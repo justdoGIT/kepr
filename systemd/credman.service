@@ -1,0 +1,40 @@
+[Unit]
+Description=credman — credential manager daemon
+Documentation=man:credman(1)
+After=local-fs.target
+Before=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# Socket dir created by daemon itself
+ExecStart=/usr/local/sbin/credman-daemon
+
+# Never expose internal details in service description
+SyslogIdentifier=credman-daemon
+
+# Restart on failure — credentials must always be available
+Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+# Hardening
+NoNewPrivileges=no          # needs root for systemd-creds
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/credman /etc/credstore.encrypted
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
