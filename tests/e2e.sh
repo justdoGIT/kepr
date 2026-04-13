@@ -86,7 +86,11 @@ credman --json delete "$NAME" >/dev/null \
     && pass "delete $NAME" \
     || fail "delete $NAME"
 
-if credman --json get "$NAME" | jq -e '.ok == false' >/dev/null; then
+# `credman --json get` on a missing cred exits 1; `set -o pipefail` would
+# then make the whole `| jq` pipeline exit 1 even when jq matched. Capture
+# first, then pipe — same pattern as tests 4 and 7.
+out=$(credman --json get "$NAME" || true)
+if echo "$out" | jq -e '.ok == false' >/dev/null; then
     pass "get after delete reports not found"
 else
     fail "get after delete unexpectedly succeeded"
@@ -198,7 +202,9 @@ else
 fi
 
 MISSING="${PREFIX}DEFINITELY_NOT_HERE"
-if credman --json get "$MISSING" \
+# Same pipefail trap as test 1: credman exits 1 on not-found. Capture first.
+out=$(credman --json get "$MISSING" || true)
+if echo "$out" \
     | jq -e '.ok == false and (.error | type == "string" and length > 0)' >/dev/null; then
     pass "--json get on missing cred: ok=false, error is non-empty string"
 else
@@ -247,7 +253,16 @@ fi
 # ── 8. Audit log shape (requires journal read access) ─────────────────────────
 step "8. audit log records op=get without leaking the value"
 
-if ! journalctl -t credman-daemon -n 1 >/dev/null 2>&1; then
+# A bare `journalctl -t credman-daemon` returns exit 0 even when the user
+# cannot see system messages — journald silently filters to the user's own
+# session. So probe group membership directly: root, `systemd-journal`, or
+# `adm` can read the daemon's audit log; anyone else sees "No entries".
+can_journal=0
+if [ "$(id -u)" = 0 ]; then can_journal=1
+elif id -nG | tr ' ' '\n' | grep -qxE 'systemd-journal|adm'; then can_journal=1
+fi
+
+if [ "$can_journal" = 0 ]; then
     skip "journalctl not readable by this user (join group 'systemd-journal' or 'adm')"
 else
     NAME="${PREFIX}AUDIT"
