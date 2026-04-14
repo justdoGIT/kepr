@@ -9,6 +9,7 @@ mod generate;
 
 use std::io::{self, BufRead, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use generate::{generate_secret, GenKind, ZeroString};
@@ -16,24 +17,31 @@ use protocol::{Request, Response, SOCKET_PATH, TIMEOUT_SECS, MAX_MSG_BYTES};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+static FORCE_NO_COLOR: AtomicBool = AtomicBool::new(false);
+
 // ── Colour helpers ────────────────────────────────────────────────────────────
 
-fn is_tty() -> bool { unsafe { isatty(1) != 0 } }
+fn use_color() -> bool {
+    if FORCE_NO_COLOR.load(Ordering::Relaxed) { return false; }
+    if std::env::var_os("NO_COLOR").is_some() { return false; }
+    unsafe { isatty(1) != 0 }
+}
 extern "C" { fn isatty(fd: i32) -> i32; }
 
 macro_rules! color {
     ($code:expr, $text:expr) => {
-        if is_tty() { format!("\x1b[{}m{}\x1b[0m", $code, $text) }
-        else        { $text.to_string() }
+        if use_color() { format!("\x1b[{}m{}\x1b[0m", $code, $text) }
+        else           { $text.to_string() }
     };
 }
 
-fn ok(m: &str)   { println!("  {}  {}", color!("0;32","✓"), m); }
-fn err(m: &str)  { eprintln!("  {}  {}", color!("0;31","✗"), m); }
-fn warn(m: &str) { println!("  {}  {}", color!("1;33","⚠"), m); }
-fn info(m: &str) { println!("  {}  {}", color!("0;36","·"), m); }
-fn bold(m: &str) { println!("{}", color!("1", m)); }
-fn dim(m: &str)  { println!("{}", color!("2", m)); }
+fn ok(m: &str)    { println!("  {}  {}", color!("0;32","✓"), m); }
+fn err(m: &str)   { eprintln!("  {}  {}", color!("0;31","✗"), m); }
+fn warn(m: &str)  { println!("  {}  {}", color!("1;33","⚠"), m); }
+fn info(m: &str)  { println!("  {}  {}", color!("0;36","·"), m); }
+fn einfo(m: &str) { eprintln!("  {}  {}", color!("0;36","·"), m); }
+fn bold(m: &str)  { println!("{}", color!("1", m)); }
+fn dim(m: &str)   { println!("{}", color!("2", m)); }
 
 // ── Socket client ─────────────────────────────────────────────────────────────
 
@@ -123,6 +131,7 @@ struct Args {
     quiet:    bool,
     export:   bool,
     json:     bool,
+    force:    bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -130,15 +139,16 @@ fn parse_args() -> Result<Args, String> {
     let mut a = Args {
         command: String::new(), name: None, value: None,
         generate: false, gen_kind: GenKind::Hex,
-        quiet: false, export: false, json: false,
+        quiet: false, export: false, json: false, force: false,
     };
 
     let mut i = 1usize;
 
     while i < raw.len() && raw[i].starts_with("--") {
         match raw[i].as_str() {
-            "--json"    => { a.json = true; i += 1; }
-            "--version" => { println!("credman {VERSION}"); std::process::exit(0); }
+            "--json"     => { a.json = true; i += 1; }
+            "--no-color" => { FORCE_NO_COLOR.store(true, Ordering::Relaxed); i += 1; }
+            "--version"  => { println!("credman {VERSION}"); std::process::exit(0); }
             "--help"|"-h" => { print_help(); std::process::exit(0); }
             _ => break,
         }
@@ -157,7 +167,9 @@ fn parse_args() -> Result<Args, String> {
             "--generate"|"-g" => { a.generate = true; i += 1; }
             "--quiet"|"-q"    => { a.quiet    = true; i += 1; }
             "--export"|"-e"   => { a.export   = true; i += 1; }
+            "--force"|"-f"    => { a.force    = true; i += 1; }
             "--json"          => { a.json     = true; i += 1; }
+            "--no-color"      => { FORCE_NO_COLOR.store(true, Ordering::Relaxed); i += 1; }
             "--value"|"-v" => {
                 i += 1;
                 a.value = Some(raw.get(i).ok_or("--value needs a value")?.clone());
@@ -185,14 +197,18 @@ fn print_help() {
     println!("credman {VERSION} — credential manager");
     println!();
     println!("USAGE:");
-    println!("  credman [--json] COMMAND [args]");
+    println!("  credman [--json] [--no-color] COMMAND [args]");
     println!();
     println!("COMMANDS:");
     println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid]");
     println!("  get KEY [--quiet] [--export]");
-    println!("  list");
-    println!("  delete KEY");
+    println!("  list                                 (alias: ls)");
+    println!("  delete KEY [--force]                 (alias: rm)");
     println!("  check");
+    println!();
+    println!("GLOBAL FLAGS:");
+    println!("  --json       machine-readable output; no stderr on clean errors");
+    println!("  --no-color   disable ANSI colors (also honors NO_COLOR env var)");
     println!();
     println!("EXAMPLES:");
     println!("  credman set OPENAI_API_KEY              # interactive, masked input");
@@ -201,8 +217,9 @@ fn print_help() {
     println!("  credman get OPENAI_API_KEY              # decrypt and print");
     println!("  credman get OPENAI_API_KEY --export     # print as: export VAR=value");
     println!("  credman get OPENAI_API_KEY --quiet      # raw value only");
-    println!("  credman list                            # show all stored names");
-    println!("  credman delete BOB_TOKEN                # remove credential");
+    println!("  credman --json get OPENAI_API_KEY       # json output for scripts");
+    println!("  credman ls                              # alias for list");
+    println!("  credman rm BOB_TOKEN --force            # delete without prompt");
     println!("  credman check                           # verify all decrypt ok");
     println!();
     println!("  View audit log:");
@@ -316,25 +333,28 @@ fn cmd_set(a: &Args) -> Response {
             }
             resp
         }
-        Err(e) => { err(&e); Response::fail(&e) }
+        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
     }
 }
 
 fn cmd_get(a: &Args) -> Response {
     let name = match &a.name {
         Some(n) => n.clone(),
-        None => { err("NAME required: credman get KEY"); return Response::fail("NAME required"); }
+        None => {
+            if !a.json { err("NAME required: credman get KEY"); }
+            return Response::fail("NAME required");
+        }
     };
 
     let req = Request::Get { name: name.clone() };
 
     match send_request(&req) {
-        Err(e) => { err(&e); Response::fail(&e) }
+        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
         Ok(resp) => {
             if !resp.ok {
                 if !a.json {
                     err(resp.error.as_deref().unwrap_or("not found"));
-                    info(&format!("Set it with: credman set {name}"));
+                    einfo(&format!("Set it with: credman set {name}"));
                 }
                 return resp;
             }
@@ -356,7 +376,7 @@ fn cmd_get(a: &Args) -> Response {
 
 fn cmd_list(a: &Args) -> Response {
     match send_request(&Request::List) {
-        Err(e) => { err(&e); Response::fail(&e) }
+        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
         Ok(resp) => {
             if a.json { return resp; }
 
@@ -382,10 +402,13 @@ fn cmd_list(a: &Args) -> Response {
 fn cmd_delete(a: &Args) -> Response {
     let name = match &a.name {
         Some(n) => n.clone(),
-        None => { err("NAME required: credman delete KEY"); return Response::fail("NAME required"); }
+        None => {
+            if !a.json { err("NAME required: credman delete KEY"); }
+            return Response::fail("NAME required");
+        }
     };
 
-    if !a.json {
+    if !a.json && !a.force {
         warn(&format!("Delete '{name}'?"));
         eprint!("  {} ", color!("0;36","Confirm [y/N]:"));
         io::stderr().flush().ok();
@@ -398,7 +421,7 @@ fn cmd_delete(a: &Args) -> Response {
     }
 
     match send_request(&Request::Delete { name: name.clone() }) {
-        Err(e) => { err(&e); Response::fail(&e) }
+        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
         Ok(resp) => {
             if resp.ok  && !a.json { ok(&format!("Deleted: {name}")); }
             if !resp.ok && !a.json { err(resp.error.as_deref().unwrap_or("failed")); }
@@ -409,7 +432,7 @@ fn cmd_delete(a: &Args) -> Response {
 
 fn cmd_check(a: &Args) -> Response {
     match send_request(&Request::Check) {
-        Err(e) => { err(&e); Response::fail(&e) }
+        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
         Ok(resp) => {
             if a.json { return resp; }
 
@@ -417,7 +440,9 @@ fn cmd_check(a: &Args) -> Response {
             if let Some(r) = results {
                 println!();
                 bold(&format!("  Checking {} credential(s)...\n", r.len()));
-                for (name, status) in r {
+                let mut entries: Vec<(&String, &String)> = r.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                for (name, status) in entries {
                     if status == "ok" {
                         ok(&format!("{:<40}", name));
                     } else {
@@ -448,15 +473,18 @@ fn main() {
     };
 
     let resp = match args.command.as_str() {
-        "set"    => cmd_set(&args),
-        "get"    => cmd_get(&args),
-        "list"   => cmd_list(&args),
-        "delete" => cmd_delete(&args),
-        "check"  => cmd_check(&args),
-        other    => {
-            err(&format!("unknown command: {other}"));
-            err("try: credman --help");
-            std::process::exit(1);
+        "set"          => cmd_set(&args),
+        "get"          => cmd_get(&args),
+        "list" | "ls"  => cmd_list(&args),
+        "delete"|"rm"  => cmd_delete(&args),
+        "check"        => cmd_check(&args),
+        other => {
+            let msg = format!("unknown command: {other}");
+            if !args.json {
+                err(&msg);
+                err("try: credman --help");
+            }
+            Response::fail(&msg)
         }
     };
 
