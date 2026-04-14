@@ -35,10 +35,10 @@ fn main() {
                 err(&msg);
                 err("try: credman --help");
             }
-            Response::fail(&msg)
+            Response::fail(msg)
         }
     };
 
     if args.json { print_json(&resp); }
-    if !resp.ok  { std::process::exit(1); }
+    if !resp.is_success() { std::process::exit(1); }
 }
