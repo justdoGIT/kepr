@@ -4,25 +4,35 @@ Documentation=man:credman(1)
 After=local-fs.target
 Before=network.target
 
+# Rate-limit restarts. These keys belong in [Unit], not [Service].
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=root
 Group=root
 
-# Socket dir created by daemon itself
+# Create /run/credman (0755 root:root) before the process starts.
+# Without this, ReadWritePaths below would fail at namespace-setup
+# time because the path doesn't yet exist.
+RuntimeDirectory=credman
+RuntimeDirectoryMode=0755
+
 ExecStart=/usr/local/sbin/credman-daemon
 
-# Never expose internal details in service description
+# Neutral identifier — never expose internal tool names in the
+# service description or the journal tag.
 SyslogIdentifier=credman-daemon
 
-# Restart on failure — credentials must always be available
+# Restart on failure — credentials must always be available.
 Restart=on-failure
 RestartSec=2
-StartLimitIntervalSec=30
-StartLimitBurst=5
 
-# Hardening
-NoNewPrivileges=no          # needs root for systemd-creds
+# ── Hardening ────────────────────────────────────────────────────
+# NoNewPrivileges must stay off: the credential backend needs the
+# privilege to derive host-bound keys.
+NoNewPrivileges=no
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/run/credman /etc/credstore.encrypted
