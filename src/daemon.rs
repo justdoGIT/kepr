@@ -36,12 +36,29 @@ use protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
 const POOL_WORKERS: usize = 16;
 const POOL_QUEUE:   usize = 64;
 
+// ── mlockall ─────────────────────────────────────────────────────────────────
+// Lock current and future allocations into RAM so decrypted secret bytes
+// never land on swap. Daemon runs as root, so RLIMIT_MEMLOCK is typically
+// unlimited; soft-fail with a warning if it isn't available.
+
+const MCL_CURRENT: i32 = 1;
+const MCL_FUTURE:  i32 = 2;
+extern "C" { fn mlockall(flags: i32) -> i32; }
+
+fn lock_memory() {
+    let ret = unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) };
+    if ret != 0 {
+        eprintln!("[credman-daemon] warning: mlockall failed — secrets may be swappable");
+    }
+}
+
 fn main() {
     if effective_uid() != 0 {
         eprintln!("[credman-daemon] must run as root");
         std::process::exit(1);
     }
 
+    lock_memory();
     setup_socket_dir();
     let _ = fs::remove_file(SOCKET_PATH);
 
@@ -99,7 +116,7 @@ fn dispatch(uid: u32, username: &str, request: Request) -> Response {
                 op: "ping", name: None, uid, username,
                 result: AuditResult::Ok,
             });
-            Response { ok: true, pong: Some(true), ..Response::empty() }
+            Response::Pong
         }
         Request::Set { name, value, generate } =>
             handle_set(uid, username, &name, value.as_deref(), generate.as_deref()),

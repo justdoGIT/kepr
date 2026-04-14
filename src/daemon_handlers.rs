@@ -24,7 +24,7 @@ pub fn handle_set(
             op: "set", name: Some(name), uid, username,
             result: AuditResult::Fail(e.clone()),
         });
-        return Response::fail(&e);
+        return Response::fail(e);
     }
 
     let upper = name.to_uppercase();
@@ -44,26 +44,21 @@ pub fn handle_set(
                 op: "set", name: Some(&upper), uid, username,
                 result: AuditResult::Ok,
             });
-            Response {
-                ok: true,
-                name: Some(upper),
-                cred_name: Some(cred_name),
-                ..Response::empty()
-            }
+            Response::SetOk { name: upper, cred_name }
         }
         Err(e) => {
             audit::log(&AuditEvent {
                 op: "set", name: Some(&upper), uid, username,
                 result: AuditResult::Fail(e.clone()),
             });
-            Response::fail(&e)
+            Response::fail(e)
         }
     }
 }
 
 pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
     if let Err(e) = validate_name(name) {
-        return Response::fail(&e);
+        return Response::fail(e);
     }
 
     let upper = name.to_uppercase();
@@ -74,51 +69,39 @@ pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
                 op: "get", name: Some(&upper), uid, username,
                 result: AuditResult::Ok,
             });
-            Response {
-                ok:    true,
-                name:  Some(upper),
-                value: Some(secret.to_owned_string()),
-                ..Response::empty()
-            }
+            Response::GetOk { name: upper, value: secret.to_owned_string() }
         }
         Err(e) => {
             audit::log(&AuditEvent {
                 op: "get", name: Some(&upper), uid, username,
                 result: AuditResult::Fail(e.clone()),
             });
-            Response::fail(&e)
+            Response::fail(e)
         }
     }
 }
 
 pub fn handle_list(uid: u32, username: &str) -> Response {
     let entries = daemon_cache::list_for_uid(uid);
-    let creds: Vec<CredInfo> = entries.iter().map(|(name, path)| {
-        CredInfo {
-            name:      name.clone(),
-            cred_name: store::to_cred_name(uid, name),
-            size:      file_size(path),
-            modified:  file_mtime_str(path),
-        }
+    let creds: Vec<CredInfo> = entries.iter().map(|(name, path)| CredInfo {
+        name:      name.clone(),
+        cred_name: store::to_cred_name(uid, name),
+        size:      file_size(path),
+        modified:  file_mtime_str(path),
     }).collect();
 
-    let count = creds.len();
     audit::log(&AuditEvent {
         op: "list", name: None, uid, username,
         result: AuditResult::Ok,
     });
 
-    Response {
-        ok: true,
-        credentials: Some(creds),
-        count: Some(count),
-        ..Response::empty()
-    }
+    let count = creds.len();
+    Response::ListOk { credentials: creds, count }
 }
 
 pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
     if let Err(e) = validate_name(name) {
-        return Response::fail(&e);
+        return Response::fail(e);
     }
 
     let upper = name.to_uppercase();
@@ -130,14 +113,14 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
                 op: "delete", name: Some(&upper), uid, username,
                 result: AuditResult::Ok,
             });
-            Response { ok: true, name: Some(upper), ..Response::empty() }
+            Response::DeleteOk { name: upper }
         }
         Err(e) => {
             audit::log(&AuditEvent {
                 op: "delete", name: Some(&upper), uid, username,
                 result: AuditResult::Fail(e.clone()),
             });
-            Response::fail(&e)
+            Response::fail(e)
         }
     }
 }
@@ -192,10 +175,5 @@ pub fn handle_check(uid: u32, username: &str) -> Response {
         },
     });
 
-    Response {
-        ok: all_ok,
-        results: Some(results),
-        count: Some(count),
-        ..Response::empty()
-    }
+    Response::CheckOk { results, count, all_ok }
 }

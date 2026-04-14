@@ -12,6 +12,18 @@ use crate::client::send_request;
 use crate::generate::{generate_secret, GenKind};
 use crate::protocol::{Request, Response};
 
+// Dispatch a request, turning transport errors into a Response::Err.
+// Centralises the "on send failure, print and fail" pattern.
+fn dispatch(a: &Args, req: &Request) -> Response {
+    match send_request(req) {
+        Ok(resp) => resp,
+        Err(e)   => {
+            if !a.json { err(&e); }
+            Response::fail(e)
+        }
+    }
+}
+
 pub fn cmd_set(a: &Args) -> Response {
     let name = match &a.name {
         Some(n) => n.clone(),
@@ -49,18 +61,17 @@ pub fn cmd_set(a: &Args) -> Response {
         println!();
         bold(&format!("  Setting: {}", color("1;33", &name)));
 
-        let check_req = Request::Get { name: name.clone() };
-        if let Ok(r) = send_request(&check_req) {
-            if r.ok {
-                warn(&format!("'{}' already exists.", name));
-                eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
-                io::stderr().flush().ok();
-                let mut ans = String::new();
-                io::stdin().lock().read_line(&mut ans).ok();
-                if ans.trim().to_lowercase() != "y" {
-                    info("Aborted.");
-                    return Response::fail("aborted");
-                }
+        // Peek: does this credential already exist? Ignore network errors here —
+        // the actual set call will surface them.
+        if let Response::GetOk { .. } = dispatch(a, &Request::Get { name: name.clone() }) {
+            warn(&format!("'{}' already exists.", name));
+            eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
+            io::stderr().flush().ok();
+            let mut ans = String::new();
+            io::stdin().lock().read_line(&mut ans).ok();
+            if ans.trim().to_lowercase() != "y" {
+                info("Aborted.");
+                return Response::fail("aborted");
             }
         }
 
@@ -94,26 +105,20 @@ pub fn cmd_set(a: &Args) -> Response {
         }
     };
 
-    let req = Request::Set {
-        name:     name.clone(),
-        value:    value_opt,
-        generate: gen_opt,
-    };
+    let req = Request::Set { name: name.clone(), value: value_opt, generate: gen_opt };
+    let resp = dispatch(a, &req);
 
-    match send_request(&req) {
-        Ok(resp) => {
-            if resp.ok && !a.json {
-                println!();
-                ok(&format!("Stored: {}", color("1", &name)));
-                dim(&format!("  Retrieve: credman get {name}"));
-                println!();
-            } else if !resp.ok && !a.json {
-                err(resp.error.as_deref().unwrap_or("unknown error"));
-            }
-            resp
+    match &resp {
+        Response::SetOk { name, .. } if !a.json => {
+            println!();
+            ok(&format!("Stored: {}", color("1", name)));
+            dim(&format!("  Retrieve: credman get {name}"));
+            println!();
         }
-        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
+        Response::Err { error } if !a.json => err(error),
+        _ => {}
     }
+    resp
 }
 
 pub fn cmd_get(a: &Args) -> Response {
@@ -125,57 +130,56 @@ pub fn cmd_get(a: &Args) -> Response {
         }
     };
 
-    let req = Request::Get { name: name.clone() };
+    let resp = dispatch(a, &Request::Get { name: name.clone() });
 
-    match send_request(&req) {
-        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
-        Ok(resp) => {
-            if !resp.ok {
-                if !a.json {
-                    err(resp.error.as_deref().unwrap_or("not found"));
-                    einfo(&format!("Set it with: credman set {name}"));
-                }
-                return resp;
-            }
-
-            let val = resp.value.as_deref().unwrap_or("");
-
+    match &resp {
+        Response::GetOk { name, value } => {
             if a.json   { return resp; }
-            if a.quiet  { println!("{val}"); return resp; }
-            if a.export { println!("export {name}={val}"); return resp; }
-
+            if a.quiet  { println!("{value}"); return resp; }
+            if a.export { println!("export {name}={value}"); return resp; }
             println!();
             bold(&format!("  {name}"));
-            println!("  {}", color("0;32", val));
+            println!("  {}", color("0;32", value));
             println!();
             resp
+        }
+        Response::Err { error } => {
+            if !a.json {
+                err(error);
+                einfo(&format!("Set it with: credman set {name}"));
+            }
+            resp
+        }
+        _ => {
+            if !a.json { err("unexpected response"); }
+            Response::fail("unexpected response")
         }
     }
 }
 
 pub fn cmd_list(a: &Args) -> Response {
-    match send_request(&Request::List) {
-        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
-        Ok(resp) => {
-            if a.json { return resp; }
+    let resp = dispatch(a, &Request::List);
+    if a.json { return resp; }
 
-            let creds = resp.credentials.as_deref().unwrap_or(&[]);
-            if creds.is_empty() {
+    match &resp {
+        Response::ListOk { credentials, .. } => {
+            if credentials.is_empty() {
                 info("No credentials stored.");
                 return resp;
             }
-
             println!();
-            bold(&format!("  Stored credentials ({})\n", creds.len()));
-            for c in creds {
+            bold(&format!("  Stored credentials ({})\n", credentials.len()));
+            for c in credentials {
                 println!("  {:<40} {}",
                     color("1", &c.name),
                     color("2", &format!("{}B  {}", c.size, c.modified)));
             }
             println!();
-            resp
         }
+        Response::Err { error } => err(error),
+        _ => err("unexpected response"),
     }
+    resp
 }
 
 pub fn cmd_delete(a: &Args) -> Response {
@@ -199,42 +203,40 @@ pub fn cmd_delete(a: &Args) -> Response {
         }
     }
 
-    match send_request(&Request::Delete { name: name.clone() }) {
-        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
-        Ok(resp) => {
-            if resp.ok  && !a.json { ok(&format!("Deleted: {name}")); }
-            if !resp.ok && !a.json { err(resp.error.as_deref().unwrap_or("failed")); }
-            resp
-        }
+    let resp = dispatch(a, &Request::Delete { name: name.clone() });
+    match &resp {
+        Response::DeleteOk { name } if !a.json => ok(&format!("Deleted: {name}")),
+        Response::Err { error } if !a.json     => err(error),
+        _ => {}
     }
+    resp
 }
 
 pub fn cmd_check(a: &Args) -> Response {
-    match send_request(&Request::Check) {
-        Err(e) => { if !a.json { err(&e); } Response::fail(&e) }
-        Ok(resp) => {
-            if a.json { return resp; }
+    let resp = dispatch(a, &Request::Check);
+    if a.json { return resp; }
 
-            if let Some(r) = resp.results.as_ref() {
-                println!();
-                bold(&format!("  Checking {} credential(s)...\n", r.len()));
-                let mut entries: Vec<(&String, &String)> = r.iter().collect();
-                entries.sort_by(|a, b| a.0.cmp(b.0));
-                for (name, status) in entries {
-                    if status == "ok" {
-                        ok(&format!("{:<40}", name));
-                    } else {
-                        err(&format!("{:<40} FAILED", name));
-                    }
-                }
-                println!();
-                if resp.ok { ok("All credentials verified."); }
-                else       { warn("Some credentials failed."); }
-                println!();
-            } else {
+    match &resp {
+        Response::CheckOk { results, all_ok, .. } => {
+            if results.is_empty() {
                 info("No credentials to check.");
+                return resp;
             }
-            resp
+            println!();
+            bold(&format!("  Checking {} credential(s)...\n", results.len()));
+            let mut entries: Vec<(&String, &String)> = results.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            for (name, status) in entries {
+                if status == "ok" { ok(&format!("{:<40}", name)); }
+                else              { err(&format!("{:<40} FAILED", name)); }
+            }
+            println!();
+            if *all_ok { ok("All credentials verified."); }
+            else       { warn("Some credentials failed."); }
+            println!();
         }
+        Response::Err { error } => err(error),
+        _ => err("unexpected response"),
     }
+    resp
 }

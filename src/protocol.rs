@@ -1,19 +1,23 @@
-// protocol.rs — shared request/response types
+// protocol.rs — shared request/response types for the CLI↔daemon Unix socket.
 //
-// Everything that crosses the Unix socket lives here.
-// Both credman (client) and credman-daemon import this module.
-// Keep it minimal — only wire types, no logic.
+// Both credman (client) and credman-daemon import this module. Keep it
+// minimal — only wire types + helpers that preserve wire invariants.
+//
+// Wire format (framed): <u32 BE length> <JSON payload>
+//
+// Request and Response are both tagged enums, so adding a new operation
+// requires exactly one new variant — no god-struct with all-Option fields.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-// ── Socket path ───────────────────────────────────────────────────────────────
+// ── Socket path / limits ──────────────────────────────────────────────────────
 
-pub const SOCKET_PATH:    &str = "/run/credman/credman.sock";
+pub const SOCKET_PATH:   &str  = "/run/credman/credman.sock";
 #[allow(dead_code)]
-pub const SOCKET_DIR:     &str = "/run/credman";
-pub const MAX_MSG_BYTES:  usize = 65_536;   // 64 KB max message
-pub const TIMEOUT_SECS:   u64   = 10;
+pub const SOCKET_DIR:    &str  = "/run/credman";
+pub const MAX_MSG_BYTES: usize = 65_536;   // 64 KB max framed message
+pub const TIMEOUT_SECS:  u64   = 10;
 
 // ── Request ───────────────────────────────────────────────────────────────────
 
@@ -37,56 +41,47 @@ pub enum Request {
 // ── Response ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Response {
-    pub ok:             bool,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name:           Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cred_name:      Option<String>,
-
-    // value is present only for Get responses
-    // daemon sends it over socket (socket is root:credman-group protected)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value:          Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error:          Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub credentials:    Option<Vec<CredInfo>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub count:          Option<usize>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub results:        Option<HashMap<String, String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pong:           Option<bool>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Response {
+    SetOk    { name: String, cred_name: String },
+    GetOk    { name: String, value: String },
+    DeleteOk { name: String },
+    ListOk   { credentials: Vec<CredInfo>, count: usize },
+    CheckOk  { results: HashMap<String, String>, count: usize, all_ok: bool },
+    Pong,
+    Err      { error: String },
 }
 
 impl Response {
+    /// Transport-level success (request was understood and not rejected).
+    /// A CheckOk with `all_ok=false` is still transport-ok.
     #[allow(dead_code)]
-    pub fn ok() -> Self {
-        Self { ok: true, ..Self::empty() }
+    pub fn is_transport_ok(&self) -> bool {
+        !matches!(self, Response::Err { .. })
     }
 
-    pub fn fail(msg: &str) -> Self {
-        Self { ok: false, error: Some(msg.to_string()), ..Self::empty() }
-    }
-
-    pub fn empty() -> Self {
-        Self {
-            ok: false, name: None, cred_name: None,
-            value: None, error: None, credentials: None,
-            count: None, results: None, pong: None,
+    /// Semantic success — used for the CLI's exit code.
+    /// False for any Err and for CheckOk with a failing credential.
+    pub fn is_success(&self) -> bool {
+        match self {
+            Response::Err { .. }                  => false,
+            Response::CheckOk { all_ok, .. }      => *all_ok,
+            _                                     => true,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn err_msg(&self) -> Option<&str> {
+        if let Response::Err { error } = self { Some(error) } else { None }
+    }
+
+    /// Convenience constructor used throughout the codebase.
+    pub fn fail(msg: impl Into<String>) -> Self {
+        Response::Err { error: msg.into() }
     }
 }
 
-// ── Credential info (for list) ────────────────────────────────────────────────
+// ── Credential info (for ListOk) ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CredInfo {
@@ -115,23 +110,13 @@ mod tests {
 
     #[test]
     fn request_wire_tag_is_lowercase_cmd() {
-        // The daemon dispatches on `cmd`. Regressing the tag or casing
-        // would silently break every client.
         assert_eq!(as_value(&Request::Ping)["cmd"],   json!("ping"));
         assert_eq!(as_value(&Request::List)["cmd"],   json!("list"));
         assert_eq!(as_value(&Request::Check)["cmd"],  json!("check"));
+        assert_eq!(as_value(&Request::Get { name: "X".into() })["cmd"], json!("get"));
+        assert_eq!(as_value(&Request::Delete { name: "X".into() })["cmd"], json!("delete"));
         assert_eq!(
-            as_value(&Request::Get { name: "X".into() })["cmd"],
-            json!("get"),
-        );
-        assert_eq!(
-            as_value(&Request::Delete { name: "X".into() })["cmd"],
-            json!("delete"),
-        );
-        assert_eq!(
-            as_value(&Request::Set {
-                name: "X".into(), value: None, generate: None,
-            })["cmd"],
+            as_value(&Request::Set { name: "X".into(), value: None, generate: None })["cmd"],
             json!("set"),
         );
     }
@@ -144,117 +129,94 @@ mod tests {
             Request::Check,
             Request::Get    { name: "OPENAI".into() },
             Request::Delete { name: "FOO".into() },
-            Request::Set {
-                name: "K".into(),
-                value: Some("v".into()),
-                generate: None,
-            },
-            Request::Set {
-                name: "K".into(),
-                value: None,
-                generate: Some("hex".into()),
-            },
-            Request::Set {
-                name: "K".into(),
-                value: None,
-                generate: None,
-            },
+            Request::Set { name: "K".into(), value: Some("v".into()), generate: None },
+            Request::Set { name: "K".into(), value: None, generate: Some("hex".into()) },
+            Request::Set { name: "K".into(), value: None, generate: None },
         ];
         for req in cases {
-            let original = as_value(&req);
-            let back     = roundtrip_request(&req);
-            assert_eq!(original, back, "roundtrip changed variant: {original}");
+            assert_eq!(as_value(&req), roundtrip_request(&req));
         }
     }
 
     #[test]
     fn set_optional_fields_omitted_when_none() {
-        // `skip_serializing_if` keeps the wire compact and avoids leaking `null`s.
-        let req = Request::Set {
-            name: "X".into(), value: None, generate: None,
-        };
+        let req = Request::Set { name: "X".into(), value: None, generate: None };
         let v = as_value(&req);
         assert!(v.get("value").is_none(),    "value should be absent: {v}");
         assert!(v.get("generate").is_none(), "generate should be absent: {v}");
     }
 
     #[test]
-    fn response_fail_shape() {
+    fn response_err_wire_shape() {
         let r = Response::fail("boom");
-        assert!(!r.ok);
-        assert_eq!(r.error.as_deref(), Some("boom"));
-        // Every other field is None — the CLI checks these.
-        assert!(r.name.is_none());
-        assert!(r.cred_name.is_none());
-        assert!(r.value.is_none());
-        assert!(r.credentials.is_none());
-        assert!(r.count.is_none());
-        assert!(r.results.is_none());
-        assert!(r.pong.is_none());
+        let v = as_value(&r);
+        assert_eq!(v["kind"],  json!("err"));
+        assert_eq!(v["error"], json!("boom"));
+        assert!(!r.is_transport_ok());
+        assert!(!r.is_success());
+        assert_eq!(r.err_msg(), Some("boom"));
     }
 
     #[test]
-    fn response_ok_serializes_without_nulls() {
-        // A bare `ok: true` response must not serialize any `null` keys —
-        // JSON-mode consumers parse this output.
-        let v = as_value(&Response::ok());
-        let obj = v.as_object().expect("response is a JSON object");
-        assert_eq!(obj.len(), 1, "unexpected extra keys: {v}");
-        assert_eq!(obj.get("ok"), Some(&json!(true)));
+    fn response_variant_tags() {
+        assert_eq!(as_value(&Response::Pong)["kind"], json!("pong"));
+        assert_eq!(
+            as_value(&Response::SetOk { name: "X".into(), cred_name: "y".into() })["kind"],
+            json!("set_ok"),
+        );
+        assert_eq!(
+            as_value(&Response::GetOk { name: "X".into(), value: "v".into() })["kind"],
+            json!("get_ok"),
+        );
+        assert_eq!(
+            as_value(&Response::DeleteOk { name: "X".into() })["kind"],
+            json!("delete_ok"),
+        );
     }
 
     #[test]
-    fn response_roundtrip() {
-        let resp = Response {
-            ok: true,
-            name: Some("X".into()),
-            value: Some("secret".into()),
-            ..Response::empty()
+    fn response_list_roundtrip() {
+        let r = Response::ListOk {
+            credentials: vec![CredInfo {
+                name: "X".into(), cred_name: "credman-1000-x".into(),
+                size: 42, modified: "2024-01-01 00:00".into(),
+            }],
+            count: 1,
         };
-        let bytes = serde_json::to_vec(&resp).expect("to_vec");
-        let back: Response = serde_json::from_slice(&bytes).expect("from_slice");
-        assert!(back.ok);
-        assert_eq!(back.name.as_deref(),  Some("X"));
-        assert_eq!(back.value.as_deref(), Some("secret"));
-        assert!(back.error.is_none());
+        let bytes = serde_json::to_vec(&r).unwrap();
+        let back: Response = serde_json::from_slice(&bytes).unwrap();
+        match back {
+            Response::ListOk { credentials, count } => {
+                assert_eq!(count, 1);
+                assert_eq!(credentials[0].name, "X");
+                assert_eq!(credentials[0].size, 42);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]
-    fn response_list_and_check_shapes_roundtrip() {
-        // Exercises the collection fields `credentials` and `results` so a
-        // stray `skip_serializing_if` regression on either would be caught.
-        let list_resp = Response {
-            ok: true,
-            count: Some(1),
-            credentials: Some(vec![CredInfo {
-                name:      "X".into(),
-                cred_name: "credman-1000-x".into(),
-                size:      42,
-                modified:  "2024-01-01 00:00".into(),
-            }]),
-            ..Response::empty()
-        };
-        let bytes = serde_json::to_vec(&list_resp).expect("to_vec");
-        let back: Response = serde_json::from_slice(&bytes).expect("from_slice");
-        let creds = back.credentials.expect("credentials must roundtrip");
-        assert_eq!(creds.len(), 1);
-        assert_eq!(creds[0].name, "X");
-        assert_eq!(creds[0].size, 42);
-        assert_eq!(back.count, Some(1));
-
+    fn response_check_all_ok_drives_is_success() {
         let mut results = HashMap::new();
-        results.insert("A".to_string(), "ok".to_string());
-        results.insert("B".to_string(), "failed".to_string());
-        let check_resp = Response {
-            ok: false,
-            results: Some(results),
-            count: Some(2),
-            ..Response::empty()
-        };
-        let bytes = serde_json::to_vec(&check_resp).expect("to_vec");
-        let back: Response = serde_json::from_slice(&bytes).expect("from_slice");
-        let r = back.results.expect("results must roundtrip");
-        assert_eq!(r.get("A").map(String::as_str), Some("ok"));
-        assert_eq!(r.get("B").map(String::as_str), Some("failed"));
+        results.insert("A".into(), "ok".into());
+        results.insert("B".into(), "failed".into());
+        let r = Response::CheckOk { results, count: 2, all_ok: false };
+        // transport-ok (the daemon answered), but semantic-fail (a cred is broken)
+        assert!(r.is_transport_ok());
+        assert!(!r.is_success());
+    }
+
+    #[test]
+    fn response_get_roundtrip() {
+        let r = Response::GetOk { name: "X".into(), value: "secret".into() };
+        let bytes = serde_json::to_vec(&r).unwrap();
+        let back: Response = serde_json::from_slice(&bytes).unwrap();
+        match back {
+            Response::GetOk { name, value } => {
+                assert_eq!(name, "X");
+                assert_eq!(value, "secret");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }
