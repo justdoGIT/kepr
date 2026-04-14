@@ -5,7 +5,8 @@
 //
 // Root systemd service. Owns all encryption/decryption operations and audit
 // logging. Per-connection: read peer uid via SO_PEERCRED, parse framed JSON,
-// dispatch, emit framed JSON response.
+// dispatch, emit framed JSON response. Connections are handled by a bounded
+// worker pool so a flood can't spawn unbounded threads.
 
 mod protocol;
 mod crypto;
@@ -16,17 +17,24 @@ mod framing;
 mod daemon_socket;
 mod daemon_peer;
 mod daemon_handlers;
+mod daemon_pool;
+mod daemon_cache;
 
 use std::fs;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::thread;
 
 use audit::{username_for_uid, AuditEvent, AuditResult};
 use daemon_handlers::{handle_check, handle_delete, handle_get, handle_list, handle_set};
 use daemon_peer::get_peer_uid;
+use daemon_pool::Pool;
 use daemon_socket::{effective_uid, set_socket_permissions, setup_socket_dir};
 use framing::{read_frame, write_frame};
 use protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
+
+// Worker pool sizing. Connections are short-lived (1 req / 1 resp) but each
+// may fork+exec the credential backend, so we want some slack over CPU count.
+const POOL_WORKERS: usize = 16;
+const POOL_QUEUE:   usize = 64;
 
 fn main() {
     if effective_uid() != 0 {
@@ -41,11 +49,13 @@ fn main() {
         .expect("cannot bind socket");
     set_socket_permissions();
 
-    eprintln!("[credman-daemon] listening on {SOCKET_PATH}");
+    let pool = Pool::new(POOL_WORKERS, POOL_QUEUE, handle_client);
+
+    eprintln!("[credman-daemon] listening on {SOCKET_PATH} (workers={POOL_WORKERS})");
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => { thread::spawn(move || handle_client(stream)); }
+            Ok(stream) => pool.dispatch(stream),
             Err(e)     => eprintln!("[credman-daemon] accept error: {e}"),
         }
     }

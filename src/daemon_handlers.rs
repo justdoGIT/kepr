@@ -7,9 +7,10 @@ use std::collections::HashMap;
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::crypto;
+use crate::daemon_cache;
 use crate::generate::{self, generate_secret, GenKind};
 use crate::protocol::{CredInfo, Response};
-use crate::store::{self, file_mtime_str, file_size, list_for_uid, validate_name};
+use crate::store::{self, file_mtime_str, file_size, validate_name};
 
 pub fn handle_set(
     uid:      u32,
@@ -38,6 +39,7 @@ pub fn handle_set(
     match crypto::encrypt(uid, &upper, secret.as_bytes()) {
         Ok(()) => {
             let cred_name = store::to_cred_name(uid, &upper);
+            daemon_cache::invalidate(uid);
             audit::log(&AuditEvent {
                 op: "set", name: Some(&upper), uid, username,
                 result: AuditResult::Ok,
@@ -90,7 +92,7 @@ pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
 }
 
 pub fn handle_list(uid: u32, username: &str) -> Response {
-    let entries = list_for_uid(uid);
+    let entries = daemon_cache::list_for_uid(uid);
     let creds: Vec<CredInfo> = entries.iter().map(|(name, path)| {
         CredInfo {
             name:      name.clone(),
@@ -123,6 +125,7 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
 
     match crypto::delete(uid, &upper) {
         Ok(()) => {
+            daemon_cache::invalidate(uid);
             audit::log(&AuditEvent {
                 op: "delete", name: Some(&upper), uid, username,
                 result: AuditResult::Ok,
@@ -140,15 +143,45 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
 }
 
 pub fn handle_check(uid: u32, username: &str) -> Response {
-    let entries = list_for_uid(uid);
-    let mut results = HashMap::new();
+    let entries = daemon_cache::list_for_uid(uid);
+    let count = entries.len();
+
+    // Parallelise verify across a bounded thread fan-out.
+    // Each verify is a fork+exec of the credential backend, so CPU isn't the
+    // bottleneck — the gain is overlapping the round-trip latency.
+    let par = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(2)
+        .min(count.max(1));
+
+    // Round-robin names into `par` buckets to balance load.
+    let mut buckets: Vec<Vec<String>> = (0..par).map(|_| Vec::new()).collect();
+    for (i, (name, _)) in entries.iter().enumerate() {
+        buckets[i % par].push(name.clone());
+    }
+
+    let mut results: HashMap<String, String> = HashMap::new();
     let mut all_ok = true;
 
-    for (name, _) in &entries {
-        let ok = crypto::verify(uid, name);
-        results.insert(name.clone(), if ok { "ok" } else { "failed" }.to_string());
-        if !ok { all_ok = false; }
-    }
+    std::thread::scope(|s| {
+        let handles: Vec<_> = buckets.into_iter()
+            .map(|bucket| s.spawn(move || {
+                bucket.into_iter()
+                    .map(|name| {
+                        let ok = crypto::verify(uid, &name);
+                        (name, ok)
+                    })
+                    .collect::<Vec<(String, bool)>>()
+            }))
+            .collect();
+
+        for h in handles {
+            for (name, ok) in h.join().unwrap() {
+                results.insert(name, if ok { "ok".into() } else { "failed".into() });
+                if !ok { all_ok = false; }
+            }
+        }
+    });
 
     audit::log(&AuditEvent {
         op: "check", name: None, uid, username,
@@ -162,7 +195,7 @@ pub fn handle_check(uid: u32, username: &str) -> Response {
     Response {
         ok: all_ok,
         results: Some(results),
-        count: Some(entries.len()),
+        count: Some(count),
         ..Response::empty()
     }
 }
