@@ -1,13 +1,11 @@
 # credman-docs (Fumadocs)
 
-Fumadocs (Next.js + MDX) docs site for credman. The legacy Mintlify
-scaffold still lives at `../docs/` so the two can be diffed during
-migration.
+Fumadocs (Next.js + MDX) docs site for credman.
 
 ## Layout
 
 ```
-docs-next/
+docs/
 ├── app/                       # Next.js App Router: home + /docs routes
 ├── components/
 │   ├── mermaid.tsx            # client-side Mermaid renderer (fenced blocks)
@@ -34,7 +32,7 @@ subdirectories become collapsible groups via their own meta.json.
 ## Develop
 
 ```bash
-cd docs-next
+cd docs
 npm install
 npm run dev       # http://localhost:3000
 npm run build     # production build
@@ -58,21 +56,20 @@ the sidebar.
 ## Deploy (GitHub → Vercel)
 
 1. Push the repo to GitHub.
-2. Import the repo on Vercel. Set **Root Directory** to `docs-next`.
+2. Import the repo on Vercel. Set **Root Directory** to `docs`.
 3. Framework preset auto-detects Next.js. No env vars needed.
 4. Subsequent pushes auto-deploy.
 
 Preview deployments per PR are enabled by default.
 
-## Migration notes
+## Component shim notes
 
 - MDX pages use a small Mintlify-compatibility shim
   (`components/mintlify-compat.tsx`) so `<Note>`, `<Warning>`,
   `<CardGroup>`, `<Steps>`, etc. resolve to Fumadocs UI equivalents
   without rewriting every page.
-- Mintlify's `<Tabs><Tab title="X">` API differs from Fumadocs'
-  `<Tabs items={[...]}><Tab value="X">`. `quickstart.mdx` has been
-  migrated; check any new Tabs usage.
+- Fumadocs' `<Tabs>` API uses `items={[...]}` + `<Tab value="X">`
+  (not Mintlify's `<Tab title="X">`). `quickstart.mdx` follows the
+  Fumadocs API; match it for new Tabs usage.
 - Internal links are absolute from the site root
-  (`/docs/architecture/overview`). The old Mintlify scaffold used
-  docs-relative paths (`/architecture/overview`).
+  (`/docs/architecture/overview`).
