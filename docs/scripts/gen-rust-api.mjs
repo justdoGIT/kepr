@@ -11,7 +11,7 @@
 //
 // Requirements
 //   - Rust nightly toolchain (`rustup toolchain install nightly`).
-//   - Run from the docs-next/ directory: `npm run gen:api`.
+//   - Run from the docs/ directory: `npm run gen:api`.
 //
 // Non-goals
 //   - Rendering doc strings as rich markdown (rustdoc JSON gives raw
