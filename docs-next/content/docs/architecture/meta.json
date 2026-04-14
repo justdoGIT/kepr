@@ -1,0 +1,9 @@
+{
+  "title": "Architecture",
+  "defaultOpen": true,
+  "pages": [
+    "overview",
+    "design-patterns",
+    "sequence-diagrams"
+  ]
+}

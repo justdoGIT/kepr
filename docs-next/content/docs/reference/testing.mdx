@@ -1,0 +1,82 @@
+---
+title: "Testing"
+description: "Hermetic unit tests via cargo test, end-to-end suite via tests/e2e.sh, and the coverage matrix between them."
+---
+
+## Unit tests (`cargo test`)
+
+Hermetic — no daemon, no root, no encryption backend.
+
+| Module          | Test                                                  | Asserts                                                    |
+| --------------- | ----------------------------------------------------- | ---------------------------------------------------------- |
+| `protocol`      | `request_wire_tag_is_lowercase_cmd`                   | `cmd` field stays lowercase across all variants.           |
+| `protocol`      | `request_roundtrip_preserves_all_variants`            | Serialize → deserialize is identity.                       |
+| `protocol`      | `set_optional_fields_omitted_when_none`               | `value` / `generate` skipped when `None`.                  |
+| `protocol`      | `response_check_all_ok_drives_is_success`             | Transport-ok + semantic-fail composes correctly.           |
+| `store`         | `cred_name_format` / `cred_name_roundtrip`            | `to_cred_name` / `from_cred_name` are inverses.            |
+| `store`         | `from_cred_name_reverses_dash_mapping`                | Pins `_↔-` substitution; regression breaks `list` / `get`. |
+| `store`         | `validate_name_accepts_valid` / `_rejects_invalid`    | 128-char cap; rejects `/`, `..`, NUL, non-ASCII, whitespace.|
+| `store`         | `format_timestamp_known_values`                       | Calendar math vs. `1700000000` epoch.                      |
+| `generate`      | `gen_kind_roundtrip`                                  | `as_str ↔ from_str` (case-sensitive on the wire).          |
+| `generate`      | `hex_format` / `base62_format`                        | Length + alphabet conformance.                             |
+| `generate`      | `pass_format`                                         | upper + lower + digit + symbol present (8 samples).        |
+| `generate`      | `uuid_v4_format`                                      | Length 36, version `4`, variant `[89ab]`, hex elsewhere.   |
+| `framing`       | `roundtrip_small`                                     | `<u32 BE><payload>` codec.                                 |
+| `framing`       | `rejects_oversized_frame`                             | `n > max` returns `InvalidData`.                           |
+| `framing`       | `partial_read_is_reassembled`                         | `read_exact` loops over fragmented streams.                |
+| `cli_mode`      | precedence tests                                      | `NO_COLOR > --no-color > CLICOLOR_FORCE > --color > off`.  |
+| `cli_activity`  | `parse_resolves_aliases` / `_rejects_unknown`         | `ls` → list, `rm` → delete; unknown returns `Err`.         |
+
+<Note>
+  `store::tests` only compile under the `credman-daemon` bin target —
+  see the `mod` declarations.
+</Note>
+
+## End-to-end tests (`tests/e2e.sh`)
+
+Requires the installed daemon, `credman` group membership, and `jq`.
+Cases 7 and 8 skip cleanly without sudo / journal-read access. Each
+credential created uses prefix `E2E_<pid>_<epoch>_` and is removed on
+`trap EXIT`.
+
+```mermaid
+flowchart TB
+    P[Preflight: socket reachable + jq present] --> T1
+    T1[1. happy path: set, get, list, check, delete, get-after-delete] --> T2
+    T2[2. value round-trip preserves exact bytes] --> T3
+    T3[3. generators: hex / base62 / uuid regex + pass complexity] --> T4
+    T4[4. daemon-side validate_name rejects '/' and '.'] --> T5
+    T5[5. --value overwrites an existing cred] --> T6
+    T6[6. --json shape on success and on missing cred] --> T7
+    T7[7. error sanitisation strips backend tool names<br/>SKIP if no sudo] --> T8
+    T8[8. audit log records op=get without leaking value<br/>SKIP if no journal access] --> T9
+    T9[9. colour opt-in: default off, --color on, NO_COLOR / --no-color win] --> T10
+    T10[10. check output deterministic + sorted by name] --> T11
+    T11[11. --json mode: zero stderr noise on clean errors] --> T12
+    T12[12. delete --force skips interactive prompt] --> T13
+    T13[13. aliases ls / rm behave as list / delete]
+```
+
+Run:
+
+```bash
+sudo systemctl status credman           # daemon up
+newgrp credman                          # group active in this shell
+./tests/e2e.sh                          # exit 0 = full pass
+```
+
+## Coverage matrix
+
+| Concern                          | Unit                       | E2E      |
+| -------------------------------- | -------------------------- | -------- |
+| Wire format stability            | `protocol::tests`          | 6, 11    |
+| Naming + path-traversal defence  | `store::validate_name_*`   | 4        |
+| Generator format guarantees      | `generate::tests`          | 3        |
+| Atomic write / overwrite         | —                          | 5        |
+| Per-cred decrypt success         | —                          | 1, 10    |
+| Sanitised error path             | —                          | 7        |
+| Audit log without value leak     | —                          | 8        |
+| Colour precedence                | `cli_mode::tests`          | 9        |
+| `--json` stderr hygiene          | —                          | 11       |
+| Alias dispatch                   | `cli_activity::tests`      | 13       |
+| Framing fragmentation            | `framing::tests`           | (implicit) |

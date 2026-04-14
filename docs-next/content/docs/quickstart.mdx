@@ -1,0 +1,108 @@
+---
+title: "Quickstart"
+description: "Build, install, activate the credman group, store and retrieve a credential."
+---
+
+## Prerequisites
+
+- Linux with **systemd** (the daemon is a systemd unit; the encryption
+  backend ships with systemd).
+- Stable Rust toolchain (`rustc`, `cargo`) — only at build time.
+- `bash`, `sudo` access for installation.
+
+## Install
+
+<Steps>
+  <Step title="Clone and build">
+    ```bash
+    git clone <repo> credman && cd credman
+    chmod +x install.sh
+    ./install.sh
+    ```
+
+    The installer runs `cargo build --release`, creates the `credman`
+    system group, installs both binaries, and starts
+    `credman.service`.
+  </Step>
+
+  <Step title="Activate group membership">
+    ```bash
+    newgrp credman          # or log out / in
+    groups | grep credman   # verify
+    ```
+
+    <Warning>
+      Without active group membership, `credman` cannot connect to
+      `/run/credman/credman.sock` (it is `0660 root:credman`).
+    </Warning>
+  </Step>
+
+  <Step title="Verify the daemon is reachable">
+    ```bash
+    systemctl status credman
+    credman list            # empty list, no error
+    ```
+  </Step>
+</Steps>
+
+## Store and retrieve
+
+<Tabs items={['Generate', 'Interactive (masked)', 'Non-interactive']}>
+  <Tab value="Generate">
+    ```bash
+    credman set OPENAI_API_KEY --generate
+    credman set BOB_TOKEN --generate --gen-kind pass
+    ```
+  </Tab>
+  <Tab value="Interactive (masked)">
+    ```bash
+    credman set OPENAI_API_KEY
+    # Value for OPENAI_API_KEY (blank = auto-generate): ***
+    ```
+  </Tab>
+  <Tab value="Non-interactive">
+    ```bash
+    credman set OPENAI_API_KEY --value sk-abc123
+    ```
+  </Tab>
+</Tabs>
+
+```bash
+credman get OPENAI_API_KEY               # pretty
+credman get OPENAI_API_KEY --quiet       # raw value, for $(...) capture
+credman get OPENAI_API_KEY --export      # 'export OPENAI_API_KEY=...'
+eval "$(credman get OPENAI_API_KEY --export)"
+```
+
+## Routine operations
+
+```bash
+credman list                             # alias: ls
+credman check                            # decrypts every cred; exit 1 if any fail
+credman delete OPENAI_API_KEY            # interactive confirm
+credman rm OPENAI_API_KEY --force        # no prompt
+```
+
+## JSON mode for scripts
+
+`--json` emits one JSON object on stdout. On clean errors (missing arg,
+unknown verb), nothing goes to stderr.
+
+```bash
+credman --json list | jq '.credentials[].name'
+credman --json get DOES_NOT_EXIST          # {"kind":"err","error":"..."} ; exit 1
+```
+
+## Audit log
+
+```bash
+journalctl -t credman-daemon                          # tail
+journalctl -t credman-daemon CREDMAN_UID=1000         # one user
+journalctl -t credman-daemon CREDMAN_OP=get           # one op
+journalctl -t credman-daemon CREDMAN_RESULT=fail      # only failures
+```
+
+<Check>
+  The credential value is never logged — only `op`, `name`, `uid`,
+  `user`, and `result`.
+</Check>
