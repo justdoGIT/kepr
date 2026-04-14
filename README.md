@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./.github/assets/credman.png" alt="credman" width="720">
+</p>
+
 # credman
 
 Per-user credential manager for Linux. An unprivileged CLI talks to a
