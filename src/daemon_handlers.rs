@@ -13,15 +13,18 @@ use crate::protocol::{CredInfo, Response};
 use crate::store::{self, file_mtime_str, file_size, validate_name};
 
 pub fn handle_set(
-    uid:      u32,
+    uid: u32,
     username: &str,
-    name:     &str,
-    value:    Option<&str>,
+    name: &str,
+    value: Option<&str>,
     generate: Option<&str>,
 ) -> Response {
     if let Err(e) = validate_name(name) {
         audit::log(&AuditEvent {
-            op: "set", name: Some(name), uid, username,
+            op: "set",
+            name: Some(name),
+            uid,
+            username,
             result: AuditResult::Fail(e.clone()),
         });
         return Response::fail(e);
@@ -41,14 +44,23 @@ pub fn handle_set(
             let cred_name = store::to_cred_name(uid, &upper);
             daemon_cache::invalidate(uid);
             audit::log(&AuditEvent {
-                op: "set", name: Some(&upper), uid, username,
+                op: "set",
+                name: Some(&upper),
+                uid,
+                username,
                 result: AuditResult::Ok,
             });
-            Response::SetOk { name: upper, cred_name }
+            Response::SetOk {
+                name: upper,
+                cred_name,
+            }
         }
         Err(e) => {
             audit::log(&AuditEvent {
-                op: "set", name: Some(&upper), uid, username,
+                op: "set",
+                name: Some(&upper),
+                uid,
+                username,
                 result: AuditResult::Fail(e.clone()),
             });
             Response::fail(e)
@@ -66,14 +78,23 @@ pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
     match crypto::decrypt(uid, &upper) {
         Ok(secret) => {
             audit::log(&AuditEvent {
-                op: "get", name: Some(&upper), uid, username,
+                op: "get",
+                name: Some(&upper),
+                uid,
+                username,
                 result: AuditResult::Ok,
             });
-            Response::GetOk { name: upper, value: secret.to_owned_string() }
+            Response::GetOk {
+                name: upper,
+                value: secret.to_owned_string(),
+            }
         }
         Err(e) => {
             audit::log(&AuditEvent {
-                op: "get", name: Some(&upper), uid, username,
+                op: "get",
+                name: Some(&upper),
+                uid,
+                username,
                 result: AuditResult::Fail(e.clone()),
             });
             Response::fail(e)
@@ -83,20 +104,29 @@ pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
 
 pub fn handle_list(uid: u32, username: &str) -> Response {
     let entries = daemon_cache::list_for_uid(uid);
-    let creds: Vec<CredInfo> = entries.iter().map(|(name, path)| CredInfo {
-        name:      name.clone(),
-        cred_name: store::to_cred_name(uid, name),
-        size:      file_size(path),
-        modified:  file_mtime_str(path),
-    }).collect();
+    let creds: Vec<CredInfo> = entries
+        .iter()
+        .map(|(name, path)| CredInfo {
+            name: name.clone(),
+            cred_name: store::to_cred_name(uid, name),
+            size: file_size(path),
+            modified: file_mtime_str(path),
+        })
+        .collect();
 
     audit::log(&AuditEvent {
-        op: "list", name: None, uid, username,
+        op: "list",
+        name: None,
+        uid,
+        username,
         result: AuditResult::Ok,
     });
 
     let count = creds.len();
-    Response::ListOk { credentials: creds, count }
+    Response::ListOk {
+        credentials: creds,
+        count,
+    }
 }
 
 pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
@@ -110,14 +140,20 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
         Ok(()) => {
             daemon_cache::invalidate(uid);
             audit::log(&AuditEvent {
-                op: "delete", name: Some(&upper), uid, username,
+                op: "delete",
+                name: Some(&upper),
+                uid,
+                username,
                 result: AuditResult::Ok,
             });
             Response::DeleteOk { name: upper }
         }
         Err(e) => {
             audit::log(&AuditEvent {
-                op: "delete", name: Some(&upper), uid, username,
+                op: "delete",
+                name: Some(&upper),
+                uid,
+                username,
                 result: AuditResult::Fail(e.clone()),
             });
             Response::fail(e)
@@ -147,27 +183,36 @@ pub fn handle_check(uid: u32, username: &str) -> Response {
     let mut all_ok = true;
 
     std::thread::scope(|s| {
-        let handles: Vec<_> = buckets.into_iter()
-            .map(|bucket| s.spawn(move || {
-                bucket.into_iter()
-                    .map(|name| {
-                        let ok = crypto::verify(uid, &name);
-                        (name, ok)
-                    })
-                    .collect::<Vec<(String, bool)>>()
-            }))
+        let handles: Vec<_> = buckets
+            .into_iter()
+            .map(|bucket| {
+                s.spawn(move || {
+                    bucket
+                        .into_iter()
+                        .map(|name| {
+                            let ok = crypto::verify(uid, &name);
+                            (name, ok)
+                        })
+                        .collect::<Vec<(String, bool)>>()
+                })
+            })
             .collect();
 
         for h in handles {
             for (name, ok) in h.join().unwrap() {
                 results.insert(name, if ok { "ok".into() } else { "failed".into() });
-                if !ok { all_ok = false; }
+                if !ok {
+                    all_ok = false;
+                }
             }
         }
     });
 
     audit::log(&AuditEvent {
-        op: "check", name: None, uid, username,
+        op: "check",
+        name: None,
+        uid,
+        username,
         result: if all_ok {
             AuditResult::Ok
         } else {
@@ -175,5 +220,9 @@ pub fn handle_check(uid: u32, username: &str) -> Response {
         },
     });
 
-    Response::CheckOk { results, count, all_ok }
+    Response::CheckOk {
+        results,
+        count,
+        all_ok,
+    }
 }

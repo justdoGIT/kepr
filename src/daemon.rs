@@ -8,17 +8,17 @@
 // dispatch, emit framed JSON response. Connections are handled by a bounded
 // worker pool so a flood can't spawn unbounded threads.
 
-mod protocol;
-mod crypto;
-mod generate;
-mod store;
 mod audit;
-mod framing;
-mod daemon_socket;
-mod daemon_peer;
-mod daemon_handlers;
-mod daemon_pool;
+mod crypto;
 mod daemon_cache;
+mod daemon_handlers;
+mod daemon_peer;
+mod daemon_pool;
+mod daemon_socket;
+mod framing;
+mod generate;
+mod protocol;
+mod store;
 
 use std::fs;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -34,7 +34,7 @@ use protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
 // Worker pool sizing. Connections are short-lived (1 req / 1 resp) but each
 // may fork+exec the credential backend, so we want some slack over CPU count.
 const POOL_WORKERS: usize = 16;
-const POOL_QUEUE:   usize = 64;
+const POOL_QUEUE: usize = 64;
 
 // ── mlockall ─────────────────────────────────────────────────────────────────
 // Lock current and future allocations into RAM so decrypted secret bytes
@@ -42,8 +42,10 @@ const POOL_QUEUE:   usize = 64;
 // unlimited; soft-fail with a warning if it isn't available.
 
 const MCL_CURRENT: i32 = 1;
-const MCL_FUTURE:  i32 = 2;
-extern "C" { fn mlockall(flags: i32) -> i32; }
+const MCL_FUTURE: i32 = 2;
+extern "C" {
+    fn mlockall(flags: i32) -> i32;
+}
 
 fn lock_memory() {
     let ret = unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) };
@@ -62,8 +64,7 @@ fn main() {
     setup_socket_dir();
     let _ = fs::remove_file(SOCKET_PATH);
 
-    let listener = UnixListener::bind(SOCKET_PATH)
-        .expect("cannot bind socket");
+    let listener = UnixListener::bind(SOCKET_PATH).expect("cannot bind socket");
     set_socket_permissions();
 
     let pool = Pool::new(POOL_WORKERS, POOL_QUEUE, handle_client);
@@ -73,7 +74,7 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => pool.dispatch(stream),
-            Err(e)     => eprintln!("[credman-daemon] accept error: {e}"),
+            Err(e) => eprintln!("[credman-daemon] accept error: {e}"),
         }
     }
 }
@@ -92,7 +93,7 @@ fn handle_client(mut stream: UnixStream) {
     };
 
     let buf = match read_frame(&mut stream, MAX_MSG_BYTES) {
-        Ok(b)  => b,
+        Ok(b) => b,
         Err(_) => return,
     };
 
@@ -113,17 +114,23 @@ fn dispatch(uid: u32, username: &str, request: Request) -> Response {
     match request {
         Request::Ping => {
             audit::log(&AuditEvent {
-                op: "ping", name: None, uid, username,
+                op: "ping",
+                name: None,
+                uid,
+                username,
                 result: AuditResult::Ok,
             });
             Response::Pong
         }
-        Request::Set { name, value, generate } =>
-            handle_set(uid, username, &name, value.as_deref(), generate.as_deref()),
-        Request::Get { name }    => handle_get(uid, username, &name),
-        Request::List            => handle_list(uid, username),
+        Request::Set {
+            name,
+            value,
+            generate,
+        } => handle_set(uid, username, &name, value.as_deref(), generate.as_deref()),
+        Request::Get { name } => handle_get(uid, username, &name),
+        Request::List => handle_list(uid, username),
         Request::Delete { name } => handle_delete(uid, username, &name),
-        Request::Check           => handle_check(uid, username),
+        Request::Check => handle_check(uid, username),
     }
 }
 

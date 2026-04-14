@@ -2,18 +2,18 @@
 //
 // Thin client. Speaks to credman-daemon over a Unix socket; never calls the
 // credential backend directly, never needs root/sudo. The `credman` group
-// membership is the only access control — see ARCHITECTURE.md.
+// membership is the only access control — see DOCS.md.
 
-mod protocol;
-mod generate;
-mod framing;
-mod client;
-mod cli_mode;
-mod cli_ui;
-mod cli_input;
+mod cli_activity;
 mod cli_args;
 mod cli_cmds;
-mod cli_activity;
+mod cli_input;
+mod cli_mode;
+mod cli_ui;
+mod client;
+mod framing;
+mod generate;
+mod protocol;
 
 use cli_args::parse_args;
 use cli_ui::{err, json_mode, print_json};
@@ -27,12 +27,12 @@ fn main() {
     // On parse failure: honour --json mode, if it was already seen on
     // argv, by emitting a Response::Err on stdout with no stderr noise.
     let args = match parse_args() {
-        Ok(a)  => a,
+        Ok(a) => a,
         Err(e) => {
             if json_mode() {
                 print_json(&Response::fail(e));
             } else {
-                err(&format!("{e}"));
+                err(&e);
             }
             std::process::exit(1);
         }
@@ -40,6 +40,10 @@ fn main() {
 
     let resp = args.command.dispatch(&args);
 
-    if args.json { print_json(&resp); }
-    if !resp.is_success() { std::process::exit(1); }
+    if args.json {
+        print_json(&resp);
+    }
+    if !resp.is_success() {
+        std::process::exit(1);
+    }
 }

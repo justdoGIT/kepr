@@ -17,11 +17,11 @@ impl CliActivity {
     /// Parse a user-supplied verb, resolving aliases to the canonical form.
     pub fn parse(s: &str) -> Result<Self, String> {
         let canonical = match s {
-            "set"            => "set",
-            "get"            => "get",
-            "list"  | "ls"   => "list",
-            "delete"| "rm"   => "delete",
-            "check"          => "check",
+            "set" => "set",
+            "get" => "get",
+            "list" | "ls" => "list",
+            "delete" | "rm" => "delete",
+            "check" => "check",
             other => return Err(format!("unknown command: {other}")),
         };
         Ok(Self(canonical.to_string()))
@@ -29,20 +29,20 @@ impl CliActivity {
 
     /// Canonical verb string — by construction one of the five built-in
     /// commands.
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 
     /// Route this activity to its CLI handler. Relies on the type invariant
     /// that `self.0` is always a known verb: the `_` arm is unreachable.
     pub fn dispatch(&self, args: &Args) -> Response {
         match self.as_str() {
-            "set"    => cli_cmds::cmd_set(args),
-            "get"    => cli_cmds::cmd_get(args),
-            "list"   => cli_cmds::cmd_list(args),
+            "set" => cli_cmds::cmd_set(args),
+            "get" => cli_cmds::cmd_get(args),
+            "list" => cli_cmds::cmd_list(args),
             "delete" => cli_cmds::cmd_delete(args),
-            "check"  => cli_cmds::cmd_check(args),
-            _ => unreachable!(
-                "CliActivity invariant broken: parse() only emits known verbs"
-            ),
+            "check" => cli_cmds::cmd_check(args),
+            _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }
 }

@@ -14,11 +14,12 @@ extern "C" {
     fn chown(path: *const i8, owner: u32, group: u32) -> i32;
 }
 
-pub fn effective_uid() -> u32 { unsafe { geteuid() } }
+pub fn effective_uid() -> u32 {
+    unsafe { geteuid() }
+}
 
 pub fn setup_socket_dir() {
-    fs::create_dir_all(SOCKET_DIR)
-        .expect("cannot create socket dir");
+    fs::create_dir_all(SOCKET_DIR).expect("cannot create socket dir");
     fs::set_permissions(SOCKET_DIR, fs::Permissions::from_mode(0o755))
         .expect("cannot chmod socket dir");
 }
@@ -28,7 +29,9 @@ pub fn set_socket_permissions() {
     let gid = group_gid("credman").unwrap_or(0);
 
     if let Ok(path) = CString::new(SOCKET_PATH) {
-        unsafe { chown(path.as_ptr(), 0, gid); }
+        unsafe {
+            chown(path.as_ptr(), 0, gid);
+        }
     }
 
     fs::set_permissions(SOCKET_PATH, fs::Permissions::from_mode(0o660))

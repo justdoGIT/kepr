@@ -22,16 +22,28 @@ impl Drop for ZeroString {
 
 impl std::ops::Deref for ZeroString {
     type Target = str;
-    fn deref(&self) -> &str { &self.0 }
+    fn deref(&self) -> &str {
+        &self.0
+    }
 }
 
 impl ZeroString {
-    pub fn from_string(s: String) -> Self { Self(s) }
+    pub fn from_string(s: String) -> Self {
+        Self(s)
+    }
     #[allow(dead_code)]
-    pub fn as_bytes(&self) -> &[u8] { self.0.as_bytes() }
-    pub fn is_empty(&self) -> bool { self.0.is_empty() }
-    pub fn len(&self) -> usize { self.0.len() }
-    pub fn to_owned_string(&self) -> String { self.0.clone() }
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn to_owned_string(&self) -> String {
+        self.0.clone()
+    }
 }
 
 // ── Gen kind ──────────────────────────────────────────────────────────────────
@@ -47,20 +59,20 @@ pub enum GenKind {
 impl GenKind {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
-            "hex"    => Some(Self::Hex),
+            "hex" => Some(Self::Hex),
             "base62" => Some(Self::Base62),
-            "pass"   => Some(Self::Pass),
-            "uuid"   => Some(Self::Uuid),
-            _        => None,
+            "pass" => Some(Self::Pass),
+            "uuid" => Some(Self::Uuid),
+            _ => None,
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Hex    => "hex",
+            Self::Hex => "hex",
             Self::Base62 => "base62",
-            Self::Pass   => "pass",
-            Self::Uuid   => "uuid",
+            Self::Pass => "pass",
+            Self::Uuid => "uuid",
         }
     }
 }
@@ -72,10 +84,8 @@ struct UrandomRng;
 impl UrandomRng {
     fn bytes(n: usize) -> Vec<u8> {
         let mut buf = vec![0u8; n];
-        let mut f = fs::File::open("/dev/urandom")
-            .expect("cannot open /dev/urandom");
-        f.read_exact(&mut buf)
-            .expect("cannot read /dev/urandom");
+        let mut f = fs::File::open("/dev/urandom").expect("cannot open /dev/urandom");
+        f.read_exact(&mut buf).expect("cannot read /dev/urandom");
         buf
     }
 
@@ -86,7 +96,9 @@ impl UrandomRng {
         while result.len() < len {
             let batch = Self::bytes(len * 3);
             for &b in &batch {
-                if result.len() >= len { break; }
+                if result.len() >= len {
+                    break;
+                }
                 if (b as usize) < max {
                     result.push(alphabet[b as usize % alphabet.len()]);
                 }
@@ -102,12 +114,14 @@ pub fn generate_secret(kind: GenKind) -> ZeroString {
     let s = match kind {
         GenKind::Hex => {
             let bytes = UrandomRng::bytes(32);
-            bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            bytes
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
         }
 
         GenKind::Base62 => {
-            const ALPHA: &[u8] =
-                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+            const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
             String::from_utf8(UrandomRng::sample(ALPHA, 48)).unwrap()
         }
 
@@ -117,10 +131,11 @@ pub fn generate_secret(kind: GenKind) -> ZeroString {
             loop {
                 let bytes = UrandomRng::sample(ALPHA, 32);
                 let s = String::from_utf8(bytes).unwrap();
-                if s.bytes().any(|b| b.is_ascii_uppercase()) &&
-                   s.bytes().any(|b| b.is_ascii_lowercase()) &&
-                   s.bytes().any(|b| b.is_ascii_digit())     &&
-                   s.bytes().any(|b| b"!@#$%^&*-_=+".contains(&b)) {
+                if s.bytes().any(|b| b.is_ascii_uppercase())
+                    && s.bytes().any(|b| b.is_ascii_lowercase())
+                    && s.bytes().any(|b| b.is_ascii_digit())
+                    && s.bytes().any(|b| b"!@#$%^&*-_=+".contains(&b))
+                {
                     break s;
                 }
             }
@@ -162,23 +177,32 @@ mod tests {
         }
         assert!(GenKind::from_str("garbage").is_none());
         assert!(GenKind::from_str("").is_none());
-        assert!(GenKind::from_str("HEX").is_none(), "case-sensitive on the wire");
+        assert!(
+            GenKind::from_str("HEX").is_none(),
+            "case-sensitive on the wire"
+        );
     }
 
     #[test]
     fn hex_format() {
         let s = generate_secret(GenKind::Hex);
         assert_eq!(s.len(), 64, "hex secret is 32 bytes as hex");
-        assert!(s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
-                "hex secret must use [0-9a-f] only: {}", &*s);
+        assert!(
+            s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+            "hex secret must use [0-9a-f] only: {}",
+            &*s
+        );
     }
 
     #[test]
     fn base62_format() {
         let s = generate_secret(GenKind::Base62);
         assert_eq!(s.len(), 48);
-        assert!(s.bytes().all(|b| b.is_ascii_alphanumeric()),
-                "base62 secret must be alphanumeric: {}", &*s);
+        assert!(
+            s.bytes().all(|b| b.is_ascii_alphanumeric()),
+            "base62 secret must be alphanumeric: {}",
+            &*s
+        );
     }
 
     #[test]
@@ -190,11 +214,26 @@ mod tests {
         for _ in 0..8 {
             let s = generate_secret(GenKind::Pass);
             assert_eq!(s.len(), 32);
-            assert!(s.bytes().any(|b| b.is_ascii_uppercase()), "needs upper: {}", &*s);
-            assert!(s.bytes().any(|b| b.is_ascii_lowercase()), "needs lower: {}", &*s);
-            assert!(s.bytes().any(|b| b.is_ascii_digit()),     "needs digit: {}", &*s);
-            assert!(s.bytes().any(|b| b"!@#$%^&*-_=+".contains(&b)),
-                    "needs symbol: {}", &*s);
+            assert!(
+                s.bytes().any(|b| b.is_ascii_uppercase()),
+                "needs upper: {}",
+                &*s
+            );
+            assert!(
+                s.bytes().any(|b| b.is_ascii_lowercase()),
+                "needs lower: {}",
+                &*s
+            );
+            assert!(
+                s.bytes().any(|b| b.is_ascii_digit()),
+                "needs digit: {}",
+                &*s
+            );
+            assert!(
+                s.bytes().any(|b| b"!@#$%^&*-_=+".contains(&b)),
+                "needs symbol: {}",
+                &*s
+            );
         }
     }
 
@@ -210,13 +249,21 @@ mod tests {
         // Version nibble (index 14) must be '4'
         assert_eq!(bytes[14], b'4', "uuid version must be 4: {}", &*s);
         // Variant nibble (index 19) must be one of 8|9|a|b
-        assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'),
-                "uuid variant bits wrong: {}", &*s);
+        assert!(
+            matches!(bytes[19], b'8' | b'9' | b'a' | b'b'),
+            "uuid variant bits wrong: {}",
+            &*s
+        );
         // Every non-dash position must be lowercase hex
         for (i, &b) in bytes.iter().enumerate() {
-            if matches!(i, 8 | 13 | 18 | 23) { continue; }
-            assert!(matches!(b, b'0'..=b'9' | b'a'..=b'f'),
-                    "non-hex char at {i} in {}", &*s);
+            if matches!(i, 8 | 13 | 18 | 23) {
+                continue;
+            }
+            assert!(
+                matches!(b, b'0'..=b'9' | b'a'..=b'f'),
+                "non-hex char at {i} in {}",
+                &*s
+            );
         }
     }
 
@@ -231,7 +278,7 @@ mod tests {
         assert!(!z.is_empty());
         assert_eq!(z.to_owned_string(), "hello");
         assert_eq!(z.as_bytes(), b"hello");
-        assert_eq!(&*z, "hello");   // Deref<Target=str>
+        assert_eq!(&*z, "hello"); // Deref<Target=str>
 
         let empty = ZeroString::from_string(String::new());
         assert!(empty.is_empty());

@@ -18,7 +18,7 @@ use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CliMode {
-    pub json:  bool,
+    pub json: bool,
     pub color: bool,
 }
 
@@ -36,20 +36,14 @@ static CLI_MODE: OnceLock<CliMode> = OnceLock::new();
 pub fn init_from_argv(argv: &[String]) {
     let json = argv.iter().any(|a| a == "--json");
 
-    let no_color_env  = std::env::var_os("NO_COLOR").is_some();
+    let no_color_env = std::env::var_os("NO_COLOR").is_some();
     let no_color_flag = argv.iter().any(|a| a == "--no-color");
-    let force_env     = std::env::var_os("CLICOLOR_FORCE")
+    let force_env = std::env::var_os("CLICOLOR_FORCE")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(false);
-    let color_flag    = argv.iter().any(|a| a == "--color");
+    let color_flag = argv.iter().any(|a| a == "--color");
 
-    let color = if no_color_env || no_color_flag {
-        false
-    } else if force_env || color_flag {
-        true
-    } else {
-        false
-    };
+    let color = !(no_color_env || no_color_flag) && (force_env || color_flag);
 
     let _ = CLI_MODE.set(CliMode { json, color });
 }
@@ -59,8 +53,12 @@ pub fn mode() -> CliMode {
     CLI_MODE.get().copied().unwrap_or_default()
 }
 
-pub fn json_mode() -> bool { mode().json }
-pub fn use_color() -> bool { mode().color }
+pub fn json_mode() -> bool {
+    mode().json
+}
+pub fn use_color() -> bool {
+    mode().color
+}
 
 #[cfg(test)]
 mod tests {
@@ -72,13 +70,11 @@ mod tests {
         let owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
         let json = owned.iter().any(|a| a == "--json");
         let nc_flag = owned.iter().any(|a| a == "--no-color");
-        let c_flag  = owned.iter().any(|a| a == "--color");
+        let c_flag = owned.iter().any(|a| a == "--color");
         let force = force_env
             .map(|v| v != "0" && !v.is_empty())
             .unwrap_or(false);
-        let color = if no_color_env || nc_flag { false }
-                    else if force || c_flag    { true }
-                    else                       { false };
+        let color = !(no_color_env || nc_flag) && (force || c_flag);
         CliMode { json, color }
     }
 

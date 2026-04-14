@@ -29,7 +29,7 @@ impl Pool {
                 let stream = {
                     let guard = rx.lock().expect("worker rx poisoned");
                     match guard.recv() {
-                        Ok(s)  => s,
+                        Ok(s) => s,
                         Err(_) => return, // sender dropped — shutdown
                     }
                 };

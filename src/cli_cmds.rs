@@ -17,8 +17,10 @@ use crate::protocol::{Request, Response};
 fn dispatch(a: &Args, req: &Request) -> Response {
     match send_request(req) {
         Ok(resp) => resp,
-        Err(e)   => {
-            if !a.json { err(&e); }
+        Err(e) => {
+            if !a.json {
+                err(&e);
+            }
             Response::fail(e)
         }
     }
@@ -28,9 +30,14 @@ pub fn cmd_set(a: &Args) -> Response {
     let name = match &a.name {
         Some(n) => n.clone(),
         None => {
-            if a.json { return Response::fail("NAME required"); }
+            if a.json {
+                return Response::fail("NAME required");
+            }
             bold("\n  credman — set credential\n");
-            eprint!("  {}", color("0;36", "Credential name (e.g. OPENAI_API_KEY): "));
+            eprint!(
+                "  {}",
+                color("0;36", "Credential name (e.g. OPENAI_API_KEY): ")
+            );
             io::stderr().flush().ok();
             let mut n = String::new();
             io::stdin().lock().read_line(&mut n).ok();
@@ -45,14 +52,16 @@ pub fn cmd_set(a: &Args) -> Response {
 
     let (value_opt, gen_opt): (Option<String>, Option<String>) = if let Some(v) = &a.value {
         (Some(v.clone()), None)
-
     } else if a.generate {
         let s = generate_secret(a.gen_kind);
         if !a.json {
-            ok(&format!("Generated {} secret ({} chars)", a.gen_kind.as_str(), s.len()));
+            ok(&format!(
+                "Generated {} secret ({} chars)",
+                a.gen_kind.as_str(),
+                s.len()
+            ));
         }
         (Some(s.to_owned_string()), None)
-
     } else {
         if a.json {
             return Response::fail("provide --value or --generate in json mode");
@@ -76,8 +85,13 @@ pub fn cmd_set(a: &Args) -> Response {
         }
 
         dim("  Leave blank to auto-generate. Input is hidden.\n");
-        let val = read_masked(&format!("  {} ",
-            color("0;36", &format!("Value for {name} (blank = auto-generate):"))));
+        let val = read_masked(&format!(
+            "  {} ",
+            color(
+                "0;36",
+                &format!("Value for {name} (blank = auto-generate):")
+            )
+        ));
 
         if val.is_empty() {
             println!();
@@ -94,10 +108,10 @@ pub fn cmd_set(a: &Args) -> Response {
                 "2" => GenKind::Base62,
                 "3" => GenKind::Pass,
                 "4" => GenKind::Uuid,
-                _   => GenKind::Hex,
+                _ => GenKind::Hex,
             };
             let s = generate_secret(kind);
-            let preview = format!("{}...{}", &s[..8], &s[s.len()-4..]);
+            let preview = format!("{}...{}", &s[..8], &s[s.len() - 4..]);
             ok(&format!("Generated: {}", color("2", &preview)));
             (Some(s.to_owned_string()), None)
         } else {
@@ -105,7 +119,11 @@ pub fn cmd_set(a: &Args) -> Response {
         }
     };
 
-    let req = Request::Set { name: name.clone(), value: value_opt, generate: gen_opt };
+    let req = Request::Set {
+        name: name.clone(),
+        value: value_opt,
+        generate: gen_opt,
+    };
     let resp = dispatch(a, &req);
 
     match &resp {
@@ -125,7 +143,9 @@ pub fn cmd_get(a: &Args) -> Response {
     let name = match &a.name {
         Some(n) => n.clone(),
         None => {
-            if !a.json { err("NAME required: credman get KEY"); }
+            if !a.json {
+                err("NAME required: credman get KEY");
+            }
             return Response::fail("NAME required");
         }
     };
@@ -134,9 +154,17 @@ pub fn cmd_get(a: &Args) -> Response {
 
     match &resp {
         Response::GetOk { name, value } => {
-            if a.json   { return resp; }
-            if a.quiet  { println!("{value}"); return resp; }
-            if a.export { println!("export {name}={value}"); return resp; }
+            if a.json {
+                return resp;
+            }
+            if a.quiet {
+                println!("{value}");
+                return resp;
+            }
+            if a.export {
+                println!("export {name}={value}");
+                return resp;
+            }
             println!();
             bold(&format!("  {name}"));
             println!("  {}", color("0;32", value));
@@ -151,7 +179,9 @@ pub fn cmd_get(a: &Args) -> Response {
             resp
         }
         _ => {
-            if !a.json { err("unexpected response"); }
+            if !a.json {
+                err("unexpected response");
+            }
             Response::fail("unexpected response")
         }
     }
@@ -159,7 +189,9 @@ pub fn cmd_get(a: &Args) -> Response {
 
 pub fn cmd_list(a: &Args) -> Response {
     let resp = dispatch(a, &Request::List);
-    if a.json { return resp; }
+    if a.json {
+        return resp;
+    }
 
     match &resp {
         Response::ListOk { credentials, .. } => {
@@ -170,9 +202,11 @@ pub fn cmd_list(a: &Args) -> Response {
             println!();
             bold(&format!("  Stored credentials ({})\n", credentials.len()));
             for c in credentials {
-                println!("  {:<40} {}",
+                println!(
+                    "  {:<40} {}",
                     color("1", &c.name),
-                    color("2", &format!("{}B  {}", c.size, c.modified)));
+                    color("2", &format!("{}B  {}", c.size, c.modified))
+                );
             }
             println!();
         }
@@ -186,7 +220,9 @@ pub fn cmd_delete(a: &Args) -> Response {
     let name = match &a.name {
         Some(n) => n.clone(),
         None => {
-            if !a.json { err("NAME required: credman delete KEY"); }
+            if !a.json {
+                err("NAME required: credman delete KEY");
+            }
             return Response::fail("NAME required");
         }
     };
@@ -206,7 +242,7 @@ pub fn cmd_delete(a: &Args) -> Response {
     let resp = dispatch(a, &Request::Delete { name: name.clone() });
     match &resp {
         Response::DeleteOk { name } if !a.json => ok(&format!("Deleted: {name}")),
-        Response::Err { error } if !a.json     => err(error),
+        Response::Err { error } if !a.json => err(error),
         _ => {}
     }
     resp
@@ -214,10 +250,14 @@ pub fn cmd_delete(a: &Args) -> Response {
 
 pub fn cmd_check(a: &Args) -> Response {
     let resp = dispatch(a, &Request::Check);
-    if a.json { return resp; }
+    if a.json {
+        return resp;
+    }
 
     match &resp {
-        Response::CheckOk { results, all_ok, .. } => {
+        Response::CheckOk {
+            results, all_ok, ..
+        } => {
             if results.is_empty() {
                 info("No credentials to check.");
                 return resp;
@@ -227,12 +267,18 @@ pub fn cmd_check(a: &Args) -> Response {
             let mut entries: Vec<(&String, &String)> = results.iter().collect();
             entries.sort_by(|a, b| a.0.cmp(b.0));
             for (name, status) in entries {
-                if status == "ok" { ok(&format!("{:<40}", name)); }
-                else              { err(&format!("{:<40} FAILED", name)); }
+                if status == "ok" {
+                    ok(&format!("{:<40}", name));
+                } else {
+                    err(&format!("{:<40} FAILED", name));
+                }
             }
             println!();
-            if *all_ok { ok("All credentials verified."); }
-            else       { warn("Some credentials failed."); }
+            if *all_ok {
+                ok("All credentials verified.");
+            } else {
+                warn("Some credentials failed.");
+            }
             println!();
         }
         Response::Err { error } => err(error),

@@ -19,7 +19,7 @@ use crate::store;
 // backend's own stderr output; everywhere else in the codebase we call
 // it "the credential backend".
 const BACKEND_BIN: &str = "/usr/bin/systemd-creds";
-const KEY_TYPE:    &str = "host";
+const KEY_TYPE: &str = "host";
 
 // ── Encrypt ───────────────────────────────────────────────────────────────────
 
@@ -27,13 +27,12 @@ const KEY_TYPE:    &str = "host";
 /// Called only from the daemon (running as root).
 pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
     let cred_name = store::to_cred_name(uid, name);
-    let out_path  = store::cred_path(uid, name);
+    let out_path = store::cred_path(uid, name);
 
     // Ensure credstore exists with correct permissions
     let store = store::store_path();
     if !store.exists() {
-        fs::create_dir_all(store)
-            .map_err(|e| format!("cannot create credstore: {e}"))?;
+        fs::create_dir_all(store).map_err(|e| format!("cannot create credstore: {e}"))?;
         fs::set_permissions(store, fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("cannot chmod credstore: {e}"))?;
     }
@@ -48,9 +47,10 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
         .args([
             "encrypt",
             &format!("--with-key={KEY_TYPE}"),
-            "--name", &cred_name,
-            "-",                                // read from stdin
-            tmp_path.to_str().unwrap(),         // write to temp file
+            "--name",
+            &cred_name,
+            "-",                        // read from stdin
+            tmp_path.to_str().unwrap(), // write to temp file
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -69,7 +69,7 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
     }
 
     let output = match child.wait_with_output() {
-        Ok(o)  => o,
+        Ok(o) => o,
         Err(e) => {
             let _ = fs::remove_file(&tmp_path);
             return Err(format!("encryption backend error: {e}"));
@@ -91,11 +91,10 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
         return Err(format!("cannot secure credential file: {e}"));
     }
 
-    fs::rename(&tmp_path, &out_path)
-        .map_err(|e| {
-            let _ = fs::remove_file(&tmp_path);
-            format!("cannot install credential: {e}")
-        })
+    fs::rename(&tmp_path, &out_path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("cannot install credential: {e}")
+    })
 }
 
 // ── Decrypt ───────────────────────────────────────────────────────────────────
@@ -113,7 +112,7 @@ pub fn decrypt(uid: u32, name: &str) -> Result<ZeroString, String> {
         .args([
             "decrypt",
             cred_path.to_str().unwrap(),
-            "-",    // write to stdout
+            "-", // write to stdout
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -129,7 +128,9 @@ pub fn decrypt(uid: u32, name: &str) -> Result<ZeroString, String> {
     let s = String::from_utf8(output.stdout)
         .map_err(|_| "credential contains invalid UTF-8".to_string())?;
 
-    Ok(ZeroString::from_string(s.trim_end_matches('\n').to_string()))
+    Ok(ZeroString::from_string(
+        s.trim_end_matches('\n').to_string(),
+    ))
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────────
@@ -139,8 +140,7 @@ pub fn delete(uid: u32, name: &str) -> Result<(), String> {
     if !cred_path.exists() {
         return Err(format!("credential not found: {name}"));
     }
-    fs::remove_file(&cred_path)
-        .map_err(|e| format!("cannot delete credential: {e}"))
+    fs::remove_file(&cred_path).map_err(|e| format!("cannot delete credential: {e}"))
 }
 
 // ── Error sanitizer ───────────────────────────────────────────────────────────
@@ -149,15 +149,15 @@ pub fn delete(uid: u32, name: &str) -> Result<(), String> {
 /// before they are sent back to the user.
 fn sanitize_error(raw: &str) -> String {
     raw.replace("systemd-creds", "credential backend")
-       .replace(BACKEND_BIN,   "credential backend")
-       .replace("--with-key",    "")
-       .replace(KEY_TYPE,        "")
-       .lines()
-       .filter(|l| !l.trim().is_empty())
-       .collect::<Vec<_>>()
-       .join("; ")
-       .trim()
-       .to_string()
+        .replace(BACKEND_BIN, "credential backend")
+        .replace("--with-key", "")
+        .replace(KEY_TYPE, "")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
+        .trim()
+        .to_string()
 }
 
 // ── Check ─────────────────────────────────────────────────────────────────────
