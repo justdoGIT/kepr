@@ -9,6 +9,13 @@ use crate::protocol::Response;
 
 pub static FORCE_NO_COLOR: AtomicBool = AtomicBool::new(false);
 
+/// Set when `--json` is seen on argv. Lets error paths that fire before
+/// Args is built (e.g. CliActivity::parse rejecting an unknown verb) honour
+/// JSON mode — no stderr noise, Response::Err on stdout.
+pub static FORCE_JSON: AtomicBool = AtomicBool::new(false);
+
+pub fn json_mode() -> bool { FORCE_JSON.load(Ordering::Relaxed) }
+
 extern "C" { fn isatty(fd: i32) -> i32; }
 
 pub fn use_color() -> bool {
