@@ -1,0 +1,48 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "credman",
+  "description": "Per-user credential manager for Linux: unprivileged CLI, root daemon, framed JSON over a Unix socket.",
+  "colors": {
+    "primary": "#1f7a5a",
+    "light": "#7fd1ae",
+    "dark": "#0f3d2d"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/design-patterns",
+              "architecture/sequence-diagrams"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/features",
+              "reference/testing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/"
+    }
+  }
+}
