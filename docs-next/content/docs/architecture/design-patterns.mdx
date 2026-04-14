@@ -1,0 +1,104 @@
+---
+title: "Design patterns"
+description: "Tagged enums on the wire, peer-credential authorisation, atomic writes, bounded worker pool, error sanitisation."
+---
+
+## Tagged enums on the wire
+
+Both `Request` and `Response` use `#[serde(tag = "...")]` so adding an
+operation is exactly one new variant — there is no god-struct of
+`Option<...>` fields.
+
+```rust
+#[serde(tag = "cmd", rename_all = "lowercase")]
+pub enum Request { Set { ... }, Get { ... }, List, Delete { ... }, Check, Ping }
+
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Response { SetOk { ... }, GetOk { ... }, ListOk { ... }, ..., Err { error } }
+```
+
+`Response::is_success()` distinguishes **transport** success from
+**semantic** success: `CheckOk { all_ok: false }` is a valid reply but
+exits the CLI non-zero.
+
+## Newtype with constructor enforcement
+
+`CliActivity(String)` can only be built through `CliActivity::parse`,
+which resolves aliases (`ls` → `list`, `rm` → `delete`) and rejects
+unknown verbs. `dispatch()` then has an irrefutable five-arm match plus
+`unreachable!()` — the type system, not a runtime check, guarantees the
+default arm cannot fire.
+
+## Zeroed-on-drop secrets
+
+`ZeroString` wraps `String` and impls `Drop` via `zeroize::Zeroize`. All
+cleartext secret material flows through this type: generated values,
+decrypted plaintext, masked terminal input. The plain `String`
+representation only escapes at the JSON boundary
+(`to_owned_string()`).
+
+## Peer-credential authorisation
+
+```rust
+let peer_uid = get_peer_uid(&stream)?;          // SO_PEERCRED
+let response = dispatch(peer_uid, &username, request);
+```
+
+Authorisation is **kernel-attested**. The uid in the dispatch path is
+the connect(2)-time uid of the peer process — it is never read from the
+JSON payload.
+
+## Bounded worker pool with backpressure
+
+`daemon_pool::Pool` is a fixed `POOL_WORKERS = 16` thread pool fed by a
+`SyncSender` of capacity `POOL_QUEUE = 64`. When the queue is full,
+`SyncSender::send` blocks the accept loop, which parks `accept(2)` and
+lets the kernel listen-backlog absorb the burst. No `thread::spawn` per
+connection — no pthread-stack OOM under flood.
+
+## Atomic write via temp + rename
+
+`crypto::encrypt` writes the ciphertext to `<path>.tmp.<pid>` in the
+same directory, `chmod 0600`, then `rename(2)` over the destination.
+Concurrent `set NAME` calls cannot interleave: a reader sees either the
+old file or the whole new one — never a partial.
+
+## Cached directory listing with write-through invalidation
+
+`daemon_cache.rs` keeps a per-uid `Vec<(String, PathBuf)>` behind an
+`RwLock`. The daemon owns *all* writes to the credstore, so cache
+invalidation is trivial — `handle_set` and `handle_delete` call
+`invalidate(uid)`. Read-heavy workloads avoid `read_dir` of a directory
+that scales with all users on the host.
+
+## Error sanitisation at the boundary
+
+`crypto::sanitize_error` strips internal tool names, the absolute path
+of the backend binary, and key-type flags from any stderr that escapes
+back to the user. The systemd unit uses a neutral `SyslogIdentifier`
+for the same reason.
+
+<Warning>
+  Treat any new error string as user-visible. Do not interpolate
+  internal command lines or absolute paths into errors that may be
+  returned over the socket.
+</Warning>
+
+## Process-wide CLI mode via `OnceLock`
+
+`cli_mode::CliMode { json, color }` is set once during `parse_args`
+from argv + environment with documented precedence
+(`NO_COLOR` > `--no-color` > `CLICOLOR_FORCE` > `--color` > default off).
+Every early-exit path (unknown verb, missing flag value) reads the same
+`mode()` snapshot, so `--json` errors never leak ANSI to stderr.
+
+## Length-prefixed framing
+
+```
+┌──────────────┬────────────────────────────┐
+│ u32 BE len   │ JSON payload (≤ 64 KiB)    │
+└──────────────┴────────────────────────────┘
+```
+
+`read_exact` on the 4-byte header eliminates the silent-truncation
+failure mode of "read once into a big buffer" and bounds memory.
