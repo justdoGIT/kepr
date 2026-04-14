@@ -33,11 +33,11 @@ fn journal_sock() -> Option<&'static UnixDatagram> {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 pub struct AuditEvent<'a> {
-    pub op:       &'a str,      // set|get|delete|list|check|ping
-    pub name:     Option<&'a str>, // credential name (None for list/check)
-    pub uid:      u32,
+    pub op: &'a str,           // set|get|delete|list|check|ping
+    pub name: Option<&'a str>, // credential name (None for list/check)
+    pub uid: u32,
     pub username: &'a str,
-    pub result:   AuditResult,
+    pub result: AuditResult,
 }
 
 pub enum AuditResult {
@@ -47,8 +47,8 @@ pub enum AuditResult {
 
 pub fn log(event: &AuditEvent) {
     let result_str = match &event.result {
-        AuditResult::Ok          => "ok".to_string(),
-        AuditResult::Fail(msg)   => format!("fail: {msg}"),
+        AuditResult::Ok => "ok".to_string(),
+        AuditResult::Fail(msg) => format!("fail: {msg}"),
     };
 
     let name_str = event.name.unwrap_or("-");
@@ -83,8 +83,8 @@ fn log_to_journal(event: &AuditEvent, result_str: &str) -> bool {
 
     // Priority: 6 = informational, 3 = error
     let priority = match &event.result {
-        AuditResult::Ok       => "6",
-        AuditResult::Fail(_)  => "3",
+        AuditResult::Ok => "6",
+        AuditResult::Fail(_) => "3",
     };
     msg.push_str(&format!("PRIORITY={priority}\n"));
 
@@ -95,16 +95,16 @@ fn log_to_journal(event: &AuditEvent, result_str: &str) -> bool {
     ));
 
     // Structured fields — indexed by journal
-    msg.push_str(&format!("CREDMAN_OP={}\n",     event.op));
-    msg.push_str(&format!("CREDMAN_NAME={}\n",   name_str));
-    msg.push_str(&format!("CREDMAN_UID={}\n",    event.uid));
-    msg.push_str(&format!("CREDMAN_USER={}\n",   event.username));
+    msg.push_str(&format!("CREDMAN_OP={}\n", event.op));
+    msg.push_str(&format!("CREDMAN_NAME={}\n", name_str));
+    msg.push_str(&format!("CREDMAN_UID={}\n", event.uid));
+    msg.push_str(&format!("CREDMAN_USER={}\n", event.username));
     msg.push_str(&format!("CREDMAN_RESULT={}\n", result_str));
 
     // Send to journal socket via the cached datagram fd.
     match journal_sock() {
         Some(sock) => sock.send_to(msg.as_bytes(), JOURNAL_SOCKET).is_ok(),
-        None       => false,
+        None => false,
     }
 }
 

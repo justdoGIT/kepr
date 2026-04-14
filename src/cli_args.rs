@@ -7,15 +7,15 @@ use crate::generate::GenKind;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct Args {
-    pub command:  CliActivity,
-    pub name:     Option<String>,
-    pub value:    Option<String>,
+    pub command: CliActivity,
+    pub name: Option<String>,
+    pub value: Option<String>,
     pub generate: bool,
     pub gen_kind: GenKind,
-    pub quiet:    bool,
-    pub export:   bool,
-    pub json:     bool,
-    pub force:    bool,
+    pub quiet: bool,
+    pub export: bool,
+    pub json: bool,
+    pub force: bool,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -30,24 +30,37 @@ pub fn parse_args() -> Result<Args, String> {
     // required value) see the correct --json / --color state.
     cli_mode::init_from_argv(&raw);
 
-    let mut name:     Option<String> = None;
-    let mut value:    Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut value: Option<String> = None;
     let mut generate = false;
     let mut gen_kind = GenKind::Hex;
-    let mut quiet    = false;
-    let mut export   = false;
-    let mut json     = false;
-    let mut force    = false;
+    let mut quiet = false;
+    let mut export = false;
+    let mut json = false;
+    let mut force = false;
 
     let mut i = 1usize;
 
     while i < raw.len() && raw[i].starts_with("--") {
         match raw[i].as_str() {
-            "--json"         => { json = true; i += 1; }
-            "--color"        => { i += 1; }
-            "--no-color"     => { i += 1; }
-            "--version"      => { println!("credman {VERSION}"); std::process::exit(0); }
-            "--help"|"-h"    => { print_help(); std::process::exit(0); }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--color" => {
+                i += 1;
+            }
+            "--no-color" => {
+                i += 1;
+            }
+            "--version" => {
+                println!("credman {VERSION}");
+                std::process::exit(0);
+            }
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
             _ => break,
         }
     }
@@ -63,14 +76,33 @@ pub fn parse_args() -> Result<Args, String> {
 
     while i < raw.len() {
         match raw[i].as_str() {
-            "--generate"|"-g" => { generate = true; i += 1; }
-            "--quiet"|"-q"    => { quiet    = true; i += 1; }
-            "--export"|"-e"   => { export   = true; i += 1; }
-            "--force"|"-f"    => { force    = true; i += 1; }
-            "--json"          => { json     = true; i += 1; }
-            "--color"         => { i += 1; }
-            "--no-color"      => { i += 1; }
-            "--value"|"-v" => {
+            "--generate" | "-g" => {
+                generate = true;
+                i += 1;
+            }
+            "--quiet" | "-q" => {
+                quiet = true;
+                i += 1;
+            }
+            "--export" | "-e" => {
+                export = true;
+                i += 1;
+            }
+            "--force" | "-f" => {
+                force = true;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--color" => {
+                i += 1;
+            }
+            "--no-color" => {
+                i += 1;
+            }
+            "--value" | "-v" => {
                 i += 1;
                 value = Some(raw.get(i).ok_or("--value needs a value")?.clone());
                 i += 1;
@@ -91,8 +123,15 @@ pub fn parse_args() -> Result<Args, String> {
     }
 
     Ok(Args {
-        command, name, value, generate, gen_kind,
-        quiet, export, json, force,
+        command,
+        name,
+        value,
+        generate,
+        gen_kind,
+        quiet,
+        export,
+        json,
+        force,
     })
 }
 

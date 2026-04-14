@@ -13,11 +13,11 @@ use std::collections::HashMap;
 
 // ── Socket path / limits ──────────────────────────────────────────────────────
 
-pub const SOCKET_PATH:   &str  = "/run/credman/credman.sock";
+pub const SOCKET_PATH: &str = "/run/credman/credman.sock";
 #[allow(dead_code)]
-pub const SOCKET_DIR:    &str  = "/run/credman";
-pub const MAX_MSG_BYTES: usize = 65_536;   // 64 KB max framed message
-pub const TIMEOUT_SECS:  u64   = 10;
+pub const SOCKET_DIR: &str = "/run/credman";
+pub const MAX_MSG_BYTES: usize = 65_536; // 64 KB max framed message
+pub const TIMEOUT_SECS: u64 = 10;
 
 // ── Request ───────────────────────────────────────────────────────────────────
 
@@ -25,15 +25,19 @@ pub const TIMEOUT_SECS:  u64   = 10;
 #[serde(tag = "cmd", rename_all = "lowercase")]
 pub enum Request {
     Set {
-        name:     String,
+        name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        value:    Option<String>,       // None = generate
+        value: Option<String>, // None = generate
         #[serde(skip_serializing_if = "Option::is_none")]
-        generate: Option<String>,       // "hex"|"base62"|"pass"|"uuid"
+        generate: Option<String>, // "hex"|"base62"|"pass"|"uuid"
     },
-    Get    { name: String },
+    Get {
+        name: String,
+    },
     List,
-    Delete { name: String },
+    Delete {
+        name: String,
+    },
     Check,
     Ping,
 }
@@ -43,13 +47,30 @@ pub enum Request {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
-    SetOk    { name: String, cred_name: String },
-    GetOk    { name: String, value: String },
-    DeleteOk { name: String },
-    ListOk   { credentials: Vec<CredInfo>, count: usize },
-    CheckOk  { results: HashMap<String, String>, count: usize, all_ok: bool },
+    SetOk {
+        name: String,
+        cred_name: String,
+    },
+    GetOk {
+        name: String,
+        value: String,
+    },
+    DeleteOk {
+        name: String,
+    },
+    ListOk {
+        credentials: Vec<CredInfo>,
+        count: usize,
+    },
+    CheckOk {
+        results: HashMap<String, String>,
+        count: usize,
+        all_ok: bool,
+    },
     Pong,
-    Err      { error: String },
+    Err {
+        error: String,
+    },
 }
 
 impl Response {
@@ -64,15 +85,19 @@ impl Response {
     /// False for any Err and for CheckOk with a failing credential.
     pub fn is_success(&self) -> bool {
         match self {
-            Response::Err { .. }                  => false,
-            Response::CheckOk { all_ok, .. }      => *all_ok,
-            _                                     => true,
+            Response::Err { .. } => false,
+            Response::CheckOk { all_ok, .. } => *all_ok,
+            _ => true,
         }
     }
 
     #[allow(dead_code)]
     pub fn err_msg(&self) -> Option<&str> {
-        if let Response::Err { error } = self { Some(error) } else { None }
+        if let Response::Err { error } = self {
+            Some(error)
+        } else {
+            None
+        }
     }
 
     /// Convenience constructor used throughout the codebase.
@@ -85,10 +110,10 @@ impl Response {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CredInfo {
-    pub name:       String,     // ENV_VAR_NAME
-    pub cred_name:  String,     // credman-<uid>-env-var-name
-    pub size:       u64,
-    pub modified:   String,     // YYYY-MM-DD HH:MM
+    pub name: String,      // ENV_VAR_NAME
+    pub cred_name: String, // credman-<uid>-env-var-name
+    pub size: u64,
+    pub modified: String, // YYYY-MM-DD HH:MM
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -110,13 +135,23 @@ mod tests {
 
     #[test]
     fn request_wire_tag_is_lowercase_cmd() {
-        assert_eq!(as_value(&Request::Ping)["cmd"],   json!("ping"));
-        assert_eq!(as_value(&Request::List)["cmd"],   json!("list"));
-        assert_eq!(as_value(&Request::Check)["cmd"],  json!("check"));
-        assert_eq!(as_value(&Request::Get { name: "X".into() })["cmd"], json!("get"));
-        assert_eq!(as_value(&Request::Delete { name: "X".into() })["cmd"], json!("delete"));
+        assert_eq!(as_value(&Request::Ping)["cmd"], json!("ping"));
+        assert_eq!(as_value(&Request::List)["cmd"], json!("list"));
+        assert_eq!(as_value(&Request::Check)["cmd"], json!("check"));
         assert_eq!(
-            as_value(&Request::Set { name: "X".into(), value: None, generate: None })["cmd"],
+            as_value(&Request::Get { name: "X".into() })["cmd"],
+            json!("get")
+        );
+        assert_eq!(
+            as_value(&Request::Delete { name: "X".into() })["cmd"],
+            json!("delete")
+        );
+        assert_eq!(
+            as_value(&Request::Set {
+                name: "X".into(),
+                value: None,
+                generate: None
+            })["cmd"],
             json!("set"),
         );
     }
@@ -127,11 +162,25 @@ mod tests {
             Request::Ping,
             Request::List,
             Request::Check,
-            Request::Get    { name: "OPENAI".into() },
+            Request::Get {
+                name: "OPENAI".into(),
+            },
             Request::Delete { name: "FOO".into() },
-            Request::Set { name: "K".into(), value: Some("v".into()), generate: None },
-            Request::Set { name: "K".into(), value: None, generate: Some("hex".into()) },
-            Request::Set { name: "K".into(), value: None, generate: None },
+            Request::Set {
+                name: "K".into(),
+                value: Some("v".into()),
+                generate: None,
+            },
+            Request::Set {
+                name: "K".into(),
+                value: None,
+                generate: Some("hex".into()),
+            },
+            Request::Set {
+                name: "K".into(),
+                value: None,
+                generate: None,
+            },
         ];
         for req in cases {
             assert_eq!(as_value(&req), roundtrip_request(&req));
@@ -140,17 +189,24 @@ mod tests {
 
     #[test]
     fn set_optional_fields_omitted_when_none() {
-        let req = Request::Set { name: "X".into(), value: None, generate: None };
+        let req = Request::Set {
+            name: "X".into(),
+            value: None,
+            generate: None,
+        };
         let v = as_value(&req);
-        assert!(v.get("value").is_none(),    "value should be absent: {v}");
-        assert!(v.get("generate").is_none(), "generate should be absent: {v}");
+        assert!(v.get("value").is_none(), "value should be absent: {v}");
+        assert!(
+            v.get("generate").is_none(),
+            "generate should be absent: {v}"
+        );
     }
 
     #[test]
     fn response_err_wire_shape() {
         let r = Response::fail("boom");
         let v = as_value(&r);
-        assert_eq!(v["kind"],  json!("err"));
+        assert_eq!(v["kind"], json!("err"));
         assert_eq!(v["error"], json!("boom"));
         assert!(!r.is_transport_ok());
         assert!(!r.is_success());
@@ -161,11 +217,17 @@ mod tests {
     fn response_variant_tags() {
         assert_eq!(as_value(&Response::Pong)["kind"], json!("pong"));
         assert_eq!(
-            as_value(&Response::SetOk { name: "X".into(), cred_name: "y".into() })["kind"],
+            as_value(&Response::SetOk {
+                name: "X".into(),
+                cred_name: "y".into()
+            })["kind"],
             json!("set_ok"),
         );
         assert_eq!(
-            as_value(&Response::GetOk { name: "X".into(), value: "v".into() })["kind"],
+            as_value(&Response::GetOk {
+                name: "X".into(),
+                value: "v".into()
+            })["kind"],
             json!("get_ok"),
         );
         assert_eq!(
@@ -178,8 +240,10 @@ mod tests {
     fn response_list_roundtrip() {
         let r = Response::ListOk {
             credentials: vec![CredInfo {
-                name: "X".into(), cred_name: "credman-1000-x".into(),
-                size: 42, modified: "2024-01-01 00:00".into(),
+                name: "X".into(),
+                cred_name: "credman-1000-x".into(),
+                size: 42,
+                modified: "2024-01-01 00:00".into(),
             }],
             count: 1,
         };
@@ -200,7 +264,11 @@ mod tests {
         let mut results = HashMap::new();
         results.insert("A".into(), "ok".into());
         results.insert("B".into(), "failed".into());
-        let r = Response::CheckOk { results, count: 2, all_ok: false };
+        let r = Response::CheckOk {
+            results,
+            count: 2,
+            all_ok: false,
+        };
         // transport-ok (the daemon answered), but semantic-fail (a cred is broken)
         assert!(r.is_transport_ok());
         assert!(!r.is_success());
@@ -208,7 +276,10 @@ mod tests {
 
     #[test]
     fn response_get_roundtrip() {
-        let r = Response::GetOk { name: "X".into(), value: "secret".into() };
+        let r = Response::GetOk {
+            name: "X".into(),
+            value: "secret".into(),
+        };
         let bytes = serde_json::to_vec(&r).unwrap();
         let back: Response = serde_json::from_slice(&bytes).unwrap();
         match back {

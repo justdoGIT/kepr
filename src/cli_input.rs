@@ -9,8 +9,14 @@ use crate::generate::ZeroString;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Termios {
-    c_iflag: u32, c_oflag: u32, c_cflag: u32, c_lflag: u32,
-    c_line: u8, c_cc: [u8; 32], c_ispeed: u32, c_ospeed: u32,
+    c_iflag: u32,
+    c_oflag: u32,
+    c_cflag: u32,
+    c_lflag: u32,
+    c_line: u8,
+    c_cc: [u8; 32],
+    c_ispeed: u32,
+    c_ospeed: u32,
 }
 const ECHO: u32 = 0x00000008;
 
@@ -21,21 +27,33 @@ extern "C" {
 
 fn get_termios() -> Termios {
     let mut t = Termios {
-        c_iflag: 0, c_oflag: 0, c_cflag: 0, c_lflag: 0,
-        c_line: 0, c_cc: [0; 32], c_ispeed: 0, c_ospeed: 0,
+        c_iflag: 0,
+        c_oflag: 0,
+        c_cflag: 0,
+        c_lflag: 0,
+        c_line: 0,
+        c_cc: [0; 32],
+        c_ispeed: 0,
+        c_ospeed: 0,
     };
-    unsafe { tcgetattr(0, &mut t); }
+    unsafe {
+        tcgetattr(0, &mut t);
+    }
     t
 }
 
-fn set_termios(t: &Termios) { unsafe { tcsetattr(0, 0, t); } }
+fn set_termios(t: &Termios) {
+    unsafe {
+        tcsetattr(0, 0, t);
+    }
+}
 
 pub fn read_masked(prompt: &str) -> ZeroString {
     eprint!("{}", prompt);
     io::stderr().flush().ok();
 
     let mut t = get_termios();
-    let orig  = t;
+    let orig = t;
     t.c_lflag &= !ECHO;
     set_termios(&t);
 
