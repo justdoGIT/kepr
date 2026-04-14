@@ -90,7 +90,7 @@ credman --json delete "$NAME" >/dev/null \
 # then make the whole `| jq` pipeline exit 1 even when jq matched. Capture
 # first, then pipe — same pattern as tests 4 and 7.
 out=$(credman --json get "$NAME" || true)
-if echo "$out" | jq -e '.ok == false' >/dev/null; then
+if echo "$out" | jq -e '.kind == "err"' >/dev/null; then
     pass "get after delete reports not found"
 else
     fail "get after delete unexpectedly succeeded"
@@ -163,14 +163,14 @@ step "4. daemon rejects invalid names"
 # the offending character, proving validate_name's own error text is reaching
 # the client untruncated (not a generic "bad request").
 out=$(credman --json set 'foo/bar' --value x 2>&1 || true)
-if echo "$out" | jq -e ".ok == false and (.error | test(\"invalid character '/'\"))" >/dev/null; then
+if echo "$out" | jq -e ".kind == \"err\" and (.error | test(\"invalid character '/'\"))" >/dev/null; then
     pass "set with '/' rejected, error names the character"
 else
     fail "set with '/' not rejected cleanly: $out"
 fi
 
 out=$(credman --json set 'foo.bar' --value x 2>&1 || true)
-if echo "$out" | jq -e ".ok == false and (.error | test(\"invalid character '\\\\.'\"))" >/dev/null; then
+if echo "$out" | jq -e ".kind == \"err\" and (.error | test(\"invalid character '\\\\.'\"))" >/dev/null; then
     pass "set with '.' rejected, error names the character"
 else
     fail "set with '.' not rejected cleanly: $out"
@@ -195,8 +195,8 @@ fi
 # ── 6. JSON mode shape ────────────────────────────────────────────────────────
 step "6. --json output is valid JSON in both success and failure"
 
-if credman --json list | jq -e '.ok == true and (.credentials | type == "array")' >/dev/null; then
-    pass "--json list: ok=true, credentials is array"
+if credman --json list | jq -e '.kind == "list_ok" and (.credentials | type == "array")' >/dev/null; then
+    pass "--json list: kind=list_ok, credentials is array"
 else
     fail "--json list shape wrong"
 fi
@@ -205,8 +205,8 @@ MISSING="${PREFIX}DEFINITELY_NOT_HERE"
 # Same pipefail trap as test 1: credman exits 1 on not-found. Capture first.
 out=$(credman --json get "$MISSING" || true)
 if echo "$out" \
-    | jq -e '.ok == false and (.error | type == "string" and length > 0)' >/dev/null; then
-    pass "--json get on missing cred: ok=false, error is non-empty string"
+    | jq -e '.kind == "err" and (.error | type == "string" and length > 0)' >/dev/null; then
+    pass "--json get on missing cred: kind=err, error is non-empty string"
 else
     fail "--json get on missing cred shape wrong"
 fi
@@ -246,6 +246,12 @@ if [ "$can_root" = 1 ]; then
     else
         pass "error is sanitized (no forbidden substrings)"
     fi
+
+    # The corrupted file is still on disk. Leaving it there makes later
+    # tests (e.g. `credman check` in test 10) exit 1 under -o pipefail
+    # because one cred no longer decrypts. Remove it here so each test
+    # stays isolated.
+    credman --json delete "$NAME" >/dev/null 2>&1 || true
 else
     skip "no root/sudo — cannot corrupt a cred file to force a decrypt failure"
 fi
@@ -368,8 +374,8 @@ errout=$(credman --json nosuchcommand 2>&1 >/dev/null || true)
     || fail "--json unknown command leaked stderr: $errout"
 
 jsonout=$(credman --json nosuchcommand 2>/dev/null || true)
-if echo "$jsonout" | jq -e '.ok == false and (.error | test("unknown command"))' >/dev/null; then
-    pass "--json unknown command: valid JSON with ok=false"
+if echo "$jsonout" | jq -e '.kind == "err" and (.error | test("unknown command"))' >/dev/null; then
+    pass "--json unknown command: valid JSON with kind=err"
 else
     fail "--json unknown command did not return structured JSON"
 fi
@@ -389,7 +395,7 @@ else
 fi
 
 out=$(credman --json get "$NAME" || true)
-if echo "$out" | jq -e '.ok == false' >/dev/null; then
+if echo "$out" | jq -e '.kind == "err"' >/dev/null; then
     pass "credential actually removed by --force"
 else
     fail "credential still present after delete --force"
