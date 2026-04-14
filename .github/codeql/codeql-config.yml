@@ -1,0 +1,10 @@
+name: credman CodeQL config
+
+queries:
+  - uses: security-extended
+
+paths-ignore:
+  - docs/.next/**
+  - docs/.source/**
+  - docs/node_modules/**
+  - target/**
