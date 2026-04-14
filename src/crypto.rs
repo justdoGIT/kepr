@@ -1,10 +1,10 @@
-// crypto.rs — systemd-creds wrapper (daemon-side only)
+// crypto.rs — credential-backend wrapper (daemon-side only)
 //
 // This module is only compiled into credman-daemon.
-// The user-facing binary never touches systemd-creds directly —
+// The user-facing binary never invokes the backend directly —
 // it only speaks to the daemon over a Unix socket.
 //
-// systemd-creds is never visible in the user's process list.
+// The backend is never visible in the user's process list.
 
 use std::fs;
 use std::io::Write;
@@ -14,8 +14,12 @@ use std::process::{Command, Stdio};
 use crate::generate::ZeroString;
 use crate::store;
 
-const SYSTEMD_CREDS: &str = "/usr/bin/systemd-creds";
-const KEY_TYPE:      &str = "host";   // --with-key=host
+// Path to the credential backend. The literal name appears here and in
+// `sanitize_error` below because that function must recognise the
+// backend's own stderr output; everywhere else in the codebase we call
+// it "the credential backend".
+const BACKEND_BIN: &str = "/usr/bin/systemd-creds";
+const KEY_TYPE:    &str = "host";
 
 // ── Encrypt ───────────────────────────────────────────────────────────────────
 
@@ -40,7 +44,7 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
     // so any reader either sees the old file or the whole new one.
     let tmp_path = out_path.with_extension(format!("tmp.{}", std::process::id()));
 
-    let mut child = Command::new(SYSTEMD_CREDS)
+    let mut child = Command::new(BACKEND_BIN)
         .args([
             "encrypt",
             &format!("--with-key={KEY_TYPE}"),
@@ -105,7 +109,7 @@ pub fn decrypt(uid: u32, name: &str) -> Result<ZeroString, String> {
         return Err(format!("credential not found: {name}"));
     }
 
-    let output = Command::new(SYSTEMD_CREDS)
+    let output = Command::new(BACKEND_BIN)
         .args([
             "decrypt",
             cred_path.to_str().unwrap(),
@@ -145,7 +149,7 @@ pub fn delete(uid: u32, name: &str) -> Result<(), String> {
 /// before they are sent back to the user.
 fn sanitize_error(raw: &str) -> String {
     raw.replace("systemd-creds", "credential backend")
-       .replace(SYSTEMD_CREDS,   "credential backend")
+       .replace(BACKEND_BIN,   "credential backend")
        .replace("--with-key",    "")
        .replace(KEY_TYPE,        "")
        .lines()
