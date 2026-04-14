@@ -23,6 +23,21 @@ updates:
     commit-message:
       prefix: "docs"
       include: scope
+    # Ignore major-version bumps for ecosystems with breaking changes —
+    # those need dedicated migration PRs, not drive-by merges.
+    ignore:
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "fumadocs-*"
+        update-types: ["version-update:semver-major"]
     groups:
       next-ecosystem:
         patterns:
