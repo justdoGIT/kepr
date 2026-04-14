@@ -12,32 +12,21 @@ mod cli_ui;
 mod cli_input;
 mod cli_args;
 mod cli_cmds;
+mod cli_activity;
 
 use cli_args::parse_args;
 use cli_ui::{err, print_json};
-use protocol::Response;
 
 fn main() {
+    // Unknown verbs are rejected inside CliActivity::parse (called from
+    // parse_args), so this binding's `command` field is always one of
+    // the five canonical activities — dispatch can't fall through.
     let args = match parse_args() {
         Ok(a)  => a,
         Err(e) => { err(&format!("{e}")); std::process::exit(1); }
     };
 
-    let resp = match args.command.as_str() {
-        "set"          => cli_cmds::cmd_set(&args),
-        "get"          => cli_cmds::cmd_get(&args),
-        "list" | "ls"  => cli_cmds::cmd_list(&args),
-        "delete"|"rm"  => cli_cmds::cmd_delete(&args),
-        "check"        => cli_cmds::cmd_check(&args),
-        other => {
-            let msg = format!("unknown command: {other}");
-            if !args.json {
-                err(&msg);
-                err("try: credman --help");
-            }
-            Response::fail(msg)
-        }
-    };
+    let resp = args.command.dispatch(&args);
 
     if args.json { print_json(&resp); }
     if !resp.is_success() { std::process::exit(1); }
