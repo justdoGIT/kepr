@@ -271,7 +271,7 @@ sequenceDiagram
     D->>D: get_peer_uid(stream) → uid=1000
     D->>D: validate_name("FOO") ok
     D->>CR: encrypt(uid=1000, "FOO", bytes)
-    CR->>BE: spawn(--with-key=host --name=credman-1000-foo)
+    CR->>BE: spawn backend encrypt, name=credman-1000-foo
     BE-->>CR: ciphertext on stdout (rc=0)
     CR->>FS: write tmp.<pid>, chmod 0600, rename → credman-1000-foo
     CR-->>D: Ok(())
@@ -317,28 +317,28 @@ sequenceDiagram
     participant CLI as credman
     participant D as credman-daemon
     participant CACHE as daemon_cache
-    participant W1 as worker thread 1
-    participant W2 as worker thread N
-    participant BE as Encryption backend
+    participant W1 as worker 1
+    participant W2 as worker N
+    participant BE as Backend
 
     U->>CLI: credman check
-    CLI->>D: {"cmd":"check"}
-    D->>CACHE: list_for_uid(1000)
-    CACHE-->>D: [(NAME_A, path), (NAME_B, path), ...]
-    D->>D: round-robin into N buckets (N = available_parallelism)
+    CLI->>D: cmd=check
+    D->>CACHE: list_for_uid uid=1000
+    CACHE-->>D: NAME_A, NAME_B, ...
+    D->>D: round-robin into N buckets
     par
         D->>W1: bucket 1
         W1->>BE: decrypt NAME_A
-        BE-->>W1: ok / fail
+        BE-->>W1: ok or fail
     and
         D->>W2: bucket N
         W2->>BE: decrypt NAME_B
-        BE-->>W2: ok / fail
+        BE-->>W2: ok or fail
     end
-    D->>D: merge results, all_ok = AND(...)
-    D-->>CLI: CheckOk { results, all_ok }
-    CLI->>CLI: sort(results) by name (HashMap order is undefined)
-    CLI->>U: per-cred ✓/✗ table; exit 1 if !all_ok
+    D->>D: merge results, all_ok = AND
+    D-->>CLI: CheckOk results all_ok
+    CLI->>CLI: sort results by name
+    CLI->>U: per-cred OK/FAIL table, exit 1 on any fail
 ```
 
 ### 4.4 Rejected request — invalid name
@@ -350,13 +350,13 @@ sequenceDiagram
     participant CLI as credman
     participant D as credman-daemon
 
-    U->>CLI: credman set 'foo/bar' --value x
-    CLI->>CLI: parse_args (positional uppercased → "FOO/BAR")
-    CLI->>D: framed {"cmd":"set","name":"FOO/BAR","value":"x"}
-    D->>D: validate_name → Err("invalid character '/' …")
-    D->>D: audit log RESULT=fail (no value field)
-    D-->>CLI: {"kind":"err","error":"invalid character '/' — only A-Z, 0-9, underscore allowed"}
-    CLI->>U: stderr message; exit 1
+    U->>CLI: credman set foo/bar --value x
+    CLI->>CLI: parse_args uppercases to FOO/BAR
+    CLI->>D: framed cmd=set name=FOO/BAR value=x
+    D->>D: validate_name returns Err, invalid character slash
+    D->>D: audit log RESULT=fail, no value field
+    D-->>CLI: kind=err, error=invalid character slash
+    CLI->>U: stderr message, exit 1
 ```
 
 The check runs **inside the daemon**, not just on the client — the
@@ -371,15 +371,15 @@ sequenceDiagram
     participant CLI
     participant D as credman-daemon
     participant CR as crypto.rs
-    participant BE as Encryption backend
+    participant BE as Backend
 
-    CLI->>D: {"cmd":"get","name":"CORRUPT"}
-    D->>CR: decrypt(uid, "CORRUPT")
-    CR->>BE: spawn(decrypt …)
-    BE-->>CR: rc!=0, stderr="systemd-creds: bad MAC; --with-key=host failed"
-    CR->>CR: sanitize_error → "credential backend: bad MAC; failed"
-    CR-->>D: Err(sanitized)
-    D-->>CLI: {"kind":"err","error":"decryption failed: credential backend: …"}
+    CLI->>D: cmd=get name=CORRUPT
+    D->>CR: decrypt uid CORRUPT
+    CR->>BE: spawn backend decrypt
+    BE-->>CR: rc nonzero, stderr leaks internal names and flags
+    CR->>CR: sanitize_error returns credential backend bad MAC
+    CR-->>D: Err sanitized
+    D-->>CLI: kind=err, error=decryption failed credential backend
 ```
 
 ---
@@ -465,7 +465,6 @@ newgrp credman                          # group active in this shell
 
 ## 6. Reference
 
-- `ARCHITECTURE.md` — socket permissions, namespacing, audit-field schema.
-- `FILE_LAYOUT.md` — one-line map of `src/`.
+- `README.md` — install, usage, file layout, troubleshooting.
 - `systemd/credman.service` — hardening flags + `ReadWritePaths` allow-list.
 - `tests/e2e.sh` — see §5.2.
