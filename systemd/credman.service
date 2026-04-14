@@ -35,7 +35,11 @@ RestartSec=2
 NoNewPrivileges=no
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/run/credman /etc/credstore.encrypted
+# The credential backend persists a host-derived key under
+# /var/lib/systemd/ on first use; without it in ReadWritePaths,
+# ProtectSystem=strict rejects the write and `set` fails with
+# "Read-only file system" until the key is manually seeded.
+ReadWritePaths=/run/credman /etc/credstore.encrypted /var/lib/systemd
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
