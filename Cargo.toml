@@ -1,8 +1,13 @@
 [package]
-name        = "credman"
-version     = "0.2.0"
-edition     = "2021"
+name = "credman"
+version = "0.2.0"
+edition = "2021"
 description = "Per-user credential manager with a root daemon backend"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/"
+keywords = ["credentials", "systemd", "linux", "cli", "daemon"]
+categories = ["command-line-utilities", "authentication"]
 
 [[bin]]
 name = "credman"
@@ -13,13 +18,71 @@ name = "credman-daemon"
 path = "src/daemon.rs"
 
 [dependencies]
-zeroize     = { version = "1.8", features = ["zeroize_derive"] }
-serde       = { version = "1.0", features = ["derive"] }
-serde_json  = "1.0"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [profile.release]
-opt-level     = "z"
-lto           = true
+opt-level = "z"
+lto = true
 codegen-units = 1
-strip         = true
-panic         = "abort"
+strip = true
+panic = "abort"
+
+# ── Debian packaging ──────────────────────────────────────────────────────────
+# Consumed by `cargo deb`. The systemd unit ships under /lib/systemd/system/
+# so the postinst can reload and enable it without pathing tricks.
+
+[package.metadata.deb]
+maintainer = "credman maintainers"
+section = "admin"
+priority = "optional"
+depends = "$auto, systemd, adduser"
+extended-description = """
+credman is a per-user credential manager for Linux. An unprivileged
+CLI talks to a root systemd service over a Unix socket; the daemon
+owns all encryption, decryption, and audit logging. Designed for
+hosts where many users need isolated credential storage without
+granting sudo."""
+assets = [
+    ["target/release/credman",        "/usr/local/bin/credman",             "0755"],
+    ["target/release/credman-daemon", "/usr/local/sbin/credman-daemon",     "0700"],
+    ["systemd/credman.service",       "/lib/systemd/system/credman.service","0644"],
+    ["completions/credman.bash",      "/usr/share/bash-completion/completions/credman", "0644"],
+    ["README.md",                     "/usr/share/doc/credman/README.md",   "0644"],
+    ["SECURITY.md",                   "/usr/share/doc/credman/SECURITY.md", "0644"],
+    ["LICENSE",                       "/usr/share/doc/credman/LICENSE",     "0644"],
+]
+maintainer-scripts = "packaging/debian"
+systemd-units = { unit-name = "credman", enable = true, start = true }
+
+# ── RPM packaging ─────────────────────────────────────────────────────────────
+# Consumed by `cargo generate-rpm`. Mirrors the Debian asset map.
+
+[package.metadata.generate-rpm]
+license = "MIT"
+requires = { systemd = "*", shadow-utils = "*" }
+assets = [
+    { source = "target/release/credman",        dest = "/usr/local/bin/credman",             mode = "0755" },
+    { source = "target/release/credman-daemon", dest = "/usr/local/sbin/credman-daemon",     mode = "0700" },
+    { source = "systemd/credman.service",       dest = "/lib/systemd/system/credman.service",mode = "0644" },
+    { source = "completions/credman.bash",      dest = "/usr/share/bash-completion/completions/credman", mode = "0644" },
+    { source = "README.md",                     dest = "/usr/share/doc/credman/README.md",   mode = "0644", doc = true },
+    { source = "SECURITY.md",                   dest = "/usr/share/doc/credman/SECURITY.md", mode = "0644", doc = true },
+    { source = "LICENSE",                       dest = "/usr/share/doc/credman/LICENSE",     mode = "0644", doc = true },
+]
+post_install_script = """
+getent group credman >/dev/null || groupadd --system credman
+systemctl daemon-reload || true
+systemctl enable --now credman.service || true
+"""
+pre_uninstall_script = """
+if [ $1 -eq 0 ]; then
+    systemctl disable --now credman.service || true
+fi
+"""
+post_uninstall_script = """
+if [ $1 -eq 0 ]; then
+    systemctl daemon-reload || true
+fi
+"""
