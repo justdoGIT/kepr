@@ -8,6 +8,7 @@ mod protocol;
 mod generate;
 mod framing;
 mod client;
+mod cli_mode;
 mod cli_ui;
 mod cli_input;
 mod cli_args;

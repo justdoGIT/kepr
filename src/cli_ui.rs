@@ -1,28 +1,15 @@
 // cli_ui.rs — CLI presentation: ANSI colour, status prefixes, JSON output.
 //
-// Converted from the original `color!` macro to a plain function so it can be
-// imported across module boundaries without macro export headaches.
+// The two boolean mode flags (colour, JSON) live in cli_mode behind a single
+// OnceLock. This module only pulls them when rendering.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
+use crate::cli_mode;
 use crate::protocol::Response;
 
-pub static FORCE_NO_COLOR: AtomicBool = AtomicBool::new(false);
+// Re-exported for call sites that used to import `cli_ui::json_mode`.
+pub use crate::cli_mode::json_mode;
 
-/// Set when `--json` is seen on argv. Lets error paths that fire before
-/// Args is built (e.g. CliActivity::parse rejecting an unknown verb) honour
-/// JSON mode — no stderr noise, Response::Err on stdout.
-pub static FORCE_JSON: AtomicBool = AtomicBool::new(false);
-
-pub fn json_mode() -> bool { FORCE_JSON.load(Ordering::Relaxed) }
-
-extern "C" { fn isatty(fd: i32) -> i32; }
-
-pub fn use_color() -> bool {
-    if FORCE_NO_COLOR.load(Ordering::Relaxed) { return false; }
-    if std::env::var_os("NO_COLOR").is_some()  { return false; }
-    unsafe { isatty(1) != 0 }
-}
+pub fn use_color() -> bool { cli_mode::use_color() }
 
 pub fn color(code: &str, text: &str) -> String {
     if use_color() { format!("\x1b[{code}m{text}\x1b[0m") }

@@ -1,9 +1,7 @@
 // cli_args.rs — argv parsing and --help rendering.
 
-use std::sync::atomic::Ordering;
-
 use crate::cli_activity::CliActivity;
-use crate::cli_ui::{FORCE_JSON, FORCE_NO_COLOR};
+use crate::cli_mode;
 use crate::generate::GenKind;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -27,6 +25,11 @@ pub fn parse_args() -> Result<Args, String> {
     // activity.
     let raw: Vec<String> = std::env::args().collect();
 
+    // Compute the process-wide CliMode from argv + env *before* any
+    // parse error can fire, so error paths (unknown verb, missing
+    // required value) see the correct --json / --color state.
+    cli_mode::init_from_argv(&raw);
+
     let mut name:     Option<String> = None;
     let mut value:    Option<String> = None;
     let mut generate = false;
@@ -40,10 +43,11 @@ pub fn parse_args() -> Result<Args, String> {
 
     while i < raw.len() && raw[i].starts_with("--") {
         match raw[i].as_str() {
-            "--json"      => { json = true; FORCE_JSON.store(true, Ordering::Relaxed); i += 1; }
-            "--no-color"  => { FORCE_NO_COLOR.store(true, Ordering::Relaxed); i += 1; }
-            "--version"   => { println!("credman {VERSION}"); std::process::exit(0); }
-            "--help"|"-h" => { print_help(); std::process::exit(0); }
+            "--json"         => { json = true; i += 1; }
+            "--color"        => { i += 1; }
+            "--no-color"     => { i += 1; }
+            "--version"      => { println!("credman {VERSION}"); std::process::exit(0); }
+            "--help"|"-h"    => { print_help(); std::process::exit(0); }
             _ => break,
         }
     }
@@ -63,8 +67,9 @@ pub fn parse_args() -> Result<Args, String> {
             "--quiet"|"-q"    => { quiet    = true; i += 1; }
             "--export"|"-e"   => { export   = true; i += 1; }
             "--force"|"-f"    => { force    = true; i += 1; }
-            "--json"          => { json     = true; FORCE_JSON.store(true, Ordering::Relaxed); i += 1; }
-            "--no-color"      => { FORCE_NO_COLOR.store(true, Ordering::Relaxed); i += 1; }
+            "--json"          => { json     = true; i += 1; }
+            "--color"         => { i += 1; }
+            "--no-color"      => { i += 1; }
             "--value"|"-v" => {
                 i += 1;
                 value = Some(raw.get(i).ok_or("--value needs a value")?.clone());
@@ -95,7 +100,7 @@ pub fn print_help() {
     println!("credman {VERSION} — credential manager");
     println!();
     println!("USAGE:");
-    println!("  credman [--json] [--no-color] COMMAND [args]");
+    println!("  credman [--json] [--color] COMMAND [args]");
     println!();
     println!("COMMANDS:");
     println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid]");
@@ -106,7 +111,12 @@ pub fn print_help() {
     println!();
     println!("GLOBAL FLAGS:");
     println!("  --json       machine-readable output; no stderr on clean errors");
-    println!("  --no-color   disable ANSI colors (also honors NO_COLOR env var)");
+    println!("  --color      enable ANSI colours (default is plain text)");
+    println!("  --no-color   force plain text (overrides CLICOLOR_FORCE=1)");
+    println!();
+    println!("ENVIRONMENT:");
+    println!("  NO_COLOR           any value disables colours (overrides --color)");
+    println!("  CLICOLOR_FORCE=1   enables colours without --color");
     println!();
     println!("EXAMPLES:");
     println!("  credman set OPENAI_API_KEY              # interactive, masked input");
