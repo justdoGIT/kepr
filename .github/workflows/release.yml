@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)release, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── 1. Verify tag matches Cargo.toml version ──────────────────────────────
+  tag-check:
+    name: Tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    outputs:
+      tag:     ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: resolve
+        env:
+          REF_NAME:     ${{ github.ref_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${DISPATCH_TAG:-$REF_NAME}"
+          VERSION="${TAG#v}"
+          CRATE_VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$VERSION" != "$CRATE_VERSION" ] && [ "${VERSION%-*}" != "$CRATE_VERSION" ]; then
+            echo "::error::tag $TAG (version $VERSION) does not match Cargo.toml version $CRATE_VERSION"
+            exit 1
+          fi
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  # ─── 2. Build binaries, package deb/rpm/tar, sign, attest ──────────────────
+  build:
+    name: Build + package (x86_64)
+    needs: tag-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents:     read
+      id-token:     write   # cosign keyless
+      attestations: write   # build provenance
+    outputs:
+      version: ${{ needs.tag-check.outputs.version }}
+    env:
+      VERSION: ${{ needs.tag-check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release
+        run: cargo build --release --bins
+
+      - name: Install cargo-deb and cargo-generate-rpm
+        run: |
+          cargo install cargo-deb --locked
+          cargo install cargo-generate-rpm --locked
+
+      - name: cargo deb
+        run: cargo deb --no-build --output dist/credman_${VERSION}_amd64.deb
+
+      - name: cargo generate-rpm
+        run: cargo generate-rpm --output dist/credman-${VERSION}-1.x86_64.rpm
+
+      - name: Build tarball
+        run: |
+          set -euo pipefail
+          STAGE="credman-${VERSION}-x86_64-linux"
+          mkdir -p "dist/${STAGE}"
+          cp target/release/credman        "dist/${STAGE}/"
+          cp target/release/credman-daemon "dist/${STAGE}/"
+          cp systemd/credman.service       "dist/${STAGE}/"
+          cp completions/credman.bash      "dist/${STAGE}/"
+          cp install.sh README.md SECURITY.md LICENSE "dist/${STAGE}/"
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+          rm -rf "dist/${STAGE}"
+
+      - name: List artefacts
+        run: ls -la dist/
+
+      - name: Generate SBOM per artefact (SPDX-JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          path: dist/
+          format: spdx-json
+          output-file: dist/credman-${{ env.VERSION }}.spdx.json
+          upload-artifact: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release artefacts (keyless)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for f in *.deb *.rpm *.tar.gz *.spdx.json; do
+            cosign sign-blob --yes --output-signature "${f}.sig" "${f}"
+          done
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+
+      - name: Upload dist/ as workflow artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: credman-release
+          path: dist/
+          if-no-files-found: error
+
+  # ─── 3. Generate changelog ────────────────────────────────────────────────
+  changelog:
+    name: Generate changelog
+    needs: tag-check
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.cliff.outputs.content }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: cliff
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGELOG-release.md
+
+  # ─── 4. Create the GitHub Release and upload assets ───────────────────────
+  release:
+    name: Publish release
+    needs: [build, changelog, tag-check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: credman-release
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag-check.outputs.tag }}
+          name:     credman ${{ needs.tag-check.outputs.tag }}
+          body:     ${{ needs.changelog.outputs.body }}
+          draft:    false
+          prerelease: ${{ contains(needs.tag-check.outputs.version, '-') }}
+          files: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+            dist/*.spdx.json
+            dist/*.sig
