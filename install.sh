@@ -52,6 +52,24 @@ sudo chmod 700 /usr/local/sbin/credman-daemon   # root-only execution
 ok "credman       → /usr/local/bin/credman"
 ok "credman-daemon → /usr/local/sbin/credman-daemon"
 
+echo -e "\n${CYN}━━━ Installing shell completion ━━━${RST}"
+# Prefer the directory bash-completion itself advertises via pkg-config;
+# fall back to the Debian/Ubuntu default. Skip with a warning if the
+# parent path isn't present — the system likely has no bash-completion
+# installed and the script would do nothing useful.
+BASH_COMPDIR="$(pkg-config --variable=completionsdir bash-completion 2>/dev/null || true)"
+if [[ -z "$BASH_COMPDIR" ]]; then
+    BASH_COMPDIR="/usr/share/bash-completion/completions"
+fi
+if [[ -d "$(dirname "$BASH_COMPDIR")" ]]; then
+    sudo install -d -m 0755 "$BASH_COMPDIR"
+    sudo install -m 0644 completions/credman.bash "$BASH_COMPDIR/credman"
+    ok "bash completion → $BASH_COMPDIR/credman"
+    info "Reload: source $BASH_COMPDIR/credman   (or open a new shell)"
+else
+    warn "bash-completion not detected — skipping completion install"
+fi
+
 echo -e "\n${CYN}━━━ Installing systemd service ━━━${RST}"
 sudo cp systemd/credman.service /etc/systemd/system/credman.service
 sudo systemctl daemon-reload
