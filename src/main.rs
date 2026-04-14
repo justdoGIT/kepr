@@ -15,15 +15,26 @@ mod cli_cmds;
 mod cli_activity;
 
 use cli_args::parse_args;
-use cli_ui::{err, print_json};
+use cli_ui::{err, json_mode, print_json};
+use protocol::Response;
 
 fn main() {
     // Unknown verbs are rejected inside CliActivity::parse (called from
-    // parse_args), so this binding's `command` field is always one of
-    // the five canonical activities — dispatch can't fall through.
+    // parse_args), so when parse_args succeeds, `command` is always one
+    // of the five canonical activities — dispatch can't fall through.
+    //
+    // On parse failure: honour --json mode, if it was already seen on
+    // argv, by emitting a Response::Err on stdout with no stderr noise.
     let args = match parse_args() {
         Ok(a)  => a,
-        Err(e) => { err(&format!("{e}")); std::process::exit(1); }
+        Err(e) => {
+            if json_mode() {
+                print_json(&Response::fail(e));
+            } else {
+                err(&format!("{e}"));
+            }
+            std::process::exit(1);
+        }
     };
 
     let resp = args.command.dispatch(&args);

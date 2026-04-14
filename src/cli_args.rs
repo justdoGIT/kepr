@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 
 use crate::cli_activity::CliActivity;
-use crate::cli_ui::FORCE_NO_COLOR;
+use crate::cli_ui::{FORCE_JSON, FORCE_NO_COLOR};
 use crate::generate::GenKind;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -40,7 +40,7 @@ pub fn parse_args() -> Result<Args, String> {
 
     while i < raw.len() && raw[i].starts_with("--") {
         match raw[i].as_str() {
-            "--json"      => { json = true; i += 1; }
+            "--json"      => { json = true; FORCE_JSON.store(true, Ordering::Relaxed); i += 1; }
             "--no-color"  => { FORCE_NO_COLOR.store(true, Ordering::Relaxed); i += 1; }
             "--version"   => { println!("credman {VERSION}"); std::process::exit(0); }
             "--help"|"-h" => { print_help(); std::process::exit(0); }
@@ -63,7 +63,7 @@ pub fn parse_args() -> Result<Args, String> {
             "--quiet"|"-q"    => { quiet    = true; i += 1; }
             "--export"|"-e"   => { export   = true; i += 1; }
             "--force"|"-f"    => { force    = true; i += 1; }
-            "--json"          => { json     = true; i += 1; }
+            "--json"          => { json     = true; FORCE_JSON.store(true, Ordering::Relaxed); i += 1; }
             "--no-color"      => { FORCE_NO_COLOR.store(true, Ordering::Relaxed); i += 1; }
             "--value"|"-v" => {
                 i += 1;
