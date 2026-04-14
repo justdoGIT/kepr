@@ -295,11 +295,12 @@ else
     fi
 fi
 
-# ── 9. Color suppression ──────────────────────────────────────────────────────
-# Forces a TTY so is_tty() returns true; then asserts that --no-color and
-# NO_COLOR=1 both strip ANSI escapes. Without a PTY, is_tty() is already false
-# and color is off either way — that path wouldn't prove anything.
-step "9. --no-color and NO_COLOR suppress ANSI under a TTY"
+# ── 9. Colour opt-in model ────────────────────────────────────────────────────
+# Colour is OFF by default, even under a TTY. --color enables it; NO_COLOR=1
+# and --no-color override --color. Uses util-linux `script` to fake a TTY —
+# without it, is_tty() is already false and we can't distinguish "TTY with
+# colour suppressed" from "not a TTY".
+step "9. colour opt-in (default off, --color enables, NO_COLOR/--no-color override)"
 
 if ! command -v script >/dev/null 2>&1; then
     skip "util-linux 'script' not available — cannot fake a TTY"
@@ -310,19 +311,31 @@ else
     pty_run() { script -q -e -c "$*" /dev/null 2>/dev/null | tr -d '\r'; }
     has_ansi() { printf '%s' "$1" | grep -q $'\x1b\['; }
 
-    base=$(pty_run "credman list")
-    if ! has_ansi "$base"; then
-        skip "baseline 'credman list' under PTY emitted no ANSI (non-TTY detection)"
+    # Default behaviour: no ANSI even under a TTY.
+    if ! has_ansi "$(pty_run "credman list")"; then
+        pass "default: no ANSI under TTY"
     else
-        if ! has_ansi "$(pty_run "credman --no-color list")"; then
-            pass "--no-color suppresses ANSI under TTY"
+        fail "default emitted ANSI; colour should be opt-in"
+    fi
+
+    # --color must enable ANSI under a TTY. If the baseline doesn't light
+    # up even with --color, the PTY emulation isn't detectable as a TTY —
+    # skip the override checks instead of reporting false failures.
+    base=$(pty_run "credman --color list")
+    if ! has_ansi "$base"; then
+        skip "'credman --color list' under PTY emitted no ANSI (non-TTY detection)"
+    else
+        pass "--color enables ANSI under TTY"
+
+        if ! has_ansi "$(pty_run "credman --color --no-color list")"; then
+            pass "--no-color overrides --color"
         else
-            fail "--no-color did NOT suppress ANSI"
+            fail "--no-color did NOT override --color"
         fi
-        if ! has_ansi "$(pty_run "NO_COLOR=1 credman list")"; then
-            pass "NO_COLOR=1 suppresses ANSI under TTY"
+        if ! has_ansi "$(pty_run "NO_COLOR=1 credman --color list")"; then
+            pass "NO_COLOR=1 overrides --color"
         else
-            fail "NO_COLOR=1 did NOT suppress ANSI"
+            fail "NO_COLOR=1 did NOT override --color"
         fi
     fi
 fi
