@@ -34,13 +34,19 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
             .map_err(|e| format!("cannot chmod credstore: {e}"))?;
     }
 
+    // Write to a per-pid temp path in the same directory, then atomically
+    // rename over the target. Prevents concurrent `set NAME` calls from
+    // interleaving partial writes — rename(2) is atomic on the same fs,
+    // so any reader either sees the old file or the whole new one.
+    let tmp_path = out_path.with_extension(format!("tmp.{}", std::process::id()));
+
     let mut child = Command::new(SYSTEMD_CREDS)
         .args([
             "encrypt",
             &format!("--with-key={KEY_TYPE}"),
             "--name", &cred_name,
             "-",                                // read from stdin
-            out_path.to_str().unwrap(),         // write to file
+            tmp_path.to_str().unwrap(),         // write to temp file
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -52,14 +58,22 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
     {
         let stdin = child.stdin.take().unwrap();
         let mut stdin = stdin;
-        stdin.write_all(value)
-            .map_err(|e| format!("write error: {e}"))?;
+        if let Err(e) = stdin.write_all(value) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(format!("write error: {e}"));
+        }
     }
 
-    let output = child.wait_with_output()
-        .map_err(|e| format!("encryption backend error: {e}"))?;
+    let output = match child.wait_with_output() {
+        Ok(o)  => o,
+        Err(e) => {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(format!("encryption backend error: {e}"));
+        }
+    };
 
     if !output.status.success() {
+        let _ = fs::remove_file(&tmp_path);
         // Sanitize error — don't leak internal tool names in the message
         // that gets sent back to the user
         let raw = String::from_utf8_lossy(&output.stderr);
@@ -67,11 +81,17 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
         return Err(format!("encryption failed: {clean}"));
     }
 
-    // Lock down the credential file
-    fs::set_permissions(&out_path, fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("cannot secure credential file: {e}"))?;
+    // Lock down the temp file BEFORE rename — rename preserves source mode.
+    if let Err(e) = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600)) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("cannot secure credential file: {e}"));
+    }
 
-    Ok(())
+    fs::rename(&tmp_path, &out_path)
+        .map_err(|e| {
+            let _ = fs::remove_file(&tmp_path);
+            format!("cannot install credential: {e}")
+        })
 }
 
 // ── Decrypt ───────────────────────────────────────────────────────────────────

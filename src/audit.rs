@@ -14,9 +14,21 @@
 //   journalctl -t credman-daemon CREDMAN_OP=get
 
 use std::os::unix::net::UnixDatagram;
+use std::sync::OnceLock;
 
 // systemd journal socket
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
+
+// Persistent datagram socket. `UnixDatagram::unbound()` per-call churned a
+// socket fd on every audit event; cache it once for the life of the daemon
+// and fall back to stderr (in `log`) if creation fails.
+static JOURNAL_SOCK: OnceLock<Option<UnixDatagram>> = OnceLock::new();
+
+fn journal_sock() -> Option<&'static UnixDatagram> {
+    JOURNAL_SOCK
+        .get_or_init(|| UnixDatagram::unbound().ok())
+        .as_ref()
+}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -89,12 +101,10 @@ fn log_to_journal(event: &AuditEvent, result_str: &str) -> bool {
     msg.push_str(&format!("CREDMAN_USER={}\n",   event.username));
     msg.push_str(&format!("CREDMAN_RESULT={}\n", result_str));
 
-    // Send to journal socket
-    match UnixDatagram::unbound() {
-        Ok(sock) => {
-            sock.send_to(msg.as_bytes(), JOURNAL_SOCKET).is_ok()
-        }
-        Err(_) => false,
+    // Send to journal socket via the cached datagram fd.
+    match journal_sock() {
+        Some(sock) => sock.send_to(msg.as_bytes(), JOURNAL_SOCKET).is_ok(),
+        None       => false,
     }
 }
 
