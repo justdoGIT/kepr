@@ -194,9 +194,43 @@ sudo systemctl restart credman.service   # reload after a rebuild
 covered by the e2e suite, which requires the installed daemon and
 `credman` group membership.
 
-See `DOCS.md` for architecture, design patterns, sequence diagrams, and
-the full test matrix. See `ARCHITECTURE.md` for the socket / namespacing
-contract and `FILE_LAYOUT.md` for the source tree.
+See [DOCS.md](./DOCS.md) for architecture, design patterns, sequence
+diagrams, and the full test matrix.
+
+## File layout
+
+```
+src/
+├── main.rs                 credman CLI entry
+├── client.rs               CLI-side socket transport (framed JSON)
+├── cli_activity.rs         CliActivity newtype, verb -> handler dispatch
+├── cli_args.rs             argv parser, --help renderer
+├── cli_cmds.rs             cmd_set/get/list/delete/check
+├── cli_input.rs            masked terminal input
+├── cli_mode.rs             process-wide JSON/color mode (OnceLock)
+├── cli_ui.rs               ANSI helpers, print_json
+├── daemon.rs               credman-daemon entry, accept loop, dispatch
+├── daemon_cache.rs         per-uid credstore listing cache
+├── daemon_handlers.rs      handle_{set,get,list,delete,check}
+├── daemon_peer.rs          SO_PEERCRED -> peer uid
+├── daemon_pool.rs          bounded worker thread pool (backpressure)
+├── daemon_socket.rs        socket dir setup, 0660 root:credman
+├── protocol.rs             shared Request/Response enums, wire limits
+├── framing.rs              <u32 BE len><payload> codec
+├── store.rs                naming, validate_name, path helpers
+├── generate.rs             ZeroString, CSPRNG, UUIDv4, base62/hex/pass
+├── crypto.rs               encryption-backend wrapper (daemon only)
+└── audit.rs                structured journal logger (daemon only)
+
+systemd/credman.service      hardened unit (mlockall, ProtectSystem=strict)
+completions/credman.bash     bash completion with live cred-name lookup
+tests/e2e.sh                 13 end-to-end cases against the installed daemon
+```
+
+Shared modules (`protocol`, `framing`, `generate`, `store`) compile into
+both binaries. `crypto`, `audit`, and everything prefixed `daemon_` are
+daemon-only and are not declared in `main.rs`'s module tree — the
+module split is enforced by the compiler.
 
 ---
 
@@ -229,4 +263,4 @@ sudo groupdel credman
 
 ## License
 
-See `LICENSE`.
+See [LICENSE](./LICENSE).

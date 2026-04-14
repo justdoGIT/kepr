@@ -30,7 +30,7 @@ When adding a new command, touch all three layers: add a variant to `Request`/`R
 
 ## Conventions that matter
 
-- **Never log secret values.** Audit entries include op/name/uid/user/result only — see `ARCHITECTURE.md`.
+- **Never log secret values.** Audit entries include op/name/uid/user/result only — see `DOCS.md` §3.3.
 - **Hide the encryption backend from users.** `crypto::sanitize_error` scrubs internal tool names and flags from error output; the systemd unit uses a neutral `SyslogIdentifier`. Preserve this stance in any new code, error strings, and docs — refer to it generically as "the credential backend."
 - **Validate names in the daemon**, not just the client. `store::validate_name` (A-Z/0-9/underscore, ≤128 chars) is the boundary against path traversal; every handler that takes a `name` must call it.
 - **Secrets use `ZeroString`** (from `generate.rs`) so memory is wiped on drop. Don't convert to plain `String` except at the socket boundary.
@@ -38,6 +38,6 @@ When adding a new command, touch all three layers: add a variant to `Request`/`R
 
 ## Reference files
 
-- `ARCHITECTURE.md` — socket permissions, namespacing rules, audit log schema.
-- `FILE_LAYOUT.md` — one-line map of `src/`.
+- `README.md` — install, usage, file layout, troubleshooting.
+- `DOCS.md` — architecture, design patterns, sequence diagrams, test matrix.
 - `systemd/credman.service` — hardening flags (`ProtectSystem=strict`, `ReadWritePaths` allowlist, `MemoryDenyWriteExecute`, etc.). `NoNewPrivileges=no` is intentional — the backend needs root to use the host key.
