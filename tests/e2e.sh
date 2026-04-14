@@ -289,6 +289,130 @@ else
     fi
 fi
 
+# ── 9. Color suppression ──────────────────────────────────────────────────────
+# Forces a TTY so is_tty() returns true; then asserts that --no-color and
+# NO_COLOR=1 both strip ANSI escapes. Without a PTY, is_tty() is already false
+# and color is off either way — that path wouldn't prove anything.
+step "9. --no-color and NO_COLOR suppress ANSI under a TTY"
+
+if ! command -v script >/dev/null 2>&1; then
+    skip "util-linux 'script' not available — cannot fake a TTY"
+else
+    NAME="${PREFIX}COLOR"
+    credman --json set "$NAME" --value "x" >/dev/null
+
+    pty_run() { script -q -e -c "$*" /dev/null 2>/dev/null | tr -d '\r'; }
+    has_ansi() { printf '%s' "$1" | grep -q $'\x1b\['; }
+
+    base=$(pty_run "credman list")
+    if ! has_ansi "$base"; then
+        skip "baseline 'credman list' under PTY emitted no ANSI (non-TTY detection)"
+    else
+        if ! has_ansi "$(pty_run "credman --no-color list")"; then
+            pass "--no-color suppresses ANSI under TTY"
+        else
+            fail "--no-color did NOT suppress ANSI"
+        fi
+        if ! has_ansi "$(pty_run "NO_COLOR=1 credman list")"; then
+            pass "NO_COLOR=1 suppresses ANSI under TTY"
+        else
+            fail "NO_COLOR=1 did NOT suppress ANSI"
+        fi
+    fi
+fi
+
+# ── 10. check output is sorted ────────────────────────────────────────────────
+# Daemon returns a HashMap — order undefined. Client must sort.
+step "10. check output is deterministic (sorted by name)"
+
+for s in ZETA_C ALPHA_A MIKE_B; do
+    credman --json set "${PREFIX}${s}" --value "x" >/dev/null
+done
+
+names1=$(credman check 2>/dev/null | grep -oE "${PREFIX}[A-Z_]+" | grep -E '(ZETA_C|ALPHA_A|MIKE_B)')
+names2=$(credman check 2>/dev/null | grep -oE "${PREFIX}[A-Z_]+" | grep -E '(ZETA_C|ALPHA_A|MIKE_B)')
+sorted=$(printf '%s\n' "$names1" | sort)
+
+if [ "$names1" = "$sorted" ]; then
+    pass "check output is sorted"
+else
+    fail "check output not sorted: $(printf '%s' "$names1" | tr '\n' ' ')"
+fi
+
+if [ "$names1" = "$names2" ]; then
+    pass "check output is stable across runs"
+else
+    fail "check output changed between runs"
+fi
+
+# ── 11. JSON mode stderr hygiene ──────────────────────────────────────────────
+# Clean errors (missing NAME, unknown command) must NOT print anything to
+# stderr in --json mode. Scripts rely on stdout having one JSON object.
+step "11. --json mode: no stderr noise on clean errors"
+
+# These CLI calls exit non-zero; under `set -e`, $() would abort the script.
+# `|| true` keeps the script running so we can inspect stderr.
+errout=$(credman --json get 2>&1 >/dev/null || true)
+[ -z "$errout" ] \
+    && pass "--json get (no NAME): stderr empty" \
+    || fail "--json get (no NAME) leaked stderr: $errout"
+
+errout=$(credman --json delete 2>&1 >/dev/null || true)
+[ -z "$errout" ] \
+    && pass "--json delete (no NAME): stderr empty" \
+    || fail "--json delete (no NAME) leaked stderr: $errout"
+
+errout=$(credman --json nosuchcommand 2>&1 >/dev/null || true)
+[ -z "$errout" ] \
+    && pass "--json unknown command: stderr empty" \
+    || fail "--json unknown command leaked stderr: $errout"
+
+jsonout=$(credman --json nosuchcommand 2>/dev/null || true)
+if echo "$jsonout" | jq -e '.ok == false and (.error | test("unknown command"))' >/dev/null; then
+    pass "--json unknown command: valid JSON with ok=false"
+else
+    fail "--json unknown command did not return structured JSON"
+fi
+
+# ── 12. --force skips the delete confirmation ─────────────────────────────────
+step "12. delete --force skips the interactive prompt"
+
+NAME="${PREFIX}FORCE_DEL"
+credman --json set "$NAME" --value "x" >/dev/null
+
+# stdin closed: if --force didn't skip the prompt, read_line would hit EOF and
+# the delete would be aborted — leaving the cred present.
+if credman delete "$NAME" --force </dev/null >/dev/null 2>&1; then
+    pass "delete --force exited cleanly with no stdin"
+else
+    fail "delete --force failed with no stdin"
+fi
+
+out=$(credman --json get "$NAME" || true)
+if echo "$out" | jq -e '.ok == false' >/dev/null; then
+    pass "credential actually removed by --force"
+else
+    fail "credential still present after delete --force"
+fi
+
+# ── 13. Command aliases: ls, rm ───────────────────────────────────────────────
+step "13. command aliases (ls, rm)"
+
+NAME="${PREFIX}ALIAS"
+credman --json set "$NAME" --value "x" >/dev/null
+
+if credman --json ls | jq -e --arg n "$NAME" '.credentials[]?.name | select(. == $n)' >/dev/null; then
+    pass "ls alias returns same shape as list"
+else
+    fail "ls alias did not return credential"
+fi
+
+if credman rm "$NAME" --force </dev/null >/dev/null 2>&1; then
+    pass "rm alias + --force deleted credential"
+else
+    fail "rm alias failed"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
