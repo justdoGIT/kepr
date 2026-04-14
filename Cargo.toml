@@ -2,7 +2,7 @@
 name        = "credman"
 version     = "0.2.0"
 edition     = "2021"
-description = "systemd-creds credential manager with daemon backend"
+description = "Per-user credential manager with a root daemon backend"
 
 [[bin]]
 name = "credman"
