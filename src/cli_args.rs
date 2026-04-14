@@ -2,13 +2,14 @@
 
 use std::sync::atomic::Ordering;
 
+use crate::cli_activity::CliActivity;
 use crate::cli_ui::FORCE_NO_COLOR;
 use crate::generate::GenKind;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct Args {
-    pub command:  String,
+    pub command:  CliActivity,
     pub name:     Option<String>,
     pub value:    Option<String>,
     pub generate: bool,
@@ -20,18 +21,26 @@ pub struct Args {
 }
 
 pub fn parse_args() -> Result<Args, String> {
+    // Gather raw flags + positional into locals, then build Args at the
+    // end. Keeps `command` typed as CliActivity the whole way through —
+    // no `String::new()` placeholder that could leak out as an invalid
+    // activity.
     let raw: Vec<String> = std::env::args().collect();
-    let mut a = Args {
-        command: String::new(), name: None, value: None,
-        generate: false, gen_kind: GenKind::Hex,
-        quiet: false, export: false, json: false, force: false,
-    };
+
+    let mut name:     Option<String> = None;
+    let mut value:    Option<String> = None;
+    let mut generate = false;
+    let mut gen_kind = GenKind::Hex;
+    let mut quiet    = false;
+    let mut export   = false;
+    let mut json     = false;
+    let mut force    = false;
 
     let mut i = 1usize;
 
     while i < raw.len() && raw[i].starts_with("--") {
         match raw[i].as_str() {
-            "--json"      => { a.json = true; i += 1; }
+            "--json"      => { json = true; i += 1; }
             "--no-color"  => { FORCE_NO_COLOR.store(true, Ordering::Relaxed); i += 1; }
             "--version"   => { println!("credman {VERSION}"); std::process::exit(0); }
             "--help"|"-h" => { print_help(); std::process::exit(0); }
@@ -39,43 +48,47 @@ pub fn parse_args() -> Result<Args, String> {
         }
     }
 
-    a.command = raw.get(i).ok_or("no command — try: credman --help")?.clone();
+    let command_verb = raw.get(i).ok_or("no command — try: credman --help")?;
+    let command = CliActivity::parse(command_verb)?;
     i += 1;
 
     if i < raw.len() && !raw[i].starts_with('-') {
-        a.name = Some(raw[i].to_uppercase());
+        name = Some(raw[i].to_uppercase());
         i += 1;
     }
 
     while i < raw.len() {
         match raw[i].as_str() {
-            "--generate"|"-g" => { a.generate = true; i += 1; }
-            "--quiet"|"-q"    => { a.quiet    = true; i += 1; }
-            "--export"|"-e"   => { a.export   = true; i += 1; }
-            "--force"|"-f"    => { a.force    = true; i += 1; }
-            "--json"          => { a.json     = true; i += 1; }
+            "--generate"|"-g" => { generate = true; i += 1; }
+            "--quiet"|"-q"    => { quiet    = true; i += 1; }
+            "--export"|"-e"   => { export   = true; i += 1; }
+            "--force"|"-f"    => { force    = true; i += 1; }
+            "--json"          => { json     = true; i += 1; }
             "--no-color"      => { FORCE_NO_COLOR.store(true, Ordering::Relaxed); i += 1; }
             "--value"|"-v" => {
                 i += 1;
-                a.value = Some(raw.get(i).ok_or("--value needs a value")?.clone());
+                value = Some(raw.get(i).ok_or("--value needs a value")?.clone());
                 i += 1;
             }
             "--gen-kind" => {
                 i += 1;
                 let k = raw.get(i).ok_or("--gen-kind needs a value")?;
-                a.gen_kind = GenKind::from_str(k)
+                gen_kind = GenKind::from_str(k)
                     .ok_or(format!("unknown gen-kind: {k} (hex|base62|pass|uuid)"))?;
                 i += 1;
             }
-            s if !s.starts_with('-') && a.name.is_none() => {
-                a.name = Some(s.to_uppercase());
+            s if !s.starts_with('-') && name.is_none() => {
+                name = Some(s.to_uppercase());
                 i += 1;
             }
             other => return Err(format!("unknown flag: {other}")),
         }
     }
 
-    Ok(a)
+    Ok(Args {
+        command, name, value, generate, gen_kind,
+        quiet, export, json, force,
+    })
 }
 
 pub fn print_help() {
