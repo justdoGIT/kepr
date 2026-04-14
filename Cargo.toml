@@ -54,7 +54,10 @@ assets = [
     ["LICENSE",                       "/usr/share/doc/credman/LICENSE",     "0644"],
 ]
 maintainer-scripts = "packaging/debian"
-systemd-units = { unit-name = "credman", enable = true, start = true }
+# systemd lifecycle is handled entirely in packaging/debian/postinst
+# and prerm. Do NOT set `systemd-units` here — it would require a
+# #DEBHELPER# token in postinst and a .service file under
+# packaging/debian/, duplicating state we already manage manually.
 
 # ── RPM packaging ─────────────────────────────────────────────────────────────
 # Consumed by `cargo generate-rpm`. Mirrors the Debian asset map.
