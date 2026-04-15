@@ -103,13 +103,22 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.3
 
       - name: Sign release artefacts (keyless)
         working-directory: dist
         run: |
           set -euo pipefail
+          # Emit sig + cert + bundle. The bundle (sig+cert+Rekor entry)
+          # is the modern single-file verification input for cosign; the
+          # separate .sig/.pem pair is kept for older tooling.
           for f in *.deb *.rpm *.tar.gz *.spdx.json; do
-            cosign sign-blob --yes --output-signature "${f}.sig" "${f}"
+            cosign sign-blob --yes \
+              --output-signature   "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              --bundle             "${f}.bundle" \
+              "${f}"
           done
 
       - name: Attest build provenance
@@ -187,3 +196,5 @@ jobs:
             dist/*.tar.gz
             dist/*.spdx.json
             dist/*.sig
+            dist/*.pem
+            dist/*.bundle
