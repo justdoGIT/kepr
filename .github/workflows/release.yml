@@ -103,6 +103,8 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.3
 
       - name: Sign release artefacts (keyless)
         working-directory: dist
