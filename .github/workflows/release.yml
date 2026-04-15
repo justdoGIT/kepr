@@ -137,15 +137,21 @@ jobs:
 
       - uses: taiki-e/install-action@v2
         with:
-          tool: git-cliff
+          # Pin to a known git-cliff version so re-running the release
+          # workflow against the same tag produces an identical changelog.
+          tool: git-cliff@2.12.0
 
       - id: cliff
         run: |
-          BODY=$(git-cliff --config cliff.toml --latest --strip header)
+          # GITHUB_OUTPUT heredoc delimiter must not appear in the body
+          # (per docs.github.com/actions/.../workflow-commands#multiline-strings).
+          # uuidgen makes collision impossible.
+          DELIM="$(uuidgen)"
+          BODY="$(git-cliff --config cliff.toml --latest --strip header)"
           {
-            echo 'content<<__EOF__'
-            echo "$BODY"
-            echo '__EOF__'
+            printf 'content<<%s\n' "$DELIM"
+            printf '%s\n'          "$BODY"
+            printf '%s\n'          "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
   # ─── 4. Create the GitHub Release and upload assets ───────────────────────
