@@ -117,7 +117,7 @@ jobs:
             dist/*.tar.gz
 
       - name: Upload dist/ as workflow artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: credman-release
           path: dist/
