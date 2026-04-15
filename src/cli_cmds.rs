@@ -111,8 +111,14 @@ pub fn cmd_set(a: &Args) -> Response {
                 _ => GenKind::Hex,
             };
             let s = generate_secret(kind);
-            let preview = format!("{}...{}", &s[..8], &s[s.len() - 4..]);
-            ok(&format!("Generated: {}", color("2", &preview)));
+            // Intentionally do not preview the value — even a 12-char
+            // slice of a 36-char UUID leaks a third of the secret into
+            // stdout (and shell history). Confirm only kind + length.
+            ok(&format!(
+                "Generated {} secret ({} chars)",
+                kind.as_str(),
+                s.len()
+            ));
             (Some(s.to_owned_string()), None)
         } else {
             (Some(val.to_owned_string()), None)
