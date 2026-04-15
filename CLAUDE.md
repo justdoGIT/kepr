@@ -61,3 +61,9 @@ Key routing rules:
 - Architecture review → invoke plan-eng-review
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
+
+## Health Stack
+
+- lint: cargo clippy -- -D warnings
+- test: cargo test
+- shell: shellcheck install.sh tests/e2e.sh
