@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./.github/assets/credman.png" alt="credman" width="720">
+  <img src="./.github/assets/credman.png" alt="credman" style="max-width: 1280px; width: 100%; height: auto;">
 </p>
 
 # credman
