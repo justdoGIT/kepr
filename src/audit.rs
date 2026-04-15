@@ -16,7 +16,6 @@
 //   journalctl -t credman-daemon
 //   journalctl -t credman-daemon CREDMAN_OP=get
 
-use std::hash::{Hash, Hasher};
 use std::os::unix::net::UnixDatagram;
 use std::sync::OnceLock;
 
@@ -36,14 +35,26 @@ fn journal_sock() -> Option<&'static UnixDatagram> {
 
 // ── Pseudonymisation ──────────────────────────────────────────────────────────
 
-/// Produce a stable, non-reversible pseudonym from an arbitrary value.
-/// Uses the default SipHash hasher (deterministic with a fixed key) and
-/// returns the first 16 hex digits of the u64 hash so the same input
-/// always maps to the same pseudonym within a given binary build.
-fn pseudonymize(value: &impl Hash) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+/// Produce a stable, non-reversible pseudonym from a byte slice.
+/// Uses the FNV-1a hash (deterministic, no external state) and returns
+/// the full 16-hex-digit u64 hash so the same input always maps to the
+/// same pseudonym regardless of Rust version or build.
+fn pseudonymize_bytes(data: &[u8]) -> String {
+    // FNV-1a 64-bit
+    let mut hash: u64 = 0xcbf29ce484222325; // offset basis
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+    }
+    format!("{:016x}", hash)
+}
+
+fn pseudonymize_uid(uid: u32) -> String {
+    pseudonymize_bytes(&uid.to_le_bytes())
+}
+
+fn pseudonymize_str(s: &str) -> String {
+    pseudonymize_bytes(s.as_bytes())
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -75,8 +86,8 @@ pub fn log(event: &AuditEvent) {
     }
 
     // Fallback to stderr (journald not available)
-    let uid_pseudo = pseudonymize(&event.uid);
-    let user_pseudo = pseudonymize(&event.username);
+    let uid_pseudo = pseudonymize_uid(event.uid);
+    let user_pseudo = pseudonymize_str(event.username);
     eprintln!(
         "[credman] op={} name={} uid={} user={} result={}",
         event.op, name_str, uid_pseudo, user_pseudo, result_str
@@ -94,8 +105,8 @@ fn log_to_journal(event: &AuditEvent, result_str: &str) -> bool {
     // remain filterable without exposing cleartext PII.
 
     let name_str = event.name.unwrap_or("-");
-    let uid_pseudo = pseudonymize(&event.uid);
-    let user_pseudo = pseudonymize(&event.username);
+    let uid_pseudo = pseudonymize_uid(event.uid);
+    let user_pseudo = pseudonymize_str(event.username);
 
     let mut msg = String::new();
 
