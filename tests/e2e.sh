@@ -289,6 +289,8 @@ else
             fail "audit CREDMAN_UID is empty"
         elif [ "$uid_logged" = "$(id -u)" ]; then
             fail "audit CREDMAN_UID contains cleartext uid"
+        elif ! echo "$uid_logged" | grep -qE '^[0-9a-f]{16}$'; then
+            fail "audit CREDMAN_UID is not a 16-char hex pseudonym: $uid_logged"
         elif echo "$entry" | grep -q "$SECRET_VAL"; then
             fail "audit entry contains the secret value!"
         else
