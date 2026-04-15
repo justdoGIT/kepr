@@ -135,13 +135,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - id: cliff
-        uses: orhun/git-cliff-action@v3
+      - uses: taiki-e/install-action@v2
         with:
-          config: cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: CHANGELOG-release.md
+          tool: git-cliff
+
+      - id: cliff
+        run: |
+          BODY=$(git-cliff --config cliff.toml --latest --strip header)
+          {
+            echo 'content<<__EOF__'
+            echo "$BODY"
+            echo '__EOF__'
+          } >> "$GITHUB_OUTPUT"
 
   # ─── 4. Create the GitHub Release and upload assets ───────────────────────
   release:
