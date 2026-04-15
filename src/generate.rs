@@ -189,8 +189,7 @@ mod tests {
         assert_eq!(s.len(), 64, "hex secret is 32 bytes as hex");
         assert!(
             s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
-            "hex secret must use [0-9a-f] only: {}",
-            &*s
+            "hex secret must use [0-9a-f] only",
         );
     }
 
@@ -200,8 +199,7 @@ mod tests {
         assert_eq!(s.len(), 48);
         assert!(
             s.bytes().all(|b| b.is_ascii_alphanumeric()),
-            "base62 secret must be alphanumeric: {}",
-            &*s
+            "base62 secret must be alphanumeric",
         );
     }
 
@@ -214,25 +212,12 @@ mod tests {
         for _ in 0..8 {
             let s = generate_secret(GenKind::Pass);
             assert_eq!(s.len(), 32);
-            assert!(
-                s.bytes().any(|b| b.is_ascii_uppercase()),
-                "needs upper: {}",
-                &*s
-            );
-            assert!(
-                s.bytes().any(|b| b.is_ascii_lowercase()),
-                "needs lower: {}",
-                &*s
-            );
-            assert!(
-                s.bytes().any(|b| b.is_ascii_digit()),
-                "needs digit: {}",
-                &*s
-            );
+            assert!(s.bytes().any(|b| b.is_ascii_uppercase()), "needs upper");
+            assert!(s.bytes().any(|b| b.is_ascii_lowercase()), "needs lower");
+            assert!(s.bytes().any(|b| b.is_ascii_digit()), "needs digit");
             assert!(
                 s.bytes().any(|b| b"!@#$%^&*-_=+".contains(&b)),
-                "needs symbol: {}",
-                &*s
+                "needs symbol",
             );
         }
     }
@@ -241,18 +226,17 @@ mod tests {
     fn uuid_v4_format() {
         let s = generate_secret(GenKind::Uuid);
         let bytes = s.as_bytes();
-        assert_eq!(bytes.len(), 36, "uuid is 36 chars: {}", &*s);
+        assert_eq!(bytes.len(), 36, "uuid is 36 chars");
         // 8-4-4-4-12 dash positions
         for i in [8, 13, 18, 23] {
-            assert_eq!(bytes[i], b'-', "expected dash at index {i} in {}", &*s);
+            assert_eq!(bytes[i], b'-', "expected dash at index {i}");
         }
         // Version nibble (index 14) must be '4'
-        assert_eq!(bytes[14], b'4', "uuid version must be 4: {}", &*s);
+        assert_eq!(bytes[14], b'4', "uuid version must be 4");
         // Variant nibble (index 19) must be one of 8|9|a|b
         assert!(
             matches!(bytes[19], b'8' | b'9' | b'a' | b'b'),
-            "uuid variant bits wrong: {}",
-            &*s
+            "uuid variant bits wrong",
         );
         // Every non-dash position must be lowercase hex
         for (i, &b) in bytes.iter().enumerate() {
@@ -261,8 +245,7 @@ mod tests {
             }
             assert!(
                 matches!(b, b'0'..=b'9' | b'a'..=b'f'),
-                "non-hex char at {i} in {}",
-                &*s
+                "non-hex char at {i}",
             );
         }
     }
