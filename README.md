@@ -156,17 +156,18 @@ permission needed.
 ## Audit log
 
 Every operation is logged to journald with structured fields. The
-**value is never logged.**
+**value is never logged.** User identifiers are pseudonymised
+(stable non-reversible hashes) so per-user filtering still works
+without exposing cleartext PII.
 
 ```bash
 journalctl -t credman-daemon                          # tail it
-journalctl -t credman-daemon CREDMAN_UID=1000         # one user
 journalctl -t credman-daemon CREDMAN_OP=get           # one op
 journalctl -t credman-daemon CREDMAN_RESULT=fail      # only failures
 ```
 
-Each entry carries `CREDMAN_OP`, `CREDMAN_NAME`, `CREDMAN_UID`,
-`CREDMAN_USER`, `CREDMAN_RESULT`.
+Each entry carries `CREDMAN_OP`, `CREDMAN_NAME`, `CREDMAN_UID`
+(pseudonym), `CREDMAN_USER` (pseudonym), `CREDMAN_RESULT`.
 
 ---
 

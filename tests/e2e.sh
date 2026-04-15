@@ -285,12 +285,14 @@ else
         fail "no audit entry found for op=get name=$NAME"
     else
         uid_logged=$(echo "$entry" | jq -r '.CREDMAN_UID // ""')
-        if [ "$uid_logged" != "$(id -u)" ]; then
-            fail "audit CREDMAN_UID=$uid_logged, expected $(id -u)"
+        if [ -z "$uid_logged" ]; then
+            fail "audit CREDMAN_UID is empty"
+        elif [ "$uid_logged" = "$(id -u)" ]; then
+            fail "audit CREDMAN_UID contains cleartext uid"
         elif echo "$entry" | grep -q "$SECRET_VAL"; then
             fail "audit entry contains the secret value!"
         else
-            pass "audit entry present, UID matches, no secret value leaked"
+            pass "audit entry present, UID pseudonymised, no secret value leaked"
         fi
     fi
 fi

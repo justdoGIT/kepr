@@ -97,12 +97,11 @@ credman --json get DOES_NOT_EXIST          # {"kind":"err","error":"..."} ; exit
 
 ```bash
 journalctl -t credman-daemon                          # tail
-journalctl -t credman-daemon CREDMAN_UID=1000         # one user
 journalctl -t credman-daemon CREDMAN_OP=get           # one op
 journalctl -t credman-daemon CREDMAN_RESULT=fail      # only failures
 ```
 
 <Check>
-  The credential value is never logged — only `op`, `name`, `uid`,
-  `user`, and `result`.
+  The credential value is never logged — only `op`, `name`,
+  pseudonymised `uid`/`user`, and `result`.
 </Check>

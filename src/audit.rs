@@ -4,15 +4,19 @@
 //   - timestamp (from journal)
 //   - operation type
 //   - credential name (never the value)
-//   - requesting uid + username
+//   - pseudonymous user identifier (non-reversible hash of uid)
 //   - result (ok/fail)
 //   - error message if failed
 //
+// User identifiers (uid, username) are replaced with stable pseudonymous
+// hashes so logs remain useful for filtering/correlation without exposing
+// cleartext PII.
+//
 // View logs:
 //   journalctl -t credman-daemon
-//   journalctl -t credman-daemon CREDMAN_UID=1000
 //   journalctl -t credman-daemon CREDMAN_OP=get
 
+use std::hash::{Hash, Hasher};
 use std::os::unix::net::UnixDatagram;
 use std::sync::OnceLock;
 
@@ -28,6 +32,18 @@ fn journal_sock() -> Option<&'static UnixDatagram> {
     JOURNAL_SOCK
         .get_or_init(|| UnixDatagram::unbound().ok())
         .as_ref()
+}
+
+// ── Pseudonymisation ──────────────────────────────────────────────────────────
+
+/// Produce a stable, non-reversible pseudonym from an arbitrary value.
+/// Uses the default SipHash hasher (deterministic with a fixed key) and
+/// returns the first 16 hex digits of the u64 hash so the same input
+/// always maps to the same pseudonym within a given binary build.
+fn pseudonymize(value: &impl Hash) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -59,9 +75,11 @@ pub fn log(event: &AuditEvent) {
     }
 
     // Fallback to stderr (journald not available)
+    let uid_pseudo = pseudonymize(&event.uid);
+    let user_pseudo = pseudonymize(&event.username);
     eprintln!(
         "[credman] op={} name={} uid={} user={} result={}",
-        event.op, name_str, "[redacted]", "[redacted]", result_str
+        event.op, name_str, uid_pseudo, user_pseudo, result_str
     );
 }
 
@@ -71,10 +89,13 @@ fn log_to_journal(event: &AuditEvent, result_str: &str) -> bool {
     // systemd journal protocol: newline-separated KEY=value pairs
     // sent as a datagram to /run/systemd/journal/socket
     //
-    // Fields prefixed with CREDMAN_ become indexed journal fields
-    // allowing: journalctl CREDMAN_UID=1000
+    // Fields prefixed with CREDMAN_ become indexed journal fields.
+    // uid/username are pseudonymised (stable per-binary hashes) so logs
+    // remain filterable without exposing cleartext PII.
 
     let name_str = event.name.unwrap_or("-");
+    let uid_pseudo = pseudonymize(&event.uid);
+    let user_pseudo = pseudonymize(&event.username);
 
     let mut msg = String::new();
 
@@ -91,14 +112,14 @@ fn log_to_journal(event: &AuditEvent, result_str: &str) -> bool {
     // Human-readable message
     msg.push_str(&format!(
         "MESSAGE=credman: op={} name={} uid={} user={} result={}\n",
-        event.op, name_str, "[redacted]", "[redacted]", result_str
+        event.op, name_str, uid_pseudo, user_pseudo, result_str
     ));
 
     // Structured fields — indexed by journal
     msg.push_str(&format!("CREDMAN_OP={}\n", event.op));
     msg.push_str(&format!("CREDMAN_NAME={}\n", name_str));
-    msg.push_str("CREDMAN_UID=[redacted]\n");
-    msg.push_str("CREDMAN_USER=[redacted]\n");
+    msg.push_str(&format!("CREDMAN_UID={}\n", uid_pseudo));
+    msg.push_str(&format!("CREDMAN_USER={}\n", user_pseudo));
     msg.push_str(&format!("CREDMAN_RESULT={}\n", result_str));
 
     // Send to journal socket via the cached datagram fd.

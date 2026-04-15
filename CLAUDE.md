@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `./install.sh` — full install: builds, creates `credman` system group, installs binaries to `/usr/local/bin/credman` and `/usr/local/sbin/credman-daemon`, installs and starts the systemd service.
 - `sudo systemctl restart credman.service` — reload the daemon after rebuilding.
 - `./tests/e2e.sh` — end-to-end against the installed daemon. Requires `credman.service` running, the invoking user in the `credman` group, and `jq`. Cases 7 (error sanitization) and 8 (audit log) skip gracefully without sudo / journal read access. All creds it creates use the prefix `E2E_<pid>_<epoch>_` and are cleaned up on exit.
-- `journalctl -t credman-daemon -f` — follow the audit log (structured fields: `CREDMAN_OP`, `CREDMAN_NAME`, `CREDMAN_UID`, `CREDMAN_USER`, `CREDMAN_RESULT`).
+- `journalctl -t credman-daemon -f` — follow the audit log (structured fields: `CREDMAN_OP`, `CREDMAN_NAME`, `CREDMAN_UID` (pseudonym), `CREDMAN_USER` (pseudonym), `CREDMAN_RESULT`).
 
 ## Architecture
 

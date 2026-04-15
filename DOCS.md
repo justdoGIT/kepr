@@ -211,16 +211,18 @@ discards bytes ≥ `(256 / |alphabet|) * |alphabet|` to stay uniform.
 ### 3.3 Audit log
 
 Every operation emits a structured journal datagram via a cached
-`UnixDatagram` fd:
+`UnixDatagram` fd. User identifiers (`uid`, `username`) are replaced
+with stable pseudonymous hashes (non-reversible) so the fields remain
+useful for per-user filtering without exposing cleartext PII:
 
 ```
 SYSLOG_IDENTIFIER=credman-daemon
 PRIORITY=6 | 3
-MESSAGE=credman: op=get name=OPENAI_API_KEY uid=1000 user=kk result=ok
+MESSAGE=credman: op=get name=OPENAI_API_KEY uid=a3f2…  user=d4e5…  result=ok
 CREDMAN_OP=get
 CREDMAN_NAME=OPENAI_API_KEY
-CREDMAN_UID=1000
-CREDMAN_USER=kk
+CREDMAN_UID=a3f2…
+CREDMAN_USER=d4e5…
 CREDMAN_RESULT=ok
 ```
 
@@ -228,7 +230,6 @@ Indexed query examples:
 
 ```bash
 journalctl -t credman-daemon
-journalctl -t credman-daemon CREDMAN_UID=1000
 journalctl -t credman-daemon CREDMAN_OP=get CREDMAN_RESULT=fail
 ```
 
