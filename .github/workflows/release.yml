@@ -21,7 +21,7 @@ jobs:
       tag:     ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - id: resolve
         env:
@@ -53,7 +53,7 @@ jobs:
     env:
       VERSION: ${{ needs.tag-check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # workflow_dispatch may target an older tag — pin to the
           # resolved tag, not whatever main currently points at.
@@ -113,7 +113,7 @@ jobs:
           done
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.deb
@@ -121,7 +121,7 @@ jobs:
             dist/*.tar.gz
 
       - name: Upload dist/ as workflow artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: credman-release
           path: dist/
@@ -135,7 +135,7 @@ jobs:
     outputs:
       body: ${{ steps.cliff.outputs.content }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Same reason as the build job — re-runs may target an older tag.
           ref: ${{ needs.tag-check.outputs.tag }}
@@ -174,7 +174,7 @@ jobs:
           path: dist/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.tag-check.outputs.tag }}
           name:     credman ${{ needs.tag-check.outputs.tag }}
