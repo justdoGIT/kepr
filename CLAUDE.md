@@ -1,10 +1,9 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Build / Install / Run
 
 - `cargo build --release` — produces both binaries in `target/release/`.
+- `cargo clippy -- -D warnings` — lint both binaries; zero warnings enforced.
 - `cargo test` — fast, hermetic unit tests for `store`, `generate`, `protocol` (no root, no daemon, no encryption backend). Tests in `store.rs` only compile under the `credman-daemon` bin target because `main.rs` doesn't `mod`-include `store`.
 - `./install.sh` — full install: builds, creates `credman` system group, installs binaries to `/usr/local/bin/credman` and `/usr/local/sbin/credman-daemon`, installs and starts the systemd service.
 - `sudo systemctl restart credman.service` — reload the daemon after rebuilding.
@@ -23,10 +22,11 @@ Two binaries share one crate (see `Cargo.toml` `[[bin]]` entries):
 **Per-user namespacing:** credentials live in the shared `/etc/credstore.encrypted/` directory but are named `credman-<uid>-<lowercased-name>` (see `src/store.rs`). `list_for_uid` filters by this prefix so users only ever see their own credentials. This is the *only* access-control boundary for reads — there is no per-file unix permission separation between users.
 
 **Module split (enforced by `mod` declarations in each binary):**
-- Shared by both: `protocol.rs` (wire types, socket path, limits), `generate.rs` (CSPRNG + `ZeroString`), `store.rs` (naming, validation, path helpers).
-- Daemon-only: `crypto.rs` (wraps the host-keyed encryption backend), `audit.rs` (journal logging).
+- Shared by both: `protocol.rs` (wire types, socket path, limits), `generate.rs` (CSPRNG + `ZeroString`), `store.rs` (naming, validation, path helpers), `framing.rs` (length-prefixed u32 wire framing).
+- CLI-only: `client.rs` (framed JSON transport), `cli_args.rs` (argv parsing), `cli_cmds.rs` (set/get/list/delete/check orchestration), `cli_ui.rs` (ANSI/JSON rendering), `cli_input.rs` (masked TTY entry), `cli_mode.rs` (colour/JSON flags), `cli_activity.rs` (subcommand newtype).
+- Daemon-only: `crypto.rs` (wraps the host-keyed encryption backend), `audit.rs` (journal logging), `daemon_handlers.rs` (operation handlers), `daemon_peer.rs` (SO_PEERCRED extraction), `daemon_pool.rs` (bounded worker pool), `daemon_socket.rs` (socket setup), `daemon_cache.rs` (per-uid credstore scan cache).
 
-When adding a new command, touch all three layers: add a variant to `Request`/`Response` in `protocol.rs`, a client function in `main.rs`, and a handler + audit call in `daemon.rs::dispatch`.
+When adding a new command, touch all three layers: add a variant to `Request`/`Response` in `protocol.rs`, a client function in `cli_cmds.rs` (with transport via `client.rs`), and a handler + audit call in `daemon_handlers.rs`.
 
 ## Conventions that matter
 
