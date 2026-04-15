@@ -13,4 +13,6 @@ paths-ignore:
 # `ok/err/info` helpers) remain subject to rust/cleartext-logging.
 # CodeQL query-filters does not accept a `paths:` sub-field, so
 # scoped suppression must be done by dismissing individual alerts
-# in the Security tab with reason "Used in tests" / "Won't fix".
+# in the Security tab. Use "False positive" for alerts flagging
+# user-requested stdout (e.g. `credman get --export`) and "Won't
+# fix" for the audit fallback where logging the op is the contract.
