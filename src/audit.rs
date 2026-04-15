@@ -46,35 +46,65 @@ pub enum AuditResult {
 }
 
 pub fn log(event: &AuditEvent) {
-    let result_str = match &event.result {
+    // Sanitise both fields at the audit boundary. handle_set (and any
+    // future handler) calls audit::log with the caller-supplied name
+    // *before* validate_name runs, so a malicious name containing CR/LF
+    // would otherwise forge extra journald KEY=value pairs or fake log
+    // lines in the stderr fallback.
+    let result_str = escape_log_field(&match &event.result {
         AuditResult::Ok => "ok".to_string(),
         AuditResult::Fail(msg) => format!("fail: {msg}"),
-    };
+    });
 
-    let name_str = event.name.unwrap_or("-");
+    let name_str = escape_log_field(event.name.unwrap_or("-"));
 
     // Try systemd journal first (structured logging)
-    if log_to_journal(event, &result_str) {
+    if log_to_journal(event, &name_str, &result_str) {
         return;
     }
 
-    // Fallback to stderr (journald not available)
+    // Fallback to stderr (journald not available). The structured journal
+    // entry is the audit record; this fallback is purely a dev-time hint
+    // that something happened. Omit uid/username so the stderr path never
+    // becomes an unstructured PII sink if a sysadmin redirects the daemon
+    // output to a shared log file.
     eprintln!(
-        "[credman] op={} name={} uid={} user={} result={}",
-        event.op, name_str, event.uid, event.username, result_str
+        "[credman] op={} name={} result={}",
+        event.op, name_str, result_str
     );
+}
+
+// Replace control characters that would break the journald KEY=value
+// framing or let an attacker forge log lines. Cap length so an oversize
+// name can't flood the journal. Kept intentionally minimal — valid
+// credential names are already [A-Z0-9_]; we only see anything else on
+// the validate_name-rejection path.
+fn escape_log_field(s: &str) -> String {
+    // Cap by char (not byte) count so multi-byte UTF-8 can't panic on a
+    // slice boundary. 256 is generous given valid names are <= 128 ASCII
+    // chars — this only trims oversize values that reached audit::log
+    // from a validate_name-rejection path.
+    const MAX_CHARS: usize = 256;
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars().take(MAX_CHARS) {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push('?'),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ── Journal logging ───────────────────────────────────────────────────────────
 
-fn log_to_journal(event: &AuditEvent, result_str: &str) -> bool {
+fn log_to_journal(event: &AuditEvent, name_str: &str, result_str: &str) -> bool {
     // systemd journal protocol: newline-separated KEY=value pairs
     // sent as a datagram to /run/systemd/journal/socket
     //
     // Fields prefixed with CREDMAN_ become indexed journal fields
     // allowing: journalctl CREDMAN_UID=1000
-
-    let name_str = event.name.unwrap_or("-");
 
     let mut msg = String::new();
 
@@ -127,4 +157,42 @@ pub fn username_for_uid(uid: u32) -> String {
         }
     }
     format!("uid={uid}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_log_field;
+
+    #[test]
+    fn escapes_newline_and_carriage_return() {
+        let forged = "FOO\nCREDMAN_OP=admin\r\nCREDMAN_UID=0";
+        let out = escape_log_field(forged);
+        assert!(!out.contains('\n'), "raw LF leaked: {out}");
+        assert!(!out.contains('\r'), "raw CR leaked: {out}");
+        assert!(out.contains("\\n") && out.contains("\\r"));
+    }
+
+    #[test]
+    fn strips_other_controls() {
+        // BEL, NUL, ESC would let an attacker smuggle terminal escape
+        // sequences through a log viewer; replace them all.
+        let s = "A\x07B\x00C\x1bD";
+        let out = escape_log_field(s);
+        assert_eq!(out, "A?B?C?D");
+    }
+
+    #[test]
+    fn passes_valid_ascii_unchanged() {
+        assert_eq!(escape_log_field("OPENAI_API_KEY"), "OPENAI_API_KEY");
+        assert_eq!(escape_log_field("-"), "-");
+    }
+
+    #[test]
+    fn caps_oversize_input_without_utf8_panic() {
+        // Repeat a 3-byte UTF-8 char past the 256-char cap. The previous
+        // byte-slice trim would have panicked on a codepoint boundary.
+        let s: String = "ñ".repeat(300);
+        let out = escape_log_field(&s);
+        assert_eq!(out.chars().count(), 256);
+    }
 }
