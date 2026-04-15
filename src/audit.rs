@@ -58,10 +58,14 @@ pub fn log(event: &AuditEvent) {
         return;
     }
 
-    // Fallback to stderr (journald not available)
+    // Fallback to stderr (journald not available). The structured journal
+    // entry is the audit record; this fallback is purely a dev-time hint
+    // that something happened. Omit uid/username so the stderr path never
+    // becomes an unstructured PII sink if a sysadmin redirects the daemon
+    // output to a shared log file.
     eprintln!(
-        "[credman] op={} name={} uid={} user={} result={}",
-        event.op, name_str, event.uid, event.username, result_str
+        "[credman] op={} name={} result={}",
+        event.op, name_str, result_str
     );
 }
 

@@ -9,20 +9,8 @@ paths-ignore:
   - docs/node_modules/**
   - target/**
 
-# Suppress rust/cleartext-logging in places where printing metadata is
-# the documented contract, not a leak:
-#   - audit.rs emits the audit trail (op/name/uid/user/result) by design;
-#     structured journal fields are the primary sink, stderr is a dev
-#     fallback. No secret value ever enters this path.
-#   - cli_cmds.rs prints credential values only when the user explicitly
-#     asks for them via `credman get` / `--quiet` / `--export`.
-#   - cli_ui.rs `ok`/`err`/`info` helpers are generic &str printers;
-#     taint flows through them only because callers pass user-facing
-#     strings that the operator explicitly requested.
-query-filters:
-  - exclude:
-      id: rust/cleartext-logging
-      paths:
-        - src/audit.rs
-        - src/cli_cmds.rs
-        - src/cli_ui.rs
+# Intentional print paths (audit fallback, `credman get --export`,
+# `ok/err/info` helpers) remain subject to rust/cleartext-logging.
+# CodeQL query-filters does not accept a `paths:` sub-field, so
+# scoped suppression must be done by dismissing individual alerts
+# in the Security tab with reason "Used in tests" / "Won't fix".
