@@ -54,6 +54,10 @@ jobs:
       VERSION: ${{ needs.tag-check.outputs.version }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # workflow_dispatch may target an older tag — pin to the
+          # resolved tag, not whatever main currently points at.
+          ref: ${{ needs.tag-check.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -133,15 +137,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # Same reason as the build job — re-runs may target an older tag.
+          ref: ${{ needs.tag-check.outputs.tag }}
           fetch-depth: 0
 
-      - id: cliff
-        uses: orhun/git-cliff-action@v3
+      - uses: taiki-e/install-action@v2
         with:
-          config: cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: CHANGELOG-release.md
+          # Pin to a known git-cliff version so re-running the release
+          # workflow against the same tag produces an identical changelog.
+          tool: git-cliff@2.12.0
+
+      - id: cliff
+        run: |
+          # GITHUB_OUTPUT heredoc delimiter must not appear in the body
+          # (per docs.github.com/actions/.../workflow-commands#multiline-strings).
+          # uuidgen makes collision impossible.
+          DELIM="$(uuidgen)"
+          BODY="$(git-cliff --config cliff.toml --current --strip header)"
+          {
+            printf 'content<<%s\n' "$DELIM"
+            printf '%s\n'          "$BODY"
+            printf '%s\n'          "$DELIM"
+          } >> "$GITHUB_OUTPUT"
 
   # ─── 4. Create the GitHub Release and upload assets ───────────────────────
   release:
