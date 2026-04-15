@@ -61,7 +61,7 @@ pub fn log(event: &AuditEvent) {
     // Fallback to stderr (journald not available)
     eprintln!(
         "[credman] op={} name={} uid={} user={} result={}",
-        event.op, name_str, event.uid, event.username, result_str
+        event.op, name_str, "[redacted]", "[redacted]", result_str
     );
 }
 
@@ -91,14 +91,14 @@ fn log_to_journal(event: &AuditEvent, result_str: &str) -> bool {
     // Human-readable message
     msg.push_str(&format!(
         "MESSAGE=credman: op={} name={} uid={} user={} result={}\n",
-        event.op, name_str, event.uid, event.username, result_str
+        event.op, name_str, "[redacted]", "[redacted]", result_str
     ));
 
     // Structured fields — indexed by journal
     msg.push_str(&format!("CREDMAN_OP={}\n", event.op));
     msg.push_str(&format!("CREDMAN_NAME={}\n", name_str));
-    msg.push_str(&format!("CREDMAN_UID={}\n", event.uid));
-    msg.push_str(&format!("CREDMAN_USER={}\n", event.username));
+    msg.push_str("CREDMAN_UID=[redacted]\n");
+    msg.push_str("CREDMAN_USER=[redacted]\n");
     msg.push_str(&format!("CREDMAN_RESULT={}\n", result_str));
 
     // Send to journal socket via the cached datagram fd.
