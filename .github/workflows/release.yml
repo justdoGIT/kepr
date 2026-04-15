@@ -54,6 +54,10 @@ jobs:
       VERSION: ${{ needs.tag-check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_dispatch may target an older tag — pin to the
+          # resolved tag, not whatever main currently points at.
+          ref: ${{ needs.tag-check.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -133,6 +137,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Same reason as the build job — re-runs may target an older tag.
+          ref: ${{ needs.tag-check.outputs.tag }}
           fetch-depth: 0
 
       - uses: taiki-e/install-action@v2
@@ -147,7 +153,7 @@ jobs:
           # (per docs.github.com/actions/.../workflow-commands#multiline-strings).
           # uuidgen makes collision impossible.
           DELIM="$(uuidgen)"
-          BODY="$(git-cliff --config cliff.toml --latest --strip header)"
+          BODY="$(git-cliff --config cliff.toml --current --strip header)"
           {
             printf 'content<<%s\n' "$DELIM"
             printf '%s\n'          "$BODY"
