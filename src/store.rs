@@ -151,8 +151,8 @@ mod tests {
             let encoded = to_cred_name(uid, name);
             let (decoded_uid, decoded_name) =
                 from_cred_name(&encoded).expect("valid cred name must parse");
-            assert_eq!(decoded_uid, uid, "uid roundtrip failed for {encoded}");
-            assert_eq!(decoded_name, name, "name roundtrip failed for {encoded}");
+            assert_eq!(decoded_uid, uid, "uid roundtrip failed");
+            assert_eq!(decoded_name, name, "name roundtrip failed");
         }
     }
 
