@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/your-org/credman/blob/main/CONTRIBUTING.md#security-vulnerabilities
+    about: Do not open a public issue for security bugs. See the security disclosure process here.

@@ -1,5 +1,19 @@
-target/
+# Claude Code
+.claude/settings.local.json
+.claude/.session*
+.claude/todos*
+
+# Claude Plugins
+entities.json
+.gstack
+.mempalace/
+mempalace.yaml
 .omc/
 .remember/
 .serena/
+
+# Rust build
+target/
+
+
 

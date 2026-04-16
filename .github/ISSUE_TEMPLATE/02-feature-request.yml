@@ -1,0 +1,91 @@
+name: Feature Request
+description: Suggest a new feature or improvement.
+title: "feat: <short description of the feature>"
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests are welcome. The clearer you describe the problem
+        you are trying to solve, the easier it is to evaluate and prioritise.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: |
+        What problem does this feature solve? Describe the situation where
+        you hit a limitation or friction point today.
+      placeholder: |
+        When working with multiple environments (dev/staging/prod), I have to
+        manually switch credential sets. There is no built-in way to group
+        credentials by environment and activate a group at once.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: |
+        Describe what you would like credman to do. Include example CLI
+        invocations or config snippets if you have them in mind.
+      placeholder: |
+        Add an `--env` flag or a `credman env` subcommand that lets users
+        define named groups of credentials and switch between them:
+
+          credman env create staging
+          credman env set staging DB_URL postgres://...
+          credman env activate staging
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        What workarounds or alternative approaches did you consider?
+        Why are they insufficient?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope of change
+      description: Your best guess at the size of this change.
+      options:
+        - Small — new flag or option on an existing command
+        - Medium — new subcommand or significant behaviour change
+        - Large — new subsystem or breaking change
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to open a pull request for this feature.
+        - label: I can help test an implementation if someone else builds it.
+        - label: I can help document this feature.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: |
+        Links to similar features in other tools, mockups, related issues,
+        or anything else that helps illustrate the request.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and feature requests and this is not a duplicate.
+          required: true
