@@ -15,7 +15,7 @@
 Two binaries share one crate (see `Cargo.toml` `[[bin]]` entries):
 
 - `credman` (`src/main.rs`) — unprivileged CLI. Never invokes the encryption backend directly, never needs root/sudo. Connects to the daemon over a Unix socket and exchanges JSON.
-- `credman-daemon` (`src/daemon.rs`) — root systemd service. Owns all encrypt/decrypt/delete operations and audit logging. Spawns a thread per connection.
+- `credman-daemon` (`src/daemon.rs`) — root systemd service. Owns all encrypt/decrypt/delete operations and audit logging. Dispatches connections to a bounded worker pool (`daemon_pool.rs`) to cap concurrency and prevent thread exhaustion.
 
 **Socket contract:** `/run/credman/credman.sock`, owned `root:credman 0660`. Any user in the `credman` group can connect; the daemon reads the peer uid via `SO_PEERCRED` and uses *that* uid for namespacing — never trust a uid from the request body.
 
@@ -34,7 +34,7 @@ When adding a new command, touch all three layers: add a variant to `Request`/`R
 - **Hide the encryption backend from users.** `crypto::sanitize_error` scrubs internal tool names and flags from error output; the systemd unit uses a neutral `SyslogIdentifier`. Preserve this stance in any new code, error strings, and docs — refer to it generically as "the credential backend."
 - **Validate names in the daemon**, not just the client. `store::validate_name` (A-Z/0-9/underscore, ≤128 chars) is the boundary against path traversal; every handler that takes a `name` must call it.
 - **Secrets use `ZeroString`** (from `generate.rs`) so memory is wiped on drop. Don't convert to plain `String` except at the socket boundary.
-- **Names are uppercased** on the client (`main.rs`) and re-uppercased in the daemon. The lowercase form only exists inside the on-disk cred name.
+- **Names are uppercased** on the client (`cli_args.rs` / `cli_cmds.rs`) and re-uppercased in the daemon. The lowercase form only exists inside the on-disk cred name.
 
 ## Reference files
 
