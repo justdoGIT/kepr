@@ -1,0 +1,31 @@
+# Code owners for credman.
+#
+# Any PR touching these paths requires review from a listed owner before it
+# can be merged (assuming branch protection is enabled with "require review
+# from Code Owners"). This is the second half of the supply-chain defence:
+# SHA-pinned actions close the external attack vector, CODEOWNERS + branch
+# protection closes the internal one.
+#
+# Paths listed here are those that affect what ships in a signed release or
+# how the daemon runs:
+#   - .github/workflows/  — builds, signs, and publishes release artefacts
+#   - Cargo.{toml,lock}   — direct and resolved dependency graph
+#   - packaging/          — deb/rpm postinst, postrm, systemd wiring
+#   - systemd/            — unit file, sandbox hardening
+#   - install.sh          — install-time behaviour
+#
+# Note: review & merge still requires GitHub branch protection to be configured
+# on `main` with:
+#   - Require pull request reviews before merging
+#   - Require review from Code Owners
+#   - Require status checks to pass (CI, Security)
+#   - Require signed commits (optional but recommended)
+
+.github/workflows/  @justdoGIT
+.github/CODEOWNERS  @justdoGIT
+.github/dependabot.yml @justdoGIT
+Cargo.toml          @justdoGIT
+Cargo.lock          @justdoGIT
+packaging/          @justdoGIT
+systemd/            @justdoGIT
+install.sh          @justdoGIT

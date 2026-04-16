@@ -2,4 +2,5 @@ target/
 .omc/
 .remember/
 .serena/
+.gstack/
 
