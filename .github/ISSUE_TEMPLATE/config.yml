@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/justdoGIT/credman/security/advisories/new
+    about: Do not open a public issue for security bugs. Use GitHub private vulnerability reporting instead.
+  - name: Support & Questions
+    url: https://github.com/justdoGIT/credman/discussions
+    about: Have a question or need help? Start a discussion rather than opening an issue.

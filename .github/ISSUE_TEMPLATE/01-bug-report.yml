@@ -1,0 +1,110 @@
+name: Bug Report
+description: Something is broken or behaving unexpectedly.
+title: "fix: <short description of the bug>"
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing — please search [existing issues](../../issues) to avoid duplicates.
+        Fill in as much detail as you can. Vague reports are hard to act on.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A clear, concise description of the bug.
+      placeholder: "When I run `credman get mykey`, it panics instead of returning the value."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps that reliably trigger the bug.
+      placeholder: |
+        1. Run `credman init`
+        2. Run `credman set foo bar`
+        3. Run `credman get foo`
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What should have happened?
+      placeholder: "Should print `bar` to stdout and exit 0."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What actually happened? Include the full error output.
+      placeholder: |
+        thread 'main' panicked at 'called `Option::unwrap()` on a `None` value', src/store.rs:42
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: credman version
+      description: Output of `credman --version`
+      placeholder: "credman 0.7.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version / distro
+      placeholder: "Ubuntu 24.04 / macOS 14.4 / Windows 11"
+    validations:
+      required: false
+
+  - type: input
+    id: rust_version
+    attributes:
+      label: Rust version (if built from source)
+      description: Output of `rustc --version`
+      placeholder: "rustc 1.77.0 (aedd173a2 2024-03-17)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: |
+        Logs, config snippets, environment details, anything else relevant.
+        Redact secrets before pasting.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I have not included any real credentials or secrets in this report.
+          required: true
