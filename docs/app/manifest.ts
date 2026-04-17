@@ -3,8 +3,10 @@ import { withBase } from '@/lib/base-path';
 
 // Required under `output: 'export'` — tells Next.js this route handler
 // has no request-time state and can be serialised to a static file at
-// build. Without it, `next build` errors with:
-//   export const dynamic = "force-static"/export const revalidate not configured
+// build. Without it, `next build` errors because one of these must be
+// set on the route:
+//   `export const dynamic = 'force-static'`
+//   `export const revalidate = <n>`
 export const dynamic = 'force-static';
 
 // PWA manifest for credman's docs. Replaces the static

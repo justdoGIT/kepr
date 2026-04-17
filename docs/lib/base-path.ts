@@ -9,11 +9,18 @@
 //
 // In dev (NODE_ENV !== 'production') or outside CI this is an empty
 // string, so `next dev` keeps serving assets from root.
+//
+// KEEP IN SYNC with the `repoName` derivation in docs/next.config.mjs.
+// next.config.mjs is .mjs and cannot import this module, so the logic
+// is duplicated by hand; if one changes, update both.
+
+const repoName =
+  process.env.GITHUB_PAGES_REPO ||
+  process.env.GITHUB_REPOSITORY?.split('/')[1] ||
+  '';
 
 export const BASE =
-  process.env.NODE_ENV === 'production' && process.env.GITHUB_REPOSITORY
-    ? `/${process.env.GITHUB_REPOSITORY.split('/')[1]}`
-    : '';
+  process.env.NODE_ENV === 'production' && repoName ? `/${repoName}` : '';
 
 export function withBase(path: string): string {
   return `${BASE}${path}`;
