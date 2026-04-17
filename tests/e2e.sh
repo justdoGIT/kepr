@@ -62,9 +62,11 @@ fi
 step "1. happy path (set --generate, get, list, check, delete)"
 
 NAME="${PREFIX}HAPPY"
-credman --json set "$NAME" --generate >/dev/null \
-    && pass "set $NAME --generate" \
-    || fail "set $NAME --generate"
+if credman --json set "$NAME" --generate >/dev/null; then
+    pass "set $NAME --generate"
+else
+    fail "set $NAME --generate"
+fi
 
 val=$(credman get "$NAME" --quiet) || val=""
 if [ -n "$val" ]; then pass "get $NAME --quiet returned a non-empty value"
@@ -82,9 +84,11 @@ else
     fail "check did not report $NAME ok"
 fi
 
-credman --json delete "$NAME" >/dev/null \
-    && pass "delete $NAME" \
-    || fail "delete $NAME"
+if credman --json delete "$NAME" >/dev/null; then
+    pass "delete $NAME"
+else
+    fail "delete $NAME"
+fi
 
 # `credman --json get` on a missing cred exits 1; `set -o pipefail` would
 # then make the whole `| jq` pipeline exit 1 even when jq matched. Capture
@@ -102,9 +106,11 @@ step "2. value round-trip preserves exact bytes"
 NAME="${PREFIX}ROUND"
 SECRET="some string with spaces and !@# chars"
 
-credman --json set "$NAME" --value "$SECRET" >/dev/null \
-    && pass "set $NAME --value <literal>" \
-    || fail "set $NAME --value <literal>"
+if credman --json set "$NAME" --value "$SECRET" >/dev/null; then
+    pass "set $NAME --value <literal>"
+else
+    fail "set $NAME --value <literal>"
+fi
 
 got=$(credman get "$NAME" --quiet) || got=""
 if [ "$got" = "$SECRET" ]; then
@@ -372,19 +378,25 @@ step "11. --json mode: no stderr noise on clean errors"
 # These CLI calls exit non-zero; under `set -e`, $() would abort the script.
 # `|| true` keeps the script running so we can inspect stderr.
 errout=$(credman --json get 2>&1 >/dev/null || true)
-[ -z "$errout" ] \
-    && pass "--json get (no NAME): stderr empty" \
-    || fail "--json get (no NAME) leaked stderr: $errout"
+if [ -z "$errout" ]; then
+    pass "--json get (no NAME): stderr empty"
+else
+    fail "--json get (no NAME) leaked stderr: $errout"
+fi
 
 errout=$(credman --json delete 2>&1 >/dev/null || true)
-[ -z "$errout" ] \
-    && pass "--json delete (no NAME): stderr empty" \
-    || fail "--json delete (no NAME) leaked stderr: $errout"
+if [ -z "$errout" ]; then
+    pass "--json delete (no NAME): stderr empty"
+else
+    fail "--json delete (no NAME) leaked stderr: $errout"
+fi
 
 errout=$(credman --json nosuchcommand 2>&1 >/dev/null || true)
-[ -z "$errout" ] \
-    && pass "--json unknown command: stderr empty" \
-    || fail "--json unknown command leaked stderr: $errout"
+if [ -z "$errout" ]; then
+    pass "--json unknown command: stderr empty"
+else
+    fail "--json unknown command leaked stderr: $errout"
+fi
 
 jsonout=$(credman --json nosuchcommand 2>/dev/null || true)
 if echo "$jsonout" | jq -e '.kind == "err" and (.error | test("unknown command"))' >/dev/null; then
