@@ -25,7 +25,7 @@ no plaintext on disk, no secret values in the journal.
 
 ## Documentation
 
-Full docs are published at **https://justdoGIT.github.io/credman/** —
+Full docs are published at **https://justdogit.github.io/credman/** —
 quickstart, architecture, sequence diagrams, reference. The source
 lives in `docs/` (Fumadocs on Next.js 15).
 
