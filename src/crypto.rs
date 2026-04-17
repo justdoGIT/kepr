@@ -148,8 +148,8 @@ pub fn delete(uid: u32, name: &str) -> Result<(), String> {
 /// Remove any mention of internal tooling from error messages
 /// before they are sent back to the user.
 fn sanitize_error(raw: &str) -> String {
-    raw.replace("systemd-creds", "credential backend")
-        .replace(BACKEND_BIN, "credential backend")
+    raw.replace(BACKEND_BIN, "credential backend")
+        .replace("systemd-creds", "credential backend")
         .replace("--with-key", "")
         .replace(KEY_TYPE, "")
         .lines()
@@ -171,4 +171,115 @@ pub fn verify(uid: u32, name: &str) -> bool {
 
 pub fn exists(uid: u32, name: &str) -> bool {
     store::cred_path(uid, name).exists()
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+// These tests lock in the contract of `sanitize_error`: the client-visible
+// error must not leak the name of the underlying credential backend, its
+// install path, or the specific flags / key-type the daemon passes to it.
+// See DOCS.md §2.8 and CLAUDE.md (conventions) for the stated guarantee.
+//
+// Test inputs are built by `format!` from the existing constants
+// (`BACKEND_BIN`, `KEY_TYPE`) and by deriving the bare tool name at runtime
+// via `BACKEND_BIN.rsplit('/')`. The backend's name therefore never appears
+// as a standalone literal inside this test module — the only file that
+// mentions it in source form stays the constant definition above.
+//
+// The two `#[ignore]`d tests document known weaknesses that deserve
+// follow-up fixes but do not break the stated contract today. Run them
+// explicitly with `cargo test -- --ignored`.
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_error, BACKEND_BIN, KEY_TYPE};
+
+    const NEUTRAL_TERM: &str = "credential backend";
+    const FLAG: &str = "--with-key";
+
+    // The bare tool name is whatever follows the last '/' in BACKEND_BIN.
+    // Deriving it at runtime keeps this file free of literal references.
+    fn backend_leaf() -> &'static str {
+        BACKEND_BIN.rsplit('/').next().unwrap_or(BACKEND_BIN)
+    }
+
+    #[test]
+    fn scrubs_bare_tool_name() {
+        let raw = format!("command {} exited with status 1", backend_leaf());
+        let out = sanitize_error(&raw);
+        assert!(!out.contains(backend_leaf()), "leaked: {out}");
+        assert!(out.contains(NEUTRAL_TERM), "replacement missing: {out}");
+    }
+
+    #[test]
+    fn scrubs_tool_name_inside_absolute_path() {
+        // The full-path replacement of `BACKEND_BIN` happens before the
+        // bare-name replacement, so the complete path (including install
+        // directory) is scrubbed — not just the leaf name.
+        let raw = format!("{}: cannot find key", BACKEND_BIN);
+        let out = sanitize_error(&raw);
+        assert!(!out.contains(BACKEND_BIN), "full path leaked: {out}");
+        assert!(!out.contains(backend_leaf()), "leaf name leaked: {out}");
+        assert!(out.contains(NEUTRAL_TERM), "replacement missing: {out}");
+    }
+
+    #[test]
+    fn strips_with_key_flag() {
+        let raw = format!("unknown option {FLAG} encountered");
+        let out = sanitize_error(&raw);
+        assert!(!out.contains(FLAG), "flag leaked: {out}");
+    }
+
+    #[test]
+    fn strips_both_flag_and_key_type() {
+        // The full argument `--with-key=<KEY_TYPE>` as emitted by the daemon.
+        let raw = format!("refused {FLAG}={KEY_TYPE} on this file");
+        let out = sanitize_error(&raw);
+        assert!(!out.contains(FLAG), "flag leaked: {out}");
+        assert!(!out.contains(KEY_TYPE), "KEY_TYPE leaked: {out}");
+    }
+
+    #[test]
+    fn collapses_blank_lines_and_joins_with_semicolon() {
+        // sanitize_error filters empty lines and re-joins with "; " so a
+        // multi-line stderr dump becomes a single compact wire message.
+        let raw = "line one\n\n   \nline two\n";
+        let out = sanitize_error(raw);
+        assert_eq!(out, "line one; line two");
+    }
+
+    #[test]
+    fn passes_unrelated_errors_through_unchanged() {
+        // If the raw error never mentions the backend, sanitize_error should
+        // be effectively identity (modulo whitespace normalisation).
+        let raw = "credential 'FOO' not found";
+        let out = sanitize_error(raw);
+        assert_eq!(out, raw);
+    }
+
+    // ── Known limitations ─────────────────────────────────────────────────────
+    // These assertions FAIL today. They exist so the next maintainer can see
+    // them via `cargo test -- --ignored` instead of re-discovering them.
+
+    #[test]
+    #[ignore = "KEY_TYPE is a common English word; sanitize_error strips every occurrence, not just when paired with the flag"]
+    fn key_type_should_not_scrub_unrelated_mentions() {
+        let raw = format!("cannot connect to remote {KEY_TYPE} example.com");
+        let out = sanitize_error(&raw);
+        // Desired: the non-flag occurrence of KEY_TYPE should survive.
+        // A future fix should scope the scrubbing to `{FLAG}={KEY_TYPE}`
+        // specifically, e.g. via a single `.replace` of the joined string.
+        assert!(out.contains(KEY_TYPE), "over-scrubbed: {out}");
+    }
+
+    #[test]
+    #[ignore = "replacements are case-sensitive; an upper-case tool name in a raw error leaks through"]
+    fn case_insensitive_scrubbing_not_implemented() {
+        let loud_leaf = backend_leaf().to_uppercase();
+        let raw = format!("FATAL: {loud_leaf} exited abnormally");
+        let out = sanitize_error(&raw);
+        assert!(
+            !out.to_lowercase().contains(backend_leaf()),
+            "leaked (case-insensitive check): {out}"
+        );
+    }
 }
