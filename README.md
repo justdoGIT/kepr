@@ -23,6 +23,41 @@ no plaintext on disk, no secret values in the journal.
 
 ---
 
+## Documentation
+
+Full docs are published at **https://justdoGIT.github.io/credman/** —
+quickstart, architecture, sequence diagrams, reference. The source
+lives in `docs/` (Fumadocs on Next.js 15).
+
+### Running docs locally
+
+```bash
+cd docs
+npm install
+npm run dev          # http://localhost:3000
+```
+
+### Building docs locally
+
+```bash
+cd docs
+npm run build        # static export to docs/out/
+npx serve out -l 3000
+```
+
+### Updating the live site
+
+The live site is rebuilt on every push to `main` that touches
+`docs/**` or `.github/workflows/docs-deploy.yml`. To add a page,
+drop an MDX file under `docs/content/docs/<section>/<slug>.mdx`
+with the Fumadocs frontmatter template; navigation is inferred
+from `docs/content/docs/meta.json`.
+
+To deploy manually (e.g. after a settings change), trigger
+`Docs Deploy` from the Actions tab via `workflow_dispatch`.
+
+---
+
 ## Requirements
 
 - Linux with **systemd** (the daemon is a systemd unit; the encryption
