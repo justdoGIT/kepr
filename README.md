@@ -33,7 +33,7 @@ lives in `docs/` (Fumadocs on Next.js 15).
 
 ```bash
 cd docs
-npm install
+npm ci
 npm run dev          # http://localhost:3000
 ```
 
@@ -42,7 +42,7 @@ npm run dev          # http://localhost:3000
 ```bash
 cd docs
 npm run build        # static export to docs/out/
-npx serve out -l 3000
+npx serve out -l 3000  # open http://localhost:3000/credman/
 ```
 
 ### Updating the live site
