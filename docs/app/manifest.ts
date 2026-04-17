@@ -1,4 +1,5 @@
 import type { MetadataRoute } from 'next';
+import { withBase } from '@/lib/base-path';
 
 // Required under `output: 'export'` — tells Next.js this route handler
 // has no request-time state and can be serialised to a static file at
@@ -8,25 +9,20 @@ export const dynamic = 'force-static';
 
 // PWA manifest for credman's docs. Replaces the static
 // public/site.webmanifest so icon URLs can be prefixed with `basePath`
-// at build time — see docs/app/layout.tsx for the matching derivation.
-const base =
-  process.env.NODE_ENV === 'production' && process.env.GITHUB_REPOSITORY
-    ? `/${process.env.GITHUB_REPOSITORY.split('/')[1]}`
-    : '';
-
+// at build time — see docs/lib/base-path.ts.
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: 'Credman',
     short_name: 'Credman',
     icons: [
       {
-        src: `${base}/web-app-manifest-192x192.png`,
+        src: withBase('/web-app-manifest-192x192.png'),
         sizes: '192x192',
         type: 'image/png',
         purpose: 'maskable',
       },
       {
-        src: `${base}/web-app-manifest-512x512.png`,
+        src: withBase('/web-app-manifest-512x512.png'),
         sizes: '512x512',
         type: 'image/png',
         purpose: 'maskable',
