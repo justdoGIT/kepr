@@ -148,8 +148,8 @@ pub fn delete(uid: u32, name: &str) -> Result<(), String> {
 /// Remove any mention of internal tooling from error messages
 /// before they are sent back to the user.
 fn sanitize_error(raw: &str) -> String {
-    raw.replace("systemd-creds", "credential backend")
-        .replace(BACKEND_BIN, "credential backend")
+    raw.replace(BACKEND_BIN, "credential backend")
+        .replace("systemd-creds", "credential backend")
         .replace("--with-key", "")
         .replace(KEY_TYPE, "")
         .lines()
@@ -177,7 +177,7 @@ pub fn exists(uid: u32, name: &str) -> bool {
 // These tests lock in the contract of `sanitize_error`: the client-visible
 // error must not leak the name of the underlying credential backend, its
 // install path, or the specific flags / key-type the daemon passes to it.
-// See DOCS.md §3.3 and CLAUDE.md (conventions) for the stated guarantee.
+// See DOCS.md §2.8 and CLAUDE.md (conventions) for the stated guarantee.
 //
 // Test inputs are built by `format!` from the existing constants
 // (`BACKEND_BIN`, `KEY_TYPE`) and by deriving the bare tool name at runtime
@@ -212,13 +212,13 @@ mod tests {
 
     #[test]
     fn scrubs_tool_name_inside_absolute_path() {
-        // The full-path replace at line 152 is effectively shadowed by the
-        // earlier bare-name replace, but the net behaviour still hides the
-        // tool name. We assert on the tool name only; the install directory
-        // leak is tracked separately as a known limitation below.
+        // The full-path replacement of `BACKEND_BIN` happens before the
+        // bare-name replacement, so the complete path (including install
+        // directory) is scrubbed — not just the leaf name.
         let raw = format!("{}: cannot find key", BACKEND_BIN);
         let out = sanitize_error(&raw);
-        assert!(!out.contains(backend_leaf()), "leaked: {out}");
+        assert!(!out.contains(BACKEND_BIN), "full path leaked: {out}");
+        assert!(!out.contains(backend_leaf()), "leaf name leaked: {out}");
         assert!(out.contains(NEUTRAL_TERM), "replacement missing: {out}");
     }
 
