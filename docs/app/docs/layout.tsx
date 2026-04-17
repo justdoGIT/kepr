@@ -2,6 +2,7 @@ import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import Image from 'next/image';
 import type { ReactNode } from 'react';
 import { source } from '@/lib/source';
+import { withBase } from '@/lib/base-path';
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
@@ -11,7 +12,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         title: (
           <span className="flex items-center gap-2 font-semibold">
             <Image
-              src="/logo.png"
+              src={withBase('/logo.png')}
               alt=""
               width={24}
               height={24}

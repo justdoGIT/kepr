@@ -8,6 +8,11 @@ const withMDX = createMDX();
 // The repo name is read from GITHUB_PAGES_REPO (set in the workflow) or
 // derived from GITHUB_REPOSITORY ("owner/repo") so forks and renames
 // don't require editing this file.
+//
+// KEEP IN SYNC with the `repoName` derivation in docs/lib/base-path.ts
+// (used by the app's Metadata API + <Image> src prefixes). This file
+// is .mjs and cannot import the TS helper, so the logic is duplicated
+// by hand; update both together when it changes.
 const isProd = process.env.NODE_ENV === 'production';
 const repoName =
   process.env.GITHUB_PAGES_REPO ||

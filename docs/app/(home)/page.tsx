@@ -1,8 +1,18 @@
+import Image from 'next/image';
 import Link from 'next/link';
+import { withBase } from '@/lib/base-path';
 
 export default function HomePage() {
   return (
-    <main className="flex flex-1 flex-col justify-center text-center p-8">
+    <main className="flex flex-1 flex-col items-center justify-center text-center p-8">
+      <Image
+        src={withBase('/logo.png')}
+        alt="credman logo"
+        width={128}
+        height={128}
+        priority
+        className="mb-6"
+      />
       <h1 className="text-4xl font-bold mb-4">credman</h1>
       <p className="text-fd-muted-foreground mb-6">
         Per-user credential manager for Linux — unprivileged CLI, root daemon,
