@@ -39,23 +39,7 @@ Cases 7 and 8 skip cleanly without sudo / journal-read access. Each
 credential created uses prefix `E2E_<pid>_<epoch>_` and is removed on
 `trap EXIT`.
 
-```mermaid
-flowchart TB
-    P[Preflight: socket reachable + jq present] --> T1
-    T1[1. happy path: set, get, list, check, delete, get-after-delete] --> T2
-    T2[2. value round-trip preserves exact bytes] --> T3
-    T3[3. generators: hex / base62 / uuid regex + pass complexity] --> T4
-    T4[4. daemon-side validate_name rejects '/' and '.'] --> T5
-    T5[5. --value overwrites an existing cred] --> T6
-    T6[6. --json shape on success and on missing cred] --> T7
-    T7[7. error sanitisation strips backend tool names<br/>SKIP if no sudo] --> T8
-    T8[8. audit log records op=get without leaking value<br/>SKIP if no journal access] --> T9
-    T9[9. colour opt-in: default off, --color on, NO_COLOR / --no-color win] --> T10
-    T10[10. check output deterministic + sorted by name] --> T11
-    T11[11. --json mode: zero stderr noise on clean errors] --> T12
-    T12[12. delete --force skips interactive prompt] --> T13
-    T13[13. aliases ls / rm behave as list / delete]
-```
+<TestMatrix />
 
 Run:
 

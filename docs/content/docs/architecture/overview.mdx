@@ -26,7 +26,7 @@ flowchart LR
     end
     subgraph Root["systemd service (root)"]
         D[credman-daemon]
-        C[crypto::encrypt/decrypt]
+        C["crypto::encrypt/decrypt"]
         S[/etc/credstore.encrypted/]
         J[(systemd journal)]
     end

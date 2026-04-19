@@ -93,7 +93,7 @@ sequenceDiagram
     D->>D: merge results, all_ok = AND(...)
     D-->>CLI: CheckOk { results, all_ok }
     CLI->>CLI: sort(results) by name (HashMap order is undefined)
-    CLI->>U: per-cred check/fail table; exit 1 if !all_ok
+    CLI->>U: per-cred check/fail table#59; exit 1 if !all_ok
 ```
 
 ## Rejected request — invalid name
@@ -111,7 +111,7 @@ sequenceDiagram
     D->>D: validate_name -> Err("invalid character '/' ...")
     D->>D: audit log RESULT=fail (no value field)
     D-->>CLI: {"kind":"err","error":"invalid character '/' ..."}
-    CLI->>U: stderr message; exit 1
+    CLI->>U: stderr message#59; exit 1
 ```
 
 <Info>
@@ -134,7 +134,7 @@ sequenceDiagram
     D->>CR: decrypt(uid, "CORRUPT")
     CR->>BE: spawn(decrypt ...)
     BE-->>CR: rc!=0, stderr leaks internal tool names + flags
-    CR->>CR: sanitize_error -> "credential backend: bad MAC; failed"
+    CR->>CR: sanitize_error -> "credential backend: bad MAC#59; failed"
     CR-->>D: Err(sanitized)
     D-->>CLI: {"kind":"err","error":"decryption failed: credential backend: ..."}
 ```

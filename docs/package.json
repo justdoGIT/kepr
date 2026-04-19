@@ -11,13 +11,15 @@
     "gen:api": "node scripts/gen-rust-api.mjs"
   },
   "dependencies": {
+    "@mermaid-js/layout-elk": "^0.2.1",
     "fumadocs-core": "^14.7.0",
     "fumadocs-mdx": "^11.3.0",
     "fumadocs-ui": "^14.7.0",
     "mermaid": "^11.4.0",
     "next": "^15.0.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-zoom-pan-pinch": "^4.0.3"
   },
   "devDependencies": {
     "@types/mdx": "^2.0.13",
