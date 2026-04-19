@@ -67,6 +67,10 @@ export function Mermaid({ chart }: { chart: string }) {
   const isDark = resolvedTheme === 'dark';
 
   useEffect(() => {
+    // Wait for next-themes to hydrate (resolvedTheme is undefined during
+    // SSR and first client pass). Rendering before then would paint the
+    // diagram in light mode, then re-render in dark — a visible flash.
+    if (resolvedTheme === undefined) return;
     let cancelled = false;
     getMermaid().then(async (mermaid) => {
       const labelBg = isDark ? '#0f172a' : '#f8fafc';
@@ -108,7 +112,7 @@ export function Mermaid({ chart }: { chart: string }) {
 
       mermaid.initialize({
         startOnLoad: false,
-        securityLevel: 'antiscript',
+        securityLevel: 'strict',
         fontFamily: 'inherit',
         theme: 'base',
         themeVariables: slate,
@@ -187,21 +191,11 @@ export function Mermaid({ chart }: { chart: string }) {
     return () => { cancelled = true; };
   }, [chart, id, isDark]);
 
-  // Serialise the inline SVG into state when the modal opens.
-  // Keeping it in React state (instead of writing into a ref inside
-  // TransformComponent) ensures the pan-zoom wrapper only mounts when
-  // its content exists, so its size measurement + centerOnInit are correct.
+  // Modal lifecycle: bind Escape, lock body scroll, clear SVG on close.
+  // (Serialisation itself happens synchronously in openZoom to avoid an
+  // empty-modal flash.)
   useEffect(() => {
     if (!zoomed) { setModalSvg(''); return; }
-    const src = ref.current?.querySelector('svg');
-    if (src) {
-      const clone = src.cloneNode(true) as SVGElement;
-      clone.removeAttribute('style');
-      clone.removeAttribute('width');
-      clone.removeAttribute('height');
-      clone.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-      setModalSvg(new XMLSerializer().serializeToString(clone));
-    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setZoomed(false);
     };
@@ -214,10 +208,25 @@ export function Mermaid({ chart }: { chart: string }) {
     };
   }, [zoomed]);
 
-  const onContainerClick = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('a')) return;
+  // Serialise the inline SVG synchronously, then open the modal — prevents the
+  // dialog from painting an empty content area between mount and the effect.
+  const openZoom = useCallback(() => {
+    const src = ref.current?.querySelector('svg');
+    if (src) {
+      const clone = src.cloneNode(true) as SVGElement;
+      clone.removeAttribute('style');
+      clone.removeAttribute('width');
+      clone.removeAttribute('height');
+      clone.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+      setModalSvg(new XMLSerializer().serializeToString(clone));
+    }
     setZoomed(true);
   }, []);
+
+  const onContainerClick = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('a')) return;
+    openZoom();
+  }, [openZoom]);
 
   if (err) {
     return (
@@ -235,7 +244,7 @@ export function Mermaid({ chart }: { chart: string }) {
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            setZoomed(true);
+            openZoom();
           }
         }}
         className="my-6 overflow-x-auto rounded-lg border border-fd-border bg-fd-card/40 p-4 md:p-6 cursor-zoom-in hover:bg-fd-card/60 hover:border-fd-ring transition-colors focus:outline-none focus:ring-2 focus:ring-fd-ring"
@@ -249,6 +258,7 @@ export function Mermaid({ chart }: { chart: string }) {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 md:p-8 backdrop-blur-sm"
           aria-modal="true"
           role="dialog"
+          aria-label="Zoomed diagram"
         >
           <button
             type="button"

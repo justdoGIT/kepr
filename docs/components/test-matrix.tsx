@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 
 // Static snake/serpentine diagram of credman's e2e test matrix.
@@ -152,6 +152,7 @@ export function TestMatrix() {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 md:p-8 backdrop-blur-sm"
           aria-modal="true"
           role="dialog"
+          aria-label="Zoomed test matrix diagram"
         >
           <button
             type="button"
