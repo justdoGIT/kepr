@@ -1,11 +1,17 @@
 name: Docs Deploy
 
+# GH Pages deploy is paused while the repo is private — GitHub Pages
+# requires a Pro/Team/Enterprise tier to serve private repos (Free tier
+# returns "Resource not accessible by integration" from actions/configure-pages).
+# Re-enable the `push` trigger below once the repo is public or the
+# account is upgraded. Manual `workflow_dispatch` remains available so
+# the pipeline can still be smoke-tested on demand.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'docs/**'
-      - '.github/workflows/docs-deploy.yml'
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'docs/**'
+  #     - '.github/workflows/docs-deploy.yml'
   workflow_dispatch:
 
 permissions:
