@@ -14,7 +14,7 @@ body:
     attributes:
       label: What happened?
       description: A clear, concise description of the bug.
-      placeholder: "When I run `credman get mykey`, it panics instead of returning the value."
+      placeholder: "When I run `kepr get mykey`, it panics instead of returning the value."
     validations:
       required: true
 
@@ -24,9 +24,9 @@ body:
       label: Steps to reproduce
       description: Exact steps that reliably trigger the bug.
       placeholder: |
-        1. Run `credman init`
-        2. Run `credman set foo bar`
-        3. Run `credman get foo`
+        1. Run `kepr init`
+        2. Run `kepr set foo bar`
+        3. Run `kepr get foo`
         4. See error
     validations:
       required: true
@@ -54,9 +54,9 @@ body:
   - type: input
     id: version
     attributes:
-      label: credman version
-      description: Output of `credman --version`
-      placeholder: "credman 0.7.2"
+      label: kepr version
+      description: Output of `kepr --version`
+      placeholder: "kepr 0.7.2"
     validations:
       required: true
 
