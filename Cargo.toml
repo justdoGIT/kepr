@@ -1,6 +1,6 @@
 [package]
 name = "kepr"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Per-user credential manager with a root daemon backend"
 license = "MIT"
