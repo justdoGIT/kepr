@@ -28,6 +28,18 @@ Two binaries share one crate (see `Cargo.toml` `[[bin]]` entries):
 
 When adding a new command, touch all three layers: add a variant to `Request`/`Response` in `protocol.rs`, a client function in `cli_cmds.rs` (with transport via `client.rs`), and a handler + audit call in `daemon_handlers.rs`.
 
+## Responsive UI
+- Mobile-first. Breakpoints: 360/768/1024/1280px. Use Tailwind `sm:/md:/lg:/xl:`.
+- Touch targets: min 44×44px. No fixed px widths >360px without `overflow-x-auto`.
+- Images: `max-width:100%; height:auto`. Wide content: scrollable container + click-to-zoom.
+
+## Pan-Zoom (diagrams/charts/images)
+- Dynamic content (Mermaid, auto-layout): `minScale:0.75`, `maxScale:15`, `wheel.step:0.01`.
+- Fixed content (SVG, full-size images): `minScale:0.25`, `maxScale:2`, `wheel.step:0.001`.
+- Both: `doubleClick.step:1.3-1.5 mode:toggle`, `pinch.step:5`.
+- Always add −/Reset/+ buttons (accessibility fallback).
+- Library: `react-zoom-pan-pinch` v3+. Wrap in `<TransformWrapper>` + `<TransformComponent contentStyle={{width:'100%',height:'100%'}}>`.
+
 ## Conventions that matter
 
 - **Never log secret values.** Audit entries include op/name/uid/user/result only — see `DOCS.md` §3.3.
