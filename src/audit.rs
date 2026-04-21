@@ -9,9 +9,9 @@
 //   - error message if failed
 //
 // View logs:
-//   journalctl -t credman-daemon
-//   journalctl -t credman-daemon CREDMAN_UID=1000
-//   journalctl -t credman-daemon CREDMAN_OP=get
+//   journalctl -t kepr-daemon
+//   journalctl -t kepr-daemon KEPR_UID=1000
+//   journalctl -t kepr-daemon KEPR_OP=get
 
 use std::os::unix::net::UnixDatagram;
 use std::sync::OnceLock;
@@ -69,7 +69,7 @@ pub fn log(event: &AuditEvent) {
     // becomes an unstructured PII sink if a sysadmin redirects the daemon
     // output to a shared log file.
     eprintln!(
-        "[credman] op={} name={} result={}",
+        "[kepr] op={} name={} result={}",
         event.op, name_str, result_str
     );
 }
@@ -103,13 +103,13 @@ fn log_to_journal(event: &AuditEvent, name_str: &str, result_str: &str) -> bool 
     // systemd journal protocol: newline-separated KEY=value pairs
     // sent as a datagram to /run/systemd/journal/socket
     //
-    // Fields prefixed with CREDMAN_ become indexed journal fields
-    // allowing: journalctl CREDMAN_UID=1000
+    // Fields prefixed with KEPR_ become indexed journal fields
+    // allowing: journalctl KEPR_UID=1000
 
     let mut msg = String::new();
 
     // Syslog identifier — shows up in journalctl -t
-    msg.push_str("SYSLOG_IDENTIFIER=credman-daemon\n");
+    msg.push_str("SYSLOG_IDENTIFIER=kepr-daemon\n");
 
     // Priority: 6 = informational, 3 = error
     let priority = match &event.result {
@@ -120,16 +120,16 @@ fn log_to_journal(event: &AuditEvent, name_str: &str, result_str: &str) -> bool 
 
     // Human-readable message
     msg.push_str(&format!(
-        "MESSAGE=credman: op={} name={} uid={} user={} result={}\n",
+        "MESSAGE=kepr: op={} name={} uid={} user={} result={}\n",
         event.op, name_str, event.uid, event.username, result_str
     ));
 
     // Structured fields — indexed by journal
-    msg.push_str(&format!("CREDMAN_OP={}\n", event.op));
-    msg.push_str(&format!("CREDMAN_NAME={}\n", name_str));
-    msg.push_str(&format!("CREDMAN_UID={}\n", event.uid));
-    msg.push_str(&format!("CREDMAN_USER={}\n", event.username));
-    msg.push_str(&format!("CREDMAN_RESULT={}\n", result_str));
+    msg.push_str(&format!("KEPR_OP={}\n", event.op));
+    msg.push_str(&format!("KEPR_NAME={}\n", name_str));
+    msg.push_str(&format!("KEPR_UID={}\n", event.uid));
+    msg.push_str(&format!("KEPR_USER={}\n", event.username));
+    msg.push_str(&format!("KEPR_RESULT={}\n", result_str));
 
     // Send to journal socket via the cached datagram fd.
     match journal_sock() {
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn escapes_newline_and_carriage_return() {
-        let forged = "FOO\nCREDMAN_OP=admin\r\nCREDMAN_UID=0";
+        let forged = "FOO\nKEPR_OP=admin\r\nKEPR_UID=0";
         let out = escape_log_field(forged);
         assert!(!out.contains('\n'), "raw LF leaked: {out}");
         assert!(!out.contains('\r'), "raw CR leaked: {out}");
