@@ -28,13 +28,13 @@ Hermetic — no daemon, no root, no encryption backend.
 | `cli_activity`  | `parse_resolves_aliases` / `_rejects_unknown`         | `ls` → list, `rm` → delete; unknown returns `Err`.         |
 
 <Note>
-  `store::tests` only compile under the `credman-daemon` bin target —
+  `store::tests` only compile under the `kepr-daemon` bin target —
   see the `mod` declarations.
 </Note>
 
 ## End-to-end tests (`tests/e2e.sh`)
 
-Requires the installed daemon, `credman` group membership, and `jq`.
+Requires the installed daemon, `kepr` group membership, and `jq`.
 Cases 7 and 8 skip cleanly without sudo / journal-read access. Each
 credential created uses prefix `E2E_<pid>_<epoch>_` and is removed on
 `trap EXIT`.
@@ -44,8 +44,8 @@ credential created uses prefix `E2E_<pid>_<epoch>_` and is removed on
 Run:
 
 ```bash
-sudo systemctl status credman           # daemon up
-newgrp credman                          # group active in this shell
+sudo systemctl status kepr           # daemon up
+newgrp kepr                          # group active in this shell
 ./tests/e2e.sh                          # exit 0 = full pass
 ```
 

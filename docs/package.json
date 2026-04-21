@@ -1,8 +1,8 @@
 {
-  "name": "credman-docs",
+  "name": "kepr-docs",
   "version": "0.1.0",
   "private": true,
-  "description": "Fumadocs site for credman — hosted from GitHub via Vercel.",
+  "description": "Fumadocs site for kepr — hosted from GitHub via Vercel.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

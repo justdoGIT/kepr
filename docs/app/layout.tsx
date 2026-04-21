@@ -13,8 +13,8 @@ import './global.css';
 // basePath prefix. Listing both would produce a duplicate tag.
 export const metadata: Metadata = {
   title: {
-    default: 'credman docs',
-    template: '%s · credman',
+    default: 'kepr docs',
+    template: '%s · kepr',
   },
   description: 'Per-user credential manager for Linux.',
   icons: {

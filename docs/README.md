@@ -1,6 +1,6 @@
-# credman-docs (Fumadocs)
+# kepr-docs (Fumadocs)
 
-Fumadocs (Next.js + MDX) docs site for credman.
+Fumadocs (Next.js + MDX) docs site for kepr.
 
 ## Layout
 
@@ -48,7 +48,7 @@ npm run gen:api
 ```
 
 Runs `cargo +nightly rustdoc --output-format json` for each binary
-(`credman`, `credman-daemon`), walks the public items, and writes MDX
+(`kepr`, `kepr-daemon`), walks the public items, and writes MDX
 under `content/docs/api/<bin>/`. After the first run, add `"api"` to
 the `pages` array in `content/docs/meta.json` to expose the section in
 the sidebar.

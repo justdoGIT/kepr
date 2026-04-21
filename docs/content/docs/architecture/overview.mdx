@@ -10,49 +10,49 @@ targets):
 
 | Binary           | UID     | Responsibilities                                              |
 | ---------------- | ------- | ------------------------------------------------------------- |
-| `credman`        | caller  | Argv parsing, terminal UI, framed JSON over `/run/credman`.   |
-| `credman-daemon` | `root`  | Encryption backend, peer-uid enforcement, audit log, fs I/O.  |
+| `kepr`        | caller  | Argv parsing, terminal UI, framed JSON over `/run/kepr`.   |
+| `kepr-daemon` | `root`  | Encryption backend, peer-uid enforcement, audit log, fs I/O.  |
 
 The CLI **never** invokes the encryption backend, **never** touches
 `/etc/credstore.encrypted/`, and **never** needs `sudo`. Membership in
-the `credman` group is the sole client-side prerequisite.
+the `kepr` group is the sole client-side prerequisite.
 
 ## Trust boundary
 
 ```mermaid
 flowchart LR
-    subgraph User["unprivileged user (uid=N, group=credman)"]
-        CLI[credman CLI]
+    subgraph User["unprivileged user (uid=N, group=kepr)"]
+        CLI[kepr CLI]
     end
     subgraph Root["systemd service (root)"]
-        D[credman-daemon]
+        D[kepr-daemon]
         C["crypto::encrypt/decrypt"]
         S[/etc/credstore.encrypted/]
         J[(systemd journal)]
     end
-    CLI -- "framed JSON\n/run/credman/credman.sock\n0660 root:credman" --> D
+    CLI -- "framed JSON\n/run/kepr/kepr.sock\n0660 root:kepr" --> D
     D -- "SO_PEERCRED uid" --> D
     D --> C
     C -- "fork+exec backend\n--with-key=host" --> S
-    D -- "structured fields\nCREDMAN_OP/NAME/UID" --> J
+    D -- "structured fields\nKEPR_OP/NAME/UID" --> J
 ```
 
 The boundary is the socket. The daemon **discards any uid in the request
 body** and uses the `SO_PEERCRED`-reported uid for namespacing; that
-makes the `credman-<uid>-<name>` scheme tamper-proof from the wire side.
+makes the `kepr-<uid>-<name>` scheme tamper-proof from the wire side.
 
 ## On-disk layout
 
 ```
 /etc/credstore.encrypted/
-├── credman-1000-openai-api-key      ← uid 1000
-├── credman-1000-stripe-secret
-├── credman-1001-openai-api-key      ← uid 1001 (different file, same name)
-└── credman-0-host-token
+├── kepr-1000-openai-api-key      ← uid 1000
+├── kepr-1000-stripe-secret
+├── kepr-1001-openai-api-key      ← uid 1001 (different file, same name)
+└── kepr-0-host-token
 
-/run/credman/credman.sock              0660 root:credman
-/usr/local/bin/credman                 0755 root:root
-/usr/local/sbin/credman-daemon         0700 root:root
+/run/kepr/kepr.sock              0660 root:kepr
+/usr/local/bin/kepr                 0755 root:root
+/usr/local/sbin/kepr-daemon         0700 root:root
 ```
 
 The encryption backend persists its host-derived key under
@@ -70,7 +70,7 @@ The encryption backend persists its host-derived key under
 | `client.rs`            | CLI            | `send_request` (connect → write_frame → read_frame).     |
 | `cli_*.rs`             | CLI            | Argv parsing, mode flags, terminal IO.                   |
 | `crypto.rs`            | daemon         | Encryption-backend wrapper; `sanitize_error`.            |
-| `audit.rs`             | daemon         | Journal datagram (cached fd) with `CREDMAN_*` fields.    |
+| `audit.rs`             | daemon         | Journal datagram (cached fd) with `KEPR_*` fields.    |
 | `daemon_*.rs`          | daemon         | Socket setup, peer creds, worker pool, dir cache, handlers. |
 
 `mod` declarations in `main.rs` and `daemon.rs` enforce this split: the

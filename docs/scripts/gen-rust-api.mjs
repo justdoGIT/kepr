@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const OUT_ROOT  = resolve(__dirname, '..', 'content', 'docs', 'api');
-const BINS      = ['credman', 'credman-daemon'];
+const BINS      = ['kepr', 'kepr-daemon'];
 
 // ── helpers ─────────────────────────────────────────────────────────
 
@@ -53,8 +53,8 @@ function rustdocJson(bin) {
     '--', '-Z', 'unstable-options', '--output-format', 'json',
   ], { cwd: REPO_ROOT });
 
-  // Crate name in JSON uses underscores — the `credman-daemon` binary
-  // produces credman_daemon.json. Try both.
+  // Crate name in JSON uses underscores — the `kepr-daemon` binary
+  // produces kepr_daemon.json. Try both.
   const candidates = [
     join(REPO_ROOT, 'target', 'doc', `${bin}.json`),
     join(REPO_ROOT, 'target', 'doc', `${bin.replace(/-/g, '_')}.json`),

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 
-// Static snake/serpentine diagram of credman's e2e test matrix.
+// Static snake/serpentine diagram of kepr's e2e test matrix.
 // Hand-authored SVG — bypasses mermaid entirely to guarantee the layout.
 
 type Node = { id: string; row: number; col: number; label: string; note?: string };
@@ -63,7 +63,7 @@ function Diagram() {
       viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
       className="block h-auto w-full min-w-[720px]"
       role="img"
-      aria-label="credman e2e test matrix — serpentine flow from preflight through 13 test cases"
+      aria-label="kepr e2e test matrix — serpentine flow from preflight through 13 test cases"
     >
       <defs>
         <marker id="tm-arrow" viewBox="0 0 10 10" refX="9" refY="5"

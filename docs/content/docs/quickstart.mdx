@@ -1,6 +1,6 @@
 ---
 title: "Quickstart"
-description: "Build, install, activate the credman group, store and retrieve a credential."
+description: "Build, install, activate the kepr group, store and retrieve a credential."
 ---
 
 ## Prerequisites
@@ -15,32 +15,32 @@ description: "Build, install, activate the credman group, store and retrieve a c
 <Steps>
   <Step title="Clone and build">
     ```bash
-    git clone <repo> credman && cd credman
+    git clone <repo> kepr && cd kepr
     chmod +x install.sh
     ./install.sh
     ```
 
-    The installer runs `cargo build --release`, creates the `credman`
+    The installer runs `cargo build --release`, creates the `kepr`
     system group, installs both binaries, and starts
-    `credman.service`.
+    `kepr.service`.
   </Step>
 
   <Step title="Activate group membership">
     ```bash
-    newgrp credman          # or log out / in
-    groups | grep credman   # verify
+    newgrp kepr          # or log out / in
+    groups | grep kepr   # verify
     ```
 
     <Warning>
-      Without active group membership, `credman` cannot connect to
-      `/run/credman/credman.sock` (it is `0660 root:credman`).
+      Without active group membership, `kepr` cannot connect to
+      `/run/kepr/kepr.sock` (it is `0660 root:kepr`).
     </Warning>
   </Step>
 
   <Step title="Verify the daemon is reachable">
     ```bash
-    systemctl status credman
-    credman list            # empty list, no error
+    systemctl status kepr
+    kepr list            # empty list, no error
     ```
   </Step>
 </Steps>
@@ -50,37 +50,37 @@ description: "Build, install, activate the credman group, store and retrieve a c
 <Tabs items={['Generate', 'Interactive (masked)', 'Non-interactive']}>
   <Tab value="Generate">
     ```bash
-    credman set OPENAI_API_KEY --generate
-    credman set BOB_TOKEN --generate --gen-kind pass
+    kepr set OPENAI_API_KEY --generate
+    kepr set BOB_TOKEN --generate --gen-kind pass
     ```
   </Tab>
   <Tab value="Interactive (masked)">
     ```bash
-    credman set OPENAI_API_KEY
+    kepr set OPENAI_API_KEY
     # Value for OPENAI_API_KEY (blank = auto-generate): ***
     ```
   </Tab>
   <Tab value="Non-interactive">
     ```bash
-    credman set OPENAI_API_KEY --value sk-abc123
+    kepr set OPENAI_API_KEY --value sk-abc123
     ```
   </Tab>
 </Tabs>
 
 ```bash
-credman get OPENAI_API_KEY               # pretty
-credman get OPENAI_API_KEY --quiet       # raw value, for $(...) capture
-credman get OPENAI_API_KEY --export      # 'export OPENAI_API_KEY=...'
-eval "$(credman get OPENAI_API_KEY --export)"
+kepr get OPENAI_API_KEY               # pretty
+kepr get OPENAI_API_KEY --quiet       # raw value, for $(...) capture
+kepr get OPENAI_API_KEY --export      # 'export OPENAI_API_KEY=...'
+eval "$(kepr get OPENAI_API_KEY --export)"
 ```
 
 ## Routine operations
 
 ```bash
-credman list                             # alias: ls
-credman check                            # decrypts every cred; exit 1 if any fail
-credman delete OPENAI_API_KEY            # interactive confirm
-credman rm OPENAI_API_KEY --force        # no prompt
+kepr list                             # alias: ls
+kepr check                            # decrypts every cred; exit 1 if any fail
+kepr delete OPENAI_API_KEY            # interactive confirm
+kepr rm OPENAI_API_KEY --force        # no prompt
 ```
 
 ## JSON mode for scripts
@@ -89,17 +89,17 @@ credman rm OPENAI_API_KEY --force        # no prompt
 unknown verb), nothing goes to stderr.
 
 ```bash
-credman --json list | jq '.credentials[].name'
-credman --json get DOES_NOT_EXIST          # {"kind":"err","error":"..."} ; exit 1
+kepr --json list | jq '.credentials[].name'
+kepr --json get DOES_NOT_EXIST          # {"kind":"err","error":"..."} ; exit 1
 ```
 
 ## Audit log
 
 ```bash
-journalctl -t credman-daemon                          # tail
-journalctl -t credman-daemon CREDMAN_UID=1000         # one user
-journalctl -t credman-daemon CREDMAN_OP=get           # one op
-journalctl -t credman-daemon CREDMAN_RESULT=fail      # only failures
+journalctl -t kepr-daemon                          # tail
+journalctl -t kepr-daemon KEPR_UID=1000         # one user
+journalctl -t kepr-daemon KEPR_OP=get           # one op
+journalctl -t kepr-daemon KEPR_RESULT=fail      # only failures
 ```
 
 <Check>
