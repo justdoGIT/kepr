@@ -33,7 +33,7 @@ pub fn cmd_set(a: &Args) -> Response {
             if a.json {
                 return Response::fail("NAME required");
             }
-            bold("\n  credman — set credential\n");
+            bold("\n  kepr — set credential\n");
             eprint!(
                 "  {}",
                 color("0;36", "Credential name (e.g. OPENAI_API_KEY): ")
@@ -136,7 +136,7 @@ pub fn cmd_set(a: &Args) -> Response {
         Response::SetOk { name, .. } if !a.json => {
             println!();
             ok(&format!("Stored: {}", color("1", name)));
-            dim(&format!("  Retrieve: credman get {name}"));
+            dim(&format!("  Retrieve: kepr get {name}"));
             println!();
         }
         Response::Err { error } if !a.json => err(error),
@@ -150,7 +150,7 @@ pub fn cmd_get(a: &Args) -> Response {
         Some(n) => n.clone(),
         None => {
             if !a.json {
-                err("NAME required: credman get KEY");
+                err("NAME required: kepr get KEY");
             }
             return Response::fail("NAME required");
         }
@@ -180,7 +180,7 @@ pub fn cmd_get(a: &Args) -> Response {
         Response::Err { error } => {
             if !a.json {
                 err(error);
-                einfo(&format!("Set it with: credman set {name}"));
+                einfo(&format!("Set it with: kepr set {name}"));
             }
             resp
         }
@@ -227,7 +227,7 @@ pub fn cmd_delete(a: &Args) -> Response {
         Some(n) => n.clone(),
         None => {
             if !a.json {
-                err("NAME required: credman delete KEY");
+                err("NAME required: kepr delete KEY");
             }
             return Response::fail("NAME required");
         }
