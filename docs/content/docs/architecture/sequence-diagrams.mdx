@@ -31,7 +31,7 @@ sequenceDiagram
     CR->>FS: write tmp.<pid>, chmod 0600, rename -> kepr-1000-foo
     CR-->>D: Ok(())
     D->>D: daemon_cache::invalidate(1000)
-    D->>J: KEPR_OP=set NAME=FOO UID=1000 RESULT=ok
+    D->>J: KEPR_OP=set KEPR_NAME=FOO KEPR_UID=1000 KEPR_RESULT=ok
     D->>CLI: write_frame({"kind":"set_ok","name":"FOO",...})
     CLI->>U: "Stored: FOO"  (exit 0)
 ```

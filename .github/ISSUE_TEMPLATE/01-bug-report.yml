@@ -24,10 +24,9 @@ body:
       label: Steps to reproduce
       description: Exact steps that reliably trigger the bug.
       placeholder: |
-        1. Run `kepr init`
-        2. Run `kepr set foo bar`
-        3. Run `kepr get foo`
-        4. See error
+        1. Run `kepr set FOO --value bar`
+        2. Run `kepr get FOO`
+        3. See error
     validations:
       required: true
 

@@ -39,7 +39,7 @@ flowchart LR
     D -- "SO_PEERCRED → uid" --> D
     D --> C
     C -- "fork+exec backend\n--with-key=host" --> S
-    D -- "structured fields\nKEPR_OP/NAME/UID" --> J
+    D -- "structured fields\nKEPR_OP/KEPR_NAME/KEPR_UID/KEPR_RESULT/KEPR_USER" --> J
 ```
 
 The boundary is the socket. The daemon **discards any uid in the request
