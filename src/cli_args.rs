@@ -54,7 +54,7 @@ pub fn parse_args() -> Result<Args, String> {
                 i += 1;
             }
             "--version" => {
-                println!("credman {VERSION}");
+                println!("kepr {VERSION}");
                 std::process::exit(0);
             }
             "--help" | "-h" => {
@@ -65,7 +65,7 @@ pub fn parse_args() -> Result<Args, String> {
         }
     }
 
-    let command_verb = raw.get(i).ok_or("no command — try: credman --help")?;
+    let command_verb = raw.get(i).ok_or("no command — try: kepr --help")?;
     let command = CliActivity::parse(command_verb)?;
     i += 1;
 
@@ -136,10 +136,10 @@ pub fn parse_args() -> Result<Args, String> {
 }
 
 pub fn print_help() {
-    println!("credman {VERSION} — credential manager");
+    println!("kepr {VERSION} — credential manager");
     println!();
     println!("USAGE:");
-    println!("  credman [--json] [--color] COMMAND [args]");
+    println!("  kepr [--json] [--color] COMMAND [args]");
     println!();
     println!("COMMANDS:");
     println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid]");
@@ -158,18 +158,18 @@ pub fn print_help() {
     println!("  CLICOLOR_FORCE=1   enables colours without --color");
     println!();
     println!("EXAMPLES:");
-    println!("  credman set OPENAI_API_KEY              # interactive, masked input");
-    println!("  credman set BOB_TOKEN --generate        # auto-generate");
-    println!("  credman set MY_KEY --value abc123       # non-interactive");
-    println!("  credman get OPENAI_API_KEY              # decrypt and print");
-    println!("  credman get OPENAI_API_KEY --export     # print as: export VAR=value");
-    println!("  credman get OPENAI_API_KEY --quiet      # raw value only");
-    println!("  credman --json get OPENAI_API_KEY       # json output for scripts");
-    println!("  credman ls                              # alias for list");
-    println!("  credman rm BOB_TOKEN --force            # delete without prompt");
-    println!("  credman check                           # verify all decrypt ok");
+    println!("  kepr set OPENAI_API_KEY              # interactive, masked input");
+    println!("  kepr set BOB_TOKEN --generate        # auto-generate");
+    println!("  kepr set MY_KEY --value abc123       # non-interactive");
+    println!("  kepr get OPENAI_API_KEY              # decrypt and print");
+    println!("  kepr get OPENAI_API_KEY --export     # print as: export VAR=value");
+    println!("  kepr get OPENAI_API_KEY --quiet      # raw value only");
+    println!("  kepr --json get OPENAI_API_KEY       # json output for scripts");
+    println!("  kepr ls                              # alias for list");
+    println!("  kepr rm BOB_TOKEN --force            # delete without prompt");
+    println!("  kepr check                           # verify all decrypt ok");
     println!();
     println!("  View audit log:");
-    println!("    journalctl -t credman-daemon");
-    println!("    journalctl -t credman-daemon CREDMAN_OP=get");
+    println!("    journalctl -t kepr-daemon");
+    println!("    journalctl -t kepr-daemon KEPR_OP=get");
 }

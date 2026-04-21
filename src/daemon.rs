@@ -1,7 +1,7 @@
 #![allow(unused_unsafe)]
 #![allow(dead_code)]
 
-// daemon.rs — credman-daemon entry, accept loop, and request dispatcher.
+// daemon.rs — kepr-daemon entry, accept loop, and request dispatcher.
 //
 // Root systemd service. Owns all encryption/decryption operations and audit
 // logging. Per-connection: read peer uid via SO_PEERCRED, parse framed JSON,
@@ -50,13 +50,13 @@ extern "C" {
 fn lock_memory() {
     let ret = unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) };
     if ret != 0 {
-        eprintln!("[credman-daemon] warning: mlockall failed — secrets may be swappable");
+        eprintln!("[kepr-daemon] warning: mlockall failed — secrets may be swappable");
     }
 }
 
 fn main() {
     if effective_uid() != 0 {
-        eprintln!("[credman-daemon] must run as root");
+        eprintln!("[kepr-daemon] must run as root");
         std::process::exit(1);
     }
 
@@ -69,12 +69,12 @@ fn main() {
 
     let pool = Pool::new(POOL_WORKERS, POOL_QUEUE, handle_client);
 
-    eprintln!("[credman-daemon] listening on {SOCKET_PATH} (workers={POOL_WORKERS})");
+    eprintln!("[kepr-daemon] listening on {SOCKET_PATH} (workers={POOL_WORKERS})");
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => pool.dispatch(stream),
-            Err(e) => eprintln!("[credman-daemon] accept error: {e}"),
+            Err(e) => eprintln!("[kepr-daemon] accept error: {e}"),
         }
     }
 }

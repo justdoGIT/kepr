@@ -72,20 +72,20 @@ jobs:
           cargo install cargo-generate-rpm --locked
 
       - name: cargo deb
-        run: cargo deb --no-build --output dist/credman_${VERSION}_amd64.deb
+        run: cargo deb --no-build --output dist/kepr_${VERSION}_amd64.deb
 
       - name: cargo generate-rpm
-        run: cargo generate-rpm --output dist/credman-${VERSION}-1.x86_64.rpm
+        run: cargo generate-rpm --output dist/kepr-${VERSION}-1.x86_64.rpm
 
       - name: Build tarball
         run: |
           set -euo pipefail
-          STAGE="credman-${VERSION}-x86_64-linux"
+          STAGE="kepr-${VERSION}-x86_64-linux"
           mkdir -p "dist/${STAGE}"
-          cp target/release/credman        "dist/${STAGE}/"
-          cp target/release/credman-daemon "dist/${STAGE}/"
-          cp systemd/credman.service       "dist/${STAGE}/"
-          cp completions/credman.bash      "dist/${STAGE}/"
+          cp target/release/kepr        "dist/${STAGE}/"
+          cp target/release/kepr-daemon "dist/${STAGE}/"
+          cp systemd/kepr.service       "dist/${STAGE}/"
+          cp completions/kepr.bash      "dist/${STAGE}/"
           cp install.sh README.md SECURITY.md LICENSE "dist/${STAGE}/"
           tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
           rm -rf "dist/${STAGE}"
@@ -98,7 +98,7 @@ jobs:
         with:
           path: dist/
           format: spdx-json
-          output-file: dist/credman-${{ env.VERSION }}.spdx.json
+          output-file: dist/kepr-${{ env.VERSION }}.spdx.json
           upload-artifact: false
 
       - name: Install cosign
@@ -132,7 +132,7 @@ jobs:
       - name: Upload dist/ as workflow artefact
         uses: actions/upload-artifact@v7
         with:
-          name: credman-release
+          name: kepr-release
           path: dist/
           if-no-files-found: error
 
@@ -179,14 +179,14 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: credman-release
+          name: kepr-release
           path: dist/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
           tag_name: ${{ needs.tag-check.outputs.tag }}
-          name:     credman ${{ needs.tag-check.outputs.tag }}
+          name:     kepr ${{ needs.tag-check.outputs.tag }}
           body:     ${{ needs.changelog.outputs.body }}
           draft:    false
           prerelease: ${{ contains(needs.tag-check.outputs.version, '-') }}

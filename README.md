@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="./.github/assets/credman.png" alt="credman" style="max-width: 1280px; width: 100%; height: auto;">
+  <img src="./.github/assets/kepr.png" alt="kepr" style="max-width: 1280px; width: 100%; height: auto;">
 </p>
 
-# credman
+# kepr
 
 Per-user credential manager for Linux. An unprivileged CLI talks to a
 root systemd service over a Unix socket; the daemon owns all
@@ -10,22 +10,22 @@ encryption, decryption, and audit logging. No `sudo` for day-to-day use,
 no plaintext on disk, no secret values in the journal.
 
 ```
-┌──────────────────────────┐         /run/credman/credman.sock         ┌──────────────────────────┐
-│  credman  (your uid)     │ ◀──── framed JSON, 0660 root:credman ───▶ │ credman-daemon  (root)   │
+┌──────────────────────────┐         /run/kepr/kepr.sock         ┌──────────────────────────┐
+│  kepr  (your uid)     │ ◀──── framed JSON, 0660 root:kepr ───▶ │ kepr-daemon  (root)   │
 │  unprivileged CLI        │                                           │ encrypts / decrypts      │
 └──────────────────────────┘                                           │ audits to journald       │
                                                                        └──────────────────────────┘
                                                                                  │
                                                                                  ▼
                                                                 /etc/credstore.encrypted/
-                                                                  credman-<uid>-<name>
+                                                                  kepr-<uid>-<name>
 ```
 
 ---
 
 ## Documentation
 
-Full docs are published at **https://justdogit.github.io/credman/** —
+Full docs are published at **https://justdogit.github.io/kepr/** —
 quickstart, architecture, sequence diagrams, reference. The source
 lives in `docs/` (Fumadocs on Next.js 15).
 
@@ -42,7 +42,7 @@ npm run dev          # http://localhost:3000
 ```bash
 cd docs
 npm run build        # static export to docs/out/
-npx serve out -l 3000  # open http://localhost:3000/credman/
+npx serve out -l 3000  # open http://localhost:3000/kepr/
 ```
 
 ### Updating the live site
@@ -71,7 +71,7 @@ To deploy manually (e.g. after a settings change), trigger
 ## Install
 
 ```bash
-git clone <repo> credman && cd credman
+git clone <repo> kepr && cd kepr
 chmod +x install.sh
 ./install.sh
 ```
@@ -79,24 +79,24 @@ chmod +x install.sh
 The installer:
 
 1. `cargo build --release`
-2. Creates the `credman` system group and adds the invoking user.
-3. Installs `/usr/local/bin/credman` (0755) and
-   `/usr/local/sbin/credman-daemon` (0700, root-only).
+2. Creates the `kepr` system group and adds the invoking user.
+3. Installs `/usr/local/bin/kepr` (0755) and
+   `/usr/local/sbin/kepr-daemon` (0700, root-only).
 4. Installs bash completion if `bash-completion` is present.
-5. Installs and starts `credman.service`.
+5. Installs and starts `kepr.service`.
 
 After install, **activate group membership** in your current shell:
 
 ```bash
-newgrp credman          # or log out / in
-groups | grep credman   # verify
+newgrp kepr          # or log out / in
+groups | grep kepr   # verify
 ```
 
 Verify the daemon is reachable:
 
 ```bash
-systemctl status credman
-credman list            # empty list, no error
+systemctl status kepr
+kepr list            # empty list, no error
 ```
 
 ---
@@ -104,7 +104,7 @@ credman list            # empty list, no error
 ## Usage
 
 ```text
-credman [--json] [--color] COMMAND [args]
+kepr [--json] [--color] COMMAND [args]
 
 COMMANDS
   set    KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid]
@@ -117,10 +117,10 @@ COMMANDS
 ### Store a credential
 
 ```bash
-credman set OPENAI_API_KEY                       # interactive, masked input
-credman set OPENAI_API_KEY --generate            # auto-generate (default: hex)
-credman set OPENAI_API_KEY --generate --gen-kind pass
-credman set OPENAI_API_KEY --value sk-abc123     # non-interactive
+kepr set OPENAI_API_KEY                       # interactive, masked input
+kepr set OPENAI_API_KEY --generate            # auto-generate (default: hex)
+kepr set OPENAI_API_KEY --generate --gen-kind pass
+kepr set OPENAI_API_KEY --value sk-abc123     # non-interactive
 ```
 
 Names are uppercase, `[A-Z0-9_]` only, ≤128 chars. The daemon rejects
@@ -130,21 +130,21 @@ anything else (path-traversal defence) — see
 ### Retrieve a credential
 
 ```bash
-credman get OPENAI_API_KEY                       # pretty
-credman get OPENAI_API_KEY --quiet               # raw value (for $(...) capture)
-credman get OPENAI_API_KEY --export              # 'export OPENAI_API_KEY=...'
+kepr get OPENAI_API_KEY                       # pretty
+kepr get OPENAI_API_KEY --quiet               # raw value (for $(...) capture)
+kepr get OPENAI_API_KEY --export              # 'export OPENAI_API_KEY=...'
 
-eval "$(credman get OPENAI_API_KEY --export)"    # load into the current shell
-export OPENAI_API_KEY="$(credman get OPENAI_API_KEY --quiet)"
+eval "$(kepr get OPENAI_API_KEY --export)"    # load into the current shell
+export OPENAI_API_KEY="$(kepr get OPENAI_API_KEY --quiet)"
 ```
 
 ### List, verify, delete
 
 ```bash
-credman list                                     # alias: ls
-credman check                                    # decrypts every cred, exits 1 if any fail
-credman delete OPENAI_API_KEY                    # interactive confirm
-credman rm OPENAI_API_KEY --force                # no prompt
+kepr list                                     # alias: ls
+kepr check                                    # decrypts every cred, exits 1 if any fail
+kepr delete OPENAI_API_KEY                    # interactive confirm
+kepr rm OPENAI_API_KEY --force                # no prompt
 ```
 
 ### Machine-readable output
@@ -154,8 +154,8 @@ arg, unknown verb), nothing goes to stderr — scripts can rely on a
 single object or empty stdout + non-zero exit.
 
 ```bash
-credman --json list | jq '.credentials[].name'
-credman --json get DOES_NOT_EXIST                # {"kind":"err","error":"..."} ; exit 1
+kepr --json list | jq '.credentials[].name'
+kepr --json get DOES_NOT_EXIST                # {"kind":"err","error":"..."} ; exit 1
 ```
 
 ### Generators
@@ -177,13 +177,13 @@ Credentials live in the shared `/etc/credstore.encrypted/` directory but
 are namespaced by uid:
 
 ```
-credman-1000-openai-api-key      # uid 1000
-credman-1001-openai-api-key      # uid 1001 (same name, different file)
+kepr-1000-openai-api-key      # uid 1000
+kepr-1001-openai-api-key      # uid 1001 (same name, different file)
 ```
 
 The daemon takes the uid from `SO_PEERCRED` on the socket, **not** from
 the request payload, so users can only see and operate on their own
-credentials. Group membership in `credman` is the only client-side
+credentials. Group membership in `kepr` is the only client-side
 permission needed.
 
 ---
@@ -194,14 +194,14 @@ Every operation is logged to journald with structured fields. The
 **value is never logged.**
 
 ```bash
-journalctl -t credman-daemon                          # tail it
-journalctl -t credman-daemon CREDMAN_UID=1000         # one user
-journalctl -t credman-daemon CREDMAN_OP=get           # one op
-journalctl -t credman-daemon CREDMAN_RESULT=fail      # only failures
+journalctl -t kepr-daemon                          # tail it
+journalctl -t kepr-daemon KEPR_UID=1000         # one user
+journalctl -t kepr-daemon KEPR_OP=get           # one op
+journalctl -t kepr-daemon KEPR_RESULT=fail      # only failures
 ```
 
-Each entry carries `CREDMAN_OP`, `CREDMAN_NAME`, `CREDMAN_UID`,
-`CREDMAN_USER`, `CREDMAN_RESULT`.
+Each entry carries `KEPR_OP`, `KEPR_NAME`, `KEPR_UID`,
+`KEPR_USER`, `KEPR_RESULT`.
 
 ---
 
@@ -225,13 +225,13 @@ least one failed credential).
 cargo build --release       # both binaries → target/release/
 cargo test                  # hermetic unit tests; no daemon needed
 ./tests/e2e.sh              # end-to-end against the running daemon
-sudo systemctl restart credman.service   # reload after a rebuild
+sudo systemctl restart kepr.service   # reload after a rebuild
 ```
 
 `cargo test` covers `protocol`, `store`, `generate`, `framing`,
 `cli_mode`, and `cli_activity`. The crypto / audit / handler layers are
 covered by the e2e suite, which requires the installed daemon and
-`credman` group membership.
+`kepr` group membership.
 
 See [DOCS.md](./DOCS.md) for architecture, design patterns, sequence
 diagrams, and the full test matrix.
@@ -240,7 +240,7 @@ diagrams, and the full test matrix.
 
 ```
 src/
-├── main.rs                 credman CLI entry
+├── main.rs                 kepr CLI entry
 ├── client.rs               CLI-side socket transport (framed JSON)
 ├── cli_activity.rs         CliActivity newtype, verb -> handler dispatch
 ├── cli_args.rs             argv parser, --help renderer
@@ -248,12 +248,12 @@ src/
 ├── cli_input.rs            masked terminal input
 ├── cli_mode.rs             process-wide JSON/color mode (OnceLock)
 ├── cli_ui.rs               ANSI helpers, print_json
-├── daemon.rs               credman-daemon entry, accept loop, dispatch
+├── daemon.rs               kepr-daemon entry, accept loop, dispatch
 ├── daemon_cache.rs         per-uid credstore listing cache
 ├── daemon_handlers.rs      handle_{set,get,list,delete,check}
 ├── daemon_peer.rs          SO_PEERCRED -> peer uid
 ├── daemon_pool.rs          bounded worker thread pool (backpressure)
-├── daemon_socket.rs        socket dir setup, 0660 root:credman
+├── daemon_socket.rs        socket dir setup, 0660 root:kepr
 ├── protocol.rs             shared Request/Response enums, wire limits
 ├── framing.rs              <u32 BE len><payload> codec
 ├── store.rs                naming, validate_name, path helpers
@@ -261,8 +261,8 @@ src/
 ├── crypto.rs               encryption-backend wrapper (daemon only)
 └── audit.rs                structured journal logger (daemon only)
 
-systemd/credman.service      hardened unit (mlockall, ProtectSystem=strict)
-completions/credman.bash     bash completion with live cred-name lookup
+systemd/kepr.service      hardened unit (mlockall, ProtectSystem=strict)
+completions/kepr.bash     bash completion with live cred-name lookup
 tests/e2e.sh                 13 end-to-end cases against the installed daemon
 ```
 
@@ -277,10 +277,10 @@ module split is enforced by the compiler.
 
 | Symptom                                             | Fix                                                                   |
 | --------------------------------------------------- | --------------------------------------------------------------------- |
-| `cannot connect to credential service`              | `systemctl status credman`; ensure the unit is `active (running)`.    |
-| `Permission denied` on the socket                   | Not in the `credman` group — `newgrp credman` or log out / in.        |
+| `cannot connect to credential service`              | `systemctl status kepr`; ensure the unit is `active (running)`.    |
+| `Permission denied` on the socket                   | Not in the `kepr` group — `newgrp kepr` or log out / in.        |
 | `set` fails with `Read-only file system`            | First-run key seeding needs `/var/lib/systemd` writable; the unit's `ReadWritePaths` already allows this — check for a custom override. |
-| `credman get` returns `credential not found`        | `credman list` to verify the name; remember names are uppercased.     |
+| `kepr get` returns `credential not found`        | `kepr list` to verify the name; remember names are uppercased.     |
 | Audit entries missing                               | Your user lacks journal-read access — join `systemd-journal` or `adm`.|
 
 ---
@@ -288,14 +288,14 @@ module split is enforced by the compiler.
 ## Uninstall
 
 ```bash
-sudo systemctl disable --now credman.service
-sudo rm /etc/systemd/system/credman.service
+sudo systemctl disable --now kepr.service
+sudo rm /etc/systemd/system/kepr.service
 sudo systemctl daemon-reload
-sudo rm -f /usr/local/bin/credman /usr/local/sbin/credman-daemon
-sudo rm -f /usr/share/bash-completion/completions/credman
+sudo rm -f /usr/local/bin/kepr /usr/local/sbin/kepr-daemon
+sudo rm -f /usr/share/bash-completion/completions/kepr
 # Credentials are NOT removed automatically:
-sudo rm -rf /etc/credstore.encrypted/credman-*
-sudo groupdel credman
+sudo rm -rf /etc/credstore.encrypted/kepr-*
+sudo groupdel kepr
 ```
 
 ---

@@ -1,27 +1,27 @@
-# Bash completion for credman.
+# Bash completion for kepr.
 #
 # Install location:
-#   /usr/share/bash-completion/completions/credman
+#   /usr/share/bash-completion/completions/kepr
 #
 # Features:
 #   - verbs:   set / get / list / ls / delete / rm / check
 #   - flags:   context-aware per subcommand
 #   - values:  --gen-kind => hex | base62 | pass | uuid
 #   - dynamic: get / delete / rm complete existing credential names via
-#              `credman --json list | jq -r '.credentials[]?.name'`
+#              `kepr --json list | jq -r '.credentials[]?.name'`
 #
 # Zsh users — load via bashcompinit in ~/.zshrc:
 #   autoload -U +X bashcompinit && bashcompinit
-#   source /usr/share/bash-completion/completions/credman
+#   source /usr/share/bash-completion/completions/kepr
 
-_credman_names() {
+_kepr_names() {
     # Best-effort — silent if jq is missing or the daemon is unreachable.
     command -v jq >/dev/null 2>&1 || return
-    credman --json list 2>/dev/null \
+    kepr --json list 2>/dev/null \
         | jq -r '.credentials[]?.name' 2>/dev/null
 }
 
-_credman() {
+_kepr() {
     local cur prev words cword
     if declare -F _init_completion >/dev/null 2>&1; then
         _init_completion || return
@@ -83,7 +83,7 @@ _credman() {
                     '--quiet -q --export -e --json --color --no-color' \
                     -- "$cur") )
             else
-                COMPREPLY=( $(compgen -W "$(_credman_names)" -- "$cur") )
+                COMPREPLY=( $(compgen -W "$(_kepr_names)" -- "$cur") )
             fi
             ;;
         delete|rm)
@@ -92,7 +92,7 @@ _credman() {
                     '--force -f --json --color --no-color' \
                     -- "$cur") )
             else
-                COMPREPLY=( $(compgen -W "$(_credman_names)" -- "$cur") )
+                COMPREPLY=( $(compgen -W "$(_kepr_names)" -- "$cur") )
             fi
             ;;
         list|ls|check)
@@ -103,4 +103,4 @@ _credman() {
     esac
 }
 
-complete -F _credman credman
+complete -F _kepr kepr

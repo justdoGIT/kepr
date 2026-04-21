@@ -39,8 +39,8 @@ commit_parsers = [
   { message = "^chore",    group = "Chores"          },
   { message = "^ci",       group = "CI"              },
   { message = "^build",    group = "Build"           },
-  # The existing repo uses "credman:" / "docs:" prefixes — map those too.
-  { message = "^credman:",    group = "credman"      },
+  # The existing repo uses "kepr:" / "docs:" prefixes — map those too.
+  { message = "^kepr:",    group = "kepr"      },
   { message = "^docs:",       group = "docs"         },
   { message = "^ci:",         group = "CI"           },
   { body = ".*security",      group = "Security"     },

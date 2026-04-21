@@ -80,38 +80,38 @@ mod tests {
 
     #[test]
     fn default_is_no_color_no_json() {
-        let m = compute(&["credman", "list"], false, None);
+        let m = compute(&["kepr", "list"], false, None);
         assert!(!m.json);
         assert!(!m.color);
     }
 
     #[test]
     fn color_flag_enables_color() {
-        let m = compute(&["credman", "--color", "list"], false, None);
+        let m = compute(&["kepr", "--color", "list"], false, None);
         assert!(m.color);
     }
 
     #[test]
     fn no_color_env_overrides_color_flag() {
-        let m = compute(&["credman", "--color", "list"], true, None);
+        let m = compute(&["kepr", "--color", "list"], true, None);
         assert!(!m.color, "NO_COLOR env must win over --color");
     }
 
     #[test]
     fn no_color_flag_overrides_force_env() {
-        let m = compute(&["credman", "--no-color", "list"], false, Some("1"));
+        let m = compute(&["kepr", "--no-color", "list"], false, Some("1"));
         assert!(!m.color, "--no-color must win over CLICOLOR_FORCE");
     }
 
     #[test]
     fn clicolor_force_enables_color() {
-        let m = compute(&["credman", "list"], false, Some("1"));
+        let m = compute(&["kepr", "list"], false, Some("1"));
         assert!(m.color);
     }
 
     #[test]
     fn json_is_independent_of_color() {
-        let m = compute(&["credman", "--json", "list"], false, None);
+        let m = compute(&["kepr", "--json", "list"], false, None);
         assert!(m.json);
         assert!(!m.color);
     }

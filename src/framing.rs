@@ -1,4 +1,4 @@
-// framing.rs — length-prefixed message framing for credman's Unix socket
+// framing.rs — length-prefixed message framing for kepr's Unix socket
 //
 // Wire format: <u32 big-endian length> <payload of that length>
 //

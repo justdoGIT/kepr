@@ -72,7 +72,7 @@ Highlights:
 
 ## Out-of-scope
 
-- Denial of service from a credman-group member against the local
+- Denial of service from a kepr-group member against the local
   daemon — by design, group membership is the trust boundary.
 - Key extraction from a compromised host — the backend key is
   host-bound; a compromised host can decrypt its own credentials.

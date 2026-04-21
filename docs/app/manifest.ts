@@ -9,13 +9,13 @@ import { withBase } from '@/lib/base-path';
 //   `export const revalidate = <n>`
 export const dynamic = 'force-static';
 
-// PWA manifest for credman's docs. Replaces the static
+// PWA manifest for kepr's docs. Replaces the static
 // public/site.webmanifest so icon URLs can be prefixed with `basePath`
 // at build time — see docs/lib/base-path.ts.
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Credman',
-    short_name: 'Credman',
+    name: 'Kepr',
+    short_name: 'Kepr',
     icons: [
       {
         src: withBase('/web-app-manifest-192x192.png'),

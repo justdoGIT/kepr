@@ -1,7 +1,7 @@
 // daemon_socket.rs — Unix socket path/permissions setup and minimal FFI.
 //
-// The daemon owns the socket at /run/credman/credman.sock (root:credman 0660).
-// Only members of the `credman` group can connect.
+// The daemon owns the socket at /run/kepr/kepr.sock (root:kepr 0660).
+// Only members of the `kepr` group can connect.
 
 use std::ffi::CString;
 use std::fs;
@@ -25,8 +25,8 @@ pub fn setup_socket_dir() {
 }
 
 pub fn set_socket_permissions() {
-    // Get gid of 'credman' group; fall back to root if missing.
-    let gid = group_gid("credman").unwrap_or(0);
+    // Get gid of 'kepr' group; fall back to root if missing.
+    let gid = group_gid("kepr").unwrap_or(0);
 
     if let Ok(path) = CString::new(SOCKET_PATH) {
         unsafe {

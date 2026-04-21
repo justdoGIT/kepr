@@ -1,6 +1,6 @@
 [package]
-name = "credman"
-version = "0.2.0"
+name = "kepr"
+version = "0.3.0"
 edition = "2021"
 description = "Per-user credential manager with a root daemon backend"
 license = "MIT"
@@ -10,11 +10,11 @@ keywords = ["credentials", "systemd", "linux", "cli", "daemon"]
 categories = ["command-line-utilities", "authentication"]
 
 [[bin]]
-name = "credman"
+name = "kepr"
 path = "src/main.rs"
 
 [[bin]]
-name = "credman-daemon"
+name = "kepr-daemon"
 path = "src/daemon.rs"
 
 [dependencies]
@@ -34,24 +34,24 @@ panic = "abort"
 # so the postinst can reload and enable it without pathing tricks.
 
 [package.metadata.deb]
-maintainer = "credman maintainers"
+maintainer = "kepr maintainers"
 section = "admin"
 priority = "optional"
 depends = "$auto, systemd, adduser"
 extended-description = """
-credman is a per-user credential manager for Linux. An unprivileged
+kepr is a per-user credential manager for Linux. An unprivileged
 CLI talks to a root systemd service over a Unix socket; the daemon
 owns all encryption, decryption, and audit logging. Designed for
 hosts where many users need isolated credential storage without
 granting sudo."""
 assets = [
-    ["target/release/credman",        "/usr/local/bin/credman",             "0755"],
-    ["target/release/credman-daemon", "/usr/local/sbin/credman-daemon",     "0700"],
-    ["systemd/credman.service",       "/lib/systemd/system/credman.service","0644"],
-    ["completions/credman.bash",      "/usr/share/bash-completion/completions/credman", "0644"],
-    ["README.md",                     "/usr/share/doc/credman/README.md",   "0644"],
-    ["SECURITY.md",                   "/usr/share/doc/credman/SECURITY.md", "0644"],
-    ["LICENSE",                       "/usr/share/doc/credman/LICENSE",     "0644"],
+    ["target/release/kepr",        "/usr/local/bin/kepr",             "0755"],
+    ["target/release/kepr-daemon", "/usr/local/sbin/kepr-daemon",     "0700"],
+    ["systemd/kepr.service",       "/lib/systemd/system/kepr.service","0644"],
+    ["completions/kepr.bash",      "/usr/share/bash-completion/completions/kepr", "0644"],
+    ["README.md",                  "/usr/share/doc/kepr/README.md",   "0644"],
+    ["SECURITY.md",                "/usr/share/doc/kepr/SECURITY.md", "0644"],
+    ["LICENSE",                    "/usr/share/doc/kepr/LICENSE",     "0644"],
 ]
 maintainer-scripts = "packaging/debian"
 # systemd lifecycle is handled entirely in packaging/debian/postinst
@@ -66,22 +66,22 @@ maintainer-scripts = "packaging/debian"
 license = "MIT"
 requires = { systemd = "*", shadow-utils = "*" }
 assets = [
-    { source = "target/release/credman",        dest = "/usr/local/bin/credman",             mode = "0755" },
-    { source = "target/release/credman-daemon", dest = "/usr/local/sbin/credman-daemon",     mode = "0700" },
-    { source = "systemd/credman.service",       dest = "/lib/systemd/system/credman.service",mode = "0644" },
-    { source = "completions/credman.bash",      dest = "/usr/share/bash-completion/completions/credman", mode = "0644" },
-    { source = "README.md",                     dest = "/usr/share/doc/credman/README.md",   mode = "0644", doc = true },
-    { source = "SECURITY.md",                   dest = "/usr/share/doc/credman/SECURITY.md", mode = "0644", doc = true },
-    { source = "LICENSE",                       dest = "/usr/share/doc/credman/LICENSE",     mode = "0644", doc = true },
+    { source = "target/release/kepr",        dest = "/usr/local/bin/kepr",             mode = "0755" },
+    { source = "target/release/kepr-daemon", dest = "/usr/local/sbin/kepr-daemon",     mode = "0700" },
+    { source = "systemd/kepr.service",       dest = "/lib/systemd/system/kepr.service",mode = "0644" },
+    { source = "completions/kepr.bash",      dest = "/usr/share/bash-completion/completions/kepr", mode = "0644" },
+    { source = "README.md",                  dest = "/usr/share/doc/kepr/README.md",   mode = "0644", doc = true },
+    { source = "SECURITY.md",                dest = "/usr/share/doc/kepr/SECURITY.md", mode = "0644", doc = true },
+    { source = "LICENSE",                    dest = "/usr/share/doc/kepr/LICENSE",     mode = "0644", doc = true },
 ]
 post_install_script = """
-getent group credman >/dev/null || groupadd --system credman
+getent group kepr >/dev/null || groupadd --system kepr
 systemctl daemon-reload || true
-systemctl enable --now credman.service || true
+systemctl enable --now kepr.service || true
 """
 pre_uninstall_script = """
 if [ $1 -eq 0 ]; then
-    systemctl disable --now credman.service || true
+    systemctl disable --now kepr.service || true
 fi
 """
 post_uninstall_script = """

@@ -1,7 +1,7 @@
-# Contributing to credman
+# Contributing to kepr
 
 Thank you for taking the time to contribute! Every bug report, feature idea,
-and pull request makes credman better. This document explains how to get
+and pull request makes kepr better. This document explains how to get
 involved and what we expect from contributors.
 
 ---
@@ -54,8 +54,8 @@ Requirements: Rust stable toolchain (1.75+), Cargo.
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/credman.git
-cd credman
+git clone https://github.com/your-org/kepr.git
+cd kepr
 
 # Build
 cargo build
@@ -70,8 +70,8 @@ cargo run -- --help
 For shell completions during development:
 
 ```bash
-cargo run -- completions bash > /tmp/credman.bash
-source /tmp/credman.bash
+cargo run -- completions bash > /tmp/kepr.bash
+source /tmp/kepr.bash
 ```
 
 ---

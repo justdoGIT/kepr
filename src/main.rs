@@ -1,7 +1,7 @@
-// main.rs — credman user CLI entry point.
+// main.rs — kepr user CLI entry point.
 //
-// Thin client. Speaks to credman-daemon over a Unix socket; never calls the
-// credential backend directly, never needs root/sudo. The `credman` group
+// Thin client. Speaks to kepr-daemon over a Unix socket; never calls the
+// credential backend directly, never needs root/sudo. The `kepr` group
 // membership is the only access control — see DOCS.md.
 
 mod cli_activity;

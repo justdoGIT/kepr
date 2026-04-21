@@ -11,7 +11,7 @@ use zeroize::Zeroize;
 // ── ZeroString ────────────────────────────────────────────────────────────────
 
 /// A String that zeroes its memory on drop.
-/// Used for all secret values throughout credman.
+/// Used for all secret values throughout kepr.
 pub struct ZeroString(pub String);
 
 impl Drop for ZeroString {

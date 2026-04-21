@@ -2,7 +2,7 @@
 set -e
 
 if [ -d /run/systemd/system ] && [ "$1" = "remove" ]; then
-    systemctl --system stop credman.service >/dev/null || true
-    systemctl --system disable credman.service >/dev/null || true
+    systemctl --system stop kepr.service >/dev/null || true
+    systemctl --system disable kepr.service >/dev/null || true
 fi
 exit 0

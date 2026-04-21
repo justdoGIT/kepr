@@ -3,7 +3,7 @@ title: "Introduction"
 description: "Per-user credential manager for Linux. Unprivileged CLI, root daemon, framed JSON over a Unix socket."
 ---
 
-`credman` is a per-user credential manager for Linux hosts. An
+`kepr` is a per-user credential manager for Linux hosts. An
 unprivileged CLI talks to a `root` systemd service over a Unix socket;
 the daemon owns all encryption, decryption, audit logging, and on-disk
 state.
@@ -23,30 +23,30 @@ state.
   </Card>
 </CardGroup>
 
-## Why credman
+## Why kepr
 
-- **No `sudo` for day-to-day use.** Membership in the `credman` group
+- **No `sudo` for day-to-day use.** Membership in the `kepr` group
   is the only client-side requirement.
 - **No plaintext on disk.** The encryption backend uses a host-bound
   key; ciphertext lives in `/etc/credstore.encrypted/`.
 - **No secrets in the audit log.** Every operation is journald-logged
   with structured fields; the value is never recorded.
 - **Per-user isolation by uid.** Credential names are namespaced
-  `credman-<uid>-<name>`; the daemon takes the uid from `SO_PEERCRED`,
+  `kepr-<uid>-<name>`; the daemon takes the uid from `SO_PEERCRED`,
   not the request body.
 
 ## Topology
 
 ```
-┌──────────────────────────┐         /run/credman/credman.sock         ┌──────────────────────────┐
-│  credman  (your uid)     │ ◀──── framed JSON, 0660 root:credman ───▶ │ credman-daemon  (root)   │
+┌──────────────────────────┐         /run/kepr/kepr.sock         ┌──────────────────────────┐
+│  kepr  (your uid)     │ ◀──── framed JSON, 0660 root:kepr ───▶ │ kepr-daemon  (root)   │
 │  unprivileged CLI        │                                           │ encrypts / decrypts      │
 └──────────────────────────┘                                           │ audits to journald       │
                                                                        └──────────────────────────┘
                                                                                  │
                                                                                  ▼
                                                                 /etc/credstore.encrypted/
-                                                                  credman-<uid>-<name>
+                                                                  kepr-<uid>-<name>
 ```
 
 <Info>
