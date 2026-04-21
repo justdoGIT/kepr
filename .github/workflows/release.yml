@@ -121,7 +121,13 @@ jobs:
               "${f}"
           done
 
+      # GitHub's attestation API is unavailable for user-owned private repos
+      # (returns 403 regardless of the `attestations: write` permission). Skip
+      # this step when the repo is private; cosign keyless signatures above
+      # already provide Rekor-backed provenance. If the repo is later made
+      # public, this step will start running again with no further changes.
       - name: Attest build provenance
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
