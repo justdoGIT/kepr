@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# tests/e2e.sh — end-to-end tests against an installed credman daemon.
+# tests/e2e.sh — end-to-end tests against an installed kepr daemon.
 #
 # Requires:
-#   - credman.service running (systemctl status credman)
-#   - invoking user in the 'credman' group (newgrp credman)
+#   - kepr.service running (systemctl status kepr)
+#   - invoking user in the 'kepr' group (newgrp kepr)
 #   - jq in PATH
 #
 # Optional:
@@ -33,28 +33,28 @@ step() { printf '\n%s\n' "$(yellow "── $* ──")"; }
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 # Every cred created by this script uses this prefix; cleanup walks
-# `credman list --json` and deletes anything starting with it.
+# `kepr list --json` and deletes anything starting with it.
 PREFIX="E2E_$$_$(date +%s)_"
 
 cleanup() {
     local names
-    names=$(credman --json list 2>/dev/null \
+    names=$(kepr --json list 2>/dev/null \
             | jq -r --arg p "$PREFIX" '.credentials[]?.name | select(startswith($p))' \
             2>/dev/null || true)
     for n in $names; do
-        credman --json delete "$n" >/dev/null 2>&1 || true
+        kepr --json delete "$n" >/dev/null 2>&1 || true
     done
 }
 trap cleanup EXIT
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
-command -v credman >/dev/null || { echo "credman not in PATH"; exit 1; }
+command -v kepr >/dev/null || { echo "kepr not in PATH"; exit 1; }
 command -v jq      >/dev/null || { echo "jq not in PATH — install jq first"; exit 1; }
 
-# Socket reachable? `credman list` fails with a connect error if not.
-if ! credman --json list >/dev/null 2>&1; then
-    echo "Cannot reach the credman daemon — is credman.service running,"
-    echo "and are you in the 'credman' group? (try: newgrp credman)"
+# Socket reachable? `kepr list` fails with a connect error if not.
+if ! kepr --json list >/dev/null 2>&1; then
+    echo "Cannot reach the kepr daemon — is kepr.service running,"
+    echo "and are you in the 'kepr' group? (try: newgrp kepr)"
     exit 1
 fi
 
@@ -62,38 +62,38 @@ fi
 step "1. happy path (set --generate, get, list, check, delete)"
 
 NAME="${PREFIX}HAPPY"
-if credman --json set "$NAME" --generate >/dev/null; then
+if kepr --json set "$NAME" --generate >/dev/null; then
     pass "set $NAME --generate"
 else
     fail "set $NAME --generate"
 fi
 
-val=$(credman get "$NAME" --quiet) || val=""
+val=$(kepr get "$NAME" --quiet) || val=""
 if [ -n "$val" ]; then pass "get $NAME --quiet returned a non-empty value"
 else fail "get $NAME --quiet returned empty"; fi
 
-if credman --json list | jq -e --arg n "$NAME" '.credentials[]?.name | select(. == $n)' >/dev/null; then
+if kepr --json list | jq -e --arg n "$NAME" '.credentials[]?.name | select(. == $n)' >/dev/null; then
     pass "list contains $NAME"
 else
     fail "list does not contain $NAME"
 fi
 
-if credman --json check | jq -e --arg n "$NAME" '.results[$n] == "ok"' >/dev/null; then
+if kepr --json check | jq -e --arg n "$NAME" '.results[$n] == "ok"' >/dev/null; then
     pass "check reports $NAME ok"
 else
     fail "check did not report $NAME ok"
 fi
 
-if credman --json delete "$NAME" >/dev/null; then
+if kepr --json delete "$NAME" >/dev/null; then
     pass "delete $NAME"
 else
     fail "delete $NAME"
 fi
 
-# `credman --json get` on a missing cred exits 1; `set -o pipefail` would
+# `kepr --json get` on a missing cred exits 1; `set -o pipefail` would
 # then make the whole `| jq` pipeline exit 1 even when jq matched. Capture
 # first, then pipe — same pattern as tests 4 and 7.
-out=$(credman --json get "$NAME" || true)
+out=$(kepr --json get "$NAME" || true)
 if echo "$out" | jq -e '.kind == "err"' >/dev/null; then
     pass "get after delete reports not found"
 else
@@ -106,13 +106,13 @@ step "2. value round-trip preserves exact bytes"
 NAME="${PREFIX}ROUND"
 SECRET="some string with spaces and !@# chars"
 
-if credman --json set "$NAME" --value "$SECRET" >/dev/null; then
+if kepr --json set "$NAME" --value "$SECRET" >/dev/null; then
     pass "set $NAME --value <literal>"
 else
     fail "set $NAME --value <literal>"
 fi
 
-got=$(credman get "$NAME" --quiet) || got=""
+got=$(kepr get "$NAME" --quiet) || got=""
 if [ "$got" = "$SECRET" ]; then
     pass "value exact match after round-trip"
 else
@@ -125,10 +125,10 @@ step "3. every generator kind produces the documented format"
 check_kind() {
     local kind=$1 expected_len=$2 regex=$3
     local name="${PREFIX}GEN_${kind^^}"
-    credman --json set "$name" --generate --gen-kind "$kind" >/dev/null \
+    kepr --json set "$name" --generate --gen-kind "$kind" >/dev/null \
         || { fail "set --gen-kind $kind"; return; }
     local v
-    v=$(credman get "$name" --quiet) || { fail "get after --gen-kind $kind"; return; }
+    v=$(kepr get "$name" --quiet) || { fail "get after --gen-kind $kind"; return; }
 
     local len=${#v}
     if [ "$len" != "$expected_len" ]; then
@@ -148,8 +148,8 @@ check_kind uuid   36  '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 
 # Pass is tested via complexity, not a single regex
 NAME="${PREFIX}GEN_PASS"
-credman --json set "$NAME" --generate --gen-kind pass >/dev/null
-passval=$(credman get "$NAME" --quiet)
+kepr --json set "$NAME" --generate --gen-kind pass >/dev/null
+passval=$(kepr get "$NAME" --quiet)
 if [ "${#passval}" = 32 ] \
     && [[ "$passval" =~ [A-Z] ]] \
     && [[ "$passval" =~ [a-z] ]] \
@@ -168,14 +168,14 @@ step "4. daemon rejects invalid names"
 # validate_name in the daemon must reject it. We also assert the error names
 # the offending character, proving validate_name's own error text is reaching
 # the client untruncated (not a generic "bad request").
-out=$(credman --json set 'foo/bar' --value x 2>&1 || true)
+out=$(kepr --json set 'foo/bar' --value x 2>&1 || true)
 if echo "$out" | jq -e ".kind == \"err\" and (.error | test(\"invalid character '/'\"))" >/dev/null; then
     pass "set with '/' rejected, error names the character"
 else
     fail "set with '/' not rejected cleanly: $out"
 fi
 
-out=$(credman --json set 'foo.bar' --value x 2>&1 || true)
+out=$(kepr --json set 'foo.bar' --value x 2>&1 || true)
 if echo "$out" | jq -e ".kind == \"err\" and (.error | test(\"invalid character '\\\\.'\"))" >/dev/null; then
     pass "set with '.' rejected, error names the character"
 else
@@ -189,9 +189,9 @@ fi
 step "5. --value overwrites an existing cred"
 
 NAME="${PREFIX}OVER"
-credman --json set "$NAME" --value "first"  >/dev/null
-credman --json set "$NAME" --value "second" >/dev/null
-got=$(credman get "$NAME" --quiet)
+kepr --json set "$NAME" --value "first"  >/dev/null
+kepr --json set "$NAME" --value "second" >/dev/null
+got=$(kepr get "$NAME" --quiet)
 if [ "$got" = "second" ]; then
     pass "second set --value replaced first"
 else
@@ -201,15 +201,15 @@ fi
 # ── 6. JSON mode shape ────────────────────────────────────────────────────────
 step "6. --json output is valid JSON in both success and failure"
 
-if credman --json list | jq -e '.kind == "list_ok" and (.credentials | type == "array")' >/dev/null; then
+if kepr --json list | jq -e '.kind == "list_ok" and (.credentials | type == "array")' >/dev/null; then
     pass "--json list: kind=list_ok, credentials is array"
 else
     fail "--json list shape wrong"
 fi
 
 MISSING="${PREFIX}DEFINITELY_NOT_HERE"
-# Same pipefail trap as test 1: credman exits 1 on not-found. Capture first.
-out=$(credman --json get "$MISSING" || true)
+# Same pipefail trap as test 1: kepr exits 1 on not-found. Capture first.
+out=$(kepr --json get "$MISSING" || true)
 if echo "$out" \
     | jq -e '.kind == "err" and (.error | type == "string" and length > 0)' >/dev/null; then
     pass "--json get on missing cred: kind=err, error is non-empty string"
@@ -233,16 +233,16 @@ fi
 
 if [ "$can_root" = 1 ]; then
     NAME="${PREFIX}CORRUPT"
-    credman --json set "$NAME" --value "ok" >/dev/null
+    kepr --json set "$NAME" --value "ok" >/dev/null
     # The on-disk name mirrors what store::to_cred_name builds.
     UID_NUM=$(id -u)
-    DISK_NAME="credman-${UID_NUM}-$(echo "$NAME" | tr '[:upper:]_' '[:lower:]-')"
+    DISK_NAME="kepr-${UID_NUM}-$(echo "$NAME" | tr '[:upper:]_' '[:lower:]-')"
     DISK_PATH="/etc/credstore.encrypted/${DISK_NAME}"
 
     run_root() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n "$@"; fi }
     run_root sh -c "echo 'not-a-real-encrypted-cred' > '$DISK_PATH'"
 
-    out=$(credman --json get "$NAME" 2>&1 || true)
+    out=$(kepr --json get "$NAME" 2>&1 || true)
     err_msg=$(echo "$out" | jq -r '.error // ""')
 
     if [ -z "$err_msg" ]; then
@@ -254,10 +254,10 @@ if [ "$can_root" = 1 ]; then
     fi
 
     # The corrupted file is still on disk. Leaving it there makes later
-    # tests (e.g. `credman check` in test 10) exit 1 under -o pipefail
+    # tests (e.g. `kepr check` in test 10) exit 1 under -o pipefail
     # because one cred no longer decrypts. Remove it here so each test
     # stays isolated.
-    credman --json delete "$NAME" >/dev/null 2>&1 || true
+    kepr --json delete "$NAME" >/dev/null 2>&1 || true
 else
     skip "no root/sudo — cannot corrupt a cred file to force a decrypt failure"
 fi
@@ -265,7 +265,7 @@ fi
 # ── 8. Audit log shape (requires journal read access) ─────────────────────────
 step "8. audit log records op=get without leaking the value"
 
-# A bare `journalctl -t credman-daemon` returns exit 0 even when the user
+# A bare `journalctl -t kepr-daemon` returns exit 0 even when the user
 # cannot see system messages — journald silently filters to the user's own
 # session. So probe group membership directly: root, `systemd-journal`, or
 # `adm` can read the daemon's audit log; anyone else sees "No entries".
@@ -279,20 +279,20 @@ if [ "$can_journal" = 0 ]; then
 else
     NAME="${PREFIX}AUDIT"
     SECRET_VAL="audit-sentinel-$(date +%N)"
-    credman --json set "$NAME" --value "$SECRET_VAL" >/dev/null
-    credman --json get "$NAME" >/dev/null
+    kepr --json set "$NAME" --value "$SECRET_VAL" >/dev/null
+    kepr --json get "$NAME" >/dev/null
     sleep 0.3  # journal write is async
 
     # Grab the most recent get-ok entry matching our name
-    entry=$(journalctl -t credman-daemon \
-            CREDMAN_OP=get CREDMAN_NAME="$NAME" CREDMAN_RESULT=ok \
+    entry=$(journalctl -t kepr-daemon \
+            KEPR_OP=get KEPR_NAME="$NAME" KEPR_RESULT=ok \
             --since='10 seconds ago' -o json -n 1 2>/dev/null || echo "")
     if [ -z "$entry" ]; then
         fail "no audit entry found for op=get name=$NAME"
     else
-        uid_logged=$(echo "$entry" | jq -r '.CREDMAN_UID // ""')
+        uid_logged=$(echo "$entry" | jq -r '.KEPR_UID // ""')
         if [ "$uid_logged" != "$(id -u)" ]; then
-            fail "audit CREDMAN_UID=$uid_logged, expected $(id -u)"
+            fail "audit KEPR_UID=$uid_logged, expected $(id -u)"
         elif echo "$entry" | grep -q "$SECRET_VAL"; then
             fail "audit entry contains the secret value!"
         else
@@ -312,13 +312,13 @@ if ! command -v script >/dev/null 2>&1; then
     skip "util-linux 'script' not available — cannot fake a TTY"
 else
     NAME="${PREFIX}COLOR"
-    credman --json set "$NAME" --value "x" >/dev/null
+    kepr --json set "$NAME" --value "x" >/dev/null
 
     pty_run() { script -q -e -c "$*" /dev/null 2>/dev/null | tr -d '\r'; }
     has_ansi() { printf '%s' "$1" | grep -q $'\x1b\['; }
 
     # Default behaviour: no ANSI even under a TTY.
-    if ! has_ansi "$(pty_run "credman list")"; then
+    if ! has_ansi "$(pty_run "kepr list")"; then
         pass "default: no ANSI under TTY"
     else
         fail "default emitted ANSI; colour should be opt-in"
@@ -327,18 +327,18 @@ else
     # --color must enable ANSI under a TTY. If the baseline doesn't light
     # up even with --color, the PTY emulation isn't detectable as a TTY —
     # skip the override checks instead of reporting false failures.
-    base=$(pty_run "credman --color list")
+    base=$(pty_run "kepr --color list")
     if ! has_ansi "$base"; then
-        skip "'credman --color list' under PTY emitted no ANSI (non-TTY detection)"
+        skip "'kepr --color list' under PTY emitted no ANSI (non-TTY detection)"
     else
         pass "--color enables ANSI under TTY"
 
-        if ! has_ansi "$(pty_run "credman --color --no-color list")"; then
+        if ! has_ansi "$(pty_run "kepr --color --no-color list")"; then
             pass "--no-color overrides --color"
         else
             fail "--no-color did NOT override --color"
         fi
-        if ! has_ansi "$(pty_run "NO_COLOR=1 credman --color list")"; then
+        if ! has_ansi "$(pty_run "NO_COLOR=1 kepr --color list")"; then
             pass "NO_COLOR=1 overrides --color"
         else
             fail "NO_COLOR=1 did NOT override --color"
@@ -351,11 +351,11 @@ fi
 step "10. check output is deterministic (sorted by name)"
 
 for s in ZETA_C ALPHA_A MIKE_B; do
-    credman --json set "${PREFIX}${s}" --value "x" >/dev/null
+    kepr --json set "${PREFIX}${s}" --value "x" >/dev/null
 done
 
-names1=$(credman check 2>/dev/null | grep -oE "${PREFIX}[A-Z_]+" | grep -E '(ZETA_C|ALPHA_A|MIKE_B)')
-names2=$(credman check 2>/dev/null | grep -oE "${PREFIX}[A-Z_]+" | grep -E '(ZETA_C|ALPHA_A|MIKE_B)')
+names1=$(kepr check 2>/dev/null | grep -oE "${PREFIX}[A-Z_]+" | grep -E '(ZETA_C|ALPHA_A|MIKE_B)')
+names2=$(kepr check 2>/dev/null | grep -oE "${PREFIX}[A-Z_]+" | grep -E '(ZETA_C|ALPHA_A|MIKE_B)')
 sorted=$(printf '%s\n' "$names1" | sort)
 
 if [ "$names1" = "$sorted" ]; then
@@ -377,28 +377,28 @@ step "11. --json mode: no stderr noise on clean errors"
 
 # These CLI calls exit non-zero; under `set -e`, $() would abort the script.
 # `|| true` keeps the script running so we can inspect stderr.
-errout=$(credman --json get 2>&1 >/dev/null || true)
+errout=$(kepr --json get 2>&1 >/dev/null || true)
 if [ -z "$errout" ]; then
     pass "--json get (no NAME): stderr empty"
 else
     fail "--json get (no NAME) leaked stderr: $errout"
 fi
 
-errout=$(credman --json delete 2>&1 >/dev/null || true)
+errout=$(kepr --json delete 2>&1 >/dev/null || true)
 if [ -z "$errout" ]; then
     pass "--json delete (no NAME): stderr empty"
 else
     fail "--json delete (no NAME) leaked stderr: $errout"
 fi
 
-errout=$(credman --json nosuchcommand 2>&1 >/dev/null || true)
+errout=$(kepr --json nosuchcommand 2>&1 >/dev/null || true)
 if [ -z "$errout" ]; then
     pass "--json unknown command: stderr empty"
 else
     fail "--json unknown command leaked stderr: $errout"
 fi
 
-jsonout=$(credman --json nosuchcommand 2>/dev/null || true)
+jsonout=$(kepr --json nosuchcommand 2>/dev/null || true)
 if echo "$jsonout" | jq -e '.kind == "err" and (.error | test("unknown command"))' >/dev/null; then
     pass "--json unknown command: valid JSON with kind=err"
 else
@@ -409,17 +409,17 @@ fi
 step "12. delete --force skips the interactive prompt"
 
 NAME="${PREFIX}FORCE_DEL"
-credman --json set "$NAME" --value "x" >/dev/null
+kepr --json set "$NAME" --value "x" >/dev/null
 
 # stdin closed: if --force didn't skip the prompt, read_line would hit EOF and
 # the delete would be aborted — leaving the cred present.
-if credman delete "$NAME" --force </dev/null >/dev/null 2>&1; then
+if kepr delete "$NAME" --force </dev/null >/dev/null 2>&1; then
     pass "delete --force exited cleanly with no stdin"
 else
     fail "delete --force failed with no stdin"
 fi
 
-out=$(credman --json get "$NAME" || true)
+out=$(kepr --json get "$NAME" || true)
 if echo "$out" | jq -e '.kind == "err"' >/dev/null; then
     pass "credential actually removed by --force"
 else
@@ -430,15 +430,15 @@ fi
 step "13. command aliases (ls, rm)"
 
 NAME="${PREFIX}ALIAS"
-credman --json set "$NAME" --value "x" >/dev/null
+kepr --json set "$NAME" --value "x" >/dev/null
 
-if credman --json ls | jq -e --arg n "$NAME" '.credentials[]?.name | select(. == $n)' >/dev/null; then
+if kepr --json ls | jq -e --arg n "$NAME" '.credentials[]?.name | select(. == $n)' >/dev/null; then
     pass "ls alias returns same shape as list"
 else
     fail "ls alias did not return credential"
 fi
 
-if credman rm "$NAME" --force </dev/null >/dev/null 2>&1; then
+if kepr rm "$NAME" --force </dev/null >/dev/null 2>&1; then
     pass "rm alias + --force deleted credential"
 else
     fail "rm alias failed"

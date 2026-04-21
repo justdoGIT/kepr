@@ -1,6 +1,6 @@
 [Unit]
-Description=credman — credential manager daemon
-Documentation=man:credman(1)
+Description=kepr — credential manager daemon
+Documentation=man:kepr(1)
 After=local-fs.target
 Before=network.target
 
@@ -13,17 +13,17 @@ Type=simple
 User=root
 Group=root
 
-# Create /run/credman (0755 root:root) before the process starts.
+# Create /run/kepr (0755 root:root) before the process starts.
 # Without this, ReadWritePaths below would fail at namespace-setup
 # time because the path doesn't yet exist.
-RuntimeDirectory=credman
+RuntimeDirectory=kepr
 RuntimeDirectoryMode=0755
 
-ExecStart=/usr/local/sbin/credman-daemon
+ExecStart=/usr/local/sbin/kepr-daemon
 
 # Neutral identifier — never expose internal tool names in the
 # service description or the journal tag.
-SyslogIdentifier=credman-daemon
+SyslogIdentifier=kepr-daemon
 
 # Restart on failure — credentials must always be available.
 Restart=on-failure
@@ -39,7 +39,7 @@ ProtectHome=yes
 # /var/lib/systemd/ on first use; without it in ReadWritePaths,
 # ProtectSystem=strict rejects the write and `set` fails with
 # "Read-only file system" until the key is manually seeded.
-ReadWritePaths=/run/credman /etc/credstore.encrypted /var/lib/systemd
+ReadWritePaths=/run/kepr /etc/credstore.encrypted /var/lib/systemd
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

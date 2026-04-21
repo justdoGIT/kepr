@@ -18,7 +18,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               height={24}
               priority
             />
-            credman
+            kepr
           </span>
         ),
       }}

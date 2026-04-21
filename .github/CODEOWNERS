@@ -1,4 +1,4 @@
-# Code owners for credman.
+# Code owners for kepr.
 #
 # Any PR touching these paths requires review from a listed owner before it
 # can be merged (assuming branch protection is enabled with "require review

@@ -1,6 +1,6 @@
 // crypto.rs — credential-backend wrapper (daemon-side only)
 //
-// This module is only compiled into credman-daemon.
+// This module is only compiled into kepr-daemon.
 // The user-facing binary never invokes the backend directly —
 // it only speaks to the daemon over a Unix socket.
 //

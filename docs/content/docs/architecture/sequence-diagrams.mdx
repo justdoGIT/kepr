@@ -3,21 +3,21 @@ title: "Sequence diagrams"
 description: "Mermaid traces of set, get, check, invalid-name rejection, and sanitised decrypt failure."
 ---
 
-## `credman set FOO --generate`
+## `kepr set FOO --generate`
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User
-    participant CLI as credman (CLI)
-    participant SOCK as /run/credman/credman.sock
-    participant D as credman-daemon
+    participant CLI as kepr (CLI)
+    participant SOCK as /run/kepr/kepr.sock
+    participant D as kepr-daemon
     participant CR as crypto.rs
     participant BE as Encryption backend
     participant FS as /etc/credstore.encrypted
     participant J as systemd journal
 
-    U->>CLI: credman set FOO --generate
+    U->>CLI: kepr set FOO --generate
     CLI->>CLI: parse_args -> CliActivity("set")
     CLI->>CLI: generate_secret(Hex) -> ZeroString
     CLI->>SOCK: connect()
@@ -26,57 +26,57 @@ sequenceDiagram
     D->>D: get_peer_uid(stream) -> uid=1000
     D->>D: validate_name("FOO") ok
     D->>CR: encrypt(uid=1000, "FOO", bytes)
-    CR->>BE: spawn(--with-key=host --name=credman-1000-foo)
+    CR->>BE: spawn(--with-key=host --name=kepr-1000-foo)
     BE-->>CR: ciphertext on stdout (rc=0)
-    CR->>FS: write tmp.<pid>, chmod 0600, rename -> credman-1000-foo
+    CR->>FS: write tmp.<pid>, chmod 0600, rename -> kepr-1000-foo
     CR-->>D: Ok(())
     D->>D: daemon_cache::invalidate(1000)
-    D->>J: CREDMAN_OP=set NAME=FOO UID=1000 RESULT=ok
+    D->>J: KEPR_OP=set KEPR_NAME=FOO KEPR_UID=1000 KEPR_RESULT=ok
     D->>CLI: write_frame({"kind":"set_ok","name":"FOO",...})
     CLI->>U: "Stored: FOO"  (exit 0)
 ```
 
-## `credman get OPENAI_API_KEY`
+## `kepr get OPENAI_API_KEY`
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User
-    participant CLI as credman (CLI)
-    participant D as credman-daemon
+    participant CLI as kepr (CLI)
+    participant D as kepr-daemon
     participant CR as crypto.rs
     participant BE as Encryption backend
     participant FS as /etc/credstore.encrypted
     participant J as systemd journal
 
-    U->>CLI: credman get OPENAI_API_KEY
+    U->>CLI: kepr get OPENAI_API_KEY
     CLI->>D: framed {"cmd":"get","name":"OPENAI_API_KEY"}
     D->>D: peer_uid=1000, validate_name ok
     D->>CR: decrypt(1000, "OPENAI_API_KEY")
-    CR->>FS: stat credman-1000-openai-api-key
+    CR->>FS: stat kepr-1000-openai-api-key
     CR->>BE: spawn(decrypt path -)
     BE-->>CR: plaintext on stdout
     CR-->>D: Ok(ZeroString)
-    D->>J: CREDMAN_OP=get RESULT=ok
+    D->>J: KEPR_OP=get RESULT=ok
     D->>CLI: {"kind":"get_ok","value":"sk-..."}
     CLI->>U: pretty / --quiet / --export rendering
     Note over CLI: ZeroString dropped -> memory zeroized
 ```
 
-## `credman check` (parallel verify)
+## `kepr check` (parallel verify)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User
-    participant CLI as credman
-    participant D as credman-daemon
+    participant CLI as kepr
+    participant D as kepr-daemon
     participant CACHE as daemon_cache
     participant W1 as worker thread 1
     participant W2 as worker thread N
     participant BE as Encryption backend
 
-    U->>CLI: credman check
+    U->>CLI: kepr check
     CLI->>D: {"cmd":"check"}
     D->>CACHE: list_for_uid(1000)
     CACHE-->>D: [(NAME_A, path), (NAME_B, path), ...]
@@ -102,10 +102,10 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     actor U as User
-    participant CLI as credman
-    participant D as credman-daemon
+    participant CLI as kepr
+    participant D as kepr-daemon
 
-    U->>CLI: credman set 'foo/bar' --value x
+    U->>CLI: kepr set 'foo/bar' --value x
     CLI->>CLI: parse_args (positional uppercased -> "FOO/BAR")
     CLI->>D: framed {"cmd":"set","name":"FOO/BAR","value":"x"}
     D->>D: validate_name -> Err("invalid character '/' ...")
@@ -126,7 +126,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant CLI
-    participant D as credman-daemon
+    participant D as kepr-daemon
     participant CR as crypto.rs
     participant BE as Encryption backend
 

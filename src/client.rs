@@ -10,7 +10,7 @@ pub fn send_request(req: &Request) -> Result<Response, String> {
     let mut stream = UnixStream::connect(SOCKET_PATH).map_err(|e| {
         format!(
             "cannot connect to credential service: {e}\n  \
-             Is credman-daemon running? Check: systemctl status credman"
+             Is kepr-daemon running? Check: systemctl status kepr"
         )
     })?;
 

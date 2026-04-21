@@ -93,6 +93,6 @@ jobs:
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           format: spdx-json
-          output-file: credman.spdx.json
+          output-file: kepr.spdx.json
           upload-artifact: true
           dependency-snapshot: true

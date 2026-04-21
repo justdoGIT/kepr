@@ -1,17 +1,17 @@
 #!/bin/sh
 set -e
 
-# Ensure the credman system group exists so the daemon socket
-# (0660 root:credman) is reachable by authorised users.
-getent group credman >/dev/null || addgroup --system credman
+# Ensure the kepr system group exists so the daemon socket
+# (0660 root:kepr) is reachable by authorised users.
+getent group kepr >/dev/null || addgroup --system kepr
 
 # Reload units and enable the service. `deb-systemd-helper` is installed
 # by dh-systemd; fall back to systemctl if absent.
 if command -v deb-systemd-helper >/dev/null 2>&1; then
-    deb-systemd-helper enable credman.service >/dev/null || true
+    deb-systemd-helper enable kepr.service >/dev/null || true
 fi
 if [ -d /run/systemd/system ]; then
     systemctl --system daemon-reload >/dev/null || true
-    systemctl restart credman.service >/dev/null || true
+    systemctl restart kepr.service >/dev/null || true
 fi
 exit 0

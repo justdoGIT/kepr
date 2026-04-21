@@ -1,4 +1,4 @@
-# credman — Technical Documentation
+# kepr — Technical Documentation
 
 A per-user credential manager for Linux hosts. An unprivileged CLI talks
 to a root systemd service over a Unix socket; the daemon owns all
@@ -15,49 +15,49 @@ targets):
 
 | Binary           | UID     | Responsibilities                                              |
 | ---------------- | ------- | ------------------------------------------------------------- |
-| `credman`        | caller  | Argv parsing, terminal UI, framed JSON over `/run/credman`.   |
-| `credman-daemon` | `root`  | Encryption backend, peer-uid enforcement, audit log, fs I/O.  |
+| `kepr`        | caller  | Argv parsing, terminal UI, framed JSON over `/run/kepr`.   |
+| `kepr-daemon` | `root`  | Encryption backend, peer-uid enforcement, audit log, fs I/O.  |
 
 The CLI **never** invokes the encryption backend, **never** touches
 `/etc/credstore.encrypted/`, and **never** needs `sudo`. Membership in
-the `credman` group is the sole client-side prerequisite.
+the `kepr` group is the sole client-side prerequisite.
 
 ### 1.2 Trust boundary
 
 ```mermaid
 flowchart LR
-    subgraph User["unprivileged user (uid=N, group=credman)"]
-        CLI[credman CLI]
+    subgraph User["unprivileged user (uid=N, group=kepr)"]
+        CLI[kepr CLI]
     end
     subgraph Root["systemd service (root)"]
-        D[credman-daemon]
+        D[kepr-daemon]
         C[crypto::encrypt/decrypt]
         S[/etc/credstore.encrypted/]
         J[(systemd journal)]
     end
-    CLI -- "framed JSON\n/run/credman/credman.sock\n0660 root:credman" --> D
+    CLI -- "framed JSON\n/run/kepr/kepr.sock\n0660 root:kepr" --> D
     D -- "SO_PEERCRED → uid" --> D
     D --> C
     C -- "fork+exec backend\n--with-key=host" --> S
-    D -- "structured fields\nCREDMAN_OP/NAME/UID" --> J
+    D -- "structured fields\nKEPR_OP/KEPR_NAME/KEPR_UID/KEPR_RESULT/KEPR_USER" --> J
 ```
 
 The boundary is the socket. The daemon **discards any uid in the request
 body** and uses the `SO_PEERCRED`-reported uid for namespacing; that
-makes the `credman-<uid>-<name>` scheme tamper-proof from the wire side.
+makes the `kepr-<uid>-<name>` scheme tamper-proof from the wire side.
 
 ### 1.3 On-disk layout
 
 ```
 /etc/credstore.encrypted/
-├── credman-1000-openai-api-key      ← uid 1000
-├── credman-1000-stripe-secret
-├── credman-1001-openai-api-key      ← uid 1001 (different file, same name)
-└── credman-0-host-token
+├── kepr-1000-openai-api-key      ← uid 1000
+├── kepr-1000-stripe-secret
+├── kepr-1001-openai-api-key      ← uid 1001 (different file, same name)
+└── kepr-0-host-token
 
-/run/credman/credman.sock              0660 root:credman
-/usr/local/bin/credman                 0755 root:root
-/usr/local/sbin/credman-daemon         0700 root:root
+/run/kepr/kepr.sock              0660 root:kepr
+/usr/local/bin/kepr                 0755 root:root
+/usr/local/sbin/kepr-daemon         0700 root:root
 ```
 
 The encryption backend persists its host-derived key under
@@ -75,7 +75,7 @@ The encryption backend persists its host-derived key under
 | `client.rs`            | CLI            | `send_request` (connect → write_frame → read_frame).     |
 | `cli_*.rs`             | CLI            | Argv parsing, mode flags, terminal IO.                   |
 | `crypto.rs`            | daemon         | Encryption-backend wrapper; `sanitize_error`.            |
-| `audit.rs`             | daemon         | Journal datagram (cached fd) with `CREDMAN_*` fields.    |
+| `audit.rs`             | daemon         | Journal datagram (cached fd) with `KEPR_*` fields.    |
 | `daemon_*.rs`          | daemon         | Socket setup, peer creds, worker pool, dir cache, handlers. |
 
 `mod` declarations in `main.rs` and `daemon.rs` enforce this split: the
@@ -214,27 +214,27 @@ Every operation emits a structured journal datagram via a cached
 `UnixDatagram` fd:
 
 ```
-SYSLOG_IDENTIFIER=credman-daemon
+SYSLOG_IDENTIFIER=kepr-daemon
 PRIORITY=6 | 3
-MESSAGE=credman: op=get name=OPENAI_API_KEY uid=1000 user=kk result=ok
-CREDMAN_OP=get
-CREDMAN_NAME=OPENAI_API_KEY
-CREDMAN_UID=1000
-CREDMAN_USER=kk
-CREDMAN_RESULT=ok
+MESSAGE=kepr: op=get name=OPENAI_API_KEY uid=1000 user=kk result=ok
+KEPR_OP=get
+KEPR_NAME=OPENAI_API_KEY
+KEPR_UID=1000
+KEPR_USER=kk
+KEPR_RESULT=ok
 ```
 
 Indexed query examples:
 
 ```bash
-journalctl -t credman-daemon
-journalctl -t credman-daemon CREDMAN_UID=1000
-journalctl -t credman-daemon CREDMAN_OP=get CREDMAN_RESULT=fail
+journalctl -t kepr-daemon
+journalctl -t kepr-daemon KEPR_UID=1000
+journalctl -t kepr-daemon KEPR_OP=get KEPR_RESULT=fail
 ```
 
 The credential **value is never logged.**
 
-### 3.4 Hardening (`systemd/credman.service`)
+### 3.4 Hardening (`systemd/kepr.service`)
 
 `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`,
 `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`,
@@ -248,21 +248,21 @@ deliberate — the backend needs the privilege to derive a host-bound key.
 
 ## 4. Sequence Diagrams
 
-### 4.1 `credman set FOO --generate`
+### 4.1 `kepr set FOO --generate`
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User
-    participant CLI as credman (CLI)
-    participant SOCK as /run/credman/credman.sock
-    participant D as credman-daemon
+    participant CLI as kepr (CLI)
+    participant SOCK as /run/kepr/kepr.sock
+    participant D as kepr-daemon
     participant CR as crypto.rs
     participant BE as Encryption backend
     participant FS as /etc/credstore.encrypted
     participant J as systemd journal
 
-    U->>CLI: credman set FOO --generate
+    U->>CLI: kepr set FOO --generate
     CLI->>CLI: parse_args → CliActivity("set")
     CLI->>CLI: generate_secret(Hex) → ZeroString
     CLI->>SOCK: connect()
@@ -271,57 +271,57 @@ sequenceDiagram
     D->>D: get_peer_uid(stream) → uid=1000
     D->>D: validate_name("FOO") ok
     D->>CR: encrypt(uid=1000, "FOO", bytes)
-    CR->>BE: spawn backend encrypt, name=credman-1000-foo
+    CR->>BE: spawn backend encrypt, name=kepr-1000-foo
     BE-->>CR: ciphertext on stdout (rc=0)
-    CR->>FS: write tmp.<pid>, chmod 0600, rename → credman-1000-foo
+    CR->>FS: write tmp.<pid>, chmod 0600, rename → kepr-1000-foo
     CR-->>D: Ok(())
     D->>D: daemon_cache::invalidate(1000)
-    D->>J: CREDMAN_OP=set NAME=FOO UID=1000 RESULT=ok
+    D->>J: KEPR_OP=set NAME=FOO UID=1000 RESULT=ok
     D->>CLI: write_frame({"kind":"set_ok","name":"FOO",...})
     CLI->>U: "Stored: FOO"  (exit 0)
 ```
 
-### 4.2 `credman get OPENAI_API_KEY`
+### 4.2 `kepr get OPENAI_API_KEY`
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User
-    participant CLI as credman (CLI)
-    participant D as credman-daemon
+    participant CLI as kepr (CLI)
+    participant D as kepr-daemon
     participant CR as crypto.rs
     participant BE as Encryption backend
     participant FS as /etc/credstore.encrypted
     participant J as systemd journal
 
-    U->>CLI: credman get OPENAI_API_KEY
+    U->>CLI: kepr get OPENAI_API_KEY
     CLI->>D: framed {"cmd":"get","name":"OPENAI_API_KEY"}
     D->>D: peer_uid=1000, validate_name ok
     D->>CR: decrypt(1000, "OPENAI_API_KEY")
-    CR->>FS: stat credman-1000-openai-api-key (exists?)
+    CR->>FS: stat kepr-1000-openai-api-key (exists?)
     CR->>BE: spawn(decrypt path -)
     BE-->>CR: plaintext on stdout
     CR-->>D: Ok(ZeroString)
-    D->>J: CREDMAN_OP=get RESULT=ok
+    D->>J: KEPR_OP=get RESULT=ok
     D->>CLI: {"kind":"get_ok","value":"sk-..."}
     CLI->>U: pretty / --quiet / --export rendering
     Note over CLI: ZeroString dropped → memory zeroized
 ```
 
-### 4.3 `credman check` (parallel verify)
+### 4.3 `kepr check` (parallel verify)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User
-    participant CLI as credman
-    participant D as credman-daemon
+    participant CLI as kepr
+    participant D as kepr-daemon
     participant CACHE as daemon_cache
     participant W1 as worker 1
     participant W2 as worker N
     participant BE as Backend
 
-    U->>CLI: credman check
+    U->>CLI: kepr check
     CLI->>D: cmd=check
     D->>CACHE: list_for_uid uid=1000
     CACHE-->>D: NAME_A, NAME_B, ...
@@ -347,10 +347,10 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     actor U as User
-    participant CLI as credman
-    participant D as credman-daemon
+    participant CLI as kepr
+    participant D as kepr-daemon
 
-    U->>CLI: credman set foo/bar --value x
+    U->>CLI: kepr set foo/bar --value x
     CLI->>CLI: parse_args uppercases to FOO/BAR
     CLI->>D: framed cmd=set name=FOO/BAR value=x
     D->>D: validate_name returns Err, invalid character slash
@@ -369,7 +369,7 @@ metachars.
 ```mermaid
 sequenceDiagram
     participant CLI
-    participant D as credman-daemon
+    participant D as kepr-daemon
     participant CR as crypto.rs
     participant BE as Backend
 
@@ -410,12 +410,12 @@ Hermetic — no daemon, no root, no encryption backend.
 | `cli_mode`      | precedence tests                      | `NO_COLOR > --no-color > CLICOLOR_FORCE > --color > off`.  |
 | `cli_activity`  | `parse_resolves_aliases` / `_rejects_unknown` | `ls`→list, `rm`→delete; unknown returns `Err`.     |
 
-`store::tests` only compile under the `credman-daemon` bin target — see
+`store::tests` only compile under the `kepr-daemon` bin target — see
 the `mod` declarations.
 
 ### 5.2 End-to-end tests (`tests/e2e.sh`)
 
-Requires the installed daemon, `credman` group membership, and `jq`.
+Requires the installed daemon, `kepr` group membership, and `jq`.
 Cases 7 + 8 skip cleanly without sudo / journal-read access. Each cred
 created uses prefix `E2E_<pid>_<epoch>_` and is removed on `trap EXIT`.
 
@@ -440,8 +440,8 @@ flowchart TB
 Run:
 
 ```bash
-sudo systemctl status credman           # daemon up
-newgrp credman                          # group active in this shell
+sudo systemctl status kepr           # daemon up
+newgrp kepr                          # group active in this shell
 ./tests/e2e.sh                          # exit 0 = full pass
 ```
 
@@ -466,5 +466,5 @@ newgrp credman                          # group active in this shell
 ## 6. Reference
 
 - `README.md` — install, usage, file layout, troubleshooting.
-- `systemd/credman.service` — hardening flags + `ReadWritePaths` allow-list.
+- `systemd/kepr.service` — hardening flags + `ReadWritePaths` allow-list.
 - `tests/e2e.sh` — see §5.2.

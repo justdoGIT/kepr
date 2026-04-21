@@ -28,15 +28,15 @@ body:
     attributes:
       label: Proposed solution
       description: |
-        Describe what you would like credman to do. Include example CLI
+        Describe what you would like kepr to do. Include example CLI
         invocations or config snippets if you have them in mind.
       placeholder: |
-        Add an `--env` flag or a `credman env` subcommand that lets users
+        Add an `--env` flag or a `kepr env` subcommand that lets users
         define named groups of credentials and switch between them:
 
-          credman env create staging
-          credman env set staging DB_URL postgres://...
-          credman env activate staging
+          kepr env create staging
+          kepr env set staging DB_URL postgres://...
+          kepr env activate staging
     validations:
       required: true
 

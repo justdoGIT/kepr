@@ -9,7 +9,7 @@ updates:
       timezone: Etc/UTC
     open-pull-requests-limit: 5
     commit-message:
-      prefix: "credman"
+      prefix: "kepr"
       include: scope
 
   - package-ecosystem: npm

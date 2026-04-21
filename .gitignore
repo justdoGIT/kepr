@@ -5,13 +5,13 @@
 
 # Claude Plugins
 entities.json
-.gstack
+.gstack/
 .mempalace/
 mempalace.yaml
+.playwright-mcp/
 .omc/
 .remember/
 .serena/
-.gstack/
 
 # Rust build
 target/
