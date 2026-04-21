@@ -1,6 +1,6 @@
 // protocol.rs — shared request/response types for the CLI↔daemon Unix socket.
 //
-// Both credman (client) and credman-daemon import this module. Keep it
+// Both kepr (client) and kepr-daemon import this module. Keep it
 // minimal — only wire types + helpers that preserve wire invariants.
 //
 // Wire format (framed): <u32 BE length> <JSON payload>
@@ -13,9 +13,9 @@ use std::collections::HashMap;
 
 // ── Socket path / limits ──────────────────────────────────────────────────────
 
-pub const SOCKET_PATH: &str = "/run/credman/credman.sock";
+pub const SOCKET_PATH: &str = "/run/kepr/kepr.sock";
 #[allow(dead_code)]
-pub const SOCKET_DIR: &str = "/run/credman";
+pub const SOCKET_DIR: &str = "/run/kepr";
 pub const MAX_MSG_BYTES: usize = 65_536; // 64 KB max framed message
 pub const TIMEOUT_SECS: u64 = 10;
 
@@ -111,7 +111,7 @@ impl Response {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CredInfo {
     pub name: String,      // ENV_VAR_NAME
-    pub cred_name: String, // credman-<uid>-env-var-name
+    pub cred_name: String, // kepr-<uid>-env-var-name
     pub size: u64,
     pub modified: String, // YYYY-MM-DD HH:MM
 }
@@ -241,7 +241,7 @@ mod tests {
         let r = Response::ListOk {
             credentials: vec![CredInfo {
                 name: "X".into(),
-                cred_name: "credman-1000-x".into(),
+                cred_name: "kepr-1000-x".into(),
                 size: 42,
                 modified: "2024-01-01 00:00".into(),
             }],
