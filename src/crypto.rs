@@ -171,9 +171,7 @@ fn sanitize_error(raw: &str) -> String {
 pub const SANITIZED_LOOKUP_ERROR: &str = "credential unavailable";
 
 pub fn sanitize_lookup_error(precise: &str) -> String {
-    if precise.starts_with("credential not found")
-        || precise.starts_with("decryption failed")
-    {
+    if precise.starts_with("credential not found") || precise.starts_with("decryption failed") {
         SANITIZED_LOOKUP_ERROR.to_string()
     } else {
         precise.to_string()
