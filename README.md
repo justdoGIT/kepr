@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./.github/assets/kepr_1280x640.png" alt="kepr" style="max-width: 1280px; width: 100%; height: auto;">
+  <img src="./.github/assets/kepr.png" alt="kepr" style="max-width: 1280px; width: 100%; height: auto;">
 </p>
 
 # kepr
