@@ -50,5 +50,30 @@ MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 
+# Capability bounding. Caps the daemon could ever raise, even though it
+# starts as root. Required:
+#   CAP_IPC_LOCK   — mlockall (src/daemon.rs lock_memory)
+#   CAP_CHOWN      — chown(socket, root:kepr) in src/daemon_socket.rs
+#   CAP_DAC_READ_SEARCH — kept for the post-AEAD migration when User= is
+#                  flipped to a non-root account that still needs to read
+#                  /etc/credstore.encrypted/. Inert under User=root.
+# AmbientCapabilities is empty so child processes (currently
+# /usr/bin/systemd-creds) cannot escalate beyond the bounded set.
+CapabilityBoundingSet=CAP_IPC_LOCK CAP_CHOWN CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+
+# Syscall filter. @system-service is systemd's recommended baseline for
+# long-running services and includes the resource calls (mlockall, mmap)
+# the daemon needs. The deny list strips classes the daemon never uses.
+# Note: do NOT add ~@resources here — that would block mlockall.
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @reboot @swap @cpu-emulation @debug @raw-io @clock @module @obsolete
+SystemCallErrorNumber=EPERM
+
+# Daemon only opens AF_UNIX sockets (its listening socket and the journald
+# socket). AF_NETLINK retained for libc internals (e.g. NSS group lookups,
+# uname). All other families denied.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
 [Install]
 WantedBy=multi-user.target
