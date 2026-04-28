@@ -160,6 +160,26 @@ fn sanitize_error(raw: &str) -> String {
         .to_string()
 }
 
+// ── Wire-error sanitiser ──────────────────────────────────────────────────────
+//
+// Distinguishable get/delete errors leak credential existence: a "credential
+// not found" tells the caller the cred is absent, while "decryption failed"
+// tells the caller it exists but is unreadable. Either is enough to enumerate
+// names by trial. Collapse both into a single user-facing message; the
+// precise reason still goes to the audit log via the handler.
+
+pub const SANITIZED_LOOKUP_ERROR: &str = "credential unavailable";
+
+pub fn sanitize_lookup_error(precise: &str) -> String {
+    if precise.starts_with("credential not found")
+        || precise.starts_with("decryption failed")
+    {
+        SANITIZED_LOOKUP_ERROR.to_string()
+    } else {
+        precise.to_string()
+    }
+}
+
 // ── Check ─────────────────────────────────────────────────────────────────────
 
 /// Verify a credential can be decrypted. Returns true/false.
@@ -281,5 +301,42 @@ mod tests {
             !out.to_lowercase().contains(backend_leaf()),
             "leaked (case-insensitive check): {out}"
         );
+    }
+
+    // ── sanitize_lookup_error ─────────────────────────────────────────────────
+    // The wire response for get/delete must not distinguish "absent" from
+    // "present-but-undecryptable" — either reveals existence to a caller who
+    // could otherwise only enumerate by trial. The audit log keeps the precise
+    // reason; only the user-facing string is collapsed.
+
+    use super::{sanitize_lookup_error, SANITIZED_LOOKUP_ERROR};
+
+    #[test]
+    fn collapses_not_found() {
+        let out = sanitize_lookup_error("credential not found: FOO");
+        assert_eq!(out, SANITIZED_LOOKUP_ERROR);
+    }
+
+    #[test]
+    fn collapses_decrypt_failed() {
+        let out = sanitize_lookup_error("decryption failed: cred backend exited 1");
+        assert_eq!(out, SANITIZED_LOOKUP_ERROR);
+    }
+
+    #[test]
+    fn passes_unrelated_errors_through() {
+        // Validation errors and operational errors are not lookup leaks; they
+        // help the legitimate user diagnose their own bad input. Don't collapse.
+        let raw = "name must match [A-Z0-9_]";
+        assert_eq!(sanitize_lookup_error(raw), raw);
+    }
+
+    #[test]
+    fn collapsed_message_contains_no_name() {
+        // Defence-in-depth: the sanitised constant must never embed the
+        // attempted name. Anyone changing SANITIZED_LOOKUP_ERROR should keep
+        // it free of placeholders.
+        assert!(!SANITIZED_LOOKUP_ERROR.contains("{}"));
+        assert!(!SANITIZED_LOOKUP_ERROR.contains("FOO"));
     }
 }
