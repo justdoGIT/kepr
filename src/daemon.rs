@@ -14,6 +14,7 @@ mod daemon_cache;
 mod daemon_handlers;
 mod daemon_peer;
 mod daemon_pool;
+mod daemon_ratelimit;
 mod daemon_socket;
 mod framing;
 mod generate;
@@ -22,11 +23,13 @@ mod store;
 
 use std::fs;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::OnceLock;
 
 use audit::{username_for_uid, AuditEvent, AuditResult};
 use daemon_handlers::{handle_check, handle_delete, handle_get, handle_list, handle_set};
 use daemon_peer::get_peer_uid;
 use daemon_pool::Pool;
+use daemon_ratelimit::RateLimiter;
 use daemon_socket::{
     effective_uid, set_socket_permissions, setup_socket_dir, tighten_umask_for_socket,
 };
@@ -37,6 +40,18 @@ use protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
 // may fork+exec the credential backend, so we want some slack over CPU count.
 const POOL_WORKERS: usize = 16;
 const POOL_QUEUE: usize = 64;
+
+// Per-peer-uid rate limit. A peer that stays under ~10 ops/sec sees no
+// impact; a peer that bursts past 30 outstanding requests is throttled
+// per-token-deficit until the bucket refills. See daemon_ratelimit.
+const RATE_LIMIT_CAPACITY: f64 = 30.0;
+const RATE_LIMIT_REFILL_PER_SEC: f64 = 10.0;
+
+static RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
+
+fn rate_limiter() -> &'static RateLimiter {
+    RATE_LIMITER.get_or_init(|| RateLimiter::new(RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_PER_SEC))
+}
 
 // ── mlockall ─────────────────────────────────────────────────────────────────
 // Lock current and future allocations into RAM so decrypted secret bytes
@@ -98,6 +113,19 @@ fn handle_client(mut stream: UnixStream) {
             return;
         }
     };
+
+    if !rate_limiter().check(peer_uid) {
+        // Reply immediately and return the worker to the pool. An earlier
+        // version slept here for a small jitter to deter timing-based
+        // fingerprinting of the bucket capacity, but the sleep happens
+        // inside a bounded worker (POOL_WORKERS = 16): a peer hammering
+        // the limit could keep ~16 workers parked in this branch and
+        // saturate the pool from the reject path alone, defeating the
+        // limiter's whole point. The bucket already throttles throughput;
+        // the public capacity is documented, so jitter buys nothing real.
+        send_error(&mut stream, "rate limited");
+        return;
+    }
 
     let buf = match read_frame(&mut stream, MAX_MSG_BYTES) {
         Ok(b) => b,
