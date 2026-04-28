@@ -235,3 +235,68 @@ mod tests {
         assert_eq!(format_timestamp(1_700_000_000), "2023-11-14 22:13");
     }
 }
+
+// ── Property tests ────────────────────────────────────────────────────────────
+// validate_name is the only path-traversal defence between the daemon and the
+// filesystem. Example-based tests above catch the obvious cases; these
+// property tests random-walk the input space to lock in the contract:
+//   1. Any [A-Za-z0-9_]{1..=128} input is accepted.
+//   2. Any input containing a single non-allowed Unicode scalar is rejected.
+//   3. Any input longer than 128 chars is rejected, regardless of charset.
+//   4. validate_name is total — no input causes a panic.
+//
+// Default proptest config runs 256 cases per property; failures are minimised
+// (shrunk) and the failing seed is recorded under proptest-regressions/ for
+// deterministic replay. Keep that directory out of git unless a regression
+// proves valuable for the test corpus.
+
+#[cfg(test)]
+mod proptests {
+    use super::validate_name;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Positive contract: any non-empty [A-Za-z0-9_] string up to the
+        /// 128-char cap must be accepted.
+        #[test]
+        fn valid_chars_within_length_accepted(s in "[A-Za-z0-9_]{1,128}") {
+            prop_assert!(validate_name(&s).is_ok(), "rejected valid name: {s:?}");
+        }
+
+        /// Negative contract: any string containing at least one Unicode
+        /// scalar outside [A-Za-z0-9_] must be rejected. The complement class
+        /// covers ASCII punctuation, whitespace, control chars, and the
+        /// entire non-ASCII Unicode plane.
+        #[test]
+        fn invalid_char_rejected(
+            prefix in "[A-Za-z0-9_]{0,30}",
+            bad    in "[^A-Za-z0-9_]",
+            suffix in "[A-Za-z0-9_]{0,30}",
+        ) {
+            let s = format!("{prefix}{bad}{suffix}");
+            prop_assert!(
+                validate_name(&s).is_err(),
+                "accepted name with invalid char: {s:?}"
+            );
+        }
+
+        /// Length cap: 129..=200 chars of otherwise-valid charset must still
+        /// reject. Catches off-by-one regressions on the 128 boundary.
+        #[test]
+        fn over_length_rejected(s in "[A-Za-z0-9_]{129,200}") {
+            prop_assert!(
+                validate_name(&s).is_err(),
+                "accepted over-length name: {} chars",
+                s.len()
+            );
+        }
+
+        /// Totality: any UTF-8 input must terminate with Ok or Err. No
+        /// panics, no infinite loops. Acts as a fuzz harness for the
+        /// function's edge cases (empty, all-control, mixed-script, etc.).
+        #[test]
+        fn never_panics(s in ".*") {
+            let _ = validate_name(&s);
+        }
+    }
+}
