@@ -12,10 +12,29 @@ use crate::protocol::{SOCKET_DIR, SOCKET_PATH};
 extern "C" {
     fn geteuid() -> u32;
     fn chown(path: *const i8, owner: u32, group: u32) -> i32;
+    fn umask(mask: u32) -> u32;
 }
 
 pub fn effective_uid() -> u32 {
     unsafe { geteuid() }
+}
+
+/// Tighten the process umask before binding the listening socket so the
+/// inode is created at 0660 from the moment `bind(2)` returns.
+///
+/// `bind(2)` materialises the socket with `0666 & ~umask`, and only after
+/// that do the explicit `chown` + `chmod` calls in `set_socket_permissions`
+/// run. With a permissive ambient umask (anyone overriding the systemd
+/// default of 0022 — `UMask=0000`, a non-systemd launcher, a manual
+/// invocation under sudo) that window leaves the socket world-connectable
+/// until the chmod lands. Setting umask to 0117 collapses the window:
+/// the socket arrives at `root:root 0660`, and the subsequent chown to
+/// `root:kepr` is the only remaining transition before kepr-group
+/// processes can connect.
+pub fn tighten_umask_for_socket() {
+    unsafe {
+        umask(0o117);
+    }
 }
 
 pub fn setup_socket_dir() {
@@ -47,4 +66,33 @@ fn group_gid(name: &str) -> Option<u32> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn current_umask() -> u32 {
+        // umask(2) atomically swaps and returns the previous mask. Set-and-
+        // restore is the standard idiom to read it without changing it.
+        let prev = unsafe { umask(0) };
+        unsafe {
+            umask(prev);
+        }
+        prev
+    }
+
+    #[test]
+    fn tighten_umask_sets_0117() {
+        let saved = current_umask();
+        tighten_umask_for_socket();
+        let after = current_umask();
+        // Restore before any assertion so a panic doesn't leak a tightened
+        // mask into sibling tests sharing the test process.
+        let _ = unsafe { umask(saved) };
+        assert_eq!(
+            after, 0o117,
+            "tighten_umask_for_socket must leave the process umask at 0117"
+        );
+    }
 }
