@@ -97,7 +97,7 @@ pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
                 username,
                 result: AuditResult::Fail(e.clone()),
             });
-            Response::fail(e)
+            Response::fail(crypto::sanitize_lookup_error(&e))
         }
     }
 }
@@ -156,7 +156,7 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
                 username,
                 result: AuditResult::Fail(e.clone()),
             });
-            Response::fail(e)
+            Response::fail(crypto::sanitize_lookup_error(&e))
         }
     }
 }
