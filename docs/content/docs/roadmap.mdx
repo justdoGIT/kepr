@@ -1,0 +1,503 @@
+---
+title: "Roadmap"
+description: "Phased plan for kepr — Phase 0 (in-process AEAD foundation, v1.0.0) through Phase 3 (team mode + tamper-evident audit, v3.0.0)."
+---
+
+This roadmap is the source of truth for what kepr will become and the
+order it ships in. Every phase ends in a versioned release. Locked
+decisions live at the bottom; the matrix shows kepr's posture at each
+milestone against the alternatives a procurement lead will compare us to.
+
+The plan was built from a public CEO-and-PhD-security review against the
+codebase that landed at the rename (commit
+[`56d5882`](https://github.com/justdoGIT/kepr/commit/56d5882)). Every
+finding was either confirmed against the actual source (with `file:line`
+citation) or refuted. See `Gap analysis` below for the audit trail.
+
+## Versioning
+
+| Milestone | Phase | Theme |
+| --- | --- | --- |
+| `v1.0.0` | Phase 0 | In-process AEAD, end-to-end zeroize, capability drop, fuzz/proptest |
+| `v1.5.0` | Phase 1 | `kepr exec`, docker helper, direnv, macOS Keychain backend, public launch |
+| `v2.0.0` | Phase 2 | Rotation hooks, TTL, FIDO2 unlock, polkit consent, ESO + cloud sync, audit chain |
+| `v3.0.0` | Phase 3 | Team mode (age + Git), Sigstore Rekor anchor, SLSA-3 hermetic build, STRIDE doc |
+
+`v1.0.0` is reserved for the Phase 0 crypto rewrite — that decision
+predates this roadmap and was honoured deliberately, because the
+in-process AEAD migration is the one change that retroactively breaks
+the encryption-format compatibility envelope.
+
+## Gap analysis
+
+Verdicts on the public-review findings, audited against the current
+codebase. `valid` means the finding stands and is on the roadmap;
+`already-done` means the property is in place and we will pin it with a
+test instead of a rewrite.
+
+### Architecture
+
+- **Fork+exec per operation, plaintext via `Command::output()`** —
+  *valid, not done.* `src/crypto.rs:46-58` spawns
+  `/usr/bin/systemd-creds encrypt` per `set`; `src/crypto.rs:111-128`
+  reads plaintext into a plain `Vec<u8>` on `get`. No
+  `zeroize::Zeroizing` wrapper. No startup digest check on `BACKEND_BIN`
+  (`src/crypto.rs:21`). Replaced in Phase 0.
+- **`ZeroString` end-to-end claim is weaker than it looks** —
+  *partially done.* `src/generate.rs:14-21` defines `ZeroString` over
+  `String`. The decrypt pipeline at `src/crypto.rs:128-133` materialises
+  through a non-zeroizing intermediate. `Response::GetOk { value: String }`
+  (`src/protocol.rs:54-57`) is plain. `serde_json::to_vec` and the
+  framed write path (`src/daemon.rs:138-139`) leave plaintext JSON in a
+  plain `Vec<u8>`. End-to-end zeroization arrives in Phase 0.
+- **Unix socket creation race** — *valid, not done.*
+  `src/daemon.rs:65-68` calls `UnixListener::bind` without setting
+  `umask` first; `src/daemon_socket.rs:27-39` does
+  `chown` + `set_permissions(0o660)` post-bind. The window between
+  `bind` and `set_socket_permissions` is racy. Fixed in Phase 0 with
+  `umask(0o117)` before `bind`, plus a regression test.
+- **AEAD AAD binding to uid + name** — *not applicable today;
+  becomes the right thing once in-process AEAD lands.* The host-key
+  backend (`systemd-creds`) carries `--name=<cred_name>` but does not
+  bind the uid into ciphertext-authenticated metadata. Phase 0's
+  in-process AEAD makes `uid || canonical-name` the AAD.
+- **`SO_PEERCRED` connect-time-only capture** — *correct for the
+  current fresh-connect-per-request pattern* (`src/client.rs:9-15`,
+  `src/daemon_peer.rs:27-49`). Pinned with a regression test in Phase 0;
+  if connection pooling is ever added the test will fail loudly.
+
+### Security
+
+- **Rate limiting / lockout** — *valid, not done.*
+  `src/daemon_pool.rs` is bounded backpressure, not throttling. Phase 0
+  adds `src/daemon_ratelimit.rs` with a per-uid token bucket.
+- **Distinguishable wire errors** — *valid, not done.*
+  `src/crypto.rs:108` returns `"credential not found"` and
+  `src/crypto.rs:125` returns `"decryption failed"`. Phase 0 collapses
+  the wire response into a single `"credential unavailable"`; audit log
+  keeps the precise reason; a `--debug` CLI flag asks the daemon for
+  the unsanitised message under the same auth path.
+- **Constant-time comparisons** — *valid as a forward-looking
+  guard.* No `subtle::ConstantTimeEq` use today; no current code path
+  needs it. Added to the dependency set in Phase 2 with the FIDO2
+  assertion verifier — and added to the code-review checklist now so
+  no future PR introduces a regression silently.
+- **Capability scoping in the systemd unit** — *valid, not done.*
+  `systemd/kepr.service:32-51` has `ProtectSystem=strict`,
+  `ProtectHome=yes`, `MemoryDenyWriteExecute=yes`, `LockPersonality=yes`.
+  Missing `CapabilityBoundingSet=`, `AmbientCapabilities=`,
+  `SystemCallFilter=`, `RestrictAddressFamilies=`. Phase 0 lands all
+  four; once the in-process AEAD removes the `systemd-creds` runtime
+  dependency, `NoNewPrivileges` flips to `yes` (currently `no` at line 35).
+- **Fuzzing / proptest** — *valid, not done.* Phase 0 adds
+  `proptest` over `validate_name` and a `cargo-fuzz` harness over
+  `framing.rs` and `protocol.rs`.
+- **Backend binary supply-chain** — *fork+exec disappears in Phase 0;
+  the supply-chain finding goes away with it.*
+- **Audit log tamper-evidence** — *escaping is correct
+  (`src/audit.rs:48-99`), but journald entries are deletable by root.*
+  Phase 2 adds a hash-chained append-only file at
+  `/var/lib/kepr/audit.log`; Phase 3 anchors the chain head into
+  Sigstore Rekor.
+- **Same-uid consent prompt** — *accepted-risk today, addressed in
+  Phase 2.* polkit on Linux for flagged creds; FIDO2 touch as a
+  stronger alternative.
+- **License consistency** — *bug.* `LICENSE` is LGPL-2.1 while
+  `Cargo.toml:6` and `Cargo.toml:66` declare `MIT`. Phase 0 fixes this
+  by re-licensing to dual `MIT OR Apache-2.0` (see *Locked decisions*).
+- **No library crate** — *valid, not done.* `Cargo.toml` declares two
+  `[[bin]]` targets and no `[lib]`. Modules duplicated through `mod`
+  declarations in each binary (`src/main.rs:7-16`,
+  `src/daemon.rs:11-21`). Phase 0 splits `crates/kepr-core/`.
+
+### Already in place
+
+`mlockall(MCL_CURRENT|MCL_FUTURE)` (`src/daemon.rs:50-55`); atomic
+write via temp+rename (`src/crypto.rs:44, 89-97`); `validate_name`
+enforced in every daemon handler (`src/daemon_handlers.rs`); per-uid
+namespacing parsed back from path (`src/store.rs:21-28`); SBOM (SPDX),
+cosign signing, build-provenance attestations, `cargo audit`, `npm
+audit` all live in `.github/workflows/security.yml` (CodeQL is gated
+on the repo flipping public). Audit log escapes CRLF and bounds field
+length to 256 chars (`src/audit.rs:82-98`).
+
+## Phase 0 — Stabilise (`v1.0.0`, weeks 1–3, ~70-90h)
+
+Close every architectural and security gap above that doesn't require
+new product surface. Ship the same shape kepr has today, but defensible
+under a public security review.
+
+**New modules.**
+
+- `src/crypto_inproc.rs` — `aes-gcm` AEAD over a per-host master key,
+  with `uid || canonical_name` as Additional Authenticated Data.
+- `src/master_key.rs` — load-or-generate a 256-bit master key, sealed
+  through one `systemd-creds` blob at startup; pure in-process for every
+  read/write afterward. (`tss-esapi` direct TPM2 binding deferred to
+  Phase 2 behind a feature flag — keeps the dep tree small.)
+- `src/daemon_ratelimit.rs` — per-uid token bucket. Default 10/sec
+  refill, burst 30; override via `[ratelimit]` in `/etc/kepr/daemon.toml`.
+- `crates/kepr-core/` — workspace member holding `protocol`, `framing`,
+  `generate::ZeroString`. Both bins re-export through it; the
+  forthcoming `docker-credential-kepr` and `kepr-eso-provider` depend
+  on it.
+
+**Modified modules.**
+
+- `src/crypto.rs` becomes a thin trait facade with two backends:
+  `Backend::SystemdCreds` (kept under `--features legacy-backend`) and
+  `Backend::InProc` (default).
+- `src/daemon_handlers.rs` — calls the trait; gains a rate-limit gate;
+  collapses "not found" and "decrypt failed" into a single
+  `"credential unavailable"` wire response while still logging the
+  precise reason to the audit pipeline.
+- `src/protocol.rs` — `Response::GetOk { value: ZeroString }` so the
+  serde path is zeroizing end-to-end.
+- `src/generate.rs` — extends `ZeroString` with `Serialize` /
+  `Deserialize` and `ZeroizeOnDrop`-derived behaviour.
+- `src/daemon.rs:65-68` — set `umask(0o117)` before `bind`.
+- `systemd/kepr.service` — adds
+  `CapabilityBoundingSet=CAP_IPC_LOCK CAP_DAC_READ_SEARCH CAP_CHOWN`,
+  `AmbientCapabilities=`,
+  `SystemCallFilter=@system-service ~@resources ~@mount`,
+  `RestrictAddressFamilies=AF_UNIX AF_NETLINK`. Once in-process AEAD
+  ships, `NoNewPrivileges=yes`.
+- `Cargo.toml` — `license = "MIT OR Apache-2.0"`, matching `LICENSE-MIT`
+  and `LICENSE-APACHE` at repo root.
+- `[dev-dependencies]` += `proptest`. New `fuzz/` directory per
+  `cargo-fuzz` convention.
+
+**Risks.**
+
+- Wire-format change `Response::GetOk { value: String }` → `ZeroString`
+  is JSON-shape compatible but pin it with a cross-version test before
+  declaring it.
+- Workspace rearrangement may surface dependency downgrades in
+  `Cargo.lock` — gate behind a `cargo update` review.
+- Master-key migration story: `systemd-creds`-encrypted creds written
+  with the legacy backend must remain readable through the
+  `legacy-backend` feature for at least one release; document a
+  `kepr migrate` subcommand.
+
+**Success criteria.**
+
+- `cargo test --workspace` green.
+- `cargo clippy --workspace --all-targets -- -D warnings` clean.
+- `cargo fuzz run frame_fuzz -- -max_total_time=1800` finishes without
+  panic in nightly CI.
+- `tests/e2e.sh` passes against the new daemon.
+- `systemd-analyze security kepr.service` ≤ 2.5 (currently ~3.0-3.5).
+- Wire response identical for `not found` and `decrypt failed`; audit
+  log retains the precise reason.
+- `LICENSE-MIT` and `LICENSE-APACHE` present; `Cargo.toml` matches.
+- v1.0.0 tagged.
+
+## Phase 1 — Useful (`v1.5.0`, weeks 4–12, ~280-340h)
+
+Make kepr genuinely useful in a developer's daily workflow on Linux,
+then start the cross-platform crossing. By the end of this phase kepr
+ships on macOS, has three high-leverage UX entry points, and is
+defensible at a public launch.
+
+**New modules.**
+
+- `src/cli_exec.rs` — `kepr exec --env VAR1,VAR2 -- python train.py`.
+  Fetches `Get` for each var, sets env, `execvpe`s the child via
+  `nix::unistd::execvpe`, wipes the parent's env after fork.
+- `src/cli_manifest.rs` — parses `.kepr.toml` (walk-up from `$PWD`)
+  with an `[env]` section listing required keys. Drops the `--env`
+  argument when a manifest is found.
+- `src/cli_envdump.rs` — emits `export VAR=value` lines for direnv;
+  generalises the existing `cmd_get --export` path.
+- `src/cli_doctor.rs` — diagnoses common setup issues: kepr group
+  missing, daemon down, socket permissions wrong, backend binary
+  digest mismatch.
+- Third `[[bin]]` `docker-credential-kepr` at `src/docker_helper.rs` —
+  implements the docker credential-helper protocol (`get` / `store` /
+  `erase` / `list` over stdin/stdout JSON) by wrapping
+  `client::send_request`.
+- `crates/kepr-backend-keychain/` — macOS Keychain backend over
+  `security-framework`. The "daemon" goes away on macOS — the launchd
+  service per user is enough; the CLI is a thin wrapper over
+  `SecItemAdd` / `SecItemCopyMatching` / `SecItemDelete`.
+
+**Modified modules.**
+
+- `src/cli_activity.rs` adds `Exec`, `Doctor`, `Env`.
+- `src/cli_args.rs` learns the `--` separator, `--env CSV`, and a
+  `--manifest path` override.
+- `src/cli_cmds.rs` wires the new activities.
+- `Cargo.toml` declares the third bin.
+- `README.md` splits into Linux / macOS / Windows-(planned) installation
+  paths and gets the comparison table from the *Competitor matrix*
+  section below.
+- New doc page: `docs/content/docs/installation/macos.mdx`.
+
+**Risks.**
+
+- macOS has no `SO_PEERCRED` for Unix sockets. Use Apple XPC or
+  audit-token rather than rolling a custom IPC. Budget conservatively;
+  this is the largest single block of platform work in the roadmap.
+- The `.kepr.toml` schema will be argued over forever. Ship it minimal,
+  document a deprecation policy, and don't extend before v3.0.
+- `docker-credential-kepr` competes with `docker-credential-pass` and
+  `docker-credential-secretservice`. Be explicit about why kepr is
+  better — per-uid isolation and the audit log.
+
+**Success criteria.**
+
+- `kepr exec --env OPENAI_API_KEY -- python -c 'import os;
+  print(os.environ["OPENAI_API_KEY"])'` works end-to-end. The parent
+  process's env is clean afterwards.
+- macOS: a Homebrew tap install, then `kepr set FOO --value bar &&
+  kepr get FOO` works without a daemon.
+- `kepr doctor` produces actionable diagnostics for the four most
+  common setup failures.
+- Public launch: README sells (badges, comparison table, asciicast),
+  v1.5.0 tagged, HN/Reddit submissions queued.
+
+## Phase 2 — Indispensable (`v2.0.0`, months 4–6, ~280-340h)
+
+Features that turn kepr from "nice utility" into "we depend on this."
+By the end of this phase the rotation story, the hardware-key-touch
+story, and the Kubernetes story all exist.
+
+**New modules.**
+
+- `src/cli_rotate.rs` — `kepr rotate KEY --hook ./refresh.sh`. Pipes
+  the new value to the hook on stdin, atomically commits on hook exit
+  0, restores the prior value otherwise.
+- `src/daemon_expiry.rs` — periodic sweeper thread. Deletes expired
+  creds, audit-logs the removal.
+- `src/fido2.rs` — wraps `libfido2`-bindings for assertion verify.
+  First user of `subtle::ConstantTimeEq`.
+- `src/daemon_polkit.rs` — wraps
+  `polkit_authority_check_authorization` for same-uid consent on
+  flagged creds.
+- `src/audit_chain.rs` — append-only file at `/var/lib/kepr/audit.log`,
+  each entry hash-chained
+  `H_n = SHA-256(H_{n-1} || serialized_event)`. Owned `root:root 0640`,
+  daemon-only writeable. New CLI: `kepr audit verify`.
+- `crates/kepr-eso-provider/` — implements the External Secrets
+  Operator `SecretStore` plugin contract; sidecar deployment.
+- `crates/kepr-sync-vault/`, `crates/kepr-sync-aws-sm/`,
+  `crates/kepr-sync-gcp-sm/` — pluggable `Syncer` trait backends
+  registered through `src/sync.rs`.
+
+**Modified modules.**
+
+- `src/protocol.rs` — `Request::Set { ..., ttl_secs: Option<u64> }`,
+  new `Request::Rotate`, new `Request::Get { name, fido2_assertion:
+  Option<Vec<u8>> }`.
+- `src/store.rs` — sidecar metadata file holding `expires_at` and
+  `requires_consent` / `requires_fido2` flags.
+- `src/daemon_handlers.rs` — `handle_rotate`, expiry-aware `handle_get`,
+  consent + FIDO2 gates.
+- `src/audit.rs` — write to journald *and* append to the new chain.
+
+**Risks.**
+
+- `libfido2` quality varies wildly across distros; budget time for
+  wrapper bugs and document supported kernels / udev rules.
+- TTL sweeper interacts with `src/daemon_cache.rs`. Invalidate
+  aggressively; regression-test it.
+- ESO is a different mental model — write the doc page first, the
+  code second. Otherwise you'll over-fit the implementation to the
+  kepr POV.
+
+**Success criteria.**
+
+- `kepr rotate STRIPE_KEY --hook ./bin/refresh-stripe.sh` rolls forward
+  on success and rolls back on hook failure (proptest with random
+  hook exit codes).
+- `kepr set TMP --ttl 60` shows `expires_at` in `kepr list`; entry is
+  gone 65 seconds later.
+- A flagged cred requires a Yubikey touch on every `kepr get`;
+  unflagged creds are unaffected.
+- ESO syncs a `kepr` `SecretStore` into a Kubernetes `Secret` in a
+  `kind` cluster.
+- `kepr audit verify` exits 0 against an honest chain and non-zero on
+  a single tampered entry.
+- v2.0.0 tagged.
+
+## Phase 3 — Enterprise (`v3.0.0`, months 7–12, ~480-560h)
+
+Team mode, hardware-key-attested team identities, public anchoring of
+the audit log, formal security posture documentation. The version
+where kepr stops competing with `pass` and starts competing with
+`Bitwarden Teams` and `Vault`.
+
+**New modules.**
+
+- `crates/kepr-team/` — `age` + `git2`. A team is a list of
+  FIDO2-attested age recipients; secrets are encrypted to all of them
+  and committed to a Git remote. `kepr team add <pubkey>`, `kepr team
+  share <KEY> <team>`, `kepr team sync`.
+- `src/team_identity.rs` — generate an age identity inside a Yubikey
+  via the FIDO2 `hmac-secret` extension. Never extractable; signed by
+  the device's attestation cert.
+- `src/audit_rekor.rs` — periodic submission of the audit chain head
+  to Sigstore Rekor as a signed checkpoint. CLI: `kepr audit verify
+  --rekor` independently verifies the chain head against the public
+  log.
+- Optional Yubikey-touch unseal at daemon startup, behind a
+  feature flag.
+
+**Documentation deliverables.**
+
+- `docs/content/docs/security/threat-model.mdx` — full STRIDE walk
+  against the architecture, with mitigations linked back to actual
+  source paths.
+- README badges for **SLSA-3** provenance and the published SBOM.
+
+**Build/release deliverables.**
+
+- `.github/workflows/release.yml` — flip to the SLSA-3 generic
+  generator. Hermetic builds. OIDC-keyless cosign + Rekor identity.
+
+**Risks.**
+
+- Team mode is the largest scope-creep surface in the entire roadmap.
+  Pre-commit to the smallest possible age + Git design. Do not write a
+  server.
+- SLSA-3 hermetic builds require running the build in a network-isolated
+  ephemeral runner. Allow buffer time.
+- Rekor anchoring requires an OIDC identity for keyless signing —
+  wired to the GitHub Actions OIDC token in CI; for local builds use
+  `cosign sign --identity-token`.
+
+**Success criteria.**
+
+- `kepr team share STRIPE_KEY engineering` encrypts to all current
+  engineering members and pushes to the team Git remote. A different
+  member, on a different machine, runs `kepr team sync && kepr get
+  STRIPE_KEY` and reads the value.
+- `kepr audit verify --rekor` independently verifies the chain head
+  against the public Sigstore log.
+- README displays SLSA-3 and SBOM badges that link to the latest
+  release's attestations.
+- The STRIDE doc lives at `/docs/security/threat-model`, references
+  every relevant source file by path.
+- v3.0.0 tagged.
+
+## Competitor matrix
+
+Score 0 (none) to 5 (best in class). "Today" is the current repo on
+`fix/github-release-workflow`. Each phase column is a projection.
+
+| Tool                  | Encryption model              | Per-user isolation | Audit log integrity | Cross-platform | Sync / team | Rotation | Hardware-key unlock | K8s integration | License friendliness | Packaging maturity |
+| --------------------- | ----------------------------- | ------------------ | ------------------- | -------------- | ----------- | -------- | ------------------- | --------------- | -------------------- | ------------------ |
+| **kepr (today)**      | 3 (host-key fork+exec)        | 4                  | 2 (journald)        | 1 (Linux)      | 0           | 0        | 0                   | 0               | 2 (LGPL/MIT mismatch)| 3 (deb+rpm+systemd)|
+| **kepr after P0**     | 4 (in-process AEAD + AAD)     | 5                  | 2                   | 1              | 0           | 0        | 0                   | 0               | 4 (consistent)       | 3                  |
+| **kepr after P1**     | 4                             | 5                  | 2                   | 3 (+macOS)     | 0           | 0        | 0                   | 0               | 4                    | 4 (+brew)          |
+| **kepr after P2**     | 4                             | 5                  | 4 (hash chain)      | 3              | 2 (one-way) | 4        | 4 (FIDO2)           | 4 (ESO)         | 4                    | 4                  |
+| **kepr after P3**     | 5 (TPM/FIDO2 unseal)          | 5                  | 5 (Rekor anchored)  | 4 (+winget)    | 4 (age+Git) | 4        | 5                   | 4               | 5                    | 5 (SLSA-3)         |
+| `pass`                | 3 (GPG)                       | 4                  | 1 (Git history)     | 5              | 4 (Git)     | 1        | 2 (GPG smartcard)   | 1               | 5 (GPL)              | 5                  |
+| `gopass`              | 3 (GPG/age)                   | 4                  | 1                   | 5              | 4 (Git)     | 2        | 2                   | 2               | 5 (MIT)              | 4                  |
+| `sops` + `age`        | 5 (file AEAD, recipient-keys) | 3 (file ACL only)  | 2 (Git)             | 5              | 5 (Git/CI)  | 2        | 3                   | 5 (helm-secrets)| 5 (Apache-2.0)       | 5                  |
+| `bitwarden-cli`       | 4 (E2EE blob, server)         | 4                  | 3 (server log)      | 5              | 5 (server)  | 3        | 4                   | 2               | 4                    | 5                  |
+| `1password-cli`       | 5 (E2EE + secret-key)         | 5                  | 4                   | 5              | 5           | 4        | 5 (Touch ID)        | 4 (operator)    | 1 (closed)           | 5                  |
+| HashiCorp Vault       | 5 (KMS + seal)                | 5 (policies)       | 5                   | 5              | 5 (replication) | 5    | 5 (HSM)             | 5 (CSI/agent)   | 3 (BUSL since 2023)  | 5                  |
+| Doppler               | 4 (server, hosted)            | 4                  | 4                   | 5              | 5           | 4        | 3                   | 4               | 1 (closed SaaS)      | 5                  |
+| Infisical             | 4 (E2EE blob)                 | 4                  | 3                   | 5              | 5           | 3        | 3                   | 4 (operator)    | 4 (MIT core)         | 4                  |
+| `systemd-creds`       | 4 (host-key)                  | 2 (root only)      | 1                   | 1              | 0           | 0        | 1 (TPM2)            | 0               | 5 (LGPL)             | 5 (in systemd)     |
+
+**Read.** Today kepr beats `systemd-creds` on per-user isolation (the
+only thing kepr fundamentally is) and matches `pass` on licence
+cleanliness once the LGPL/MIT mismatch is resolved. The big gaps are
+cross-platform (Phase 1), tamper-evident audit log (Phase 2 → 3),
+and sync/team mode (Phase 3). kepr will not surpass Vault on this
+matrix; the goal is to surpass `pass` / `gopass` / `sops` on the
+per-user-isolation, audit-log integrity, and hardware-key axes by end
+of Phase 3 while staying single-binary, daemon-on-Linux,
+no-server-required.
+
+## Locked decisions
+
+These were settled before Phase 0 began. Record here so future
+contributors don't re-litigate.
+
+| # | Decision | Locked value |
+| - | -------- | ------------ |
+| 1 | License | `MIT OR Apache-2.0` (dual). Recipient chooses. Aligns with the Rust ecosystem default and removes the LGPL-2.1 vs `Cargo.toml`-says-`MIT` inconsistency. |
+| 2 | `kepr-core` library crate | Phase 0. Done while the surface is small and the maintainer set is one. |
+| 3 | Master-key sealing | One `systemd-creds` blob at startup; pure in-process for every read/write afterward. Direct TPM2 (`tss-esapi`) deferred to Phase 2 behind a feature flag. |
+| 4 | Launch order | Linux-first **v1.0.0** (Phase 0). macOS lands in **v1.5.0** at the end of Phase 1. |
+| 5 | AEAD library | `aes-gcm` (RustCrypto). Pure Rust; smaller dep tree than `ring`. |
+| 6 | `docker-credential-kepr` packaging | Third `[[bin]]` in the same `Cargo.toml` until v3.0; promoted to its own crate only if it grows. |
+| 7 | Team-mode Git transport | Plain Git for v3.0. Self-hosted relay only if v3.x demand surfaces. |
+| 8 | Rate limit defaults | 10/sec refill, burst 30; override via `[ratelimit]` in `/etc/kepr/daemon.toml`. |
+| 9 | Wire-error collapse | "not found" and "decrypt failed" both return `"credential unavailable"`; the audit log retains the precise reason. CLI `--debug` flag asks the daemon for the unsanitised message under the same auth path. |
+| 10 | `v1.0.0` reservation | Reserved for the Phase 0 crypto rewrite. Carried over from the rename design decision filed 2026-04-21. |
+
+## Why kepr is not on a blockchain (and is not tokenizing users)
+
+Recorded once so this discussion does not recur.
+
+- Blockchains are public, replicated, append-only ledgers. Credentials
+  must be private, controlled, and revocable. **Immutability and
+  revocation are mutually exclusive** for secret material — once a
+  ciphertext is on chain, a future key compromise (harvest-now,
+  decrypt-later) decrypts the entire history retroactively. A local
+  `rm` cannot.
+- **Metadata leakage** is devastating even when payloads are encrypted.
+  Transaction timestamps, sizes, and addresses publicly disclose
+  who-rotates-what-when, which feeds supply-chain reconnaissance.
+- **Cost and latency** are 1000× wrong. Local Unix-socket round-trip
+  is sub-millisecond. The cheapest L2 is seconds and dollars-per-write.
+  A credential manager doing hundreds of writes per developer per
+  month does not fit on chain.
+- **A wallet key would itself need a credential manager.** Infinite
+  regress.
+- **Tokenizing users likely fails the Howey test in the US**
+  (investment of money, common enterprise, expectation of profit
+  derived from the efforts of others), trips MiCA in the EU and the
+  expanded FCA regime in the UK. Distributing a token tied to a
+  security product is unregistered securities issuance.
+- **Trust destruction.** Every credential manager competes on trust.
+  Procurement teams deny adoption the moment a token is in the loop.
+- **Smart-contract attack surface.** Audited contracts ship with
+  one-to-three exploitable findings on average. Adding contract code
+  to a security tool inverts the security argument.
+
+### Adjacent ideas tracked for Phase 3 evaluation only
+
+- **Sigstore Rekor anchoring** of the hash-chained audit log head.
+  Public, append-only, no token, no money. Already on the Phase 3
+  deliverables list.
+- **W3C Decentralised Identifiers + Verifiable Credentials** for
+  *public-identity sharing* across machines. Cryptography, not a
+  chain. Tracked.
+- **Shamir Secret Sharing / threshold MPC** for team-mode key escrow.
+  Lets a team recover a master key when a member loses a device,
+  without any single party having unilateral access. Note: HashiCorp
+  Vault auto-unseal solves the same problem at roughly 1% of the
+  implementation complexity; Phase 3 will pick the cheaper option.
+  Tracked.
+
+## Open questions for evaluation during execution
+
+These are the calls to revisit when the work itself surfaces evidence
+that the locked answer was wrong.
+
+- **Wire-error collapsing UX cost.** Confirm a typo'd cred name is
+  still recoverable via `kepr list` rather than a "this name doesn't
+  exist" message. If user testing in Phase 1 shows the collapse hurts
+  recovery, surface a suggestion line client-side without leaking
+  daemon-side knowledge.
+- **Rate-limit numerics in CI.** 10/sec burst 30 may be too tight for
+  a CI runner that legitimately fetches dozens of secrets at startup.
+  Phase 2's `kepr exec` should warm a request batch into a single
+  `Request::GetMany` to amortise the limit.
+- **Master-key migration.** The `legacy-backend` feature gate on the
+  `systemd-creds`-fork+exec path needs a formal end-of-life. Propose
+  v2.0.0 as the version that drops the feature and emits a one-time
+  migration banner.
+- **macOS XPC vs Unix-socket parity.** macOS does not have
+  `SO_PEERCRED`; the `audit_token` path is the closest equivalent.
+  Confirm Phase 1 actually pins peer-uid identity with a regression
+  test before the public launch.
+- **Team-mode metadata privacy.** Plain Git transport leaks push
+  timestamps and recipient-set sizes. Document this in the threat
+  model in Phase 3; revisit a self-hosted relay only if a customer
+  shows up with that requirement.

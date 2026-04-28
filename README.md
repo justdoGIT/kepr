@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./.github/assets/kepr.png" alt="kepr" style="max-width: 1280px; width: 100%; height: auto;">
+  <img src="./.github/assets/kepr_1280x640.png" alt="kepr" style="max-width: 1280px; width: 100%; height: auto;">
 </p>
 
 # kepr
@@ -28,6 +28,10 @@ no plaintext on disk, no secret values in the journal.
 Full docs are published at **https://justdogit.github.io/kepr/** —
 quickstart, architecture, sequence diagrams, reference. The source
 lives in `docs/` (Fumadocs on Next.js 15).
+
+The phased plan and competitor matrix live at
+[`docs/roadmap`](https://justdogit.github.io/kepr/docs/roadmap)
+(source: `docs/content/docs/roadmap.mdx`).
 
 ### Running docs locally
 
