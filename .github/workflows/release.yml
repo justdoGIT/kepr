@@ -86,7 +86,7 @@ jobs:
           cp target/release/kepr-daemon "dist/${STAGE}/"
           cp systemd/kepr.service       "dist/${STAGE}/"
           cp completions/kepr.bash      "dist/${STAGE}/"
-          cp install.sh README.md SECURITY.md LICENSE "dist/${STAGE}/"
+          cp install.sh README.md SECURITY.md LICENSE-MIT LICENSE-APACHE "dist/${STAGE}/"
           tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
           rm -rf "dist/${STAGE}"
 

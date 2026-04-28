@@ -302,4 +302,10 @@ sudo groupdel kepr
 
 ## License
 
-See [LICENSE](./LICENSE).
+Dual-licensed under either of:
+
+- [MIT License](./LICENSE-MIT)
+- [Apache License, Version 2.0](./LICENSE-APACHE)
+
+at your option. Contributions are accepted under the same dual licence
+(`Apache-2.0 OR MIT`) per Apache 2.0 §5.
