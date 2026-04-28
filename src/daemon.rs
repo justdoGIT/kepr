@@ -46,7 +46,6 @@ const POOL_QUEUE: usize = 64;
 // per-token-deficit until the bucket refills. See daemon_ratelimit.
 const RATE_LIMIT_CAPACITY: f64 = 30.0;
 const RATE_LIMIT_REFILL_PER_SEC: f64 = 10.0;
-const RATE_LIMIT_REJECT_JITTER_MS: u64 = 20;
 
 static RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 
@@ -116,12 +115,14 @@ fn handle_client(mut stream: UnixStream) {
     };
 
     if !rate_limiter().check(peer_uid) {
-        // Brief jitter before responding so a hostile peer cannot spin a
-        // tight loop probing the limit boundary; the bucket already throttles
-        // throughput, the sleep deters timing-based fingerprinting.
-        std::thread::sleep(std::time::Duration::from_millis(
-            RATE_LIMIT_REJECT_JITTER_MS,
-        ));
+        // Reply immediately and return the worker to the pool. An earlier
+        // version slept here for a small jitter to deter timing-based
+        // fingerprinting of the bucket capacity, but the sleep happens
+        // inside a bounded worker (POOL_WORKERS = 16): a peer hammering
+        // the limit could keep ~16 workers parked in this branch and
+        // saturate the pool from the reject path alone, defeating the
+        // limiter's whole point. The bucket already throttles throughput;
+        // the public capacity is documented, so jitter buys nothing real.
         send_error(&mut stream, "rate limited");
         return;
     }
