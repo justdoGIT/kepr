@@ -29,6 +29,10 @@ Full docs are published at **https://justdogit.github.io/kepr/** —
 quickstart, architecture, sequence diagrams, reference. The source
 lives in `docs/` (Fumadocs on Next.js 15).
 
+The phased plan and competitor matrix live at
+[`docs/roadmap`](https://justdogit.github.io/kepr/docs/roadmap)
+(source: `docs/content/docs/roadmap.mdx`).
+
 ### Running docs locally
 
 ```bash
