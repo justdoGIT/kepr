@@ -195,13 +195,37 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         std::thread::current().id()
     ));
 
-    let mut f = fs::OpenOptions::new()
+    // Open with create_new(true) — `mode(0o600)` only applies to a
+    // NEW inode (Linux open(2) ignores the mode argument when O_EXCL
+    // is absent and the file already exists). With plain create(true),
+    // a stale `*.tmp.<pid>.<tid>` left by a crashed previous run
+    // would be reopened at its original (possibly broader) mode and
+    // then renamed into place, exposing credential contents. Codex
+    // flagged this on the re-review of #55.
+    //
+    // On EEXIST we make a single retry: the (pid, thread-id) suffix
+    // makes a collision with a LIVE thread impossible, so any
+    // pre-existing file at this path is stale. Remove it and try
+    // once more under the same security shape; a second failure is
+    // a real error.
+    let mut f = match fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(&tmp)
-        .map_err(|e| format!("open temp failed: {e}"))?;
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&tmp);
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(|e| format!("open temp failed (after stale-cleanup): {e}"))?
+        }
+        Err(e) => return Err(format!("open temp failed: {e}")),
+    };
     if let Err(e) = f.write_all(bytes) {
         drop(f);
         let _ = fs::remove_file(&tmp);

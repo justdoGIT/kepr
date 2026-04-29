@@ -162,12 +162,17 @@ pub fn load_or_generate(
     // at any mode wider than the bits below — the previous shape
     // (fs::write then chmod) left a window where the master-key blob
     // was group/world readable under default umask. Codex flagged the
-    // same pattern in crypto_inproc::write_atomic on a re-review pass;
-    // the fix is identical.
+    // same pattern in crypto_inproc::write_atomic on a re-review pass.
+    //
+    // `create_new(true)` is the right shape here (rather than
+    // `create(true)`) because mode(0o600) only applies to a NEW
+    // inode. The write path is only reached when `path.exists()`
+    // returned false above; re-entering it with the file present
+    // would be a TOCTOU race we explicitly want to fail on rather
+    // than reopen at a stale mode.
     let mut f = fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(path)
         .map_err(|e| format!("open master key: {e}"))?;
