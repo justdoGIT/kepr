@@ -118,27 +118,28 @@ impl VersionState {
         let mut map = self.counters.lock().unwrap();
         let prev = map.get(cred_name).copied();
         let next = prev.unwrap_or(0) + 1;
-        // 1. Run the caller's file IO. If this fails the state map
-        //    is untouched and the existing on-disk ciphertext
-        //    continues to verify cleanly.
-        f(next)?;
-        // 2. Commit the counter to the in-memory map.
+
+        // Two-phase commit. Codex's rollback-protection re-review
+        // surfaced the underlying atomicity requirement: the rollback
+        // floor (state) and the on-disk ciphertext (file) MUST advance
+        // together, or the daemon must be left with consistent old
+        // values, or the cred must brick. Anything in between (file
+        // ahead of state, or vice versa) lets an attacker replay a
+        // ciphertext whose counter no longer matches the floor.
+        //
+        // Strategy: bump state first. If state-persist fails, file IO
+        // never runs. If state-persist succeeds, run file IO. If file
+        // IO fails, attempt to revert state. The revert failing is
+        // the only path that leaves an inconsistency, and there state
+        // is ahead of file — verify rejects the older file, so the
+        // cred bricks. Bricked > replayable.
+
+        // Phase 1: persist the new counter.
         map.insert(cred_name.to_string(), next);
-        // 3. Persist while still holding the lock so a concurrent
-        //    `with_next` can't interleave its own snapshot.
         let snapshot = map.clone();
         if let Err(e) = self.persist(&snapshot) {
-            // Persist failed AFTER the file was written. Revert the
-            // in-memory commit so it can't get ahead of the durable
-            // disk state — Codex flagged this on a re-review pass:
-            // an in-memory counter that is higher than the persisted
-            // one would, after a daemon restart that reloads from
-            // disk, regress the rollback floor below ciphertexts the
-            // daemon already produced. With the revert, on-disk
-            // ciphertext at `next` is still readable (verify uses
-            // `>=` against the lower recorded value) and the next
-            // successful with_next will re-roll to a higher counter
-            // and overwrite, restoring the invariant.
+            // State persist failed. Revert in-memory and bail out;
+            // file IO was never attempted.
             match prev {
                 Some(p) => {
                     map.insert(cred_name.to_string(), p);
@@ -149,6 +150,40 @@ impl VersionState {
             }
             return Err(e);
         }
+
+        // Phase 2: file IO. The state floor is now at `next`, so
+        // any successful write at `next` produces a verify-clean
+        // ciphertext.
+        if let Err(e) = f(next) {
+            // File IO failed AFTER state was persisted. Try to
+            // revert state to its prior value so the existing
+            // on-disk ciphertext (still at the old counter) keeps
+            // verifying.
+            match prev {
+                Some(p) => {
+                    map.insert(cred_name.to_string(), p);
+                }
+                None => {
+                    map.remove(cred_name);
+                }
+            }
+            let snapshot = map.clone();
+            if let Err(rev_err) = self.persist(&snapshot) {
+                // Revert persist also failed: state on disk is at
+                // `next`, no new file exists, existing ciphertext
+                // (if any) is at `prev`. verify(prev vs next)
+                // rejects, so subsequent reads of the cred return
+                // "credential unavailable" until a successful retry
+                // of with_next. The cred is bricked, NOT replayable
+                // — strictly better than the previous shape, which
+                // could leak a replay window in the same scenario.
+                return Err(format!(
+                    "{e} (state revert also failed: {rev_err}; cred is now unreadable until retry)"
+                ));
+            }
+            return Err(e);
+        }
+
         Ok(next)
     }
 
