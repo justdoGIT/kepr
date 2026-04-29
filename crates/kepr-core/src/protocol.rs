@@ -27,8 +27,13 @@ pub const TIMEOUT_SECS: u64 = 10;
 pub enum Request {
     Set {
         name: String,
+        // ZeroString rather than String so the secret value transits
+        // through the client process and serde's intermediate buffer
+        // in a wrapper that zeroises on drop. Symmetric with
+        // `Response::GetOk.value`. Wire format unchanged (still a
+        // JSON string when present).
         #[serde(skip_serializing_if = "Option::is_none")]
-        value: Option<String>, // None = generate
+        value: Option<ZeroString>, // None = generate
         #[serde(skip_serializing_if = "Option::is_none")]
         generate: Option<String>, // "hex"|"base62"|"pass"|"uuid"
     },
