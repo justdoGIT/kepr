@@ -38,6 +38,52 @@ impl std::fmt::Debug for ZeroString {
     }
 }
 
+// Display intentionally DOES print the inner value. The CLI's
+// `kepr get` is the legitimate use site (`println!("{value}")` and
+// `eval "$(kepr get … --export)"`); without Display the call sites
+// would have to reach for `value.as_str()` and lose the type's
+// guarantee that any rendering path goes through one place we
+// audit. Anyone wanting a redacted form must use Debug explicitly.
+impl std::fmt::Display for ZeroString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// Serialise as a plain JSON string so the wire format is unchanged
+// from the previous `value: String`. Old daemons still talk to new
+// clients and vice versa. The deserializer accepts a String and
+// moves it into a ZeroString; the bytes inside the resulting
+// ZeroString get zeroized on drop, which closes the gap the public
+// review flagged about secret values lingering in serde-allocated
+// buffers on the client side.
+impl serde::Serialize for ZeroString {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ZeroString {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(ZeroString::from_string(s))
+    }
+}
+
+// Convenience conversions so call sites and tests can use the
+// ergonomic `"v".into()` idiom rather than `from_string("v".into())`.
+impl From<String> for ZeroString {
+    fn from(s: String) -> Self {
+        ZeroString::from_string(s)
+    }
+}
+
+impl From<&str> for ZeroString {
+    fn from(s: &str) -> Self {
+        ZeroString::from_string(s.to_string())
+    }
+}
+
 impl ZeroString {
     pub fn from_string(s: String) -> Self {
         Self(s)
