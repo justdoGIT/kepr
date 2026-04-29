@@ -16,6 +16,15 @@ pub struct Args {
     pub export: bool,
     pub json: bool,
     pub force: bool,
+    /// `kepr exec` only: list of env-var names parsed from `--env`.
+    /// Empty for every other command. The CLI parser owns the
+    /// CSV-split + name uppercasing; downstream code consumes the
+    /// list as-is.
+    pub env_vars: Vec<String>,
+    /// `kepr exec` only: argv to exec, gathered from everything
+    /// after the `--` separator. The first element is the binary;
+    /// subsequent elements are its arguments.
+    pub exec_argv: Vec<String>,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -38,6 +47,8 @@ pub fn parse_args() -> Result<Args, String> {
     let mut export = false;
     let mut json = false;
     let mut force = false;
+    let mut env_vars: Vec<String> = Vec::new();
+    let mut exec_argv: Vec<String> = Vec::new();
 
     let mut i = 1usize;
 
@@ -114,6 +125,25 @@ pub fn parse_args() -> Result<Args, String> {
                     .ok_or(format!("unknown gen-kind: {k} (hex|base62|pass|uuid)"))?;
                 i += 1;
             }
+            "--env" => {
+                // `kepr exec --env VAR1,VAR2` — defer the CSV split
+                // and validation to cli_exec::parse_env_csv so the
+                // error path is uniform whether the entries arrive
+                // here or, in a future PR, from a `.kepr.toml`
+                // manifest reader.
+                i += 1;
+                let csv = raw.get(i).ok_or("--env needs a CSV of variable names")?;
+                env_vars = crate::cli_exec::parse_env_csv(csv)?;
+                i += 1;
+            }
+            "--" => {
+                // Everything after `--` is the child argv. Bash's
+                // own getopt convention: the separator is consumed
+                // and never appears in `exec_argv`.
+                i += 1;
+                exec_argv = raw[i..].to_vec();
+                break;
+            }
             s if !s.starts_with('-') && name.is_none() => {
                 name = Some(s.to_uppercase());
                 i += 1;
@@ -132,6 +162,8 @@ pub fn parse_args() -> Result<Args, String> {
         export,
         json,
         force,
+        env_vars,
+        exec_argv,
     })
 }
 
@@ -147,6 +179,7 @@ pub fn print_help() {
     println!("  list                                 (alias: ls)");
     println!("  delete KEY [--force]                 (alias: rm)");
     println!("  check");
+    println!("  exec --env VAR1[,VAR2…] -- CMD ARGS  run CMD with credentials in env");
     println!();
     println!("GLOBAL FLAGS:");
     println!("  --json       machine-readable output; no stderr on clean errors");
@@ -168,6 +201,8 @@ pub fn print_help() {
     println!("  kepr ls                              # alias for list");
     println!("  kepr rm BOB_TOKEN --force            # delete without prompt");
     println!("  kepr check                           # verify all decrypt ok");
+    println!("  kepr exec --env OPENAI_API_KEY -- python train.py");
+    println!("                                       # provision creds in env, replace process");
     println!();
     println!("  View audit log:");
     println!("    journalctl -t kepr-daemon");

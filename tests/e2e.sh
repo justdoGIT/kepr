@@ -593,6 +593,41 @@ else
     skip "no root/sudo or no systemctl — cannot exercise the daemon-restart sweep"
 fi
 
+# ── 17. kepr exec provisions credentials into a child process ────────────────
+# Phase 1 entry point. Fetches each var via Get, then `execvp`s the child
+# with the env merged in. The parent process is replaced (no fork), so
+# the only place the secret value should appear is the child's environment.
+# We use `/bin/sh -c 'echo "..."'` as the child to print a sentinel
+# constructed from the fetched value — if the env wasn't provisioned we
+# get an empty string; if it was, we get the marker plus the value.
+step "17. kepr exec --env VAR -- cmd: child sees the credential in env"
+
+NAME="${PREFIX}EXEC_VAR"
+SECRET_VAL="exec-sentinel-$(date +%N)"
+kepr --json set "$NAME" --value "$SECRET_VAL" >/dev/null
+
+# `${...}` reaches the literal in the heredoc-less single-quoted shell
+# script that /bin/sh runs as the child. The variable expansion happens
+# in the *child's* shell, AFTER kepr exec provisioned the env.
+exec_out=$(kepr exec --env "$NAME" -- /bin/sh -c "echo MARKER:\$$NAME" 2>&1 || true)
+if echo "$exec_out" | grep -qF "MARKER:${SECRET_VAL}"; then
+    pass "child process saw $NAME in its environment"
+else
+    fail "child env missing $NAME (got: $(printf '%s' "$exec_out" | tr '\n' ' '))"
+fi
+
+# Negative case: a missing cred MUST abort BEFORE the child runs. The
+# alternative — silently exec'ing the child with the var unset — would
+# let unrelated default-env behaviour kick in, which is the bug the
+# build_env() abort path exists to prevent.
+MISSING="${PREFIX}EXEC_MISSING"
+exec_out=$(kepr exec --env "$MISSING" -- /bin/sh -c 'echo SHOULD_NOT_RUN' 2>&1 || true)
+if ! echo "$exec_out" | grep -q "SHOULD_NOT_RUN"; then
+    pass "missing cred aborts BEFORE child runs"
+else
+    fail "exec ran child despite missing cred (got: $exec_out)"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
