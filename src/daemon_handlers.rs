@@ -84,9 +84,15 @@ pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
                 username,
                 result: AuditResult::Ok,
             });
+            // Move the ZeroString directly into the response — the
+            // protocol field is `value: ZeroString`, so the secret
+            // bytes never touch a non-zeroising String on the way
+            // out. The previous `secret.to_owned_string()` cloned
+            // into a plain String that the serializer would then
+            // walk; that String dropped without zeroizing.
             Response::GetOk {
                 name: upper,
-                value: secret.to_owned_string(),
+                value: secret,
             }
         }
         Err(e) => {
