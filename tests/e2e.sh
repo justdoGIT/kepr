@@ -444,6 +444,112 @@ else
     fail "rm alias failed"
 fi
 
+# ── 14. InProc magic prefix on disk (requires root or sudo) ──────────────────
+# After Phase 0 α3, every cred file is written by the in-process AEAD
+# backend and starts with the bytes `kepr_v1\n`. A different magic (or
+# no magic) means the daemon is silently using the legacy path or the
+# wire format has drifted. Pin the contract.
+step "14. on-disk cred starts with the kepr_v1 magic"
+
+if [ "$can_root" = 1 ]; then
+    NAME="${PREFIX}MAGIC"
+    kepr --json set "$NAME" --value "x" >/dev/null
+    UID_NUM=$(id -u)
+    DISK_NAME="kepr-${UID_NUM}-$(echo "$NAME" | tr '[:upper:]_' '[:lower:]-')"
+    DISK_PATH="/etc/credstore.encrypted/${DISK_NAME}"
+
+    # Guard against the file being missing/unreadable BEFORE the
+    # head-pipeline pipefail-aborts the whole script. Codex flagged
+    # the bare `$(head | od | tr)` form on first review.
+    if ! run_root test -r "$DISK_PATH"; then
+        fail "cred file missing or unreadable: $DISK_PATH"
+    else
+        # od -c renders bytes as escaped chars: \n shows as "\n", a-z as a-z.
+        # `kepr_v1\n` is the magic; check both segments to avoid a partial match.
+        head=$(run_root head -c 8 "$DISK_PATH" | od -An -c | tr -d ' \n')
+        if [ "$head" = "kepr_v1\\n" ]; then
+            pass "on-disk cred starts with kepr_v1\\n"
+        else
+            fail "on-disk magic mismatch (got: $head, expected: kepr_v1\\n)"
+        fi
+    fi
+    kepr --json delete "$NAME" >/dev/null 2>&1 || true
+else
+    skip "no root/sudo — cannot read /etc/credstore.encrypted/ to inspect on-disk magic"
+fi
+
+# ── 15. Master key is sealed at /var/lib/kepr/master.key (root or sudo) ──────
+# The Phase 0 α2b loader writes the sealed master key to a known path
+# at first daemon start; from there every restart unseals it without
+# re-deriving. Verify both the file's existence and its mode (0600,
+# root-owned) — anything wider exposes the seal blob.
+step "15. master key file exists with root:root 0600"
+
+if [ "$can_root" = 1 ]; then
+    KEY_PATH="/var/lib/kepr/master.key"
+    if run_root test -f "$KEY_PATH"; then
+        mode=$(run_root stat -c '%a %U %G' "$KEY_PATH")
+        if [ "$mode" = "600 root root" ]; then
+            pass "master key present at 0600 root:root"
+        else
+            fail "master key has wrong perms/owner: $mode"
+        fi
+    else
+        fail "master key not found at $KEY_PATH (daemon never bootstrapped?)"
+    fi
+else
+    skip "no root/sudo — cannot stat /var/lib/kepr/master.key"
+fi
+
+# ── 16. Legacy-cred sweep on daemon restart (root or sudo) ───────────────────
+# Plant a fake legacy file (no kepr_v1 magic) under /etc/credstore.encrypted/
+# with a kepr-* prefix, then bounce the daemon. The startup sweep should
+# delete it. Idempotent: a second restart finds nothing to do.
+step "16. daemon sweeps legacy systemd-creds files on restart"
+
+if [ "$can_root" = 1 ] && command -v systemctl >/dev/null; then
+    UID_NUM=$(id -u)
+    LEGACY_NAME="kepr-${UID_NUM}-legacy-sweep-test"
+    LEGACY_PATH="/etc/credstore.encrypted/${LEGACY_NAME}"
+
+    # Plant a file that looks like the old systemd-creds blob: no kepr_v1
+    # magic, just opaque bytes. The sweep should pick it up because the
+    # filename matches the kepr-* prefix.
+    run_root sh -c "echo 'pretend-systemd-creds-blob' > '$LEGACY_PATH'"
+
+    if run_root systemctl restart kepr.service 2>/dev/null; then
+        # Give the daemon a beat to come up and run sweep_legacy_credstore.
+        # The accept loop is reachable via `kepr list` once it's listening.
+        # Track whether the daemon ever came back: if it didn't, the
+        # legacy-file check is meaningless and we must report a real
+        # failure rather than a false PASS — Codex flagged the loop as
+        # silently swallowing a permanent-down daemon on first review.
+        ready=0
+        for _ in 1 2 3 4 5; do
+            if kepr --json list >/dev/null 2>&1; then
+                ready=1
+                break
+            fi
+            sleep 1
+        done
+
+        if [ "$ready" = 0 ]; then
+            fail "daemon did not come back after restart — sweep result is undecidable"
+            run_root rm -f "$LEGACY_PATH" || true
+        elif run_root test -e "$LEGACY_PATH"; then
+            fail "legacy file still present after restart: $LEGACY_PATH"
+            run_root rm -f "$LEGACY_PATH" || true
+        else
+            pass "legacy file swept on restart"
+        fi
+    else
+        skip "systemctl restart kepr.service failed (test cannot proceed)"
+        run_root rm -f "$LEGACY_PATH" || true
+    fi
+else
+    skip "no root/sudo or no systemctl — cannot exercise the daemon-restart sweep"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"

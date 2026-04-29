@@ -7,9 +7,9 @@
 - `cargo test --workspace` — fast, hermetic unit tests across the three buckets: `kepr` (CLI module tests), `kepr-daemon` (handler / store / crypto-error / rate-limit / umask / audit), and `kepr-core` (framing / generate / protocol). `store.rs` lives in the daemon bin only — it's not `mod`-included from `main.rs`, so its tests only compile under the daemon target.
 - `cd crates/kepr-core && cargo +nightly fuzz run frame_fuzz -- -max_total_time=60` — fuzz `read_frame` for 60 s. Requires `rustup install nightly` and `cargo install cargo-fuzz` once. Targets live at `crates/kepr-core/fuzz/fuzz_targets/`; corpus and crash artifacts are gitignored.
 - `cd crates/kepr-core && cargo +nightly fuzz run protocol_fuzz -- -max_total_time=60` — same idea against `serde_json::from_slice::<Request>`.
+- `./tests/e2e.sh` — end-to-end against the installed daemon. Requires `kepr.service` running, the invoking user in the `kepr` group, and `jq`. Cases 7 (error sanitization), 8 (audit log), 14 (on-disk magic), 15 (master-key perms) and 16 (legacy-cred sweep on daemon restart) skip gracefully without sudo / journal-read access / `systemctl`. All creds it creates use the prefix `E2E_<pid>_<epoch>_` and are cleaned up on exit.
 - `./install.sh` — full install: builds, creates `kepr` system group, installs binaries to `/usr/local/bin/kepr` and `/usr/local/sbin/kepr-daemon`, installs and starts the systemd service.
 - `sudo systemctl restart kepr.service` — reload the daemon after rebuilding.
-- `./tests/e2e.sh` — end-to-end against the installed daemon. Requires `kepr.service` running, the invoking user in the `kepr` group, and `jq`. Cases 7 (error sanitization) and 8 (audit log) skip gracefully without sudo / journal read access. All creds it creates use the prefix `E2E_<pid>_<epoch>_` and are cleaned up on exit.
 - `journalctl -t kepr-daemon -f` — follow the audit log (structured fields: `KEPR_OP`, `KEPR_NAME`, `KEPR_UID`, `KEPR_USER`, `KEPR_RESULT`).
 
 ## Architecture
