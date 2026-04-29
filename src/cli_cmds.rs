@@ -50,80 +50,81 @@ pub fn cmd_set(a: &Args) -> Response {
         return Response::fail("empty name");
     }
 
-    let (value_opt, gen_opt): (Option<String>, Option<String>) = if let Some(v) = &a.value {
-        (Some(v.clone()), None)
-    } else if a.generate {
-        let s = generate_secret(a.gen_kind);
-        if !a.json {
-            ok(&format!(
-                "Generated {} secret ({} chars)",
-                a.gen_kind.as_str(),
-                s.len()
-            ));
-        }
-        (Some(s.to_owned_string()), None)
-    } else {
-        if a.json {
-            return Response::fail("provide --value or --generate in json mode");
-        }
-
-        println!();
-        bold(&format!("  Setting: {}", color("1;33", &name)));
-
-        // Peek: does this credential already exist? Ignore network errors here —
-        // the actual set call will surface them.
-        if let Response::GetOk { .. } = dispatch(a, &Request::Get { name: name.clone() }) {
-            warn(&format!("'{}' already exists.", name));
-            eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
-            io::stderr().flush().ok();
-            let mut ans = String::new();
-            io::stdin().lock().read_line(&mut ans).ok();
-            if ans.trim().to_lowercase() != "y" {
-                info("Aborted.");
-                return Response::fail("aborted");
+    let (value_opt, gen_opt): (Option<kepr_core::generate::ZeroString>, Option<String>) =
+        if let Some(v) = &a.value {
+            (Some(v.clone().into()), None)
+        } else if a.generate {
+            let s = generate_secret(a.gen_kind);
+            if !a.json {
+                ok(&format!(
+                    "Generated {} secret ({} chars)",
+                    a.gen_kind.as_str(),
+                    s.len()
+                ));
             }
-        }
-
-        dim("  Leave blank to auto-generate. Input is hidden.\n");
-        let val = read_masked(&format!(
-            "  {} ",
-            color(
-                "0;36",
-                &format!("Value for {name} (blank = auto-generate):")
-            )
-        ));
-
-        if val.is_empty() {
-            println!();
-            info("Generating automatically.");
-            info("  [1] hex      — 64-char hex token     (default)");
-            info("  [2] base62   — 48-char alphanumeric");
-            info("  [3] pass     — 32-char mixed symbols");
-            info("  [4] uuid     — UUID4 format");
-            eprint!("  {}", color("0;36", "Choice [1-4, default=1]: "));
-            io::stderr().flush().ok();
-            let mut c = String::new();
-            io::stdin().lock().read_line(&mut c).ok();
-            let kind = match c.trim() {
-                "2" => GenKind::Base62,
-                "3" => GenKind::Pass,
-                "4" => GenKind::Uuid,
-                _ => GenKind::Hex,
-            };
-            let s = generate_secret(kind);
-            // Intentionally do not preview the value — even a 12-char
-            // slice of a 36-char UUID leaks a third of the secret into
-            // stdout (and shell history). Confirm only kind + length.
-            ok(&format!(
-                "Generated {} secret ({} chars)",
-                kind.as_str(),
-                s.len()
-            ));
-            (Some(s.to_owned_string()), None)
+            (Some(s), None)
         } else {
-            (Some(val.to_owned_string()), None)
-        }
-    };
+            if a.json {
+                return Response::fail("provide --value or --generate in json mode");
+            }
+
+            println!();
+            bold(&format!("  Setting: {}", color("1;33", &name)));
+
+            // Peek: does this credential already exist? Ignore network errors here —
+            // the actual set call will surface them.
+            if let Response::GetOk { .. } = dispatch(a, &Request::Get { name: name.clone() }) {
+                warn(&format!("'{}' already exists.", name));
+                eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
+                io::stderr().flush().ok();
+                let mut ans = String::new();
+                io::stdin().lock().read_line(&mut ans).ok();
+                if ans.trim().to_lowercase() != "y" {
+                    info("Aborted.");
+                    return Response::fail("aborted");
+                }
+            }
+
+            dim("  Leave blank to auto-generate. Input is hidden.\n");
+            let val = read_masked(&format!(
+                "  {} ",
+                color(
+                    "0;36",
+                    &format!("Value for {name} (blank = auto-generate):")
+                )
+            ));
+
+            if val.is_empty() {
+                println!();
+                info("Generating automatically.");
+                info("  [1] hex      — 64-char hex token     (default)");
+                info("  [2] base62   — 48-char alphanumeric");
+                info("  [3] pass     — 32-char mixed symbols");
+                info("  [4] uuid     — UUID4 format");
+                eprint!("  {}", color("0;36", "Choice [1-4, default=1]: "));
+                io::stderr().flush().ok();
+                let mut c = String::new();
+                io::stdin().lock().read_line(&mut c).ok();
+                let kind = match c.trim() {
+                    "2" => GenKind::Base62,
+                    "3" => GenKind::Pass,
+                    "4" => GenKind::Uuid,
+                    _ => GenKind::Hex,
+                };
+                let s = generate_secret(kind);
+                // Intentionally do not preview the value — even a 12-char
+                // slice of a 36-char UUID leaks a third of the secret into
+                // stdout (and shell history). Confirm only kind + length.
+                ok(&format!(
+                    "Generated {} secret ({} chars)",
+                    kind.as_str(),
+                    s.len()
+                ));
+                (Some(s), None)
+            } else {
+                (Some(val), None)
+            }
+        };
 
     let req = Request::Set {
         name: name.clone(),
