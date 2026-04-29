@@ -39,11 +39,20 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
             .map_err(|e| format!("cannot chmod credstore: {e}"))?;
     }
 
-    // Write to a per-pid temp path in the same directory, then atomically
-    // rename over the target. Prevents concurrent `set NAME` calls from
-    // interleaving partial writes — rename(2) is atomic on the same fs,
-    // so any reader either sees the old file or the whole new one.
-    let tmp_path = out_path.with_extension(format!("tmp.{}", std::process::id()));
+    // Write to a per-(pid, thread-id) temp path in the same directory,
+    // then atomically rename over the target. Prevents concurrent
+    // `set NAME` calls from interleaving partial writes — rename(2) is
+    // atomic on the same fs, so any reader either sees the old file or
+    // the whole new one. The thread-id component is what guarantees
+    // two daemon workers writing the same credential do not collide on
+    // the same temp file (Codex flagged the (pid)-only variant on #51
+    // for the InProc path; same race applies here, so it gets the same
+    // fix even though this code path is mostly dormant after α3).
+    let tmp_path = out_path.with_extension(format!(
+        "tmp.{}.{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
 
     let mut child = Command::new(BACKEND_BIN)
         .args([
