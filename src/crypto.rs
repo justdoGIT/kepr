@@ -11,8 +11,8 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 
-use crate::generate::ZeroString;
 use crate::store;
+use kepr_core::generate::ZeroString;
 
 // Path to the credential backend. The literal name appears here and in
 // `sanitize_error` below because that function must recognise the

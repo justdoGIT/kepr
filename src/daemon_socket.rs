@@ -7,7 +7,7 @@ use std::ffi::CString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use crate::protocol::{SOCKET_DIR, SOCKET_PATH};
+use kepr_core::protocol::{SOCKET_DIR, SOCKET_PATH};
 
 extern "C" {
     fn geteuid() -> u32;

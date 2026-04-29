@@ -11,13 +11,10 @@ mod cli_input;
 mod cli_mode;
 mod cli_ui;
 mod client;
-mod framing;
-mod generate;
-mod protocol;
 
 use cli_args::parse_args;
 use cli_ui::{err, json_mode, print_json};
-use protocol::Response;
+use kepr_core::protocol::Response;
 
 fn main() {
     // Unknown verbs are rejected inside CliActivity::parse (called from

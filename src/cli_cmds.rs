@@ -9,8 +9,8 @@ use crate::cli_args::Args;
 use crate::cli_input::read_masked;
 use crate::cli_ui::{bold, color, dim, einfo, err, info, ok, warn};
 use crate::client::send_request;
-use crate::generate::{generate_secret, GenKind};
-use crate::protocol::{Request, Response};
+use kepr_core::generate::{generate_secret, GenKind};
+use kepr_core::protocol::{Request, Response};
 
 // Dispatch a request, turning transport errors into a Response::Err.
 // Centralises the "on send failure, print and fail" pattern.

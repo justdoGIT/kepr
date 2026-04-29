@@ -57,6 +57,12 @@ pub enum GenKind {
 }
 
 impl GenKind {
+    // We want Option<Self> here so callers can chain via .and_then on
+    // an Option<&str> (see daemon_handlers::handle_set). Implementing
+    // std::str::FromStr would force a Result with an associated Err
+    // type, which loses that ergonomic and means three callsites
+    // change shape for no real benefit.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "hex" => Some(Self::Hex),
