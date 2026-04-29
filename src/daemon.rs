@@ -126,7 +126,7 @@ fn sweep_legacy_credstore() {
             use std::io::Read;
             f.read_exact(&mut head)
         }) {
-            Ok(()) => !INPROC_MAGICS.iter().any(|m| m.len() == HEAD_LEN && &head == *m),
+            Ok(()) => !INPROC_MAGICS.iter().any(|m| m.len() == HEAD_LEN && head == **m),
             // Treat unreadable / too-short files as legacy too — they
             // cannot decrypt under either backend, so removal is the
             // honest answer.
