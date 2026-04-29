@@ -60,6 +60,42 @@ MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 
+# Phase 0 finishing pass: drop the remaining `systemd-analyze security`
+# exposure categories that don't require an architectural change. These
+# bring the offline score from 3.0 down to the ≤ 2.5 target documented in
+# the Phase 0 success criteria. Pinned by tests/systemd_unit.rs so a
+# future edit that drops one of these directives fails CI.
+
+# Daemon listens only on /run/kepr/kepr.sock and writes to the local
+# journal — it has no IP path. The systemd-creds child invoked once at
+# startup is also network-free (host-key derivation is local).
+PrivateNetwork=yes
+
+# No /dev/* access. Implies a private /dev mount with a closed device
+# policy — strictly stronger than DeviceAllow= alone.
+PrivateDevices=yes
+
+# Daemon does not adjust the system clock, kernel log, or hostname.
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+
+# /proc visibility tightening. `invisible` hides other processes' PID
+# subtrees from this service; `pid` restricts /proc to the per-pid
+# directories the process needs for its own introspection.
+ProtectProc=invisible
+ProcSubset=pid
+
+# Native ABI only. Blocks compat-mode syscalls on x86_64 (the i386 ABI
+# was historically a way to bypass syscall filters set in 64-bit terms).
+SystemCallArchitectures=native
+
+# Belt-and-braces with the in-process umask we set in
+# `daemon_socket::tighten_umask_for_socket()` before bind(2). Setting it
+# at the unit level too means any file created by the daemon (even via a
+# future code path that forgets the explicit umask call) lands at 0o600.
+UMask=0077
+
 # Capability bounding. Caps the daemon could ever raise, even though it
 # starts as root. Required:
 #   CAP_IPC_LOCK   — mlockall (src/daemon.rs lock_memory)
