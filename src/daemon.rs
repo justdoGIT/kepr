@@ -18,6 +18,8 @@ mod daemon_peer;
 mod daemon_pool;
 mod daemon_ratelimit;
 mod daemon_socket;
+#[cfg(feature = "inproc-aead")]
+mod master_key;
 mod store;
 
 use std::fs;
