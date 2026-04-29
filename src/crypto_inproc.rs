@@ -132,38 +132,47 @@ impl InProcBackend {
 impl Backend for InProcBackend {
     fn encrypt(&self, uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
         let cred_name = store::to_cred_name(uid, name);
-        let counter = self.versions.next(&cred_name)?;
-
         let cipher = self.cipher();
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let aad = Self::aad(uid, name);
+        let cred_path = self.cred_path(uid, name);
 
-        // v2 plaintext = [8B counter LE u64][secret bytes]. The
-        // counter is inside the AEAD plaintext, so the GCM tag binds
-        // it: any tamper with the counter on disk fails the auth
-        // check. A peer who rolls back the whole file loses anyway
-        // because the daemon also persists the high-water mark and
-        // refuses lower counters at read time.
-        let mut plaintext = Vec::with_capacity(COUNTER_LEN + value.len());
-        plaintext.extend_from_slice(&counter.to_le_bytes());
-        plaintext.extend_from_slice(value);
+        // Transactional counter advance: with_next holds the
+        // VersionState mutex through the file write so a failed
+        // write_atomic does not advance the recorded high-water mark
+        // (which would brick the existing on-disk file at the older
+        // counter), and so concurrent encrypts can't lose a
+        // persistence ordering and let state regress on disk. Codex
+        // flagged both failure modes on the prior shape.
+        self.versions
+            .with_next(&cred_name, |counter| {
+                let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
-        let ciphertext = cipher
-            .encrypt(
-                &nonce,
-                Payload {
-                    msg: &plaintext,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| "encryption failed".to_string())?;
+                // v2 plaintext = [8B counter LE u64][secret bytes].
+                // The counter is inside the AEAD plaintext so the GCM
+                // tag binds it: any tamper with the counter on disk
+                // fails the auth check.
+                let mut plaintext = Vec::with_capacity(COUNTER_LEN + value.len());
+                plaintext.extend_from_slice(&counter.to_le_bytes());
+                plaintext.extend_from_slice(value);
 
-        let mut out = Vec::with_capacity(MAGIC_LEN + NONCE_LEN + ciphertext.len());
-        out.extend_from_slice(MAGIC_V2);
-        out.extend_from_slice(nonce.as_slice());
-        out.extend_from_slice(&ciphertext);
+                let ciphertext = cipher
+                    .encrypt(
+                        &nonce,
+                        Payload {
+                            msg: &plaintext,
+                            aad: &aad,
+                        },
+                    )
+                    .map_err(|_| "encryption failed".to_string())?;
 
-        write_atomic(&self.cred_path(uid, name), &out)
+                let mut out = Vec::with_capacity(MAGIC_LEN + NONCE_LEN + ciphertext.len());
+                out.extend_from_slice(MAGIC_V2);
+                out.extend_from_slice(nonce.as_slice());
+                out.extend_from_slice(&ciphertext);
+
+                write_atomic(&cred_path, &out)
+            })
+            .map(|_| ())
     }
 
     fn decrypt(&self, uid: u32, name: &str) -> Result<ZeroString, String> {

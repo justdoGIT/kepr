@@ -77,16 +77,55 @@ impl VersionState {
         })
     }
 
-    /// Increment and return the next counter for `cred_name`. Persists
-    /// the new value to disk before returning so a daemon crash mid-
-    /// `set` cannot leave a ciphertext on disk whose counter is higher
-    /// than what the state file remembers.
-    pub fn next(&self, cred_name: &str) -> Result<u64, String> {
+    /// Run `f` with the next counter for `cred_name`, atomically.
+    /// The closure does the actual on-disk write of the ciphertext
+    /// for that counter; on closure success the new counter is
+    /// committed and the state file is persisted, on closure failure
+    /// the in-memory map is left untouched and disk state is
+    /// unchanged.
+    ///
+    /// Codex flagged two P1s on the previous shape:
+    ///
+    ///   1. The earlier `next()` advanced the in-memory counter
+    ///      *before* the caller wrote the ciphertext file. If the
+    ///      file write then failed (ENOSPC, rename failure), the
+    ///      cred became unreadable: the on-disk file still carried
+    ///      the old counter while the state's high-water mark had
+    ///      jumped, so subsequent `get` calls were rejected as
+    ///      rollback. Running the file IO first, committing the
+    ///      counter only on success, fixes this.
+    ///
+    ///   2. The earlier `next()` released the mutex before
+    ///      persisting the cloned snapshot to disk. Two concurrent
+    ///      `next()` calls could persist their snapshots in either
+    ///      order, so an older snapshot could land on disk last and
+    ///      overwrite a newer counter. After a daemon restart, the
+    ///      reloaded state could be lower than what the in-memory
+    ///      one had committed, weakening rollback protection.
+    ///      Holding the lock through the file IO (this includes the
+    ///      caller's closure) and the subsequent persist serialises
+    ///      both mutations and avoids the lost-update race.
+    ///
+    /// Trade-off: encrypts across different credentials also
+    /// serialise on this lock. The daemon's encrypt rate is bounded
+    /// by user activity (a few `set` ops/sec at most for any normal
+    /// workload), so the throughput cost is negligible compared to
+    /// the correctness win.
+    pub fn with_next<F>(&self, cred_name: &str, f: F) -> Result<u64, String>
+    where
+        F: FnOnce(u64) -> Result<(), String>,
+    {
         let mut map = self.counters.lock().unwrap();
         let next = map.get(cred_name).copied().unwrap_or(0) + 1;
+        // 1. Run the caller's file IO. If this fails the state map
+        //    is untouched and the existing on-disk ciphertext
+        //    continues to verify cleanly.
+        f(next)?;
+        // 2. Commit the counter to the in-memory map.
         map.insert(cred_name.to_string(), next);
+        // 3. Persist while still holding the lock so a concurrent
+        //    `with_next` can't interleave its own snapshot.
         let snapshot = map.clone();
-        drop(map); // release the lock before doing IO
         self.persist(&snapshot)?;
         Ok(next)
     }
@@ -116,12 +155,14 @@ impl VersionState {
 
     /// Forget the counter for `cred_name`. Called on `delete` so a
     /// subsequent `set` of the same name starts at counter=1 rather
-    /// than carrying the old high-water mark forever.
+    /// than carrying the old high-water mark forever. Holds the lock
+    /// through persist for the same reason `with_next` does — out-
+    /// of-order persistence between a forget and a concurrent
+    /// `with_next` would corrupt the state file.
     pub fn forget(&self, cred_name: &str) -> Result<(), String> {
         let mut map = self.counters.lock().unwrap();
         if map.remove(cred_name).is_some() {
             let snapshot = map.clone();
-            drop(map);
             self.persist(&snapshot)?;
         }
         Ok(())
@@ -187,32 +228,54 @@ mod tests {
         (state, dir)
     }
 
+    /// Test helper: succeed-immediately closure. Used wherever a test
+    /// just wants to advance the counter without simulating any real
+    /// file IO.
+    fn ok_io<T>(_: T) -> Result<(), String> {
+        Ok(())
+    }
+
     #[test]
     fn next_starts_at_one_for_unknown_cred() {
         let (s, _d) = fresh_state();
-        assert_eq!(s.next("FOO").unwrap(), 1);
+        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 1);
     }
 
     #[test]
     fn next_increments_per_call() {
         let (s, _d) = fresh_state();
-        assert_eq!(s.next("FOO").unwrap(), 1);
-        assert_eq!(s.next("FOO").unwrap(), 2);
-        assert_eq!(s.next("FOO").unwrap(), 3);
+        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 1);
+        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 2);
+        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 3);
     }
 
     #[test]
     fn next_is_independent_per_cred() {
         let (s, _d) = fresh_state();
-        assert_eq!(s.next("FOO").unwrap(), 1);
-        assert_eq!(s.next("BAR").unwrap(), 1);
-        assert_eq!(s.next("FOO").unwrap(), 2);
+        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 1);
+        assert_eq!(s.with_next("BAR", ok_io).unwrap(), 1);
+        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 2);
+    }
+
+    #[test]
+    fn with_next_does_not_advance_on_io_failure() {
+        // Codex P1 #1: a failing write_atomic must NOT leave the
+        // state map advanced. Verify by injecting a closure that
+        // always errors and checking the next successful call still
+        // gets counter=1.
+        let (s, _d) = fresh_state();
+        let err = s
+            .with_next("FOO", |_| Err("simulated ENOSPC".to_string()))
+            .expect_err("io failure propagates");
+        assert!(err.contains("ENOSPC"));
+        // State is untouched: a subsequent call still returns 1.
+        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 1);
     }
 
     #[test]
     fn verify_accepts_equal_counter() {
         let (s, _d) = fresh_state();
-        let n = s.next("FOO").unwrap();
+        let n = s.with_next("FOO", ok_io).unwrap();
         s.verify("FOO", n).expect("equal counter must verify");
     }
 
@@ -223,15 +286,15 @@ mod tests {
         // (impossible in a single-daemon model, but a defensive
         // ordering for correctness). Pin it.
         let (s, _d) = fresh_state();
-        let _ = s.next("FOO").unwrap(); // recorded = 1
+        let _ = s.with_next("FOO", ok_io).unwrap(); // recorded = 1
         s.verify("FOO", 2).expect("higher counter must verify");
     }
 
     #[test]
     fn verify_rejects_lower_counter() {
         let (s, _d) = fresh_state();
-        let _ = s.next("FOO").unwrap();
-        let _ = s.next("FOO").unwrap(); // recorded = 2
+        let _ = s.with_next("FOO", ok_io).unwrap();
+        let _ = s.with_next("FOO", ok_io).unwrap(); // recorded = 2
         let err = s.verify("FOO", 1).expect_err("lower counter must reject");
         assert!(err.contains("rollback detected"), "got: {err}");
     }
@@ -249,14 +312,14 @@ mod tests {
     #[test]
     fn forget_resets_counter() {
         let (s, _d) = fresh_state();
-        let _ = s.next("FOO").unwrap();
-        let _ = s.next("FOO").unwrap();
+        let _ = s.with_next("FOO", ok_io).unwrap();
+        let _ = s.with_next("FOO", ok_io).unwrap();
         s.forget("FOO").unwrap();
         // After forget, a verify against any counter should pass
         // (since the cred is unknown again).
         s.verify("FOO", 1).expect("post-forget verify");
-        // And next() starts again from 1.
-        assert_eq!(s.next("FOO").unwrap(), 1);
+        // And with_next() starts again from 1.
+        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 1);
     }
 
     #[test]
@@ -265,9 +328,9 @@ mod tests {
         let path = dir.path().join("cred-versions.json");
 
         let s1 = VersionState::load(path.clone()).unwrap();
-        let _ = s1.next("FOO").unwrap();
-        let _ = s1.next("FOO").unwrap();
-        let _ = s1.next("BAR").unwrap();
+        let _ = s1.with_next("FOO", ok_io).unwrap();
+        let _ = s1.with_next("FOO", ok_io).unwrap();
+        let _ = s1.with_next("BAR", ok_io).unwrap();
         drop(s1);
 
         let s2 = VersionState::load(path).unwrap();
@@ -282,7 +345,7 @@ mod tests {
     fn state_file_is_0600_after_persist() {
         use std::os::unix::fs::PermissionsExt;
         let (s, _d) = fresh_state();
-        let _ = s.next("FOO").unwrap(); // forces persist
+        let _ = s.with_next("FOO", ok_io).unwrap(); // forces persist
         let mode = fs::metadata(&s.path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "state file must be 0o600, got {mode:o}");
     }
