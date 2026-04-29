@@ -23,7 +23,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -158,9 +158,22 @@ pub fn load_or_generate(
         }
     }
 
-    fs::write(path, &blob).map_err(|e| format!("write master key: {e}"))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("chmod master key: {e}"))?;
+    // Create with mode 0600 at open(2) time so the inode never exists
+    // at any mode wider than the bits below — the previous shape
+    // (fs::write then chmod) left a window where the master-key blob
+    // was group/world readable under default umask. Codex flagged the
+    // same pattern in crypto_inproc::write_atomic on a re-review pass;
+    // the fix is identical.
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("open master key: {e}"))?;
+    f.write_all(&blob)
+        .map_err(|e| format!("write master key: {e}"))?;
+    drop(f);
     Ok(key)
 }
 

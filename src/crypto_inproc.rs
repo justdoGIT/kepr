@@ -29,7 +29,8 @@
 // shipped systemd-creds backend leaves open.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
@@ -163,8 +164,16 @@ impl Backend for InProcBackend {
 }
 
 /// Atomic write of `bytes` to `path`: temp file in the same directory,
-/// chmod 0600, then rename. Mirrors the same write pattern the
-/// SystemdCredsBackend uses (`fs::rename` is atomic on the same fs).
+/// created at mode `0o600` from the moment `open(2)` returns, then
+/// renamed over the target. `fs::rename` is atomic on the same fs and
+/// preserves the source mode, so the final file inherits `0o600` too.
+///
+/// Codex flagged the previous shape (write-then-chmod) as racy:
+/// `fs::write` creates the file with `0o666 & ~umask`, leaving a brief
+/// window where group/other could open the temp file before the
+/// subsequent `chmod`. `OpenOptions::mode(0o600)` closes the window —
+/// the inode never exists at any mode wider than what the bits below
+/// declare.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().ok_or("invalid credential path")?;
     if !parent.exists() {
@@ -185,11 +194,21 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         std::process::id(),
         std::thread::current().id()
     ));
-    fs::write(&tmp, bytes).map_err(|e| format!("write failed: {e}"))?;
-    if let Err(e) = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)) {
+
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .map_err(|e| format!("open temp failed: {e}"))?;
+    if let Err(e) = f.write_all(bytes) {
+        drop(f);
         let _ = fs::remove_file(&tmp);
-        return Err(format!("cannot secure credential file: {e}"));
+        return Err(format!("write failed: {e}"));
     }
+    drop(f); // explicit flush before rename
+
     fs::rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("cannot install credential: {e}")
