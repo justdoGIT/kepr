@@ -2,7 +2,7 @@
 
 ## Build / Install / Run
 
-- `cargo build --release` — produces both binaries (`kepr`, `kepr-daemon`) in `target/release/`. Workspace contains the bins plus the `kepr-core` library member at `crates/kepr-core/`.
+- `cargo build --release` — produces three binaries (`kepr`, `kepr-daemon`, `docker-credential-kepr`) in `target/release/`. Workspace contains the bins plus the `kepr-core` library member at `crates/kepr-core/`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` — lint everything; zero warnings enforced.
 - `cargo test --workspace` — fast, hermetic unit tests across the three buckets: `kepr` (CLI module tests), `kepr-daemon` (handler / store / crypto-error / rate-limit / umask / audit), and `kepr-core` (framing / generate / protocol). `store.rs` lives in the daemon bin only — it's not `mod`-included from `main.rs`, so its tests only compile under the daemon target.
 - `cd crates/kepr-core && cargo +nightly fuzz run frame_fuzz -- -max_total_time=60` — fuzz `read_frame` for 60 s. Requires `rustup install nightly` and `cargo install cargo-fuzz` once. Targets live at `crates/kepr-core/fuzz/fuzz_targets/`; corpus and crash artifacts are gitignored.
@@ -14,10 +14,11 @@
 
 ## Architecture
 
-Two binaries share one crate (see `Cargo.toml` `[[bin]]` entries):
+Three binaries share one crate (see `Cargo.toml` `[[bin]]` entries):
 
 - `kepr` (`src/main.rs`) — unprivileged CLI. Never invokes the encryption backend directly, never needs root/sudo. Connects to the daemon over a Unix socket and exchanges JSON.
 - `kepr-daemon` (`src/daemon.rs`) — root systemd service. Owns all encrypt/decrypt/delete operations and audit logging. Dispatches connections to a bounded worker pool (`daemon_pool.rs`) to cap concurrency and prevent thread exhaustion.
+- `docker-credential-kepr` (`src/docker_helper.rs`) — Phase 1 ε. Implements the docker credential-helper protocol (get/store/erase/list over stdin/stdout JSON). Wraps `client::send_request`. Same socket, same `kepr` group gate as the main CLI.
 
 **Socket contract:** `/run/kepr/kepr.sock`, owned `root:kepr 0660`. Any user in the `kepr` group can connect; the daemon reads the peer uid via `SO_PEERCRED` and uses *that* uid for namespacing — never trust a uid from the request body.
 
