@@ -6,6 +6,7 @@
 use std::io::{self, BufRead, Write};
 
 use crate::cli_args::Args;
+use crate::cli_envdump::shell_escape;
 use crate::cli_input::read_masked;
 use crate::cli_ui::{bold, color, dim, einfo, err, info, ok, warn};
 use crate::client::send_request;
@@ -169,7 +170,14 @@ pub fn cmd_get(a: &Args) -> Response {
                 return resp;
             }
             if a.export {
-                println!("export {name}={value}");
+                // Single-quote-escape via shell_escape so a value
+                // containing $, backticks, or quotes is safe to
+                // `eval`. The previous shape `export {name}={value}`
+                // was an injection-vector if the value carried any
+                // shell metachars; the multi-var sibling
+                // `kepr env --env CSV` and this single-var form now
+                // share the same escaping helper.
+                println!("export {name}={}", shell_escape(value.as_str()));
                 return resp;
             }
             println!();

@@ -654,6 +654,59 @@ for name in "daemon socket" "kepr group membership" "daemon responds to Ping"; d
     fi
 done
 
+# ── 19. kepr env --env CSV emits eval-safe export lines ──────────────────────
+# Phase 1 sibling of `kepr exec`. Sources two credentials into the
+# current shell via `eval "$(kepr env --env A,B)"` and verifies both
+# are visible AFTER the eval. Crucially, the second credential carries
+# a value with shell metachars ($, backticks) — eval-ing the line MUST
+# treat those as literals, not expand them. A pre-Phase-1 cmd_get
+# --export would have detonated on this case (no quoting).
+step "19. kepr env --env CSV: eval-safe export lines"
+
+NAME_A="${PREFIX}ENV_A"
+NAME_B="${PREFIX}ENV_B"
+VAL_A="plain-value-$(date +%N)"
+# A value designed to break naive `export VAR=value` rendering: the
+# `$(date)` is shell-active without single-quotes. The post-eval
+# environment must hold the literal text, NOT the date.
+# shellcheck disable=SC2016 # literal $(date) is intentional
+VAL_B='the-injected-value-$(date)'
+kepr --json set "$NAME_A" --value "$VAL_A" >/dev/null
+kepr --json set "$NAME_B" --value "$VAL_B" >/dev/null
+
+# Capture exports from a subshell so the test process's environment
+# is not polluted. `set -a` is not needed because the lines start with
+# `export`. Use `printenv` to read back so we go through the kernel's
+# environment-variable view, not the subshell's variable substitution
+# that we're trying to test against.
+export_out=$(eval "$(kepr env --env "$NAME_A,$NAME_B")"; printenv "$NAME_A"; echo '---'; printenv "$NAME_B" || true)
+got_a=$(echo "$export_out" | sed -n '1p')
+got_b=$(echo "$export_out" | sed -n '3p')
+
+if [ "$got_a" = "$VAL_A" ]; then
+    pass "kepr env exported $NAME_A round-tripped exactly"
+else
+    fail "kepr env $NAME_A: got $(printf '%q' "$got_a"), expected $(printf '%q' "$VAL_A")"
+fi
+
+if [ "$got_b" = "$VAL_B" ]; then
+    pass "kepr env preserved shell metachars in $NAME_B (no expansion)"
+else
+    fail "kepr env $NAME_B leaked: got $(printf '%q' "$got_b"), expected $(printf '%q' "$VAL_B")"
+fi
+
+# Negative: missing cred must abort BEFORE any line is emitted, so the
+# user can't `eval` partial state. Same contract as exec.
+MISSING_C="${PREFIX}ENV_MISSING"
+env_out=$(kepr env --env "$NAME_A,$MISSING_C" 2>&1 || true)
+# The good var must NOT appear on stdout — empty output proves the
+# whole batch was abandoned, not just the missing leg.
+if ! echo "$env_out" | grep -q "^export ${NAME_A}="; then
+    pass "kepr env aborts the whole batch on first failure"
+else
+    fail "kepr env emitted ${NAME_A} despite ${MISSING_C} missing"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"

@@ -181,6 +181,7 @@ pub fn print_help() {
     println!("  check");
     println!("  exec --env VAR1[,VAR2…] -- CMD ARGS  run CMD with credentials in env");
     println!("  doctor                               diagnose common setup issues");
+    println!("  env --env VAR1[,VAR2…]               emit `export VAR='value'` lines for eval");
     println!();
     println!("GLOBAL FLAGS:");
     println!("  --json       machine-readable output; no stderr on clean errors");
@@ -205,6 +206,7 @@ pub fn print_help() {
     println!("  kepr exec --env OPENAI_API_KEY -- python train.py");
     println!("                                       # provision creds in env, replace process");
     println!("  kepr doctor                          # ✓/✗ list of setup checks");
+    println!("  eval \"$(kepr env --env DB_PASS,DB_USER)\"  # source creds into the current shell");
     println!();
     println!("  View audit log:");
     println!("    journalctl -t kepr-daemon");
