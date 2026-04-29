@@ -26,6 +26,12 @@ zeroize = { version = "1.8", features = ["zeroize_derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 aes-gcm = "0.10"
+# `kepr doctor` calls getgrnam(3) and getgroups(2) to verify the
+# invoking user is in the `kepr` group. The std lib has no portable
+# wrapper for either, so the libc crate is the lightest dep that
+# exposes them. Bin-only — neither the daemon nor kepr-core uses libc
+# directly (the daemon's mlockall extern "C" path is hand-written).
+libc = "0.2"
 
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git

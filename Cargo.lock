@@ -265,6 +265,7 @@ version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "kepr-core",
+ "libc",
  "proptest",
  "serde",
  "serde_json",
