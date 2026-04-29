@@ -119,14 +119,8 @@ fn sweep_legacy_credstore() {
         };
         if is_legacy {
             match fs::remove_file(&path) {
-                Ok(()) => eprintln!(
-                    "[kepr-daemon] swept legacy credential: {}",
-                    name_str
-                ),
-                Err(e) => eprintln!(
-                    "[kepr-daemon] failed to sweep {}: {e}",
-                    name_str
-                ),
+                Ok(()) => eprintln!("[kepr-daemon] swept legacy credential: {}", name_str),
+                Err(e) => eprintln!("[kepr-daemon] failed to sweep {}: {e}", name_str),
             }
         }
     }
@@ -158,6 +152,14 @@ fn main() {
         eprintln!("[kepr-daemon] cannot install backend: {e}");
         std::process::exit(1);
     });
+    // Drop the bootstrap copy ASAP. Without this, the `Zeroizing` wrapper
+    // would only run its destructor at the end of main() — which is the
+    // end of the process lifetime, since the accept loop below never
+    // returns under normal operation. An explicit drop zeroizes the
+    // 32-byte key immediately after the backend has its own copy, which
+    // shrinks the window where a coredump or memory snapshot could
+    // surface plaintext key material.
+    drop(key);
 
     // One-time sweep of any legacy systemd-creds-format credentials left
     // over from before the AEAD migration. The user explicitly opted to
