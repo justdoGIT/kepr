@@ -30,6 +30,11 @@ Two binaries share one crate (see `Cargo.toml` `[[bin]]` entries):
 
 When adding a new command, touch all three layers: add a variant to `Request`/`Response` in `crates/kepr-core/src/protocol.rs`, a client function in `cli_cmds.rs` (with transport via `client.rs`), and a handler + audit call in `daemon_handlers.rs`.
 
+## Workflow
+
+- **TDD by default.** For new features and bug fixes: write a failing test first (RED), confirm the failure mode is what you expect, implement the minimal code to make it pass (GREEN), then refactor with the suite as a safety net. Use the `verify-first` skill to lock down the success command + failure mode + rollback *before* any code change. The exception is pure mechanical refactors that preserve all external behaviour (file moves, crate splits) — there the existing suite is the contract.
+- **Self-review every PR.** After `gh pr create`, before asking for merge, walk the diff yourself: re-read changed files, check error-message hygiene, look for missed test coverage, confirm the PR description matches the code, and consider edge cases the tests do not yet exercise. Post a self-review summary as a PR comment that names the riskiest assumption you made. Do this even when Codex / Copilot say nothing or 👍 — automated reviewers catch a slice; the rest you have to find before merge. Skill: `pr-review-lean`.
+
 ## Responsive UI
 - Mobile-first. Breakpoints: 360/768/1024/1280px. Use Tailwind `sm:/md:/lg:/xl:`.
 - Touch targets: min 44×44px. No fixed px widths >360px without `overflow-x-auto`.
