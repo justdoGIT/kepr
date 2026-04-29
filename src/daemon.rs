@@ -10,7 +10,6 @@
 
 mod audit;
 mod crypto;
-#[cfg(feature = "inproc-aead")]
 mod crypto_inproc;
 mod daemon_cache;
 mod daemon_handlers;
@@ -18,7 +17,6 @@ mod daemon_peer;
 mod daemon_pool;
 mod daemon_ratelimit;
 mod daemon_socket;
-#[cfg(feature = "inproc-aead")]
 mod master_key;
 mod store;
 
@@ -72,6 +70,62 @@ fn lock_memory() {
     }
 }
 
+/// Path to the daemon's sealed master key file. The systemd unit's
+/// `StateDirectory=kepr` ensures `/var/lib/kepr/` exists at 0700
+/// before the daemon starts, so the file lands at 0600 inside it.
+const MASTER_KEY_PATH: &str = "/var/lib/kepr/master.key";
+
+/// Magic prefix written by the InProc AEAD backend. Files in
+/// `/etc/credstore.encrypted/` that match the `kepr-*` prefix but do
+/// not start with this magic are leftover from the legacy
+/// systemd-creds backend and are unreadable under the new format —
+/// see `sweep_legacy_credstore`.
+const INPROC_MAGIC: &[u8] = b"kepr_v1\n";
+
+/// Walk `/etc/credstore.encrypted/` for `kepr-*` files and delete any
+/// whose first 8 bytes are not the InProc AEAD magic. The user
+/// authorised this destructive cutover at the migration policy step;
+/// the alternative ("read-fallback to systemd-creds") was rejected to
+/// avoid carrying two backends forever. Each deletion is logged to
+/// the audit channel so post-mortem inspection has a record.
+///
+/// Failures (read-dir, individual unlink) are logged and the sweep
+/// continues — a partial cleanup is better than aborting startup
+/// because of one stuck file.
+fn sweep_legacy_credstore() {
+    use store::CRED_PREFIX;
+    let dir = std::path::Path::new(store::CREDSTORE);
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return, // dir absent on a fresh install — nothing to do
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.starts_with(&format!("{CRED_PREFIX}-")) {
+            continue;
+        }
+        let path = entry.path();
+        let mut head = [0u8; INPROC_MAGIC.len()];
+        let is_legacy = match fs::File::open(&path).and_then(|mut f| {
+            use std::io::Read;
+            f.read_exact(&mut head)
+        }) {
+            Ok(()) => head.as_slice() != INPROC_MAGIC,
+            // Treat unreadable / too-short files as legacy too — they
+            // cannot decrypt under either backend, so removal is the
+            // honest answer.
+            Err(_) => true,
+        };
+        if is_legacy {
+            match fs::remove_file(&path) {
+                Ok(()) => eprintln!("[kepr-daemon] swept legacy credential: {}", name_str),
+                Err(e) => eprintln!("[kepr-daemon] failed to sweep {}: {e}", name_str),
+            }
+        }
+    }
+}
+
 fn main() {
     if effective_uid() != 0 {
         eprintln!("[kepr-daemon] must run as root");
@@ -79,6 +133,42 @@ fn main() {
     }
 
     lock_memory();
+
+    // Bootstrap the in-process AEAD backend before serving any request.
+    // This is a one-shot at startup: load (or generate + seal + persist)
+    // the 32-byte master key, hand it to InProcBackend, and install
+    // that as `crypto::default_backend()`. The systemd-creds fork+exec
+    // happens at most once here for the master key; per-credential
+    // ops are pure in-process AES-256-GCM afterwards.
+    let key = master_key::load_or_generate(
+        std::path::Path::new(MASTER_KEY_PATH),
+        &master_key::SystemdCredsSealer,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
+        std::process::exit(1);
+    });
+    crypto::initialize_inproc_backend(*key).unwrap_or_else(|e| {
+        eprintln!("[kepr-daemon] cannot install backend: {e}");
+        std::process::exit(1);
+    });
+    // Drop the bootstrap copy ASAP. Without this, the `Zeroizing` wrapper
+    // would only run its destructor at the end of main() — which is the
+    // end of the process lifetime, since the accept loop below never
+    // returns under normal operation. An explicit drop zeroizes the
+    // 32-byte key immediately after the backend has its own copy, which
+    // shrinks the window where a coredump or memory snapshot could
+    // surface plaintext key material.
+    drop(key);
+
+    // One-time sweep of any legacy systemd-creds-format credentials left
+    // over from before the AEAD migration. The user explicitly opted to
+    // delete these on cutover (no in-place re-encryption), so log the
+    // names and remove the files. Idempotent: on second start the sweep
+    // finds nothing because every file the daemon writes now starts with
+    // the kepr_v1 magic.
+    sweep_legacy_credstore();
+
     setup_socket_dir();
     let _ = fs::remove_file(SOCKET_PATH);
 

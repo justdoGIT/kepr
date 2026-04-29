@@ -19,9 +19,7 @@
 // The Sealer trait makes the systemd-creds dependency injectable so
 // `load_or_generate` can be unit-tested with a mock sealer that just
 // round-trips bytes. End-to-end coverage of the systemd-creds path
-// lives in tests/e2e.sh once α3 wires the InProc backend in by default.
-
-#![cfg(feature = "inproc-aead")]
+// lives in tests/e2e.sh.
 
 use std::fs;
 use std::io::{Read, Write};

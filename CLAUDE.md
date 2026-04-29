@@ -26,7 +26,7 @@ Two binaries share one crate (see `Cargo.toml` `[[bin]]` entries):
 **Module split:**
 - `crates/kepr-core/` (library, depended on by both bins): `protocol` (wire types, socket path, limits), `generate` (CSPRNG + `ZeroString`), `framing` (length-prefixed u32 wire framing). The lib has no IO logic beyond the framing read/write helpers and no knowledge of `systemd-creds`, the daemon cache, or the credstore layout — so future out-of-tree consumers (`docker-credential-kepr`, the External Secrets Operator provider) can depend on it without pulling in root-only privileges.
 - CLI-only (in `src/`): `client.rs` (framed JSON transport), `cli_args.rs` (argv parsing), `cli_cmds.rs` (set/get/list/delete/check orchestration), `cli_ui.rs` (ANSI/JSON rendering), `cli_input.rs` (masked TTY entry), `cli_mode.rs` (colour/JSON flags), `cli_activity.rs` (subcommand newtype).
-- Daemon-only (in `src/`): `store.rs` (naming, validation, path helpers), `crypto.rs` (wraps the host-keyed encryption backend), `audit.rs` (journal logging), `daemon_handlers.rs` (operation handlers), `daemon_peer.rs` (SO_PEERCRED extraction), `daemon_pool.rs` (bounded worker pool), `daemon_socket.rs` (socket setup; umask + chown), `daemon_cache.rs` (per-uid credstore scan cache), `daemon_ratelimit.rs` (per-uid token bucket).
+- Daemon-only (in `src/`): `store.rs` (naming, validation, path helpers), `crypto.rs` (Backend trait + legacy systemd-creds path; selects the active backend via `default_backend()`), `crypto_inproc.rs` (in-process AES-256-GCM backend, default since α3), `master_key.rs` (load-or-generate the 32-byte master key sealed via systemd-creds at `/var/lib/kepr/master.key`), `audit.rs` (journal logging), `daemon_handlers.rs` (operation handlers), `daemon_peer.rs` (SO_PEERCRED extraction), `daemon_pool.rs` (bounded worker pool), `daemon_socket.rs` (socket setup; umask + chown), `daemon_cache.rs` (per-uid credstore scan cache), `daemon_ratelimit.rs` (per-uid token bucket).
 
 When adding a new command, touch all three layers: add a variant to `Request`/`Response` in `crates/kepr-core/src/protocol.rs`, a client function in `cli_cmds.rs` (with transport via `client.rs`), and a handler + audit call in `daemon_handlers.rs`.
 
@@ -59,7 +59,7 @@ When adding a new command, touch all three layers: add a variant to `Request`/`R
 
 - `README.md` — install, usage, file layout, troubleshooting.
 - `DOCS.md` — architecture, design patterns, sequence diagrams, test matrix.
-- `systemd/kepr.service` — hardening flags (`ProtectSystem=strict`, `ReadWritePaths` allowlist, `MemoryDenyWriteExecute`, etc.). `NoNewPrivileges=no` is intentional — the backend needs root to use the host key.
+- `systemd/kepr.service` — hardening flags: `ProtectSystem=strict`, `ReadWritePaths` allowlist (incl. `/var/lib/kepr` for the master-key file), `StateDirectory=kepr` (auto-creates `/var/lib/kepr/` at 0700), `MemoryDenyWriteExecute=yes`, `CapabilityBoundingSet=CAP_IPC_LOCK CAP_CHOWN CAP_DAC_READ_SEARCH`, `SystemCallFilter=@system-service` minus mount/reboot/swap/cpu-emulation/debug/raw-io/clock/module/obsolete, `RestrictAddressFamilies=AF_UNIX AF_NETLINK`, `NoNewPrivileges=yes`. The InProc AEAD backend means per-credential ops are pure in-process; `systemd-creds` is only invoked at daemon startup to seal/unseal the master key.
 
 ## Skill routing
 
