@@ -28,8 +28,6 @@
 // MAC check at decrypt time, closing the cross-substitution path the
 // shipped systemd-creds backend leaves open.
 
-#![cfg(feature = "inproc-aead")]
-
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
