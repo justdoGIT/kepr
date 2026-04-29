@@ -25,6 +25,11 @@ pub struct Args {
     /// after the `--` separator. The first element is the binary;
     /// subsequent elements are its arguments.
     pub exec_argv: Vec<String>,
+    /// `kepr exec` / `kepr env`: explicit pin to a `.kepr.toml`
+    /// manifest. If unset, the resolver falls back to walking up
+    /// from `$PWD` and finally to "no manifest". `--env CSV`
+    /// overrides whatever the manifest says.
+    pub manifest_path: Option<std::path::PathBuf>,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -49,6 +54,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut force = false;
     let mut env_vars: Vec<String> = Vec::new();
     let mut exec_argv: Vec<String> = Vec::new();
+    let mut manifest_path: Option<std::path::PathBuf> = None;
 
     let mut i = 1usize;
 
@@ -129,11 +135,19 @@ pub fn parse_args() -> Result<Args, String> {
                 // `kepr exec --env VAR1,VAR2` — defer the CSV split
                 // and validation to cli_exec::parse_env_csv so the
                 // error path is uniform whether the entries arrive
-                // here or, in a future PR, from a `.kepr.toml`
-                // manifest reader.
+                // here or from a `.kepr.toml` manifest.
                 i += 1;
                 let csv = raw.get(i).ok_or("--env needs a CSV of variable names")?;
                 env_vars = crate::cli_exec::parse_env_csv(csv)?;
+                i += 1;
+            }
+            "--manifest" => {
+                // Explicit pin to a `.kepr.toml`. Beats auto-discovery,
+                // loses to an explicit `--env CSV`. The resolver in
+                // cli_manifest::resolve enforces the precedence.
+                i += 1;
+                let p = raw.get(i).ok_or("--manifest needs a path")?;
+                manifest_path = Some(std::path::PathBuf::from(p));
                 i += 1;
             }
             "--" => {
@@ -164,6 +178,7 @@ pub fn parse_args() -> Result<Args, String> {
         force,
         env_vars,
         exec_argv,
+        manifest_path,
     })
 }
 
@@ -179,9 +194,9 @@ pub fn print_help() {
     println!("  list                                 (alias: ls)");
     println!("  delete KEY [--force]                 (alias: rm)");
     println!("  check");
-    println!("  exec --env VAR1[,VAR2…] -- CMD ARGS  run CMD with credentials in env");
+    println!("  exec [--env CSV|--manifest PATH] -- CMD ARGS  run CMD with creds in env");
     println!("  doctor                               diagnose common setup issues");
-    println!("  env --env VAR1[,VAR2…]               emit `export VAR='value'` lines for eval");
+    println!("  env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval");
     println!();
     println!("GLOBAL FLAGS:");
     println!("  --json       machine-readable output; no stderr on clean errors");
@@ -207,6 +222,14 @@ pub fn print_help() {
     println!("                                       # provision creds in env, replace process");
     println!("  kepr doctor                          # ✓/✗ list of setup checks");
     println!("  eval \"$(kepr env --env DB_PASS,DB_USER)\"  # source creds into the current shell");
+    println!("  kepr exec -- python train.py         # uses .kepr.toml in/above PWD");
+    println!();
+    println!("MANIFEST:");
+    println!("  Place a `.kepr.toml` in the project root:");
+    println!("    [env]");
+    println!("    required = [\"DB_PASS\", \"DB_USER\", \"OPENAI_API_KEY\"]");
+    println!("  Then `kepr exec -- python train.py` and `kepr env` need no flags.");
+    println!("  --env CSV overrides the manifest; --manifest path pins a different file.");
     println!();
     println!("  View audit log:");
     println!("    journalctl -t kepr-daemon");

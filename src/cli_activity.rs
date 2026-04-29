@@ -11,7 +11,20 @@ use crate::cli_cmds;
 use crate::cli_doctor;
 use crate::cli_envdump;
 use crate::cli_exec;
+use crate::cli_manifest;
 use kepr_core::protocol::Response;
+
+/// Resolve `(env_vars, manifest_path)` into the effective list of
+/// credentials for this invocation. Centralised here so `kepr exec`
+/// and `kepr env` apply the same precedence (CLI > --manifest >
+/// auto-discovery from $PWD) without each module re-implementing
+/// the resolver call.
+fn resolve_env_for(args: &Args) -> Result<Vec<String>, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("getcwd: {e}"))?;
+    let (resolved, _used) =
+        cli_manifest::resolve(&args.env_vars, args.manifest_path.as_deref(), &cwd)?;
+    Ok(resolved)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliActivity(String);
@@ -48,9 +61,15 @@ impl CliActivity {
             "list" => cli_cmds::cmd_list(args),
             "delete" => cli_cmds::cmd_delete(args),
             "check" => cli_cmds::cmd_check(args),
-            "exec" => cli_exec::cmd_exec(&args.env_vars, &args.exec_argv),
+            "exec" => match resolve_env_for(args) {
+                Ok(vars) => cli_exec::cmd_exec(&vars, &args.exec_argv),
+                Err(e) => Response::fail(e),
+            },
             "doctor" => cli_doctor::cmd_doctor(args.json),
-            "env" => cli_envdump::cmd_env(&args.env_vars),
+            "env" => match resolve_env_for(args) {
+                Ok(vars) => cli_envdump::cmd_env(&vars),
+                Err(e) => Response::fail(e),
+            },
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }
