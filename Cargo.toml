@@ -17,6 +17,15 @@ path = "src/main.rs"
 name = "kepr-daemon"
 path = "src/daemon.rs"
 
+# Phase 1 ε: docker credential-helper. Implements the docker
+# credential-helper protocol (get/store/erase/list over stdin/stdout
+# JSON) as a wrapper around `client::send_request`. Same socket, same
+# `kepr` group gate as the main CLI — no extra config besides a
+# `docker login` pointing at this binary.
+[[bin]]
+name = "docker-credential-kepr"
+path = "src/docker_helper.rs"
+
 [workspace]
 members = ["crates/kepr-core"]
 
@@ -72,8 +81,9 @@ owns all encryption, decryption, and audit logging. Designed for
 hosts where many users need isolated credential storage without
 granting sudo."""
 assets = [
-    ["target/release/kepr",        "/usr/local/bin/kepr",             "0755"],
-    ["target/release/kepr-daemon", "/usr/local/sbin/kepr-daemon",     "0700"],
+    ["target/release/kepr",                    "/usr/local/bin/kepr",                   "0755"],
+    ["target/release/kepr-daemon",             "/usr/local/sbin/kepr-daemon",           "0700"],
+    ["target/release/docker-credential-kepr",  "/usr/local/bin/docker-credential-kepr", "0755"],
     ["systemd/kepr.service",       "/lib/systemd/system/kepr.service","0644"],
     ["completions/kepr.bash",      "/usr/share/bash-completion/completions/kepr", "0644"],
     ["README.md",                  "/usr/share/doc/kepr/README.md",   "0644"],
@@ -94,8 +104,9 @@ maintainer-scripts = "packaging/debian"
 license = "MIT OR Apache-2.0"
 requires = { systemd = "*", shadow-utils = "*" }
 assets = [
-    { source = "target/release/kepr",        dest = "/usr/local/bin/kepr",             mode = "0755" },
-    { source = "target/release/kepr-daemon", dest = "/usr/local/sbin/kepr-daemon",     mode = "0700" },
+    { source = "target/release/kepr",                   dest = "/usr/local/bin/kepr",                   mode = "0755" },
+    { source = "target/release/kepr-daemon",            dest = "/usr/local/sbin/kepr-daemon",           mode = "0700" },
+    { source = "target/release/docker-credential-kepr", dest = "/usr/local/bin/docker-credential-kepr", mode = "0755" },
     { source = "systemd/kepr.service",       dest = "/lib/systemd/system/kepr.service",mode = "0644" },
     { source = "completions/kepr.bash",      dest = "/usr/share/bash-completion/completions/kepr", mode = "0644" },
     { source = "README.md",                  dest = "/usr/share/doc/kepr/README.md",   mode = "0644", doc = true },

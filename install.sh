@@ -41,16 +41,20 @@ warn "Log out and back in for group membership to take effect"
 warn "Or run: newgrp kepr"
 
 echo -e "\n${CYN}━━━ Installing binaries ━━━${RST}"
-sudo cp target/release/kepr        /usr/local/bin/kepr
-sudo cp target/release/kepr-daemon /usr/local/sbin/kepr-daemon
+sudo cp target/release/kepr                    /usr/local/bin/kepr
+sudo cp target/release/kepr-daemon             /usr/local/sbin/kepr-daemon
+sudo cp target/release/docker-credential-kepr  /usr/local/bin/docker-credential-kepr
 
 sudo chown root:root /usr/local/bin/kepr
 sudo chown root:root /usr/local/sbin/kepr-daemon
+sudo chown root:root /usr/local/bin/docker-credential-kepr
 sudo chmod 755 /usr/local/bin/kepr
 sudo chmod 700 /usr/local/sbin/kepr-daemon   # root-only execution
+sudo chmod 755 /usr/local/bin/docker-credential-kepr
 
-ok "kepr       → /usr/local/bin/kepr"
-ok "kepr-daemon → /usr/local/sbin/kepr-daemon"
+ok "kepr                      → /usr/local/bin/kepr"
+ok "kepr-daemon               → /usr/local/sbin/kepr-daemon"
+ok "docker-credential-kepr    → /usr/local/bin/docker-credential-kepr"
 
 echo -e "\n${CYN}━━━ Installing shell completion ━━━${RST}"
 # Prefer the directory bash-completion itself advertises via pkg-config;

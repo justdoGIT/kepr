@@ -750,6 +750,61 @@ else
     fail "CLI override not honoured: $(printf '%s' "$env_out" | tr '\n' ' ')"
 fi
 
+# ── 21. docker-credential-kepr round-trip ────────────────────────────────────
+# Phase 1 ε: third bin implements the docker credential-helper protocol
+# (get/store/erase/list over stdin/stdout JSON). Skip if the binary
+# is not on PATH — `cargo build --release` produces it but `install.sh`
+# may not have copied it (older installs).
+step "21. docker-credential-kepr: store/get/list/erase round-trip"
+
+if ! command -v docker-credential-kepr >/dev/null 2>&1; then
+    skip "docker-credential-kepr not on PATH (rebuild + reinstall to pick up Phase 1 ε)"
+else
+    DREG="https://${PREFIX,,}example.test"
+    DUSER="alice"
+    DSEC="docker-sentinel-$(date +%N)"
+
+    # store: stdin JSON, no stdout, exit 0.
+    if printf '%s' "{\"ServerURL\":\"$DREG\",\"Username\":\"$DUSER\",\"Secret\":\"$DSEC\"}" \
+        | docker-credential-kepr store >/dev/null 2>&1; then
+        pass "docker-credential-kepr store accepted JSON"
+    else
+        fail "docker-credential-kepr store rejected valid JSON"
+    fi
+
+    # get: stdin = URL, stdout = {"Username","Secret"}.
+    get_out=$(printf '%s' "$DREG" | docker-credential-kepr get 2>&1 || true)
+    if echo "$get_out" | jq -e --arg u "$DUSER" --arg s "$DSEC" \
+        '.Username == $u and .Secret == $s' >/dev/null; then
+        pass "docker-credential-kepr get returned the stored Username + Secret"
+    else
+        fail "docker-credential-kepr get round-trip failed: $(printf '%s' "$get_out" | tr '\n' ' ')"
+    fi
+
+    # list: stdout = {<ServerURL>: <Username>}; ours must be present.
+    list_out=$(docker-credential-kepr list </dev/null 2>&1 || true)
+    if echo "$list_out" | jq -e --arg u "$DUSER" --arg url "$DREG" \
+        '.[$url] == $u' >/dev/null; then
+        pass "docker-credential-kepr list includes the stored ServerURL"
+    else
+        fail "docker-credential-kepr list missing entry: $(printf '%s' "$list_out" | tr '\n' ' ')"
+    fi
+
+    # erase: stdin = URL, exit 0. Verify by re-erasing — second call
+    # MUST also exit 0 (docker treats erase-of-missing as a success).
+    if printf '%s' "$DREG" | docker-credential-kepr erase >/dev/null 2>&1; then
+        pass "docker-credential-kepr erase succeeded"
+    else
+        fail "docker-credential-kepr erase failed"
+    fi
+
+    if printf '%s' "$DREG" | docker-credential-kepr erase >/dev/null 2>&1; then
+        pass "docker-credential-kepr erase is idempotent on a missing entry"
+    else
+        fail "docker-credential-kepr erase failed on second run (must be idempotent)"
+    fi
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
