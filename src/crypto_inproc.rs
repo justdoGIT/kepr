@@ -253,13 +253,17 @@ impl Backend for InProcBackend {
         }
         fs::remove_file(&cred_path).map_err(|e| format!("cannot delete credential: {e}"))?;
 
-        // Forget the counter so a subsequent `set` of the same name
-        // starts at 1 instead of inheriting the deleted cred's
-        // high-water mark. Persisting the deletion also stops the
-        // state file from accumulating entries for credentials the
-        // user has explicitly removed.
+        // Tombstone the counter past the highest issued. Because
+        // verify uses ≥, simply preserving (or removing) the
+        // entry would leave a window where an attacker with a
+        // pre-delete snapshot of the latest ciphertext could
+        // replay it: the counters would match exactly. Bumping
+        // by one places the recorded value strictly above any
+        // ciphertext that has ever been issued for this cred,
+        // so all replays are rejected. A subsequent `set NAME`
+        // continues from there.
         let cred_name = store::to_cred_name(uid, name);
-        self.versions.forget(&cred_name)?;
+        self.versions.tombstone(&cred_name)?;
         Ok(())
     }
 }
@@ -468,6 +472,29 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.contains("truncated"), "got: {err}");
+    }
+
+    #[test]
+    fn delete_blocks_replay_of_pre_delete_snapshot() {
+        // Codex re-review P1: deletion must keep a tombstone that
+        // rejects replay of any ciphertext that existed before the
+        // delete. Capture the latest ciphertext, delete, plant the
+        // capture back — the decrypt must fail with rollback even
+        // though the file's counter equals what was the high-water
+        // mark immediately before the delete.
+        let (b, _dir) = fresh_backend();
+        b.encrypt(TEST_UID, "TOMBSTONE", b"original").unwrap();
+        let captured = fs::read(b.cred_path(TEST_UID, "TOMBSTONE")).unwrap();
+
+        b.delete(TEST_UID, "TOMBSTONE").unwrap();
+        // Plant the captured ciphertext back as if from a snapshot.
+        fs::write(b.cred_path(TEST_UID, "TOMBSTONE"), &captured).unwrap();
+
+        let err = match b.decrypt(TEST_UID, "TOMBSTONE") {
+            Ok(_) => panic!("replay of pre-delete file must be rejected"),
+            Err(e) => e,
+        };
+        assert!(err.contains("rollback detected"), "got: {err}");
     }
 
     #[test]

@@ -116,7 +116,8 @@ impl VersionState {
         F: FnOnce(u64) -> Result<(), String>,
     {
         let mut map = self.counters.lock().unwrap();
-        let next = map.get(cred_name).copied().unwrap_or(0) + 1;
+        let prev = map.get(cred_name).copied();
+        let next = prev.unwrap_or(0) + 1;
         // 1. Run the caller's file IO. If this fails the state map
         //    is untouched and the existing on-disk ciphertext
         //    continues to verify cleanly.
@@ -126,7 +127,28 @@ impl VersionState {
         // 3. Persist while still holding the lock so a concurrent
         //    `with_next` can't interleave its own snapshot.
         let snapshot = map.clone();
-        self.persist(&snapshot)?;
+        if let Err(e) = self.persist(&snapshot) {
+            // Persist failed AFTER the file was written. Revert the
+            // in-memory commit so it can't get ahead of the durable
+            // disk state — Codex flagged this on a re-review pass:
+            // an in-memory counter that is higher than the persisted
+            // one would, after a daemon restart that reloads from
+            // disk, regress the rollback floor below ciphertexts the
+            // daemon already produced. With the revert, on-disk
+            // ciphertext at `next` is still readable (verify uses
+            // `>=` against the lower recorded value) and the next
+            // successful with_next will re-roll to a higher counter
+            // and overwrite, restoring the invariant.
+            match prev {
+                Some(p) => {
+                    map.insert(cred_name.to_string(), p);
+                }
+                None => {
+                    map.remove(cred_name);
+                }
+            }
+            return Err(e);
+        }
         Ok(next)
     }
 
@@ -153,17 +175,31 @@ impl VersionState {
         }
     }
 
-    /// Forget the counter for `cred_name`. Called on `delete` so a
-    /// subsequent `set` of the same name starts at counter=1 rather
-    /// than carrying the old high-water mark forever. Holds the lock
-    /// through persist for the same reason `with_next` does — out-
-    /// of-order persistence between a forget and a concurrent
-    /// `with_next` would corrupt the state file.
-    pub fn forget(&self, cred_name: &str) -> Result<(), String> {
+    /// Tombstone the counter for `cred_name`: advance it past the
+    /// highest counter ever issued, so any pre-delete ciphertext
+    /// snapshot replay fails the rollback check. Called on `delete`.
+    ///
+    /// `verify` accepts file_counter ≥ recorded, so simply *removing*
+    /// the entry would let a captured pre-delete file (counter == old
+    /// high-water) replay against the implicit recorded=0 — exactly
+    /// what Codex flagged on the prior shape. Advancing instead means
+    /// any old ciphertext is now strictly below the recorded value
+    /// and gets rejected.
+    ///
+    /// Holds the lock through persist for the same reason `with_next`
+    /// does — out-of-order persistence between a tombstone and a
+    /// concurrent `with_next` would corrupt the state file.
+    pub fn tombstone(&self, cred_name: &str) -> Result<(), String> {
         let mut map = self.counters.lock().unwrap();
-        if map.remove(cred_name).is_some() {
-            let snapshot = map.clone();
-            self.persist(&snapshot)?;
+        let current = map.get(cred_name).copied().unwrap_or(0);
+        let bumped = current + 1;
+        map.insert(cred_name.to_string(), bumped);
+        let snapshot = map.clone();
+        if let Err(e) = self.persist(&snapshot) {
+            // Symmetric with with_next: revert the in-memory bump on
+            // persist failure so on-disk and in-memory don't diverge.
+            map.insert(cred_name.to_string(), current);
+            return Err(e);
         }
         Ok(())
     }
@@ -310,16 +346,37 @@ mod tests {
     }
 
     #[test]
-    fn forget_resets_counter() {
+    fn tombstone_advances_past_highest_issued() {
+        // After `set` (counter=1) and `set` (counter=2), tombstone
+        // must bump the recorded value to 3 so the file at counter=2
+        // (the latest pre-delete ciphertext) gets rejected on
+        // replay. Equality is not enough — verify uses ≥.
         let (s, _d) = fresh_state();
-        let _ = s.with_next("FOO", ok_io).unwrap();
-        let _ = s.with_next("FOO", ok_io).unwrap();
-        s.forget("FOO").unwrap();
-        // After forget, a verify against any counter should pass
-        // (since the cred is unknown again).
-        s.verify("FOO", 1).expect("post-forget verify");
-        // And with_next() starts again from 1.
-        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 1);
+        let _ = s.with_next("FOO", ok_io).unwrap(); // recorded = 1
+        let _ = s.with_next("FOO", ok_io).unwrap(); // recorded = 2
+        s.tombstone("FOO").unwrap();
+        // The latest issued counter (2) must now be rejected.
+        let err = s
+            .verify("FOO", 2)
+            .expect_err("counter=2 must reject post-tombstone");
+        assert!(err.contains("rollback detected"), "got: {err}");
+        // counter=3 still verifies (a fresh `set` after the delete
+        // would issue 3 and decrypt cleanly).
+        s.verify("FOO", 3).expect("counter=3 must verify");
+        // And the next with_next() advances from 3, not from 1.
+        assert_eq!(s.with_next("FOO", ok_io).unwrap(), 4);
+    }
+
+    #[test]
+    fn tombstone_on_unknown_cred_records_one() {
+        // Tombstoning a cred we've never seen sets the floor at 1.
+        // This handles the (admittedly weird) case where a delete
+        // races against a fresh-install scenario.
+        let (s, _d) = fresh_state();
+        s.tombstone("UNKNOWN").unwrap();
+        let err = s.verify("UNKNOWN", 0).expect_err("counter=0 < 1");
+        assert!(err.contains("rollback detected"), "got: {err}");
+        s.verify("UNKNOWN", 1).expect("counter=1 verifies");
     }
 
     #[test]
@@ -357,6 +414,43 @@ mod tests {
         let s = VersionState::load(path).expect("missing path is OK");
         // Empty state means any counter passes against an unknown cred.
         s.verify("ANY", 0).unwrap();
+    }
+
+    #[test]
+    fn with_next_reverts_in_memory_on_persist_failure() {
+        // P2 fix from Codex: when persist fails AFTER the file IO
+        // succeeds, the in-memory map must NOT stay ahead of the
+        // durable state file. Otherwise a daemon restart that reloads
+        // from disk would regress the rollback floor below ciphertexts
+        // we just produced. Pin the revert.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.json");
+        let s = VersionState::load(state_path).unwrap();
+
+        // First call persists successfully — recorded = 1.
+        s.with_next("FOO", ok_io).unwrap();
+
+        // Make the parent dir non-writable so the next persist's
+        // tempfile creation fails with EACCES.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+
+        let err = s.with_next("FOO", ok_io);
+
+        // Restore permissions BEFORE assertions so TempDir cleanup
+        // can run regardless of test outcome.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(err.is_err(), "persist failure must propagate");
+
+        // The critical post-condition: in-memory state is reverted
+        // to its previous value (recorded = 1), not stuck at 2.
+        // Verify both directly and via the verify() boundary.
+        let err2 = s
+            .verify("FOO", 0)
+            .expect_err("0 < recorded=1 still rejects");
+        assert!(err2.contains("rollback detected"), "got: {err2}");
+        s.verify("FOO", 1).expect("recorded reverted to 1");
     }
 
     #[test]
