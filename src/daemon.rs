@@ -19,6 +19,7 @@ mod daemon_ratelimit;
 mod daemon_socket;
 mod master_key;
 mod store;
+mod version_state;
 
 use std::fs;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -74,6 +75,12 @@ fn lock_memory() {
 /// `StateDirectory=kepr` ensures `/var/lib/kepr/` exists at 0700
 /// before the daemon starts, so the file lands at 0600 inside it.
 const MASTER_KEY_PATH: &str = "/var/lib/kepr/master.key";
+
+/// Path to the per-credential version-counter state. Tracks the
+/// highest counter the daemon has ever stamped into a kepr_v2
+/// ciphertext, so a wholesale `/etc/credstore.encrypted/` rollback
+/// is detected at decrypt time.
+const VERSION_STATE_PATH: &str = "/var/lib/kepr/cred-versions.json";
 
 /// Magic prefix written by the InProc AEAD backend. Files in
 /// `/etc/credstore.encrypted/` that match the `kepr-*` prefix but do
@@ -148,7 +155,18 @@ fn main() {
         eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
         std::process::exit(1);
     });
-    crypto::initialize_inproc_backend(*key).unwrap_or_else(|e| {
+    // Load the per-cred counter state for rollback protection. A
+    // missing file is the legitimate fresh-install case; a malformed
+    // file is a hard failure — we refuse to start rather than silently
+    // regress to no rollback protection.
+    let versions = std::sync::Arc::new(
+        version_state::VersionState::load(std::path::PathBuf::from(VERSION_STATE_PATH))
+            .unwrap_or_else(|e| {
+                eprintln!("[kepr-daemon] cannot load version state: {e}");
+                std::process::exit(1);
+            }),
+    );
+    crypto::initialize_inproc_backend(*key, versions).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot install backend: {e}");
         std::process::exit(1);
     });
