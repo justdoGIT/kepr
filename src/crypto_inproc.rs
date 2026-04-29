@@ -251,19 +251,27 @@ impl Backend for InProcBackend {
         if !cred_path.exists() {
             return Err(format!("credential not found: {name}"));
         }
-        fs::remove_file(&cred_path).map_err(|e| format!("cannot delete credential: {e}"))?;
 
-        // Tombstone the counter past the highest issued. Because
-        // verify uses ≥, simply preserving (or removing) the
-        // entry would leave a window where an attacker with a
-        // pre-delete snapshot of the latest ciphertext could
-        // replay it: the counters would match exactly. Bumping
-        // by one places the recorded value strictly above any
-        // ciphertext that has ever been issued for this cred,
-        // so all replays are rejected. A subsequent `set NAME`
-        // continues from there.
+        // Order matters: tombstone the counter FIRST, then remove
+        // the file. Codex flagged the inverse on a re-review:
+        // if remove_file succeeded and tombstone then failed
+        // (e.g. /var/lib/kepr unwritable, ENOSPC), the on-disk
+        // state had the ciphertext gone but the recorded counter
+        // unchanged, leaving an attacker with a pre-delete
+        // snapshot able to replay it because verify still
+        // accepted the old counter.
+        //
+        // With the tombstone-first ordering, a tombstone failure
+        // leaves the file intact and the counter unchanged — the
+        // caller sees an error and the cred is unmodified. A
+        // remove_file failure AFTER tombstone success leaves the
+        // counter advanced and the file on disk; subsequent
+        // decrypts would fail verify (file_counter < recorded),
+        // so the cred reads as "credential unavailable" — better
+        // than silently letting a replay through.
         let cred_name = store::to_cred_name(uid, name);
         self.versions.tombstone(&cred_name)?;
+        fs::remove_file(&cred_path).map_err(|e| format!("cannot delete credential: {e}"))?;
         Ok(())
     }
 }
