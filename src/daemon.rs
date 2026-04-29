@@ -10,6 +10,8 @@
 
 mod audit;
 mod crypto;
+#[cfg(feature = "inproc-aead")]
+mod crypto_inproc;
 mod daemon_cache;
 mod daemon_handlers;
 mod daemon_peer;
