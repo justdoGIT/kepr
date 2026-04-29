@@ -350,24 +350,55 @@ fi
 # Daemon returns a HashMap — order undefined. Client must sort.
 step "10. check output is deterministic (sorted by name)"
 
+# Tests 1-9 run ~30+ operations against the daemon. The default per-uid
+# rate-limit bucket is capacity 30 / refill 10/s (see daemon.rs constants),
+# so by this point the bucket can be empty. Wait long enough for a full
+# refill before adding three more sets — 30 / 10 = 3s, plus headroom.
+sleep 4
+
+# Seed three creds explicitly. Capture stdout so a daemon error (rate limit,
+# busy state file, etc.) is reported as a fail() rather than crashing the
+# whole script silently via `set -e` with stdout swallowed by `>/dev/null`.
+seed_ok=1
 for s in ZETA_C ALPHA_A MIKE_B; do
-    kepr --json set "${PREFIX}${s}" --value "x" >/dev/null
+    out=$(kepr --json set "${PREFIX}${s}" --value "x" 2>&1 || true)
+    if echo "$out" | jq -e '.kind == "set_ok"' >/dev/null 2>&1; then
+        :
+    else
+        fail "10. seeding ${PREFIX}${s} failed: $out"
+        seed_ok=0
+    fi
 done
 
-names1=$(kepr check 2>/dev/null | grep -oE "${PREFIX}[A-Z_]+" | grep -E '(ZETA_C|ALPHA_A|MIKE_B)')
-names2=$(kepr check 2>/dev/null | grep -oE "${PREFIX}[A-Z_]+" | grep -E '(ZETA_C|ALPHA_A|MIKE_B)')
-sorted=$(printf '%s\n' "$names1" | sort)
+if [ "$seed_ok" = 1 ]; then
+    # `kepr check | grep | grep` can return non-zero at any pipe stage
+    # (e.g. no credentials match the second grep), and `set -o pipefail`
+    # then propagates that to a script-killing exit. Add `|| true` so an
+    # empty match is reported as a test fail instead of a silent abort.
+    names1=$(kepr check 2>/dev/null \
+        | grep -oE "${PREFIX}[A-Z_]+" \
+        | grep -E '(ZETA_C|ALPHA_A|MIKE_B)' || true)
+    names2=$(kepr check 2>/dev/null \
+        | grep -oE "${PREFIX}[A-Z_]+" \
+        | grep -E '(ZETA_C|ALPHA_A|MIKE_B)' || true)
+    sorted=$(printf '%s\n' "$names1" | sort)
 
-if [ "$names1" = "$sorted" ]; then
-    pass "check output is sorted"
-else
-    fail "check output not sorted: $(printf '%s' "$names1" | tr '\n' ' ')"
-fi
+    if [ -z "$names1" ]; then
+        fail "10. kepr check returned no matching names — \
+seeding may have raced cleanup"
+    elif [ "$names1" = "$sorted" ]; then
+        pass "check output is sorted"
+    else
+        fail "check output not sorted: $(printf '%s' "$names1" | tr '\n' ' ')"
+    fi
 
-if [ "$names1" = "$names2" ]; then
-    pass "check output is stable across runs"
-else
-    fail "check output changed between runs"
+    if [ -z "$names2" ]; then
+        fail "10. second kepr check returned no matching names"
+    elif [ "$names1" = "$names2" ]; then
+        pass "check output is stable across runs"
+    else
+        fail "check output changed between runs"
+    fi
 fi
 
 # ── 11. JSON mode stderr hygiene ──────────────────────────────────────────────
@@ -446,10 +477,14 @@ fi
 
 # ── 14. InProc magic prefix on disk (requires root or sudo) ──────────────────
 # After Phase 0 α3, every cred file is written by the in-process AEAD
-# backend and starts with the bytes `kepr_v1\n`. A different magic (or
-# no magic) means the daemon is silently using the legacy path or the
-# wire format has drifted. Pin the contract.
-step "14. on-disk cred starts with the kepr_v1 magic"
+# backend. PR #59 (rollback protection) shifted the current format from
+# `kepr_v1\n` to `kepr_v2\n` (8-byte counter prefix inside the AEAD
+# plaintext). A fresh `kepr set` MUST produce a v2 file — anything else
+# means either the daemon silently fell back to the legacy backend
+# (which would be a regression) or the rollback-protection wiring did
+# not commit. Pin v2 specifically; v1 acceptance is reserved for the
+# read path tested implicitly by `get` on a pre-#59 cred.
+step "14. on-disk cred starts with the kepr_v2 magic"
 
 if [ "$can_root" = 1 ]; then
     NAME="${PREFIX}MAGIC"
@@ -465,12 +500,12 @@ if [ "$can_root" = 1 ]; then
         fail "cred file missing or unreadable: $DISK_PATH"
     else
         # od -c renders bytes as escaped chars: \n shows as "\n", a-z as a-z.
-        # `kepr_v1\n` is the magic; check both segments to avoid a partial match.
+        # `kepr_v2\n` is the current magic; check both segments to avoid a partial match.
         head=$(run_root head -c 8 "$DISK_PATH" | od -An -c | tr -d ' \n')
-        if [ "$head" = "kepr_v1\\n" ]; then
-            pass "on-disk cred starts with kepr_v1\\n"
+        if [ "$head" = "kepr_v2\\n" ]; then
+            pass "on-disk cred starts with kepr_v2\\n"
         else
-            fail "on-disk magic mismatch (got: $head, expected: kepr_v1\\n)"
+            fail "on-disk magic mismatch (got: $head, expected: kepr_v2\\n)"
         fi
     fi
     kepr --json delete "$NAME" >/dev/null 2>&1 || true
