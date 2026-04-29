@@ -707,6 +707,49 @@ else
     fail "kepr env emitted ${NAME_A} despite ${MISSING_C} missing"
 fi
 
+# ── 20. .kepr.toml manifest auto-discovery ───────────────────────────────────
+# Phase 1 γ: a project-local `.kepr.toml` declares which credentials
+# this directory expects. `kepr exec` / `kepr env` find it by walking
+# up from $PWD, the same way `git`, `cargo`, and `direnv` do.
+step "20. .kepr.toml manifest is auto-discovered and supplies --env"
+
+NAME="${PREFIX}MANIFEST_VAR"
+VAL="manifest-sentinel-$(date +%N)"
+kepr --json set "$NAME" --value "$VAL" >/dev/null
+
+# Build a temp project with .kepr.toml at its root, run `kepr env`
+# from a subdirectory inside it, expect the resolver to walk up,
+# parse the manifest, and emit the export line.
+proj=$(mktemp -d -t kepr-manifest-XXXXXX)
+trap 'rm -rf "$proj"' RETURN
+cat > "$proj/.kepr.toml" <<TOML
+[env]
+required = ["$NAME"]
+TOML
+mkdir -p "$proj/sub/dir"
+
+env_out=$(cd "$proj/sub/dir" && kepr env 2>&1 || true)
+if echo "$env_out" | grep -qF "export ${NAME}=" \
+    && echo "$env_out" | grep -qF "$VAL"; then
+    pass "kepr env discovers .kepr.toml from a nested cwd"
+else
+    fail "manifest auto-discovery failed: $(printf '%s' "$env_out" | tr '\n' ' ')"
+fi
+
+# An explicit `--env CSV` must override whatever the manifest says.
+# Stash a different cred and ensure the CLI list wins.
+NAME2="${PREFIX}MANIFEST_OVERRIDE"
+VAL2="override-sentinel-$(date +%N)"
+kepr --json set "$NAME2" --value "$VAL2" >/dev/null
+
+env_out=$(cd "$proj/sub/dir" && kepr env --env "$NAME2" 2>&1 || true)
+if echo "$env_out" | grep -qF "export ${NAME2}=" \
+    && ! echo "$env_out" | grep -qF "export ${NAME}="; then
+    pass "--env CSV overrides the manifest"
+else
+    fail "CLI override not honoured: $(printf '%s' "$env_out" | tr '\n' ' ')"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"

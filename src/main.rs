@@ -11,6 +11,7 @@ mod cli_doctor;
 mod cli_envdump;
 mod cli_exec;
 mod cli_input;
+mod cli_manifest;
 mod cli_mode;
 mod cli_ui;
 mod client;

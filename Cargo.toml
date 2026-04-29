@@ -32,6 +32,11 @@ aes-gcm = "0.10"
 # exposes them. Bin-only — neither the daemon nor kepr-core uses libc
 # directly (the daemon's mlockall extern "C" path is hand-written).
 libc = "0.2"
+# `.kepr.toml` manifest parser. The crate is ~70KB and depends only
+# on `serde`/`toml_edit`-internal; the runtime cost is one parse on
+# CLI startup, far cheaper than serde_json's existing path. CLI-only —
+# the daemon never reads the manifest, so this stays out of kepr-core.
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git
