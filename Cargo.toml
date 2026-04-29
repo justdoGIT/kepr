@@ -20,11 +20,20 @@ path = "src/daemon.rs"
 [workspace]
 members = ["crates/kepr-core"]
 
+[features]
+default = []
+# Opt-in in-process AES-256-GCM credential backend. Phase 0 plan α2a — the
+# crypto path is implemented behind this flag so reviewers can land the
+# code without flipping the daemon's default backend. α3 (a follow-up
+# PR) flips the default and removes the gate.
+inproc-aead = ["dep:aes-gcm"]
+
 [dependencies]
 kepr-core = { path = "crates/kepr-core", version = "0.3.0" }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+aes-gcm = { version = "0.10", optional = true }
 
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git
@@ -32,6 +41,10 @@ serde_json = "1.0"
 # already in .gitignore via the cargo `target/` rule for failure cases —
 # add an explicit ignore line if this dir starts to land in commits).
 proptest = "1"
+# Per-test writable directories for the in-process AEAD backend tests.
+# tempfile auto-cleans on drop so each test gets a hermetic credstore
+# without touching /etc/credstore.encrypted/.
+tempfile = "3"
 
 [profile.release]
 opt-level = "z"
