@@ -14,7 +14,9 @@ use std::sync::OnceLock;
 
 use crate::crypto_inproc::InProcBackend;
 use crate::store;
+use crate::version_state::VersionState;
 use kepr_core::generate::ZeroString;
+use std::sync::Arc;
 
 // Path to the credential backend. The literal name appears here and in
 // `sanitize_error` below because that function must recognise the
@@ -251,12 +253,15 @@ pub static SYSTEMD_CREDS_BACKEND: SystemdCredsBackend = SystemdCredsBackend;
 static INPROC_BACKEND: OnceLock<InProcBackend> = OnceLock::new();
 
 /// Install the in-process AEAD backend as the daemon's default. Called
-/// from `kepr-daemon::main` after the master key is loaded; repeated
-/// calls return Err so a misconfigured restart cannot silently swap
-/// backends mid-process.
-pub fn initialize_inproc_backend(master_key: [u8; 32]) -> Result<(), String> {
+/// from `kepr-daemon::main` after the master key + VersionState are
+/// loaded; repeated calls return Err so a misconfigured restart cannot
+/// silently swap backends mid-process.
+pub fn initialize_inproc_backend(
+    master_key: [u8; 32],
+    versions: Arc<VersionState>,
+) -> Result<(), String> {
     INPROC_BACKEND
-        .set(InProcBackend::new(master_key))
+        .set(InProcBackend::new(master_key, versions))
         .map_err(|_| "InProc backend already initialised".to_string())
 }
 

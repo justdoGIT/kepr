@@ -19,6 +19,7 @@ mod daemon_ratelimit;
 mod daemon_socket;
 mod master_key;
 mod store;
+mod version_state;
 
 use std::fs;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -75,12 +76,23 @@ fn lock_memory() {
 /// before the daemon starts, so the file lands at 0600 inside it.
 const MASTER_KEY_PATH: &str = "/var/lib/kepr/master.key";
 
-/// Magic prefix written by the InProc AEAD backend. Files in
+/// Path to the per-credential version-counter state. Tracks the
+/// highest counter the daemon has ever stamped into a kepr_v2
+/// ciphertext, so a wholesale `/etc/credstore.encrypted/` rollback
+/// is detected at decrypt time.
+const VERSION_STATE_PATH: &str = "/var/lib/kepr/cred-versions.json";
+
+/// Magic prefixes written by the InProc AEAD backend. Files in
 /// `/etc/credstore.encrypted/` that match the `kepr-*` prefix but do
-/// not start with this magic are leftover from the legacy
+/// not start with one of these magics are leftover from the legacy
 /// systemd-creds backend and are unreadable under the new format —
 /// see `sweep_legacy_credstore`.
-const INPROC_MAGIC: &[u8] = b"kepr_v1\n";
+///
+/// `kepr_v1\n` is the original InProc format (Phase 0 α2a–α3 — no
+/// per-cred counter). `kepr_v2\n` adds the rollback-protection
+/// counter inside the AEAD plaintext. Both must be preserved on the
+/// startup sweep; only files with neither magic are legacy.
+const INPROC_MAGICS: &[&[u8]] = &[b"kepr_v1\n", b"kepr_v2\n"];
 
 /// Walk `/etc/credstore.encrypted/` for `kepr-*` files and delete any
 /// whose first 8 bytes are not the InProc AEAD magic. The user
@@ -106,12 +118,17 @@ fn sweep_legacy_credstore() {
             continue;
         }
         let path = entry.path();
-        let mut head = [0u8; INPROC_MAGIC.len()];
+        // All currently-supported magics are 8 bytes (`kepr_vN\n`),
+        // so a single fixed-size head buffer covers them all.
+        const HEAD_LEN: usize = 8;
+        let mut head = [0u8; HEAD_LEN];
         let is_legacy = match fs::File::open(&path).and_then(|mut f| {
             use std::io::Read;
             f.read_exact(&mut head)
         }) {
-            Ok(()) => head.as_slice() != INPROC_MAGIC,
+            Ok(()) => !INPROC_MAGICS
+                .iter()
+                .any(|m| m.len() == HEAD_LEN && head == **m),
             // Treat unreadable / too-short files as legacy too — they
             // cannot decrypt under either backend, so removal is the
             // honest answer.
@@ -148,7 +165,18 @@ fn main() {
         eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
         std::process::exit(1);
     });
-    crypto::initialize_inproc_backend(*key).unwrap_or_else(|e| {
+    // Load the per-cred counter state for rollback protection. A
+    // missing file is the legitimate fresh-install case; a malformed
+    // file is a hard failure — we refuse to start rather than silently
+    // regress to no rollback protection.
+    let versions = std::sync::Arc::new(
+        version_state::VersionState::load(std::path::PathBuf::from(VERSION_STATE_PATH))
+            .unwrap_or_else(|e| {
+                eprintln!("[kepr-daemon] cannot load version state: {e}");
+                std::process::exit(1);
+            }),
+    );
+    crypto::initialize_inproc_backend(*key, versions).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot install backend: {e}");
         std::process::exit(1);
     });
