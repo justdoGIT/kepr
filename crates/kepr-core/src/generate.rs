@@ -27,6 +27,17 @@ impl std::ops::Deref for ZeroString {
     }
 }
 
+// Debug must never leak the inner value: secret material is the entire
+// reason this type exists. The redacting impl lets the type appear in
+// `Result<ZeroString, _>::expect_err`, dbg!() during incident response,
+// or any other context where Debug is structurally required, without
+// any path through which the secret can land in a log line.
+impl std::fmt::Debug for ZeroString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ZeroString(<redacted>)")
+    }
+}
+
 impl ZeroString {
     pub fn from_string(s: String) -> Self {
         Self(s)
@@ -34,6 +45,13 @@ impl ZeroString {
     #[allow(dead_code)]
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
+    }
+    /// Borrow the inner string as `&str`. Mirrors `String::as_str` but on
+    /// stable Rust (the upstream `str::as_str` was added behind the
+    /// `str_as_str` unstable feature gate). Use this rather than `.deref()`
+    /// in test assertions and call sites that just need a comparison view.
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -171,6 +189,19 @@ pub fn generate_secret(kind: GenKind) -> ZeroString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_string_debug_does_not_leak_value() {
+        // Pin the contract: Debug formatting of a ZeroString must never
+        // print the inner value, so any code path that logs a Debug
+        // representation (panic messages, dbg! macros, error reports)
+        // is safe by construction.
+        let z = ZeroString::from_string("super-secret-totp-seed".to_string());
+        let dbg = format!("{:?}", z);
+        assert!(!dbg.contains("super-secret"), "leaked: {dbg}");
+        assert!(!dbg.contains("totp"), "leaked: {dbg}");
+        assert_eq!(dbg, "ZeroString(<redacted>)");
+    }
 
     #[test]
     fn gen_kind_roundtrip() {
