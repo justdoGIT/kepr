@@ -4,7 +4,7 @@
 // OnceLock. This module only pulls them when rendering.
 
 use crate::cli_mode;
-use crate::protocol::Response;
+use kepr_core::protocol::Response;
 
 // Re-exported for call sites that used to import `cli_ui::json_mode`.
 pub use crate::cli_mode::json_mode;

@@ -3,8 +3,8 @@
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use crate::framing::{read_frame, write_frame};
-use crate::protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
+use kepr_core::framing::{read_frame, write_frame};
+use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
 
 pub fn send_request(req: &Request) -> Result<Response, String> {
     let mut stream = UnixStream::connect(SOCKET_PATH).map_err(|e| {

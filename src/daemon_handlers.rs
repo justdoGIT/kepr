@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::crypto;
 use crate::daemon_cache;
-use crate::generate::{self, generate_secret, GenKind};
-use crate::protocol::{CredInfo, Response};
 use crate::store::{self, file_mtime_str, file_size, validate_name};
+use kepr_core::generate::{self, generate_secret, GenKind};
+use kepr_core::protocol::{CredInfo, Response};
 
 pub fn handle_set(
     uid: u32,
