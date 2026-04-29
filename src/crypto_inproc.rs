@@ -175,7 +175,18 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
             .map_err(|e| format!("cannot chmod credstore: {e}"))?;
     }
 
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    // Disambiguate the temp filename by (pid, thread_id) so two daemon
+    // workers writing the same credential never collide on the temp
+    // path. Codex flagged the (pid)-only variant as racy; the bounded
+    // worker pool means concurrent same-name writes are uncommon but
+    // not impossible. ThreadId is unique within a process and fmts to
+    // a stable string, which combined with the pid is unique across
+    // the host.
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     fs::write(&tmp, bytes).map_err(|e| format!("write failed: {e}"))?;
     if let Err(e) = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)) {
         let _ = fs::remove_file(&tmp);
