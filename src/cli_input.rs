@@ -4,7 +4,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use crate::generate::ZeroString;
+use kepr_core::generate::ZeroString;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

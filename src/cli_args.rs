@@ -2,7 +2,7 @@
 
 use crate::cli_activity::CliActivity;
 use crate::cli_mode;
-use crate::generate::GenKind;
+use kepr_core::generate::GenKind;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 

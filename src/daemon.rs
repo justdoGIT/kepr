@@ -16,9 +16,6 @@ mod daemon_peer;
 mod daemon_pool;
 mod daemon_ratelimit;
 mod daemon_socket;
-mod framing;
-mod generate;
-mod protocol;
 mod store;
 
 use std::fs;
@@ -33,8 +30,8 @@ use daemon_ratelimit::RateLimiter;
 use daemon_socket::{
     effective_uid, set_socket_permissions, setup_socket_dir, tighten_umask_for_socket,
 };
-use framing::{read_frame, write_frame};
-use protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
+use kepr_core::framing::{read_frame, write_frame};
+use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
 
 // Worker pool sizing. Connections are short-lived (1 req / 1 resp) but each
 // may fork+exec the credential backend, so we want some slack over CPU count.

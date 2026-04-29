@@ -8,7 +8,7 @@
 
 use crate::cli_args::Args;
 use crate::cli_cmds;
-use crate::protocol::Response;
+use kepr_core::protocol::Response;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliActivity(String);
