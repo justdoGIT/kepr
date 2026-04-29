@@ -10,7 +10,9 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
+use crate::crypto_inproc::InProcBackend;
 use crate::store;
 use kepr_core::generate::ZeroString;
 
@@ -232,12 +234,34 @@ impl Backend for SystemdCredsBackend {
 
 pub static SYSTEMD_CREDS_BACKEND: SystemdCredsBackend = SystemdCredsBackend;
 
-/// The current default credential backend. Returns a `&'static dyn Backend`
-/// so call sites can hold the reference without any allocation. Once the
-/// InProc backend is written, this function will be the only place the
-/// switchover happens.
+/// Single per-process slot for the InProc backend instance. Initialised
+/// at daemon startup via `initialize_inproc_backend` once the master key
+/// has been loaded; thereafter every credential op routes through it.
+/// The `OnceLock` is a one-shot — re-initialisation in the same process
+/// returns Err and the existing backend is left in place.
+static INPROC_BACKEND: OnceLock<InProcBackend> = OnceLock::new();
+
+/// Install the in-process AEAD backend as the daemon's default. Called
+/// from `kepr-daemon::main` after the master key is loaded; repeated
+/// calls return Err so a misconfigured restart cannot silently swap
+/// backends mid-process.
+pub fn initialize_inproc_backend(master_key: [u8; 32]) -> Result<(), String> {
+    INPROC_BACKEND
+        .set(InProcBackend::new(master_key))
+        .map_err(|_| "InProc backend already initialised".to_string())
+}
+
+/// The current default credential backend. Returns the in-process AEAD
+/// backend once `initialize_inproc_backend` has been called; falls back
+/// to the legacy systemd-creds path otherwise (the only consumers in
+/// the latter case are unit tests that never invoke a backend method,
+/// since the daemon itself always initialises before serving requests).
 pub fn default_backend() -> &'static dyn Backend {
-    &SYSTEMD_CREDS_BACKEND
+    if let Some(b) = INPROC_BACKEND.get() {
+        b as &dyn Backend
+    } else {
+        &SYSTEMD_CREDS_BACKEND
+    }
 }
 
 // ── Credential exists ─────────────────────────────────────────────────────────

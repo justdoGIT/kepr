@@ -19,6 +19,13 @@ Group=root
 RuntimeDirectory=kepr
 RuntimeDirectoryMode=0755
 
+# Create /var/lib/kepr (0700 root:root) before the process starts.
+# This is where the in-process AEAD master key (master.key, sealed via
+# systemd-creds) is persisted. The 0700 mode keeps the directory
+# inaccessible to anyone but the daemon's owning uid (root).
+StateDirectory=kepr
+StateDirectoryMode=0700
+
 ExecStart=/usr/local/sbin/kepr-daemon
 
 # Neutral identifier — never expose internal tool names in the
@@ -30,16 +37,19 @@ Restart=on-failure
 RestartSec=2
 
 # ── Hardening ────────────────────────────────────────────────────
-# NoNewPrivileges must stay off: the credential backend needs the
-# privilege to derive host-bound keys.
-NoNewPrivileges=no
+# Phase 0 α3 flipped this to yes: the credential backend now lives
+# in-process (AES-256-GCM via aes-gcm crate). systemd-creds is only
+# invoked once at startup to seal/unseal the master key, and that
+# call does not need to gain new privileges via setuid binaries —
+# it just runs as root the same way the daemon does.
+NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-# The credential backend persists a host-derived key under
-# /var/lib/systemd/ on first use; without it in ReadWritePaths,
-# ProtectSystem=strict rejects the write and `set` fails with
-# "Read-only file system" until the key is manually seeded.
-ReadWritePaths=/run/kepr /etc/credstore.encrypted /var/lib/systemd
+# /var/lib/systemd is needed for systemd-creds' host-key state file;
+# /var/lib/kepr is for the daemon's own master.key (created by the
+# StateDirectory= directive above); /etc/credstore.encrypted is
+# where credentials are written.
+ReadWritePaths=/run/kepr /etc/credstore.encrypted /var/lib/systemd /var/lib/kepr
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

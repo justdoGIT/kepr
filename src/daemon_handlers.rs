@@ -39,7 +39,7 @@ pub fn handle_set(
         generate_secret(kind)
     };
 
-    match crypto::encrypt(uid, &upper, secret.as_bytes()) {
+    match crypto::default_backend().encrypt(uid, &upper, secret.as_bytes()) {
         Ok(()) => {
             let cred_name = store::to_cred_name(uid, &upper);
             daemon_cache::invalidate(uid);
@@ -75,7 +75,7 @@ pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
 
     let upper = name.to_uppercase();
 
-    match crypto::decrypt(uid, &upper) {
+    match crypto::default_backend().decrypt(uid, &upper) {
         Ok(secret) => {
             audit::log(&AuditEvent {
                 op: "get",
@@ -136,7 +136,7 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
 
     let upper = name.to_uppercase();
 
-    match crypto::delete(uid, &upper) {
+    match crypto::default_backend().delete(uid, &upper) {
         Ok(()) => {
             daemon_cache::invalidate(uid);
             audit::log(&AuditEvent {
@@ -190,7 +190,7 @@ pub fn handle_check(uid: u32, username: &str) -> Response {
                     bucket
                         .into_iter()
                         .map(|name| {
-                            let ok = crypto::verify(uid, &name);
+                            let ok = crypto::default_backend().verify(uid, &name);
                             (name, ok)
                         })
                         .collect::<Vec<(String, bool)>>()
