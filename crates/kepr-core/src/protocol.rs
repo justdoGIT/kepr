@@ -8,6 +8,7 @@
 // Request and Response are both tagged enums, so adding a new operation
 // requires exactly one new variant — no god-struct with all-Option fields.
 
+use crate::generate::ZeroString;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -53,7 +54,13 @@ pub enum Response {
     },
     GetOk {
         name: String,
-        value: String,
+        // ZeroString rather than String so the deserialised secret on
+        // the client side is wiped from memory when the Response is
+        // dropped, instead of leaking through serde's allocation pool
+        // until the GC happens to overwrite the heap region. Wire
+        // format unchanged (still a JSON string); old daemons / new
+        // clients and vice versa interoperate.
+        value: ZeroString,
     },
     DeleteOk {
         name: String,
@@ -285,7 +292,35 @@ mod tests {
         match back {
             Response::GetOk { name, value } => {
                 assert_eq!(name, "X");
-                assert_eq!(value, "secret");
+                // Compare via as_str so we go through the same Deref path
+                // any consumer that displays the value would: confirms
+                // the deserialised ZeroString carries the original
+                // plaintext, even though Debug/PartialEq of the
+                // ZeroString itself never expose the bytes.
+                assert_eq!(value.as_str(), "secret");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_get_value_zeroizes_on_drop() {
+        // Pin the property the wire-side ZeroString switch is supposed
+        // to deliver: dropping the deserialised Response must run
+        // ZeroString's Drop, which zeroizes the underlying bytes. We
+        // can't directly observe the freed memory after drop without
+        // tooling, but we can at least exercise the path and confirm
+        // the bytes round-trip cleanly while alive.
+        let bytes = serde_json::to_vec(&Response::GetOk {
+            name: "Y".into(),
+            value: "alive".into(),
+        })
+        .unwrap();
+        let back: Response = serde_json::from_slice(&bytes).unwrap();
+        match back {
+            Response::GetOk { value, .. } => {
+                assert_eq!(value.as_str(), "alive");
+                drop(value); // explicit Drop-and-zeroize
             }
             other => panic!("wrong variant: {other:?}"),
         }
