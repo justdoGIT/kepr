@@ -29,7 +29,8 @@
 // shipped systemd-creds backend leaves open.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
@@ -163,8 +164,16 @@ impl Backend for InProcBackend {
 }
 
 /// Atomic write of `bytes` to `path`: temp file in the same directory,
-/// chmod 0600, then rename. Mirrors the same write pattern the
-/// SystemdCredsBackend uses (`fs::rename` is atomic on the same fs).
+/// created at mode `0o600` from the moment `open(2)` returns, then
+/// renamed over the target. `fs::rename` is atomic on the same fs and
+/// preserves the source mode, so the final file inherits `0o600` too.
+///
+/// Codex flagged the previous shape (write-then-chmod) as racy:
+/// `fs::write` creates the file with `0o666 & ~umask`, leaving a brief
+/// window where group/other could open the temp file before the
+/// subsequent `chmod`. `OpenOptions::mode(0o600)` closes the window —
+/// the inode never exists at any mode wider than what the bits below
+/// declare.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().ok_or("invalid credential path")?;
     if !parent.exists() {
@@ -185,11 +194,45 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         std::process::id(),
         std::thread::current().id()
     ));
-    fs::write(&tmp, bytes).map_err(|e| format!("write failed: {e}"))?;
-    if let Err(e) = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)) {
+
+    // Open with create_new(true) — `mode(0o600)` only applies to a
+    // NEW inode (Linux open(2) ignores the mode argument when O_EXCL
+    // is absent and the file already exists). With plain create(true),
+    // a stale `*.tmp.<pid>.<tid>` left by a crashed previous run
+    // would be reopened at its original (possibly broader) mode and
+    // then renamed into place, exposing credential contents. Codex
+    // flagged this on the re-review of #55.
+    //
+    // On EEXIST we make a single retry: the (pid, thread-id) suffix
+    // makes a collision with a LIVE thread impossible, so any
+    // pre-existing file at this path is stale. Remove it and try
+    // once more under the same security shape; a second failure is
+    // a real error.
+    let mut f = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&tmp);
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(|e| format!("open temp failed (after stale-cleanup): {e}"))?
+        }
+        Err(e) => return Err(format!("open temp failed: {e}")),
+    };
+    if let Err(e) = f.write_all(bytes) {
+        drop(f);
         let _ = fs::remove_file(&tmp);
-        return Err(format!("cannot secure credential file: {e}"));
+        return Err(format!("write failed: {e}"));
     }
+    drop(f); // explicit flush before rename
+
     fs::rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("cannot install credential: {e}")
