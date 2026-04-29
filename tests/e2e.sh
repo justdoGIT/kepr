@@ -365,7 +365,11 @@ for s in ZETA_C ALPHA_A MIKE_B; do
     if echo "$out" | jq -e '.kind == "set_ok"' >/dev/null 2>&1; then
         :
     else
-        fail "10. seeding ${PREFIX}${s} failed: $out"
+        # `kepr --json` uses `to_string_pretty` (cli_ui::print_json), so a
+        # JSON error response spans multiple lines. Collapse to a single
+        # line for the fail() summary so the post-test failure list stays
+        # one-line-per-failure.
+        fail "10. seeding ${PREFIX}${s} failed: $(printf '%s' "$out" | tr '\n' ' ')"
         seed_ok=0
     fi
 done
@@ -484,6 +488,10 @@ fi
 # (which would be a regression) or the rollback-protection wiring did
 # not commit. Pin v2 specifically; v1 acceptance is reserved for the
 # read path tested implicitly by `get` on a pre-#59 cred.
+#
+# Source of truth for the supported set of magics: `INPROC_MAGICS`
+# in src/daemon.rs (used by `sweep_legacy_credstore`). When that
+# slice gains `kepr_v3\n`, update the assertion below in lock-step.
 step "14. on-disk cred starts with the kepr_v2 magic"
 
 if [ "$can_root" = 1 ]; then
