@@ -458,13 +458,20 @@ if [ "$can_root" = 1 ]; then
     DISK_NAME="kepr-${UID_NUM}-$(echo "$NAME" | tr '[:upper:]_' '[:lower:]-')"
     DISK_PATH="/etc/credstore.encrypted/${DISK_NAME}"
 
-    head=$(run_root head -c 8 "$DISK_PATH" 2>/dev/null | od -An -c | tr -d ' \n')
-    # od -c renders bytes as escaped chars: \n shows as "\n", a-z as a-z.
-    # `kepr_v1\n` is the magic; check both segments to avoid a partial match.
-    if [ "$head" = "kepr_v1\\n" ]; then
-        pass "on-disk cred starts with kepr_v1\\n"
+    # Guard against the file being missing/unreadable BEFORE the
+    # head-pipeline pipefail-aborts the whole script. Codex flagged
+    # the bare `$(head | od | tr)` form on first review.
+    if ! run_root test -r "$DISK_PATH"; then
+        fail "cred file missing or unreadable: $DISK_PATH"
     else
-        fail "on-disk magic mismatch (got: $head, expected: kepr_v1\\n)"
+        # od -c renders bytes as escaped chars: \n shows as "\n", a-z as a-z.
+        # `kepr_v1\n` is the magic; check both segments to avoid a partial match.
+        head=$(run_root head -c 8 "$DISK_PATH" | od -An -c | tr -d ' \n')
+        if [ "$head" = "kepr_v1\\n" ]; then
+            pass "on-disk cred starts with kepr_v1\\n"
+        else
+            fail "on-disk magic mismatch (got: $head, expected: kepr_v1\\n)"
+        fi
     fi
     kepr --json delete "$NAME" >/dev/null 2>&1 || true
 else
@@ -513,12 +520,23 @@ if [ "$can_root" = 1 ] && command -v systemctl >/dev/null; then
     if run_root systemctl restart kepr.service 2>/dev/null; then
         # Give the daemon a beat to come up and run sweep_legacy_credstore.
         # The accept loop is reachable via `kepr list` once it's listening.
+        # Track whether the daemon ever came back: if it didn't, the
+        # legacy-file check is meaningless and we must report a real
+        # failure rather than a false PASS — Codex flagged the loop as
+        # silently swallowing a permanent-down daemon on first review.
+        ready=0
         for _ in 1 2 3 4 5; do
-            kepr --json list >/dev/null 2>&1 && break
+            if kepr --json list >/dev/null 2>&1; then
+                ready=1
+                break
+            fi
             sleep 1
         done
 
-        if run_root test -e "$LEGACY_PATH"; then
+        if [ "$ready" = 0 ]; then
+            fail "daemon did not come back after restart — sweep result is undecidable"
+            run_root rm -f "$LEGACY_PATH" || true
+        elif run_root test -e "$LEGACY_PATH"; then
             fail "legacy file still present after restart: $LEGACY_PATH"
             run_root rm -f "$LEGACY_PATH" || true
         else
