@@ -8,6 +8,7 @@
 
 use crate::cli_args::Args;
 use crate::cli_cmds;
+use crate::cli_doctor;
 use crate::cli_exec;
 use kepr_core::protocol::Response;
 
@@ -24,6 +25,7 @@ impl CliActivity {
             "delete" | "rm" => "delete",
             "check" => "check",
             "exec" => "exec",
+            "doctor" => "doctor",
             other => return Err(format!("unknown command: {other}")),
         };
         Ok(Self(canonical.to_string()))
@@ -45,6 +47,7 @@ impl CliActivity {
             "delete" => cli_cmds::cmd_delete(args),
             "check" => cli_cmds::cmd_check(args),
             "exec" => cli_exec::cmd_exec(&args.env_vars, &args.exec_argv),
+            "doctor" => cli_doctor::cmd_doctor(args.json),
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }
@@ -56,7 +59,7 @@ mod tests {
 
     #[test]
     fn parse_accepts_canonical_verbs() {
-        for v in ["set", "get", "list", "delete", "check", "exec"] {
+        for v in ["set", "get", "list", "delete", "check", "exec", "doctor"] {
             assert_eq!(CliActivity::parse(v).unwrap().as_str(), v);
         }
     }

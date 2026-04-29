@@ -7,6 +7,7 @@
 mod cli_activity;
 mod cli_args;
 mod cli_cmds;
+mod cli_doctor;
 mod cli_exec;
 mod cli_input;
 mod cli_mode;

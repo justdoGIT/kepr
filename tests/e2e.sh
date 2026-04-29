@@ -628,6 +628,32 @@ else
     fail "exec ran child despite missing cred (got: $exec_out)"
 fi
 
+# ── 18. kepr doctor produces actionable diagnostics ──────────────────────────
+# Phase 1 setup-diagnostic command. Three production checks: socket
+# presence/mode, kepr-group membership, daemon Ping. If the daemon is
+# running and the test user is in the kepr group, all three must pass.
+# The test under sudo runs as root, so the group check reports
+# "running as root (group check bypassed)" and still passes — we accept
+# that branch as a pass too.
+step "18. kepr doctor: live invariants pass against the running daemon"
+
+doctor_json=$(kepr --json doctor 2>&1 || true)
+if echo "$doctor_json" | jq -e '.kind == "check_ok" and .all_ok == true' >/dev/null; then
+    pass "kepr doctor reports all_ok against the running daemon"
+else
+    fail "kepr doctor failed: $(printf '%s' "$doctor_json" | tr '\n' ' ')"
+fi
+
+# Sanity-check the names of the three production checks are present in
+# the JSON results — pins the wire shape against future renames.
+for name in "daemon socket" "kepr group membership" "daemon responds to Ping"; do
+    if echo "$doctor_json" | jq -e --arg n "$name" '.results[$n] != null' >/dev/null; then
+        pass "doctor reports check: $name"
+    else
+        fail "doctor missing check: $name"
+    fi
+done
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
