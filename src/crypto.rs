@@ -185,6 +185,61 @@ pub fn verify(uid: u32, name: &str) -> bool {
     decrypt(uid, name).is_ok()
 }
 
+// ── Backend trait ────────────────────────────────────────────────────────────
+//
+// The Backend trait is the seam the in-process AEAD migration will plug into.
+// Today there is one impl (SystemdCredsBackend) that delegates straight to the
+// existing free functions, so this PR is a pure mechanical refactor with no
+// behavioural change. The next PR introduces an `InProc` backend that
+// implements the same trait against `aes-gcm` with a TPM/host-key-sealed
+// master key; the PR after that flips `default_backend()` to return the new
+// impl by default and the free functions become thin wrappers that delegate
+// to the trait. Splitting the migration this way keeps every reviewable diff
+// small.
+//
+// `Send + Sync` lets a future Arc<dyn Backend> be shared across the
+// daemon_pool worker threads without per-thread state. `verify` has a default
+// body so concrete impls do not need to repeat the obvious shape.
+
+pub trait Backend: Send + Sync {
+    fn encrypt(&self, uid: u32, name: &str, value: &[u8]) -> Result<(), String>;
+    fn decrypt(&self, uid: u32, name: &str) -> Result<ZeroString, String>;
+    fn delete(&self, uid: u32, name: &str) -> Result<(), String>;
+
+    fn verify(&self, uid: u32, name: &str) -> bool {
+        self.decrypt(uid, name).is_ok()
+    }
+}
+
+/// Shells out to `/usr/bin/systemd-creds`. Today's default; will become an
+/// opt-in legacy backend once the in-process AEAD migration lands and the
+/// daemon's `NoNewPrivileges=no` flag can flip on.
+pub struct SystemdCredsBackend;
+
+impl Backend for SystemdCredsBackend {
+    fn encrypt(&self, uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
+        encrypt(uid, name, value)
+    }
+
+    fn decrypt(&self, uid: u32, name: &str) -> Result<ZeroString, String> {
+        decrypt(uid, name)
+    }
+
+    fn delete(&self, uid: u32, name: &str) -> Result<(), String> {
+        delete(uid, name)
+    }
+}
+
+pub static SYSTEMD_CREDS_BACKEND: SystemdCredsBackend = SystemdCredsBackend;
+
+/// The current default credential backend. Returns a `&'static dyn Backend`
+/// so call sites can hold the reference without any allocation. Once the
+/// InProc backend is written, this function will be the only place the
+/// switchover happens.
+pub fn default_backend() -> &'static dyn Backend {
+    &SYSTEMD_CREDS_BACKEND
+}
+
 // ── Credential exists ─────────────────────────────────────────────────────────
 
 pub fn exists(uid: u32, name: &str) -> bool {
@@ -307,7 +362,18 @@ mod tests {
     // could otherwise only enumerate by trial. The audit log keeps the precise
     // reason; only the user-facing string is collapsed.
 
-    use super::{sanitize_lookup_error, SANITIZED_LOOKUP_ERROR};
+    use super::{default_backend, sanitize_lookup_error, Backend, SANITIZED_LOOKUP_ERROR};
+
+    #[test]
+    fn default_backend_is_dyn_safe() {
+        // Compile-time + runtime smoke check on the Phase 0 backend seam:
+        // `default_backend()` returns a `&'static dyn Backend`, which only
+        // resolves if the trait is object-safe (no Self-typed return,
+        // no generic methods, no associated consts). End-to-end coverage
+        // of the systemd-creds round-trip lives in tests/e2e.sh because
+        // it needs root + the system binary on PATH.
+        let _b: &'static dyn Backend = default_backend();
+    }
 
     #[test]
     fn collapses_not_found() {
