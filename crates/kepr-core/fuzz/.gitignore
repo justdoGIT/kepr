@@ -1,0 +1,8 @@
+# cargo-fuzz state. The corpus and crash artifacts can grow large and
+# are session-local; the maintainer can re-generate them by re-running
+# the fuzzer. Keep the targets and Cargo.toml in version control.
+
+target/
+corpus/
+artifacts/
+coverage/

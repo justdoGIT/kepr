@@ -2,9 +2,11 @@
 
 ## Build / Install / Run
 
-- `cargo build --release` — produces both binaries in `target/release/`.
-- `cargo clippy -- -D warnings` — lint both binaries; zero warnings enforced.
-- `cargo test` — fast, hermetic unit tests for `store`, `generate`, `protocol` (no root, no daemon, no encryption backend). Tests in `store.rs` only compile under the `kepr-daemon` bin target because `main.rs` doesn't `mod`-include `store`.
+- `cargo build --release` — produces both binaries (`kepr`, `kepr-daemon`) in `target/release/`. Workspace contains the bins plus the `kepr-core` library member at `crates/kepr-core/`.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — lint everything; zero warnings enforced.
+- `cargo test --workspace` — fast, hermetic unit tests across the three buckets: `kepr` (CLI module tests), `kepr-daemon` (handler / store / crypto-error / rate-limit / umask / audit), and `kepr-core` (framing / generate / protocol). `store.rs` lives in the daemon bin only — it's not `mod`-included from `main.rs`, so its tests only compile under the daemon target.
+- `cd crates/kepr-core && cargo +nightly fuzz run frame_fuzz -- -max_total_time=60` — fuzz `read_frame` for 60 s. Requires `rustup install nightly` and `cargo install cargo-fuzz` once. Targets live at `crates/kepr-core/fuzz/fuzz_targets/`; corpus and crash artifacts are gitignored.
+- `cd crates/kepr-core && cargo +nightly fuzz run protocol_fuzz -- -max_total_time=60` — same idea against `serde_json::from_slice::<Request>`.
 - `./install.sh` — full install: builds, creates `kepr` system group, installs binaries to `/usr/local/bin/kepr` and `/usr/local/sbin/kepr-daemon`, installs and starts the systemd service.
 - `sudo systemctl restart kepr.service` — reload the daemon after rebuilding.
 - `./tests/e2e.sh` — end-to-end against the installed daemon. Requires `kepr.service` running, the invoking user in the `kepr` group, and `jq`. Cases 7 (error sanitization) and 8 (audit log) skip gracefully without sudo / journal read access. All creds it creates use the prefix `E2E_<pid>_<epoch>_` and are cleaned up on exit.
@@ -21,12 +23,12 @@ Two binaries share one crate (see `Cargo.toml` `[[bin]]` entries):
 
 **Per-user namespacing:** credentials live in the shared `/etc/credstore.encrypted/` directory but are named `kepr-<uid>-<lowercased-name>` (see `src/store.rs`). `list_for_uid` filters by this prefix so users only ever see their own credentials. This is the *only* access-control boundary for reads — there is no per-file unix permission separation between users.
 
-**Module split (enforced by `mod` declarations in each binary):**
-- Shared by both: `protocol.rs` (wire types, socket path, limits), `generate.rs` (CSPRNG + `ZeroString`), `framing.rs` (length-prefixed u32 wire framing).
-- CLI-only: `client.rs` (framed JSON transport), `cli_args.rs` (argv parsing), `cli_cmds.rs` (set/get/list/delete/check orchestration), `cli_ui.rs` (ANSI/JSON rendering), `cli_input.rs` (masked TTY entry), `cli_mode.rs` (colour/JSON flags), `cli_activity.rs` (subcommand newtype).
-- Daemon-only: `store.rs` (naming, validation, path helpers), `crypto.rs` (wraps the host-keyed encryption backend), `audit.rs` (journal logging), `daemon_handlers.rs` (operation handlers), `daemon_peer.rs` (SO_PEERCRED extraction), `daemon_pool.rs` (bounded worker pool), `daemon_socket.rs` (socket setup), `daemon_cache.rs` (per-uid credstore scan cache).
+**Module split:**
+- `crates/kepr-core/` (library, depended on by both bins): `protocol` (wire types, socket path, limits), `generate` (CSPRNG + `ZeroString`), `framing` (length-prefixed u32 wire framing). The lib has no IO logic beyond the framing read/write helpers and no knowledge of `systemd-creds`, the daemon cache, or the credstore layout — so future out-of-tree consumers (`docker-credential-kepr`, the External Secrets Operator provider) can depend on it without pulling in root-only privileges.
+- CLI-only (in `src/`): `client.rs` (framed JSON transport), `cli_args.rs` (argv parsing), `cli_cmds.rs` (set/get/list/delete/check orchestration), `cli_ui.rs` (ANSI/JSON rendering), `cli_input.rs` (masked TTY entry), `cli_mode.rs` (colour/JSON flags), `cli_activity.rs` (subcommand newtype).
+- Daemon-only (in `src/`): `store.rs` (naming, validation, path helpers), `crypto.rs` (wraps the host-keyed encryption backend), `audit.rs` (journal logging), `daemon_handlers.rs` (operation handlers), `daemon_peer.rs` (SO_PEERCRED extraction), `daemon_pool.rs` (bounded worker pool), `daemon_socket.rs` (socket setup; umask + chown), `daemon_cache.rs` (per-uid credstore scan cache), `daemon_ratelimit.rs` (per-uid token bucket).
 
-When adding a new command, touch all three layers: add a variant to `Request`/`Response` in `protocol.rs`, a client function in `cli_cmds.rs` (with transport via `client.rs`), and a handler + audit call in `daemon_handlers.rs`.
+When adding a new command, touch all three layers: add a variant to `Request`/`Response` in `crates/kepr-core/src/protocol.rs`, a client function in `cli_cmds.rs` (with transport via `client.rs`), and a handler + audit call in `daemon_handlers.rs`.
 
 ## Responsive UI
 - Mobile-first. Breakpoints: 360/768/1024/1280px. Use Tailwind `sm:/md:/lg:/xl:`.

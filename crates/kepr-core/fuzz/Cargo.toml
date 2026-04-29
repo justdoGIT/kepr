@@ -1,0 +1,53 @@
+# Standalone fuzz crate for kepr-core. Lives outside the cargo workspace
+# (the workspace root in /Cargo.toml lists only `crates/kepr-core`, not
+# this directory) because libfuzzer-sys requires nightly Rust and would
+# otherwise force every `cargo build --workspace` on stable to fail.
+#
+# Run from this directory or from the parent crate with:
+#   rustup install nightly
+#   cargo install cargo-fuzz
+#   cd crates/kepr-core
+#   cargo +nightly fuzz run frame_fuzz
+#   cargo +nightly fuzz run protocol_fuzz
+
+[package]
+name = "kepr-core-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.kepr-core]
+path = ".."
+
+# Each fuzz target is its own binary. cargo-fuzz auto-discovers files
+# under fuzz_targets/, but declaring them here makes the layout obvious
+# and lets clippy-on-the-fuzz-crate pick them up if anyone ever runs
+# clippy with nightly.
+
+[[bin]]
+name = "frame_fuzz"
+path = "fuzz_targets/frame_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol_fuzz"
+path = "fuzz_targets/protocol_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+# Empty workspace block: explicitly declares that this crate is its
+# own workspace root, so `cargo +nightly fuzz run ...` does not try to
+# walk up to the parent kepr workspace (which would refuse to build
+# this crate on stable).
