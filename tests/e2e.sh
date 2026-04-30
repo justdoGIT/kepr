@@ -993,48 +993,6 @@ else
     skip "no root or no audit.log present — daemon not Phase-2-δ-aware yet"
 fi
 
-# ── 26. --requires-consent fail-closes without polkit auth ──────────────────
-# Phase 2 ε. A cred set with --requires-consent must be unreadable
-# without an explicit polkit prompt. In e2e (no desktop session,
-# no auth agent), pkcheck always denies → kepr get returns
-# "credential unavailable". Skip if pkcheck isn't on PATH.
-step "26. --requires-consent gates kepr get behind polkit"
-
-if ! command -v pkcheck >/dev/null 2>&1; then
-    skip "pkcheck not installed (install policykit-1)"
-else
-    NAME="${PREFIX}CONSENT"
-    VAL="consent-sentinel-$(date +%N)"
-    if kepr --json set "$NAME" --value "$VAL" --requires-consent >/dev/null 2>&1; then
-        pass "set $NAME --requires-consent"
-    else
-        fail "set --requires-consent rejected"
-    fi
-
-    # In a non-desktop test run, no auth agent is running →
-    # pkcheck denies → daemon returns "credential unavailable".
-    # If a desktop session IS available the user would see a
-    # prompt; the e2e script skips waiting for interactive input.
-    consent_out=$(kepr --json get "$NAME" 2>&1 || true)
-    if echo "$consent_out" | jq -e '.kind == "err" and (.error | test("credential unavailable"))' >/dev/null; then
-        pass "consent-flagged cred is unreadable without polkit auth (fail-closed)"
-    elif echo "$consent_out" | jq -e --arg v "$VAL" '.kind == "get_ok" and .value == $v' >/dev/null; then
-        # Desktop session granted consent (rare in e2e); treat as
-        # pass — the consent path worked, we just got authorized.
-        pass "polkit granted consent (active desktop session detected)"
-    else
-        fail "consent-flagged get neither denied nor granted: $(printf '%s' "$consent_out" | tr '\n' ' ')"
-    fi
-
-    # kepr list must surface the requires_consent flag.
-    list_out=$(kepr --json list 2>/dev/null || echo "{}")
-    if echo "$list_out" | jq -e --arg n "$NAME" '.credentials[]? | select(.name == $n) | .requires_consent == true' >/dev/null; then
-        pass "kepr list surfaces requires_consent"
-    else
-        fail "kepr list missing requires_consent flag"
-    fi
-fi
-
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"

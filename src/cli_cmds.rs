@@ -132,7 +132,6 @@ pub fn cmd_set(a: &Args) -> Response {
         value: value_opt,
         generate: gen_opt,
         ttl_secs: a.ttl_secs,
-        requires_consent: if a.requires_consent { Some(true) } else { None },
     };
     let resp = dispatch(a, &req);
 
@@ -227,9 +226,6 @@ pub fn cmd_list(a: &Args) -> Response {
                 let mut tail = format!("{}B  {}", c.size, c.modified);
                 if let Some(exp) = &c.expires_at {
                     tail.push_str(&format!("  (expires {exp})"));
-                }
-                if matches!(c.requires_consent, Some(true)) {
-                    tail.push_str("  (consent required)");
                 }
                 println!("  {:<40} {}", color("1", &c.name), color("2", &tail));
             }
