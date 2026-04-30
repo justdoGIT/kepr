@@ -14,7 +14,9 @@
 //   journalctl -t kepr-daemon KEPR_OP=get
 
 use std::os::unix::net::UnixDatagram;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+
+use crate::audit_chain::AuditChain;
 
 // systemd journal socket
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
@@ -23,6 +25,25 @@ const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
 // socket fd on every audit event; cache it once for the life of the daemon
 // and fall back to stderr (in `log`) if creation fails.
 static JOURNAL_SOCK: OnceLock<Option<UnixDatagram>> = OnceLock::new();
+
+// Phase 2 δ.2 — tamper-evident hash chain. journald is the primary
+// audit channel (operators grep it, structured fields, log rotation
+// works); the chain is the SECONDARY channel that adds tamper-
+// evidence on top. `audit::log` fans out to both. If the chain
+// append fails (disk full, permissions glitch), the operation is
+// still recorded in journald — soft-fail to keep cred-store
+// availability — but the soft failure is itself logged to stderr
+// and to journald so an operator notices.
+static AUDIT_CHAIN: OnceLock<Arc<AuditChain>> = OnceLock::new();
+
+/// Install the chain handle. Called once at daemon startup, after
+/// the StateDirectory is ready. Subsequent calls return Err so a
+/// misconfigured restart can't silently swap chains mid-process.
+pub fn install_chain(chain: Arc<AuditChain>) -> Result<(), String> {
+    AUDIT_CHAIN
+        .set(chain)
+        .map_err(|_| "audit chain already installed".to_string())
+}
 
 fn journal_sock() -> Option<&'static UnixDatagram> {
     JOURNAL_SOCK
@@ -57,6 +78,24 @@ pub fn log(event: &AuditEvent) {
     });
 
     let name_str = escape_log_field(event.name.unwrap_or("-"));
+
+    // Tee to the hash chain BEFORE journald so a chain-write
+    // failure can be reported via the journald path itself (the
+    // operator's primary alerting channel). The chain failure is
+    // never fatal — cred-store availability outranks tamper-
+    // evidence completeness — but it IS visible.
+    if let Some(chain) = AUDIT_CHAIN.get() {
+        if let Err(e) = chain.append(event.op, event.name, event.uid, event.username, &result_str) {
+            // Chain failure is itself an audit-worthy event. Log
+            // to stderr (journald sink) with a distinctive marker
+            // so an operator's `journalctl -t kepr-daemon` grep
+            // finds the gap.
+            eprintln!(
+                "[kepr-daemon] AUDIT_CHAIN_APPEND_FAILED op={} uid={} reason={}",
+                event.op, event.uid, e
+            );
+        }
+    }
 
     // Try systemd journal first (structured logging)
     if log_to_journal(event, &name_str, &result_str) {
