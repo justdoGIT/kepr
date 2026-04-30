@@ -113,6 +113,7 @@ pub fn cmd_sync_pull(name: &str, url: &str) -> kepr_core::protocol::Response {
         value: Some(kepr_core::generate::ZeroString::from_string(value)),
         generate: None,
         ttl_secs: None,
+        requires_consent: None,
     };
     match crate::client::send_request(&req) {
         Ok(r @ Response::SetOk { .. }) => r,

@@ -17,6 +17,7 @@ mod daemon_cache;
 mod daemon_expiry;
 mod daemon_handlers;
 mod daemon_peer;
+mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
 mod daemon_socket;
@@ -32,7 +33,7 @@ use std::sync::OnceLock;
 use audit::{username_for_uid, AuditEvent, AuditResult};
 use daemon_audit::handle_audit_verify;
 use daemon_handlers::{handle_check, handle_delete, handle_get, handle_list, handle_set};
-use daemon_peer::get_peer_uid;
+use daemon_peer::get_peer_creds;
 use daemon_pool::Pool;
 use daemon_ratelimit::RateLimiter;
 use daemon_socket::{
@@ -263,8 +264,8 @@ fn handle_client(mut stream: UnixStream) {
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
 
-    let peer_uid = match get_peer_uid(&stream) {
-        Some(uid) => uid,
+    let (peer_pid, peer_uid) = match get_peer_creds(&stream) {
+        Some(c) => (c.pid, c.uid),
         None => {
             send_error(&mut stream, "cannot verify caller identity");
             return;
@@ -298,11 +299,11 @@ fn handle_client(mut stream: UnixStream) {
     };
 
     let username = username_for_uid(peer_uid);
-    let response = dispatch(peer_uid, &username, request);
+    let response = dispatch(peer_uid, peer_pid, &username, request);
     send_response(&mut stream, &response);
 }
 
-fn dispatch(uid: u32, username: &str, request: Request) -> Response {
+fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
     match request {
         Request::Ping => {
             audit::log(&AuditEvent {
@@ -319,6 +320,7 @@ fn dispatch(uid: u32, username: &str, request: Request) -> Response {
             value,
             generate,
             ttl_secs,
+            requires_consent,
         } => handle_set(
             uid,
             username,
@@ -326,8 +328,9 @@ fn dispatch(uid: u32, username: &str, request: Request) -> Response {
             value.as_deref(),
             generate.as_deref(),
             ttl_secs,
+            requires_consent,
         ),
-        Request::Get { name } => handle_get(uid, username, &name),
+        Request::Get { name } => handle_get(uid, peer_pid, username, &name),
         Request::List => handle_list(uid, username),
         Request::Delete { name } => handle_delete(uid, username, &name),
         Request::Check => handle_check(uid, username),

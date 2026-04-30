@@ -24,7 +24,18 @@ extern "C" {
     ) -> i32;
 }
 
-pub fn get_peer_uid(stream: &UnixStream) -> Option<u32> {
+/// Peer credentials captured at connect-time via SO_PEERCRED.
+/// `pid` is the kernel's view of which process opened the socket;
+/// `uid` is the namespacing key the daemon uses for cred isolation.
+/// Both are required for the polkit consent gate (Phase 2 ε) so
+/// pkcheck authorises the actual caller, not the daemon.
+#[derive(Debug, Clone, Copy)]
+pub struct PeerCreds {
+    pub pid: i32,
+    pub uid: u32,
+}
+
+pub fn get_peer_creds(stream: &UnixStream) -> Option<PeerCreds> {
     let mut cred = UCred {
         pid: 0,
         uid: 0,
@@ -42,8 +53,17 @@ pub fn get_peer_uid(stream: &UnixStream) -> Option<u32> {
         )
     };
     if ret == 0 {
-        Some(cred.uid)
+        Some(PeerCreds {
+            pid: cred.pid,
+            uid: cred.uid,
+        })
     } else {
         None
     }
+}
+
+/// Backwards-compatible thin wrapper. Prefer `get_peer_creds`
+/// for new code that needs the PID for polkit subjects.
+pub fn get_peer_uid(stream: &UnixStream) -> Option<u32> {
+    get_peer_creds(stream).map(|c| c.uid)
 }

@@ -177,6 +177,7 @@ pub fn cmd_store() -> ExitCode {
         // to surface a `--ttl` shaped option, but today we leave
         // expiry to the consumer.
         ttl_secs: None,
+        requires_consent: None,
     };
     match client::send_request(&req) {
         Ok(Response::SetOk { .. }) => ExitCode::from(0),
