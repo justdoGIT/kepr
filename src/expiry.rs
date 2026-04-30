@@ -39,52 +39,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// is how operators audit the store today.
 const META_SUFFIX: &str = ".meta";
 
-/// On-disk record. Every field is `Option<…>` with `#[serde(default)]`
-/// so meta files written by older daemons parse cleanly under newer
-/// ones. Empty `CredMeta` is equivalent to "no flags" (callers should
-/// skip writing the meta file in that case).
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+/// On-disk record. Single field today; pin via `#[serde(default)]`
+/// on every future addition so a meta file written by an older
+/// daemon parses cleanly under a newer one.
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct CredMeta {
     /// Absolute unix timestamp (seconds since epoch) at which this
     /// credential expires. The daemon refuses to decrypt past this
-    /// instant. Phase 2 α.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub expires_at_unix: Option<u64>,
-    /// True iff `kepr get` requires a polkit consent prompt before
-    /// the daemon decrypts. Phase 2 ε.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub requires_consent: Option<bool>,
-}
-
-impl CredMeta {
-    /// True iff the meta has no flags set. Callers use this to
-    /// decide whether to bother writing the file at all — an empty
-    /// meta is identical to no meta from the read path's perspective.
-    pub fn is_empty(&self) -> bool {
-        self.expires_at_unix.is_none() && self.requires_consent.is_none()
-    }
-
-    /// Build a `CredMeta` from per-flag CLI inputs. Returns `Err`
-    /// if `ttl_secs` would overflow `now + ttl` past `u64::MAX`
-    /// — the caller treats that as a fail-and-rollback condition
-    /// in `handle_set`. Pure: no I/O, no SystemTime.
-    pub fn from_flags(
-        now_unix: u64,
-        ttl_secs: Option<u64>,
-        requires_consent: Option<bool>,
-    ) -> Result<Self, String> {
-        let mut meta = Self::default();
-        if let Some(ttl) = ttl_secs {
-            meta.expires_at_unix = Some(
-                compute_expires_at(now_unix, ttl)
-                    .ok_or_else(|| "ttl too large to fit in u64".to_string())?,
-            );
-        }
-        if matches!(requires_consent, Some(true)) {
-            meta.requires_consent = Some(true);
-        }
-        Ok(meta)
-    }
+    /// instant.
+    pub expires_at_unix: u64,
 }
 
 /// Compute the expected meta-file path for a given cred path.
@@ -121,7 +84,7 @@ pub fn compute_expires_at(now_unix: u64, ttl_secs: u64) -> Option<u64> {
 /// path in `crypto_inproc::write_atomic` so a crashed daemon
 /// doesn't leave half-written meta files; the per-(pid, thread-id)
 /// suffix keeps two concurrent writers from racing on the same temp.
-pub fn write_meta(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
+pub fn write_meta(meta_path: &Path, expires_at_unix: u64) -> Result<(), String> {
     let parent = meta_path.parent().ok_or("invalid meta path (no parent)")?;
     if !parent.exists() {
         fs::create_dir_all(parent).map_err(|e| format!("create meta dir: {e}"))?;
@@ -131,7 +94,8 @@ pub fn write_meta(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
         std::process::id(),
         std::thread::current().id()
     ));
-    let bytes = serde_json::to_vec(meta).map_err(|e| format!("serialise meta: {e}"))?;
+    let payload = CredMeta { expires_at_unix };
+    let bytes = serde_json::to_vec(&payload).map_err(|e| format!("serialise meta: {e}"))?;
 
     let mut f = match fs::OpenOptions::new()
         .write(true)
@@ -255,16 +219,9 @@ mod tests {
     fn write_then_read_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("foo.meta");
-        write_meta(
-            &path,
-            &CredMeta {
-                expires_at_unix: Some(1_777_500_000),
-                requires_consent: None,
-            },
-        )
-        .unwrap();
+        write_meta(&path, 1_777_500_000).unwrap();
         let meta = read_meta(&path).expect("file present").expect("parses");
-        assert_eq!(meta.expires_at_unix, Some(1_777_500_000));
+        assert_eq!(meta.expires_at_unix, 1_777_500_000);
     }
 
     #[test]
@@ -299,14 +256,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("perm.meta");
-        write_meta(
-            &path,
-            &CredMeta {
-                expires_at_unix: Some(42),
-                requires_consent: None,
-            },
-        )
-        .unwrap();
+        write_meta(&path, 42).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "meta must be 0o600, got {mode:o}");
     }
@@ -316,14 +266,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gone.meta");
         delete_meta(&path); // missing - no panic
-        write_meta(
-            &path,
-            &CredMeta {
-                expires_at_unix: Some(1),
-                requires_consent: None,
-            },
-        )
-        .unwrap();
+        write_meta(&path, 1).unwrap();
         delete_meta(&path); // present - removed
         assert!(!path.exists());
         delete_meta(&path); // missing again - still no panic

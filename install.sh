@@ -56,21 +56,6 @@ ok "kepr                      → /usr/local/bin/kepr"
 ok "kepr-daemon               → /usr/local/sbin/kepr-daemon"
 ok "docker-credential-kepr    → /usr/local/bin/docker-credential-kepr"
 
-# Phase 2 ε: install the polkit action so creds set with
-# `--requires-consent` can prompt the user via the desktop's
-# polkit agent. Without this file, pkcheck denies the action
-# unconditionally and every consent-flagged cred reads as
-# "credential unavailable" (fail-closed).
-if [ -d /usr/share/polkit-1/actions ]; then
-    sudo cp systemd/polkit/io.kepr.policy /usr/share/polkit-1/actions/io.kepr.policy
-    sudo chown root:root /usr/share/polkit-1/actions/io.kepr.policy
-    sudo chmod 644 /usr/share/polkit-1/actions/io.kepr.policy
-    ok "polkit action io.kepr.read-credential → /usr/share/polkit-1/actions/io.kepr.policy"
-else
-    warn "polkit not installed — --requires-consent flag will deny all reads"
-    warn "install policykit-1 (or your distro's equivalent) and re-run install.sh"
-fi
-
 echo -e "\n${CYN}━━━ Installing shell completion ━━━${RST}"
 # Prefer the directory bash-completion itself advertises via pkg-config;
 # fall back to the Debian/Ubuntu default. Skip with a warning if the

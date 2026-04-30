@@ -117,16 +117,7 @@ pub fn sweep_once(dir: &Path, now: u64, versions: Option<&Arc<VersionState>>) ->
             None => continue,
         };
 
-        // Phase 2 ε: meta is now multi-flag. The sweeper only
-        // cares about credentials with a TTL — a consent-only
-        // cred (no expires_at_unix) lives forever from the
-        // sweeper's perspective. Skip if no expiry, or if the
-        // expiry is still in the future.
-        let expires_at = match meta.expires_at_unix {
-            Some(t) => t,
-            None => continue,
-        };
-        if expires_at > now {
+        if meta.expires_at_unix > now {
             continue; // not yet expired
         }
 
@@ -280,14 +271,7 @@ mod tests {
         // the meta side, so the contents are arbitrary.
         fs::write(&cp, b"opaque-cred-bytes").unwrap();
         let mp = expiry::meta_path_for(&cp);
-        expiry::write_meta(
-            &mp,
-            &expiry::CredMeta {
-                expires_at_unix: Some(expires_at_unix),
-                requires_consent: None,
-            },
-        )
-        .unwrap();
+        expiry::write_meta(&mp, expires_at_unix).unwrap();
         (cp, mp)
     }
 
@@ -295,14 +279,7 @@ mod tests {
         // For the orphan-meta test: a meta with no sibling cred.
         // The sweeper should still remove it once expired.
         let mp = dir.join(format!("{basename}.meta"));
-        expiry::write_meta(
-            &mp,
-            &expiry::CredMeta {
-                expires_at_unix: Some(expires_at_unix),
-                requires_consent: None,
-            },
-        )
-        .unwrap();
+        expiry::write_meta(&mp, expires_at_unix).unwrap();
         mp
     }
 
