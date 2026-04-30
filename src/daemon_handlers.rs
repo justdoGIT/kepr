@@ -17,7 +17,13 @@ use crate::store::{self, cred_path, file_mtime_str, file_size, validate_name};
 /// wire error "credential unavailable". Pulled out of `handle_get`
 /// to keep that function under the per-file LOC ceiling and to
 /// give the multiple meta-fail branches one named home.
-fn precheck_meta(uid: u32, name_upper: &str) -> Result<(), String> {
+///
+/// `peer_pid` is the SO_PEERCRED-captured PID of the calling
+/// process, threaded down for the polkit consent check (Phase 2 ε).
+/// Codex P1 from PR #77 review: the polkit subject must be the
+/// CALLER's pid, not the daemon's, otherwise polkit evaluates
+/// root's authorisation rather than the user's.
+fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result<(), String> {
     let mp = expiry::meta_path_for(&cred_path(uid, name_upper));
     let Some(meta_result) = expiry::read_meta(&mp) else {
         return Ok(()); // no meta = no flags = allow
@@ -31,7 +37,9 @@ fn precheck_meta(uid: u32, name_upper: &str) -> Result<(), String> {
             return Err("expired".to_string());
         }
     }
-    if matches!(meta.requires_consent, Some(true)) && !crate::daemon_polkit::consent_granted(uid) {
+    if matches!(meta.requires_consent, Some(true))
+        && !crate::daemon_polkit::consent_granted(peer_pid)
+    {
         return Err("consent denied".to_string());
     }
     Ok(())
@@ -164,7 +172,7 @@ pub fn handle_set(
     }
 }
 
-pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
+pub fn handle_get(uid: u32, peer_pid: i32, username: &str, name: &str) -> Response {
     if let Err(e) = validate_name(name) {
         return Response::fail(e);
     }
@@ -176,7 +184,7 @@ pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
     // look on the wire identical to a not-found cred (sanitised
     // "credential unavailable"). The precise reason lands in the
     // audit log so post-mortem inspection can distinguish.
-    if let Err(reason) = precheck_meta(uid, &upper) {
+    if let Err(reason) = precheck_meta(uid, peer_pid, &upper) {
         audit::log(&AuditEvent {
             op: "get",
             name: Some(&upper),
