@@ -869,6 +869,74 @@ else
     fail "--ttl 0 not rejected: $(printf '%s' "$zero_err" | tr '\n' ' ')"
 fi
 
+# ── 23. kepr rotate: hook ok commits, hook fail leaves cred unchanged ────────
+# Phase 2 γ. Validate-then-commit rotation: generate fresh value, pipe
+# to hook on stdin, commit only on hook exit 0. Critical contract is
+# that a non-zero hook exit MUST leave the prior value in place.
+step "23. kepr rotate: hook ok commits, hook fail leaves cred unchanged"
+
+NAME="${PREFIX}ROTATE"
+PRIOR="prior-value-$(date +%N)"
+kepr --json set "$NAME" --value "$PRIOR" >/dev/null
+
+# Hook ok: write the value it gets on stdin to a marker file, exit 0.
+# After rotation, cred should hold a new value AND marker file should
+# contain that same new value.
+hook_ok=$(mktemp -t kepr-hook-ok-XXXXXX.sh)
+marker=$(mktemp -t kepr-marker-XXXXXX)
+cat > "$hook_ok" <<HOOK
+#!/usr/bin/env bash
+cat - > "$marker"
+exit 0
+HOOK
+chmod +x "$hook_ok"
+
+if kepr --json rotate "$NAME" --hook "$hook_ok" >/dev/null; then
+    new_value=$(kepr get "$NAME" --quiet)
+    hook_saw=$(cat "$marker")
+    if [ -n "$new_value" ] && [ "$new_value" != "$PRIOR" ] && [ "$new_value" = "$hook_saw" ]; then
+        pass "rotate: hook saw the same value the cred-store committed"
+    else
+        fail "rotate happy-path mismatch: cred='$new_value' hook='$hook_saw' prior='$PRIOR'"
+    fi
+else
+    fail "rotate failed despite hook returning 0"
+fi
+
+# Hook fail: any rotation must NOT touch the cred. Re-set the cred to a
+# known value, run rotate against a hook that exits 1, then assert the
+# value is unchanged.
+KNOWN="known-after-rotate-fail-$(date +%N)"
+kepr --json set "$NAME" --value "$KNOWN" >/dev/null
+
+hook_fail=$(mktemp -t kepr-hook-fail-XXXXXX.sh)
+cat > "$hook_fail" <<HOOK
+#!/usr/bin/env bash
+exit 1
+HOOK
+chmod +x "$hook_fail"
+
+if ! kepr --json rotate "$NAME" --hook "$hook_fail" >/dev/null 2>&1; then
+    after=$(kepr get "$NAME" --quiet)
+    if [ "$after" = "$KNOWN" ]; then
+        pass "rotate: hook failure leaves prior value untouched"
+    else
+        fail "rotate failure clobbered cred: was '$KNOWN', now '$after'"
+    fi
+else
+    fail "rotate unexpectedly succeeded with a failing hook"
+fi
+
+rm -f "$hook_ok" "$hook_fail" "$marker"
+
+# Missing hook path: must fail BEFORE generating a value (saves /dev/urandom).
+miss_out=$(kepr --json rotate "$NAME" --hook /nonexistent/hook 2>&1 || true)
+if echo "$miss_out" | jq -e '.kind == "err" and (.error | test("hook not found"))' >/dev/null; then
+    pass "rotate: missing hook is rejected with a helpful message"
+else
+    fail "rotate: missing hook check failed: $(printf '%s' "$miss_out" | tr '\n' ' ')"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"

@@ -12,6 +12,7 @@ use crate::cli_doctor;
 use crate::cli_envdump;
 use crate::cli_exec;
 use crate::cli_manifest;
+use crate::cli_rotate;
 use kepr_core::protocol::Response;
 
 /// Resolve `(env_vars, manifest_path)` into the effective list of
@@ -41,6 +42,7 @@ impl CliActivity {
             "exec" => "exec",
             "doctor" => "doctor",
             "env" => "env",
+            "rotate" => "rotate",
             other => return Err(format!("unknown command: {other}")),
         };
         Ok(Self(canonical.to_string()))
@@ -70,6 +72,11 @@ impl CliActivity {
                 Ok(vars) => cli_envdump::cmd_env(&vars),
                 Err(e) => Response::fail(e),
             },
+            "rotate" => match (&args.name, &args.hook_path) {
+                (Some(n), Some(h)) => cli_rotate::cmd_rotate(n, args.gen_kind, h),
+                (None, _) => Response::fail("rotate requires NAME"),
+                (_, None) => Response::fail("rotate requires --hook PATH"),
+            },
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }
@@ -82,7 +89,7 @@ mod tests {
     #[test]
     fn parse_accepts_canonical_verbs() {
         for v in [
-            "set", "get", "list", "delete", "check", "exec", "doctor", "env",
+            "set", "get", "list", "delete", "check", "exec", "doctor", "env", "rotate",
         ] {
             assert_eq!(CliActivity::parse(v).unwrap().as_str(), v);
         }
