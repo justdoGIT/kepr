@@ -53,10 +53,12 @@ pub trait Syncer {
 pub fn pick_syncer(url: &str) -> Result<Box<dyn Syncer>, String> {
     if let Some(path) = url.strip_prefix("vault:") {
         Ok(Box::new(crate::sync_vault::VaultSyncer::from_path(path)))
+    } else if let Some(path) = url.strip_prefix("aws-sm:") {
+        Ok(Box::new(crate::sync_aws_sm::AwsSmSyncer::from_path(path)))
     } else {
         Err(format!(
-            "unsupported sync scheme in {url:?} — supported: vault: \
-             (aws-sm: and gcp-sm: planned)"
+            "unsupported sync scheme in {url:?} — supported: vault:, aws-sm: \
+             (gcp-sm: planned)"
         ))
     }
 }
@@ -134,14 +136,18 @@ mod tests {
     }
 
     #[test]
+    fn pick_syncer_dispatches_aws_sm_scheme() {
+        let s = pick_syncer("aws-sm:prod/db/password").unwrap();
+        assert_eq!(s.backend(), "aws-sm");
+    }
+
+    #[test]
     fn pick_syncer_rejects_unknown_scheme() {
-        // `dyn Syncer` doesn't implement Debug (no point requiring
-        // it on every backend just for test ergonomics), so we
-        // pattern-match instead of `expect_err`.
         match pick_syncer("s3:bucket/key") {
             Err(e) => {
                 assert!(e.contains("unsupported"), "msg: {e}");
                 assert!(e.contains("vault"), "names known schemes: {e}");
+                assert!(e.contains("aws-sm"), "names aws-sm too: {e}");
             }
             Ok(_) => panic!("s3 scheme should have been rejected"),
         }
