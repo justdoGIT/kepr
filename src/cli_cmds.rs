@@ -131,6 +131,7 @@ pub fn cmd_set(a: &Args) -> Response {
         name: name.clone(),
         value: value_opt,
         generate: gen_opt,
+        ttl_secs: a.ttl_secs,
     };
     let resp = dispatch(a, &req);
 
@@ -217,11 +218,16 @@ pub fn cmd_list(a: &Args) -> Response {
             println!();
             bold(&format!("  Stored credentials ({})\n", credentials.len()));
             for c in credentials {
-                println!(
-                    "  {:<40} {}",
-                    color("1", &c.name),
-                    color("2", &format!("{}B  {}", c.size, c.modified))
-                );
+                // Phase 2 α: append `(expires <ts>)` for creds with
+                // a TTL sidecar so the user can spot ephemeral
+                // credentials at a glance. Renders nothing for
+                // pre-Phase-2 / no-TTL creds, matching the prior
+                // wire shape.
+                let mut tail = format!("{}B  {}", c.size, c.modified);
+                if let Some(exp) = &c.expires_at {
+                    tail.push_str(&format!("  (expires {exp})"));
+                }
+                println!("  {:<40} {}", color("1", &c.name), color("2", &tail));
             }
             println!();
         }

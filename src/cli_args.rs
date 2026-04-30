@@ -30,6 +30,12 @@ pub struct Args {
     /// from `$PWD` and finally to "no manifest". `--env CSV`
     /// overrides whatever the manifest says.
     pub manifest_path: Option<std::path::PathBuf>,
+    /// `kepr set` only: optional TTL in seconds. When set, the
+    /// daemon writes a sidecar metadata file recording the absolute
+    /// expiry time. After that instant, `kepr get` for this name
+    /// returns `credential unavailable`. None = no expiry, the
+    /// pre-Phase-2 default.
+    pub ttl_secs: Option<u64>,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -55,6 +61,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut env_vars: Vec<String> = Vec::new();
     let mut exec_argv: Vec<String> = Vec::new();
     let mut manifest_path: Option<std::path::PathBuf> = None;
+    let mut ttl_secs: Option<u64> = None;
 
     let mut i = 1usize;
 
@@ -150,6 +157,24 @@ pub fn parse_args() -> Result<Args, String> {
                 manifest_path = Some(std::path::PathBuf::from(p));
                 i += 1;
             }
+            "--ttl" => {
+                // `kepr set NAME --ttl 60` → cred expires 60 seconds
+                // from now. Reject 0 (would expire instantly, which
+                // is almost certainly a typo for "no ttl") and any
+                // value the parser can't fit into u64 (overflow).
+                i += 1;
+                let raw_val = raw.get(i).ok_or("--ttl needs a number of seconds")?;
+                let secs: u64 = raw_val
+                    .parse()
+                    .map_err(|_| format!("--ttl must be a non-negative integer, got: {raw_val}"))?;
+                if secs == 0 {
+                    return Err("--ttl 0 would expire the credential instantly; \
+                         omit --ttl for no expiry"
+                        .to_string());
+                }
+                ttl_secs = Some(secs);
+                i += 1;
+            }
             "--" => {
                 // Everything after `--` is the child argv. Bash's
                 // own getopt convention: the separator is consumed
@@ -179,6 +204,7 @@ pub fn parse_args() -> Result<Args, String> {
         env_vars,
         exec_argv,
         manifest_path,
+        ttl_secs,
     })
 }
 
@@ -189,7 +215,7 @@ pub fn print_help() {
     println!("  kepr [--json] [--color] COMMAND [args]");
     println!();
     println!("COMMANDS:");
-    println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid]");
+    println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid] [--ttl SECS]");
     println!("  get KEY [--quiet] [--export]");
     println!("  list                                 (alias: ls)");
     println!("  delete KEY [--force]                 (alias: rm)");
@@ -211,6 +237,7 @@ pub fn print_help() {
     println!("  kepr set OPENAI_API_KEY              # interactive, masked input");
     println!("  kepr set BOB_TOKEN --generate        # auto-generate");
     println!("  kepr set MY_KEY --value abc123       # non-interactive");
+    println!("  kepr set TMP_TOKEN --generate --ttl 3600   # expires in 1h");
     println!("  kepr get OPENAI_API_KEY              # decrypt and print");
     println!("  kepr get OPENAI_API_KEY --export     # print as: export VAR=value");
     println!("  kepr get OPENAI_API_KEY --quiet      # raw value only");
