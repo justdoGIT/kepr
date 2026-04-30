@@ -17,6 +17,7 @@ mod daemon_peer;
 mod daemon_pool;
 mod daemon_ratelimit;
 mod daemon_socket;
+mod expiry;
 mod master_key;
 mod store;
 mod version_state;
@@ -280,7 +281,15 @@ fn dispatch(uid: u32, username: &str, request: Request) -> Response {
             name,
             value,
             generate,
-        } => handle_set(uid, username, &name, value.as_deref(), generate.as_deref()),
+            ttl_secs,
+        } => handle_set(
+            uid,
+            username,
+            &name,
+            value.as_deref(),
+            generate.as_deref(),
+            ttl_secs,
+        ),
         Request::Get { name } => handle_get(uid, username, &name),
         Request::List => handle_list(uid, username),
         Request::Delete { name } => handle_delete(uid, username, &name),

@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::crypto;
 use crate::daemon_cache;
-use crate::store::{self, file_mtime_str, file_size, validate_name};
+use crate::expiry;
+use crate::store::{self, cred_path, file_mtime_str, file_size, validate_name};
 use kepr_core::generate::{self, generate_secret, GenKind};
 use kepr_core::protocol::{CredInfo, Response};
 
@@ -18,6 +19,7 @@ pub fn handle_set(
     name: &str,
     value: Option<&str>,
     generate: Option<&str>,
+    ttl_secs: Option<u64>,
 ) -> Response {
     if let Err(e) = validate_name(name) {
         audit::log(&AuditEvent {
@@ -41,6 +43,43 @@ pub fn handle_set(
 
     match crypto::default_backend().encrypt(uid, &upper, secret.as_bytes()) {
         Ok(()) => {
+            // TTL handling lives in the success branch ONLY: if the
+            // encrypt failed, there's no cred on disk for the meta
+            // file to attach to. A meta-write failure on the success
+            // path is reported as a soft failure — the cred IS
+            // written and readable, but the expiry constraint isn't
+            // durable. The handler returns Err so the user retries
+            // with a fresh `--ttl`, picking up a new
+            // `now + ttl_secs` window.
+            if let Some(ttl) = ttl_secs {
+                let cp = cred_path(uid, &upper);
+                let mp = expiry::meta_path_for(&cp);
+                let now = expiry::now_unix();
+                let expires = match expiry::compute_expires_at(now, ttl) {
+                    Some(t) => t,
+                    None => {
+                        audit::log(&AuditEvent {
+                            op: "set",
+                            name: Some(&upper),
+                            uid,
+                            username,
+                            result: AuditResult::Fail("ttl overflow".into()),
+                        });
+                        return Response::fail("ttl too large to fit in u64");
+                    }
+                };
+                if let Err(e) = expiry::write_meta(&mp, expires) {
+                    audit::log(&AuditEvent {
+                        op: "set",
+                        name: Some(&upper),
+                        uid,
+                        username,
+                        result: AuditResult::Fail(format!("meta write: {e}")),
+                    });
+                    return Response::fail(format!("ttl metadata write failed: {e}"));
+                }
+            }
+
             let cred_name = store::to_cred_name(uid, &upper);
             daemon_cache::invalidate(uid);
             audit::log(&AuditEvent {
@@ -74,6 +113,44 @@ pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
     }
 
     let upper = name.to_uppercase();
+
+    // Phase 2 α: expiry check BEFORE decrypt. A cred that's past
+    // its TTL must look identical (on the wire) to a cred that
+    // never existed — same sanitised "credential unavailable"
+    // string the lookup-error path produces. The audit log carries
+    // the precise reason (`expired`) so post-mortem inspection can
+    // distinguish.
+    let cp = cred_path(uid, &upper);
+    let mp = expiry::meta_path_for(&cp);
+    if let Some(meta_result) = expiry::read_meta(&mp) {
+        match meta_result {
+            Ok(meta) if expiry::now_unix() >= meta.expires_at_unix => {
+                audit::log(&AuditEvent {
+                    op: "get",
+                    name: Some(&upper),
+                    uid,
+                    username,
+                    result: AuditResult::Fail("expired".into()),
+                });
+                return Response::fail("credential unavailable");
+            }
+            Ok(_) => {} // valid + not yet expired → fall through
+            Err(e) => {
+                // Malformed meta — fail-closed. The alternative
+                // (silently ignore the meta and decrypt anyway)
+                // would let an attacker who corrupts the meta file
+                // bypass the expiry constraint.
+                audit::log(&AuditEvent {
+                    op: "get",
+                    name: Some(&upper),
+                    uid,
+                    username,
+                    result: AuditResult::Fail(format!("meta parse: {e}")),
+                });
+                return Response::fail("credential unavailable");
+            }
+        }
+    }
 
     match crypto::default_backend().decrypt(uid, &upper) {
         Ok(secret) => {
@@ -112,11 +189,21 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
     let entries = daemon_cache::list_for_uid(uid);
     let creds: Vec<CredInfo> = entries
         .iter()
-        .map(|(name, path)| CredInfo {
-            name: name.clone(),
-            cred_name: store::to_cred_name(uid, name),
-            size: file_size(path),
-            modified: file_mtime_str(path),
+        .map(|(name, path)| {
+            // Phase 2 α: surface `expires_at` for creds with a TTL
+            // sidecar. A malformed meta is intentionally rendered
+            // as None here (the GET path treats malformed-meta as
+            // fail-closed), so list output stays clean.
+            let expires_at = expiry::read_meta(&expiry::meta_path_for(path))
+                .and_then(|r| r.ok())
+                .map(|m| expiry::format_expires_at(m.expires_at_unix));
+            CredInfo {
+                name: name.clone(),
+                cred_name: store::to_cred_name(uid, name),
+                size: file_size(path),
+                modified: file_mtime_str(path),
+                expires_at,
+            }
         })
         .collect();
 
@@ -144,6 +231,13 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
 
     match crypto::default_backend().delete(uid, &upper) {
         Ok(()) => {
+            // Phase 2 α: best-effort meta cleanup AFTER the cred is
+            // removed. If meta-delete fails, the cred is gone and a
+            // stale meta is harmless (no decrypt can succeed against
+            // a missing cred, so the expiry-check path is moot).
+            // Logging this would just clutter the audit pipeline.
+            expiry::delete_meta(&expiry::meta_path_for(&cred_path(uid, &upper)));
+
             daemon_cache::invalidate(uid);
             audit::log(&AuditEvent {
                 op: "delete",

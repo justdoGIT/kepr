@@ -805,6 +805,70 @@ else
     fi
 fi
 
+# ── 22. --ttl: cred is fetchable before expiry, unavailable after ────────────
+# Phase 2 α: kepr set NAME --ttl SECS writes a sidecar metadata file
+# recording an absolute expiry timestamp. handle_get returns
+# "credential unavailable" once `now >= expires_at_unix`, regardless
+# of whether a sweeper has GC'd the file. The e2e validates the
+# access-time check; the disk-hygiene sweeper is a future PR.
+step "22. --ttl: cred is fetchable before expiry, unavailable after"
+
+NAME="${PREFIX}TTL_QUICK"
+VAL="ttl-sentinel-$(date +%N)"
+# 2-second TTL keeps the test under 5s total. The kepr daemon's
+# expiry check is at access time, so any wall-clock test must wait
+# strictly longer than the TTL.
+kepr --json set "$NAME" --value "$VAL" --ttl 2 >/dev/null
+
+if [ "$(kepr get "$NAME" --quiet 2>/dev/null)" = "$VAL" ]; then
+    pass "--ttl 2: cred is fetchable immediately after set"
+else
+    fail "--ttl 2: cred missing right after set"
+fi
+
+# kepr list must surface `expires_at` in JSON output for TTL'd creds.
+list_out=$(kepr --json list 2>/dev/null || echo "{}")
+if echo "$list_out" | jq -e --arg n "$NAME" \
+    '.credentials[]? | select(.name == $n) | .expires_at | type == "string"' >/dev/null; then
+    pass "kepr list surfaces expires_at for TTL'd creds"
+else
+    fail "kepr list missing expires_at: $(echo "$list_out" | jq -c --arg n "$NAME" '.credentials[]? | select(.name == $n)')"
+fi
+
+# Wait past the TTL and assert the cred is now unavailable. 3s
+# leaves a comfortable margin over the 2s TTL.
+sleep 3
+
+err_out=$(kepr --json get "$NAME" 2>&1 || true)
+if echo "$err_out" | jq -e '.kind == "err" and (.error | test("credential unavailable"))' >/dev/null; then
+    pass "post-TTL get returns sanitised credential unavailable"
+else
+    fail "post-TTL get unexpectedly succeeded or wrong error: $(printf '%s' "$err_out" | tr '\n' ' ')"
+fi
+
+# A cred set without --ttl must NOT have expires_at populated. Pin
+# the no-meta path so a regression in handle_list doesn't start
+# claiming creds expire when they don't.
+NAME_NOTTL="${PREFIX}TTL_NONE"
+kepr --json set "$NAME_NOTTL" --value "x" >/dev/null
+list_out=$(kepr --json list 2>/dev/null || echo "{}")
+if echo "$list_out" | jq -e --arg n "$NAME_NOTTL" \
+    '.credentials[]? | select(.name == $n) | (.expires_at == null or .expires_at == "")' >/dev/null; then
+    pass "non-TTL cred has no expires_at (no spurious meta)"
+else
+    fail "non-TTL cred unexpectedly carries expires_at"
+fi
+
+# --ttl 0 must be rejected at the parser level (defends against the
+# typo where the user means "no ttl" but writes 0).
+zero_err=$(kepr --json set "${PREFIX}TTL_ZERO" --value x --ttl 0 2>&1 || true)
+if echo "$zero_err" | jq -e '.kind == "err" and (.error | test("--ttl 0"))' >/dev/null \
+   || echo "$zero_err" | grep -q -- "--ttl 0"; then
+    pass "--ttl 0 is rejected with a helpful message"
+else
+    fail "--ttl 0 not rejected: $(printf '%s' "$zero_err" | tr '\n' ' ')"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
