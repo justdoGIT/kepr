@@ -12,6 +12,7 @@ mod audit;
 mod crypto;
 mod crypto_inproc;
 mod daemon_cache;
+mod daemon_expiry;
 mod daemon_handlers;
 mod daemon_peer;
 mod daemon_pool;
@@ -177,6 +178,12 @@ fn main() {
                 std::process::exit(1);
             }),
     );
+    // Clone before initialize_* takes ownership — the sweeper
+    // needs the same VersionState handle so its tombstones share
+    // the rollback floor with the encrypt/decrypt path. `Arc`
+    // makes the share explicit; both call sites hold a reference,
+    // both write through the inner `Mutex`.
+    let versions_for_sweeper = std::sync::Arc::clone(&versions);
     crypto::initialize_inproc_backend(*key, versions).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot install backend: {e}");
         std::process::exit(1);
@@ -197,6 +204,11 @@ fn main() {
     // finds nothing because every file the daemon writes now starts with
     // the kepr_v1 magic.
     sweep_legacy_credstore();
+
+    // Phase 2 β — periodic TTL sweeper. Spawned once at startup;
+    // dies with the daemon when systemd SIGTERMs the unit. See
+    // `daemon_expiry::spawn_sweeper` for the per-tick contract.
+    daemon_expiry::spawn_sweeper(versions_for_sweeper);
 
     setup_socket_dir();
     let _ = fs::remove_file(SOCKET_PATH);
