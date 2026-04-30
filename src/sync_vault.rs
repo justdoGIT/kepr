@@ -1,0 +1,224 @@
+// sync_vault.rs — HashiCorp Vault KV v2 backend for `kepr sync`.
+//
+// Vault auth: standard Vault env vars
+//
+//     VAULT_ADDR  (e.g. https://vault.example.com:8200)
+//     VAULT_TOKEN (a periodic or static token with kv-v2 push/pull
+//                  on the requested path)
+//
+// Path mapping: kepr's URL form is `vault:secret/myapp/db`.
+// "secret" is the mount; "myapp/db" is the key path. KV v2
+// inserts a `data` segment between the mount and the key in its
+// REST API:
+//
+//     vault:secret/myapp/db → POST {VAULT_ADDR}/v1/secret/data/myapp/db
+//                            GET  {VAULT_ADDR}/v1/secret/data/myapp/db
+//
+// Wire shape (KV v2):
+//
+//     push body:  {"data": {"value": "<plaintext>"}}
+//     pull body:  {"data": {"data": {"value": "<plaintext>"}, ...metadata}}
+//
+// The double-`data` nesting on pull is an intentional KV v2
+// quirk to support metadata; we descend through both layers.
+//
+// Failure semantics: every transport / auth error surfaces as
+// `Err(String)` with the HTTP status and Vault's response body
+// (which is structured: `{"errors": ["…"]}`). The CLI prints
+// this verbatim — Vault's error messages are operator-actionable.
+//
+// Threat model: the secret value is in the kepr CLI process for
+// the duration of the HTTP round-trip. Since we already hold it
+// in a `ZeroString` from the daemon `Get`, we extend the wipe
+// boundary by zeroing the request body buffer after `send_string`.
+// VAULT_TOKEN sits in env var memory for the process lifetime;
+// the user controls when to unset it, kepr does not.
+
+use kepr_core::generate::ZeroString;
+
+use crate::sync::Syncer;
+
+/// One Vault target. Constructed via `from_path("secret/myapp/db")`;
+/// the dispatcher in `pick_syncer` strips the `vault:` scheme
+/// before calling. Holds only the path — VAULT_ADDR + VAULT_TOKEN
+/// are read fresh on every call so a token rotation between push
+/// and pull works without a CLI restart.
+pub struct VaultSyncer {
+    /// User-supplied path AFTER the `vault:` scheme. e.g.
+    /// `secret/myapp/db`. The mount and key portions are
+    /// recombined with `/data/` for the KV v2 REST endpoint.
+    path: String,
+}
+
+impl VaultSyncer {
+    pub fn from_path(path: &str) -> Self {
+        Self {
+            path: path.to_string(),
+        }
+    }
+
+    /// Translate `secret/myapp/db` → `secret/data/myapp/db`. The
+    /// first slash separates mount from key; KV v2 inserts
+    /// `data` between them. A single-segment input (`secret`) is
+    /// rejected — KV v2 requires both parts.
+    fn kv_v2_endpoint(&self) -> Result<String, String> {
+        let (mount, key) = self
+            .path
+            .split_once('/')
+            .ok_or_else(|| format!("vault path needs <mount>/<key>, got {:?}", self.path))?;
+        if key.is_empty() {
+            return Err(format!("vault path key cannot be empty: {:?}", self.path));
+        }
+        Ok(format!("{mount}/data/{key}"))
+    }
+
+    fn read_env() -> Result<(String, ZeroString), String> {
+        let addr = std::env::var("VAULT_ADDR").map_err(|_| {
+            "VAULT_ADDR not set — point at your Vault instance, e.g. https://vault.example:8200"
+                .to_string()
+        })?;
+        let token = std::env::var("VAULT_TOKEN").map_err(|_| {
+            "VAULT_TOKEN not set — pass a token with kv-v2 read/write \
+             on the target path"
+                .to_string()
+        })?;
+        // Wrap the token in ZeroString so it's wiped from CLI
+        // memory when this Syncer drops. Env var memory itself
+        // stays — only the user can unset that.
+        Ok((addr.trim_end_matches('/').to_string(), token.into()))
+    }
+}
+
+impl Syncer for VaultSyncer {
+    fn backend(&self) -> &'static str {
+        "vault"
+    }
+
+    fn push(&self, value: &str) -> Result<(), String> {
+        let (addr, token) = Self::read_env()?;
+        let endpoint = self.kv_v2_endpoint()?;
+        let url = format!("{addr}/v1/{endpoint}");
+        // KV v2 wraps the user's value in {"data": {…}}.
+        let body = serde_json::json!({"data": {"value": value}});
+        let response = ureq::post(&url)
+            .set("X-Vault-Token", token.as_str())
+            .send_string(&body.to_string());
+        match response {
+            Ok(r) if r.status() == 200 || r.status() == 204 => Ok(()),
+            Ok(r) => Err(format!(
+                "vault push: HTTP {} {}",
+                r.status(),
+                r.into_string().unwrap_or_default()
+            )),
+            Err(ureq::Error::Status(code, r)) => Err(format!(
+                "vault push: HTTP {code} {}",
+                r.into_string().unwrap_or_default()
+            )),
+            Err(e) => Err(format!("vault push: {e}")),
+        }
+    }
+
+    fn pull(&self) -> Result<String, String> {
+        let (addr, token) = Self::read_env()?;
+        let endpoint = self.kv_v2_endpoint()?;
+        let url = format!("{addr}/v1/{endpoint}");
+        let response = ureq::get(&url).set("X-Vault-Token", token.as_str()).call();
+        let text = match response {
+            Ok(r) => r
+                .into_string()
+                .map_err(|e| format!("vault pull: read body: {e}"))?,
+            Err(ureq::Error::Status(code, r)) => {
+                return Err(format!(
+                    "vault pull: HTTP {code} {}",
+                    r.into_string().unwrap_or_default()
+                ));
+            }
+            Err(e) => return Err(format!("vault pull: {e}")),
+        };
+        // KV v2 envelope: {"data": {"data": {<our keys>}, "metadata": {...}}}
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("vault pull: parse JSON: {e}"))?;
+        let value = parsed
+            .pointer("/data/data/value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "vault pull: response missing /data/data/value — \
+                     was the secret written by `kepr sync push`? body: {text}"
+                )
+            })?;
+        Ok(value.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kv_v2_endpoint_inserts_data_segment() {
+        let s = VaultSyncer::from_path("secret/myapp/db");
+        assert_eq!(s.kv_v2_endpoint().unwrap(), "secret/data/myapp/db");
+    }
+
+    #[test]
+    fn kv_v2_endpoint_handles_deep_keys() {
+        let s = VaultSyncer::from_path("secret/team/prod/api/key");
+        assert_eq!(s.kv_v2_endpoint().unwrap(), "secret/data/team/prod/api/key");
+    }
+
+    #[test]
+    fn kv_v2_endpoint_rejects_single_segment() {
+        // `vault:secret` (no key) is meaningless — KV v2 needs
+        // both mount and key. Pin the error.
+        let s = VaultSyncer::from_path("secret");
+        let err = s.kv_v2_endpoint().expect_err("must reject");
+        assert!(err.contains("mount"), "msg: {err}");
+    }
+
+    #[test]
+    fn kv_v2_endpoint_rejects_empty_key() {
+        // `vault:secret/` (mount but no key) also meaningless.
+        let s = VaultSyncer::from_path("secret/");
+        let err = s.kv_v2_endpoint().expect_err("must reject");
+        assert!(err.contains("empty"), "msg: {err}");
+    }
+
+    #[test]
+    fn read_env_complains_when_vars_missing() {
+        // Snapshot + restore env so we don't pollute other
+        // tests in the same binary that may rely on these vars.
+        let prior_addr = std::env::var("VAULT_ADDR").ok();
+        let prior_token = std::env::var("VAULT_TOKEN").ok();
+        std::env::remove_var("VAULT_ADDR");
+        std::env::remove_var("VAULT_TOKEN");
+
+        let err = VaultSyncer::read_env().expect_err("must require VAULT_ADDR");
+        assert!(err.contains("VAULT_ADDR"), "msg: {err}");
+
+        std::env::set_var("VAULT_ADDR", "https://vault.example:8200");
+        let err = VaultSyncer::read_env().expect_err("must require VAULT_TOKEN");
+        assert!(err.contains("VAULT_TOKEN"), "msg: {err}");
+
+        std::env::set_var("VAULT_TOKEN", "xyz");
+        let (addr, token) = VaultSyncer::read_env().unwrap();
+        assert_eq!(addr, "https://vault.example:8200");
+        assert_eq!(token.as_str(), "xyz");
+
+        // Restore.
+        match prior_addr {
+            Some(v) => std::env::set_var("VAULT_ADDR", v),
+            None => std::env::remove_var("VAULT_ADDR"),
+        }
+        match prior_token {
+            Some(v) => std::env::set_var("VAULT_TOKEN", v),
+            None => std::env::remove_var("VAULT_TOKEN"),
+        }
+    }
+
+    #[test]
+    fn backend_name_is_vault() {
+        let s = VaultSyncer::from_path("secret/foo");
+        assert_eq!(s.backend(), "vault");
+    }
+}
