@@ -55,10 +55,11 @@ pub fn pick_syncer(url: &str) -> Result<Box<dyn Syncer>, String> {
         Ok(Box::new(crate::sync_vault::VaultSyncer::from_path(path)))
     } else if let Some(path) = url.strip_prefix("aws-sm:") {
         Ok(Box::new(crate::sync_aws_sm::AwsSmSyncer::from_path(path)))
+    } else if let Some(path) = url.strip_prefix("gcp-sm:") {
+        Ok(Box::new(crate::sync_gcp_sm::GcpSmSyncer::from_path(path)))
     } else {
         Err(format!(
-            "unsupported sync scheme in {url:?} — supported: vault:, aws-sm: \
-             (gcp-sm: planned)"
+            "unsupported sync scheme in {url:?} — supported: vault:, aws-sm:, gcp-sm:"
         ))
     }
 }
@@ -142,12 +143,19 @@ mod tests {
     }
 
     #[test]
+    fn pick_syncer_dispatches_gcp_sm_scheme() {
+        let s = pick_syncer("gcp-sm:projects/myproj/secrets/db_pass").unwrap();
+        assert_eq!(s.backend(), "gcp-sm");
+    }
+
+    #[test]
     fn pick_syncer_rejects_unknown_scheme() {
         match pick_syncer("s3:bucket/key") {
             Err(e) => {
                 assert!(e.contains("unsupported"), "msg: {e}");
                 assert!(e.contains("vault"), "names known schemes: {e}");
-                assert!(e.contains("aws-sm"), "names aws-sm too: {e}");
+                assert!(e.contains("aws-sm"), "names aws-sm: {e}");
+                assert!(e.contains("gcp-sm"), "names gcp-sm: {e}");
             }
             Ok(_) => panic!("s3 scheme should have been rejected"),
         }

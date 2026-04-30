@@ -19,6 +19,7 @@ mod client;
 mod sync;
 mod sync_aws_sigv4;
 mod sync_aws_sm;
+mod sync_gcp_sm;
 mod sync_vault;
 
 use cli_args::parse_args;
