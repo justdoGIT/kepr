@@ -12,6 +12,7 @@ mod audit;
 mod audit_chain;
 mod crypto;
 mod crypto_inproc;
+mod daemon_audit;
 mod daemon_cache;
 mod daemon_expiry;
 mod daemon_handlers;
@@ -29,6 +30,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::OnceLock;
 
 use audit::{username_for_uid, AuditEvent, AuditResult};
+use daemon_audit::handle_audit_verify;
 use daemon_handlers::{handle_check, handle_delete, handle_get, handle_list, handle_set};
 use daemon_peer::get_peer_uid;
 use daemon_pool::Pool;
@@ -329,6 +331,7 @@ fn dispatch(uid: u32, username: &str, request: Request) -> Response {
         Request::List => handle_list(uid, username),
         Request::Delete { name } => handle_delete(uid, username, &name),
         Request::Check => handle_check(uid, username),
+        Request::AuditVerify => handle_audit_verify(uid, username, AUDIT_CHAIN_PATH),
     }
 }
 
