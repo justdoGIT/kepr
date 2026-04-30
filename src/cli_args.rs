@@ -45,6 +45,12 @@ pub struct Args {
     /// remote URL (e.g. `vault:secret/team/db_pass`). The CLI
     /// dispatches to the right backend by URL scheme. Phase 2 ζ.
     pub url: Option<String>,
+    /// `kepr set` only: gate `kepr get` for this credential
+    /// behind a polkit consent prompt. The daemon writes a
+    /// `requires_consent: true` flag into the sidecar metadata;
+    /// subsequent `Get` calls run `pkcheck` against the calling
+    /// user before decrypting. Phase 2 ε.
+    pub requires_consent: bool,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -73,6 +79,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut ttl_secs: Option<u64> = None;
     let mut hook_path: Option<std::path::PathBuf> = None;
     let mut url: Option<String> = None;
+    let mut requires_consent = false;
 
     let mut i = 1usize;
 
@@ -177,6 +184,13 @@ pub fn parse_args() -> Result<Args, String> {
                 url = Some(v.clone());
                 i += 1;
             }
+            "--requires-consent" => {
+                // Phase 2 ε. No value: presence flips the flag.
+                // The daemon translates this into a sidecar
+                // `requires_consent: true` field.
+                requires_consent = true;
+                i += 1;
+            }
             "--hook" => {
                 // `kepr rotate NAME --hook ./refresh.sh` — path to
                 // the validation hook. We don't existence-check
@@ -237,6 +251,7 @@ pub fn parse_args() -> Result<Args, String> {
         ttl_secs,
         hook_path,
         url,
+        requires_consent,
     })
 }
 
@@ -247,7 +262,7 @@ pub fn print_help() {
     println!("  kepr [--json] [--color] COMMAND [args]");
     println!();
     println!("COMMANDS:");
-    println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid] [--ttl SECS]");
+    println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid] [--ttl SECS] [--requires-consent]");
     println!("  get KEY [--quiet] [--export]");
     println!("  list                                 (alias: ls)");
     println!("  delete KEY [--force]                 (alias: rm)");
@@ -274,6 +289,7 @@ pub fn print_help() {
     println!("  kepr set BOB_TOKEN --generate        # auto-generate");
     println!("  kepr set MY_KEY --value abc123       # non-interactive");
     println!("  kepr set TMP_TOKEN --generate --ttl 3600   # expires in 1h");
+    println!("  kepr set DB_PASS --value secret --requires-consent  # polkit prompts on every get");
     println!("  kepr get OPENAI_API_KEY              # decrypt and print");
     println!("  kepr get OPENAI_API_KEY --export     # print as: export VAR=value");
     println!("  kepr get OPENAI_API_KEY --quiet      # raw value only");

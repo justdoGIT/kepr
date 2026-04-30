@@ -10,6 +10,40 @@ use crate::crypto;
 use crate::daemon_cache;
 use crate::expiry;
 use crate::store::{self, cred_path, file_mtime_str, file_size, validate_name};
+
+/// Pre-decrypt meta gate for `handle_get`. Returns `Ok(())` to
+/// allow the decrypt; returns `Err(reason)` with a precise audit
+/// reason that the caller logs and converts into the sanitised
+/// wire error "credential unavailable". Pulled out of `handle_get`
+/// to keep that function under the per-file LOC ceiling and to
+/// give the multiple meta-fail branches one named home.
+///
+/// `peer_pid` is the SO_PEERCRED-captured PID of the calling
+/// process, threaded down for the polkit consent check (Phase 2 ε).
+/// Codex P1 from PR #77 review: the polkit subject must be the
+/// CALLER's pid, not the daemon's, otherwise polkit evaluates
+/// root's authorisation rather than the user's.
+fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result<(), String> {
+    let mp = expiry::meta_path_for(&cred_path(uid, name_upper));
+    let Some(meta_result) = expiry::read_meta(&mp) else {
+        return Ok(()); // no meta = no flags = allow
+    };
+    let meta = match meta_result {
+        Ok(m) => m,
+        Err(e) => return Err(format!("meta parse: {e}")),
+    };
+    if let Some(exp) = meta.expires_at_unix {
+        if expiry::now_unix() >= exp {
+            return Err("expired".to_string());
+        }
+    }
+    if matches!(meta.requires_consent, Some(true))
+        && !crate::daemon_polkit::consent_granted(peer_pid)
+    {
+        return Err("consent denied".to_string());
+    }
+    Ok(())
+}
 use kepr_core::generate::{self, generate_secret, GenKind};
 use kepr_core::protocol::{CredInfo, Response};
 
@@ -20,6 +54,7 @@ pub fn handle_set(
     value: Option<&str>,
     generate: Option<&str>,
     ttl_secs: Option<u64>,
+    requires_consent: Option<bool>,
 ) -> Response {
     if let Err(e) = validate_name(name) {
         audit::log(&AuditEvent {
@@ -61,30 +96,31 @@ pub fn handle_set(
             // first ordering doesn't actually shrink that window
             // because meta-write can still fail AFTER encrypt
             // succeeds in this ordering. Same exposure, more code.
-            if let Some(ttl) = ttl_secs {
+            // Build a CredMeta from the supplied flags via the
+            // helper in `expiry`; on overflow, roll back the cred.
+            let meta = match expiry::CredMeta::from_flags(
+                expiry::now_unix(),
+                ttl_secs,
+                requires_consent,
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = crypto::default_backend().delete(uid, &upper);
+                    audit::log(&AuditEvent {
+                        op: "set",
+                        name: Some(&upper),
+                        uid,
+                        username,
+                        result: AuditResult::Fail(format!("{e} (cred rolled back)")),
+                    });
+                    return Response::fail(e);
+                }
+            };
+
+            if !meta.is_empty() {
                 let cp = cred_path(uid, &upper);
                 let mp = expiry::meta_path_for(&cp);
-                let now = expiry::now_unix();
-                let expires = match expiry::compute_expires_at(now, ttl) {
-                    Some(t) => t,
-                    None => {
-                        // u64 overflow on `now + ttl`. The parser
-                        // already prevents 0; an attacker-supplied
-                        // gigantic ttl is the only way here. Roll
-                        // the cred back before returning so we
-                        // don't leak a TTL-less persistent cred.
-                        let _ = crypto::default_backend().delete(uid, &upper);
-                        audit::log(&AuditEvent {
-                            op: "set",
-                            name: Some(&upper),
-                            uid,
-                            username,
-                            result: AuditResult::Fail("ttl overflow (cred rolled back)".into()),
-                        });
-                        return Response::fail("ttl too large to fit in u64");
-                    }
-                };
-                if let Err(e) = expiry::write_meta(&mp, expires) {
+                if let Err(e) = expiry::write_meta(&mp, &meta) {
                     let rollback = crypto::default_backend().delete(uid, &upper);
                     let audit_msg = match &rollback {
                         Ok(()) => format!("meta write: {e} (cred rolled back)"),
@@ -98,11 +134,11 @@ pub fn handle_set(
                         result: AuditResult::Fail(audit_msg),
                     });
                     let user_msg = match rollback {
-                        Ok(()) => format!("ttl metadata write failed: {e}"),
+                        Ok(()) => format!("meta write failed: {e}"),
                         Err(re) => format!(
-                            "ttl metadata write failed: {e}; \
+                            "meta write failed: {e}; \
                              cred rollback also failed: {re} \
-                             (cred {upper} may persist without TTL — delete manually)"
+                             (cred {upper} may persist without flags — delete manually)"
                         ),
                     };
                     return Response::fail(user_msg);
@@ -136,49 +172,27 @@ pub fn handle_set(
     }
 }
 
-pub fn handle_get(uid: u32, username: &str, name: &str) -> Response {
+pub fn handle_get(uid: u32, peer_pid: i32, username: &str, name: &str) -> Response {
     if let Err(e) = validate_name(name) {
         return Response::fail(e);
     }
 
     let upper = name.to_uppercase();
 
-    // Phase 2 α: expiry check BEFORE decrypt. A cred that's past
-    // its TTL must look identical (on the wire) to a cred that
-    // never existed — same sanitised "credential unavailable"
-    // string the lookup-error path produces. The audit log carries
-    // the precise reason (`expired`) so post-mortem inspection can
-    // distinguish.
-    let cp = cred_path(uid, &upper);
-    let mp = expiry::meta_path_for(&cp);
-    if let Some(meta_result) = expiry::read_meta(&mp) {
-        match meta_result {
-            Ok(meta) if expiry::now_unix() >= meta.expires_at_unix => {
-                audit::log(&AuditEvent {
-                    op: "get",
-                    name: Some(&upper),
-                    uid,
-                    username,
-                    result: AuditResult::Fail("expired".into()),
-                });
-                return Response::fail("credential unavailable");
-            }
-            Ok(_) => {} // valid + not yet expired → fall through
-            Err(e) => {
-                // Malformed meta — fail-closed. The alternative
-                // (silently ignore the meta and decrypt anyway)
-                // would let an attacker who corrupts the meta file
-                // bypass the expiry constraint.
-                audit::log(&AuditEvent {
-                    op: "get",
-                    name: Some(&upper),
-                    uid,
-                    username,
-                    result: AuditResult::Fail(format!("meta parse: {e}")),
-                });
-                return Response::fail("credential unavailable");
-            }
-        }
+    // Phase 2 α + ε — pre-decrypt meta gate. A cred whose meta
+    // says expired/consent-required-and-denied/parse-failed must
+    // look on the wire identical to a not-found cred (sanitised
+    // "credential unavailable"). The precise reason lands in the
+    // audit log so post-mortem inspection can distinguish.
+    if let Err(reason) = precheck_meta(uid, peer_pid, &upper) {
+        audit::log(&AuditEvent {
+            op: "get",
+            name: Some(&upper),
+            uid,
+            username,
+            result: AuditResult::Fail(reason.to_string()),
+        });
+        return Response::fail("credential unavailable");
     }
 
     match crypto::default_backend().decrypt(uid, &upper) {
@@ -219,19 +233,27 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
     let creds: Vec<CredInfo> = entries
         .iter()
         .map(|(name, path)| {
-            // Phase 2 α: surface `expires_at` for creds with a TTL
-            // sidecar. A malformed meta is intentionally rendered
-            // as None here (the GET path treats malformed-meta as
-            // fail-closed), so list output stays clean.
-            let expires_at = expiry::read_meta(&expiry::meta_path_for(path))
-                .and_then(|r| r.ok())
-                .map(|m| expiry::format_expires_at(m.expires_at_unix));
+            // Phase 2 α + ε: surface `expires_at` and
+            // `requires_consent` for creds with a meta sidecar. A
+            // malformed meta renders both as None so list output
+            // stays clean (the GET path fail-closes on malformed
+            // meta separately).
+            let meta_opt = expiry::read_meta(&expiry::meta_path_for(path)).and_then(|r| r.ok());
+            let expires_at = meta_opt
+                .as_ref()
+                .and_then(|m| m.expires_at_unix.map(expiry::format_expires_at));
+            let requires_consent = meta_opt
+                .as_ref()
+                .and_then(|m| m.requires_consent)
+                .filter(|v| *v)
+                .map(|_| true);
             CredInfo {
                 name: name.clone(),
                 cred_name: store::to_cred_name(uid, name),
                 size: file_size(path),
                 modified: file_mtime_str(path),
                 expires_at,
+                requires_consent,
             }
         })
         .collect();
