@@ -36,6 +36,17 @@ pub enum Request {
         value: Option<ZeroString>, // None = generate
         #[serde(skip_serializing_if = "Option::is_none")]
         generate: Option<String>, // "hex"|"base62"|"pass"|"uuid"
+        /// Phase 2 α: optional time-to-live in seconds. When set, the
+        /// daemon writes a sidecar metadata file recording the absolute
+        /// unix timestamp at which this credential expires. After that
+        /// instant, `handle_get` returns `credential unavailable`
+        /// regardless of whether the on-disk ciphertext is still
+        /// readable. A future PR adds a sweeper thread that GCs the
+        /// expired files; this PR limits scope to the access-time
+        /// check, so expired files take up disk until manually deleted
+        /// or until the sweeper lands.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ttl_secs: Option<u64>,
     },
     Get {
         name: String,
@@ -126,6 +137,14 @@ pub struct CredInfo {
     pub cred_name: String, // kepr-<uid>-env-var-name
     pub size: u64,
     pub modified: String, // YYYY-MM-DD HH:MM
+    /// Phase 2 α: human-readable absolute expiry timestamp
+    /// (`YYYY-MM-DD HH:MM`) for creds that were set with `--ttl`.
+    /// `None` for credentials with no TTL — same wire shape as the
+    /// pre-Phase-2 daemon (the field is `skip_serializing_if =
+    /// "Option::is_none"`, so old clients never see the field and
+    /// new clients tolerate the missing-field path).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub expires_at: Option<String>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -162,7 +181,8 @@ mod tests {
             as_value(&Request::Set {
                 name: "X".into(),
                 value: None,
-                generate: None
+                generate: None,
+                ttl_secs: None,
             })["cmd"],
             json!("set"),
         );
@@ -182,16 +202,26 @@ mod tests {
                 name: "K".into(),
                 value: Some("v".into()),
                 generate: None,
+                ttl_secs: None,
             },
             Request::Set {
                 name: "K".into(),
                 value: None,
                 generate: Some("hex".into()),
+                ttl_secs: None,
             },
             Request::Set {
                 name: "K".into(),
                 value: None,
                 generate: None,
+                ttl_secs: None,
+            },
+            // Phase 2 α: TTL-bearing variant must round-trip cleanly.
+            Request::Set {
+                name: "EPHEMERAL".into(),
+                value: Some("v".into()),
+                generate: None,
+                ttl_secs: Some(60),
             },
         ];
         for req in cases {
@@ -205,9 +235,16 @@ mod tests {
             name: "X".into(),
             value: None,
             generate: None,
+            ttl_secs: None,
         };
         let v = as_value(&req);
         assert!(v.get("value").is_none(), "value should be absent: {v}");
+        // Phase 2 α: ttl_secs uses skip_serializing_if so old daemons
+        // never see the field. Pin the wire shape.
+        assert!(
+            v.get("ttl_secs").is_none(),
+            "ttl_secs should be absent when None: {v}"
+        );
         assert!(
             v.get("generate").is_none(),
             "generate should be absent: {v}"
@@ -256,6 +293,7 @@ mod tests {
                 cred_name: "kepr-1000-x".into(),
                 size: 42,
                 modified: "2024-01-01 00:00".into(),
+                expires_at: None,
             }],
             count: 1,
         };

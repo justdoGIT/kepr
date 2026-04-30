@@ -172,6 +172,11 @@ pub fn cmd_store() -> ExitCode {
         name,
         value: Some(kepr_core::generate::ZeroString::from_string(value)),
         generate: None,
+        // Docker logins don't expire from kepr's side — docker
+        // manages its own session lifecycle. A future PR may want
+        // to surface a `--ttl` shaped option, but today we leave
+        // expiry to the consumer.
+        ttl_secs: None,
     };
     match client::send_request(&req) {
         Ok(Response::SetOk { .. }) => ExitCode::from(0),
