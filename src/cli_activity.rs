@@ -43,6 +43,7 @@ impl CliActivity {
             "doctor" => "doctor",
             "env" => "env",
             "rotate" => "rotate",
+            "audit-verify" => "audit-verify",
             other => return Err(format!("unknown command: {other}")),
         };
         Ok(Self(canonical.to_string()))
@@ -77,6 +78,7 @@ impl CliActivity {
                 (None, _) => Response::fail("rotate requires NAME"),
                 (_, None) => Response::fail("rotate requires --hook PATH"),
             },
+            "audit-verify" => cli_cmds::cmd_audit_verify(args),
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }
@@ -89,7 +91,16 @@ mod tests {
     #[test]
     fn parse_accepts_canonical_verbs() {
         for v in [
-            "set", "get", "list", "delete", "check", "exec", "doctor", "env", "rotate",
+            "set",
+            "get",
+            "list",
+            "delete",
+            "check",
+            "exec",
+            "doctor",
+            "env",
+            "rotate",
+            "audit-verify",
         ] {
             assert_eq!(CliActivity::parse(v).unwrap().as_str(), v);
         }

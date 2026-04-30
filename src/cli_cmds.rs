@@ -307,3 +307,28 @@ pub fn cmd_check(a: &Args) -> Response {
     }
     resp
 }
+
+/// Phase 2 δ.3 — `kepr audit-verify`. Asks the daemon to walk
+/// /var/lib/kepr/audit.log and report the entry count + head hash.
+/// Tamper detection is server-side; the CLI just renders the
+/// outcome.
+pub fn cmd_audit_verify(a: &Args) -> Response {
+    let resp = dispatch(a, &Request::AuditVerify);
+    if a.json {
+        return resp;
+    }
+    match &resp {
+        Response::AuditOk { entries, last_hash } => {
+            println!();
+            ok(&format!(
+                "audit chain verified: {entries} entr{}",
+                if *entries == 1 { "y" } else { "ies" }
+            ));
+            dim(&format!("  head: {last_hash}"));
+            println!();
+        }
+        Response::Err { error } => err(error),
+        _ => err("unexpected response"),
+    }
+    resp
+}

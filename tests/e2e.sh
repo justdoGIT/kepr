@@ -972,6 +972,27 @@ else
     skip "no root/sudo — cannot read /var/lib/kepr/audit.log"
 fi
 
+# ── 25. kepr audit-verify reports a clean chain ──────────────────────────────
+# Phase 2 δ.3: CLI walks the daemon's hash-chained audit log via
+# Request::AuditVerify and reports entry count + head hash. The
+# log file is root-only readable (0o640 root:root); the verify
+# request goes through the daemon, which is the only process that
+# can read it. Skip if the chain doesn't exist yet (fresh install
+# with no events).
+step "25. kepr audit-verify reports a clean chain"
+
+if [ "$can_root" = 1 ] && run_root test -f /var/lib/kepr/audit.log; then
+    av_out=$(kepr --json audit-verify 2>&1 || true)
+    if echo "$av_out" | jq -e '.kind == "audit_ok" and (.entries | type == "number") and (.last_hash | type == "string" and (length == 64))' >/dev/null; then
+        entries=$(echo "$av_out" | jq -r '.entries')
+        pass "audit-verify: $entries entries, head hash is 64-hex"
+    else
+        fail "audit-verify response shape unexpected: $(printf '%s' "$av_out" | tr '\n' ' ')"
+    fi
+else
+    skip "no root or no audit.log present — daemon not Phase-2-δ-aware yet"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
