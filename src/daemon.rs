@@ -17,7 +17,6 @@ mod daemon_cache;
 mod daemon_expiry;
 mod daemon_handlers;
 mod daemon_peer;
-mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
 mod daemon_socket;
@@ -320,7 +319,6 @@ fn dispatch(uid: u32, username: &str, request: Request) -> Response {
             value,
             generate,
             ttl_secs,
-            requires_consent,
         } => handle_set(
             uid,
             username,
@@ -328,7 +326,6 @@ fn dispatch(uid: u32, username: &str, request: Request) -> Response {
             value.as_deref(),
             generate.as_deref(),
             ttl_secs,
-            requires_consent,
         ),
         Request::Get { name } => handle_get(uid, username, &name),
         Request::List => handle_list(uid, username),

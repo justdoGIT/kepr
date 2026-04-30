@@ -173,7 +173,6 @@ pub fn cmd_rotate(name: &str, kind: GenKind, hook_path: &Path) -> Response {
             value: Some(value),
             generate: None,
             ttl_secs: None,
-            requires_consent: None,
         }) {
             Ok(Response::SetOk { cred_name, .. }) => Ok(cred_name),
             Ok(Response::Err { error }) => Err(error),
