@@ -272,7 +272,9 @@ pub fn print_help() {
     println!("  env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval");
     println!("  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid]   atomic rotation");
     println!("  audit-verify                         verify the hash-chained audit log");
-    println!("  sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:)");
+    println!(
+        "  sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:|gcp-sm:)"
+    );
     println!("  sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally");
     println!();
     println!("GLOBAL FLAGS:");
@@ -309,6 +311,10 @@ pub fn print_help() {
     println!("  kepr sync-push DB_PASS --url aws-sm:prod/db/password");
     println!(
         "                                       # AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION"
+    );
+    println!("  kepr sync-push DB_PASS --url gcp-sm:projects/myproj/secrets/db_pass");
+    println!(
+        "                                       # GCP_ACCESS_TOKEN env var (gcloud auth print-access-token)"
     );
     println!("  eval \"$(kepr env --env DB_PASS,DB_USER)\"  # source creds into the current shell");
     println!("  kepr exec -- python train.py         # uses .kepr.toml in/above PWD");
