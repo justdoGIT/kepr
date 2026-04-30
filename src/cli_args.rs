@@ -36,6 +36,11 @@ pub struct Args {
     /// returns `credential unavailable`. None = no expiry, the
     /// pre-Phase-2 default.
     pub ttl_secs: Option<u64>,
+    /// `kepr rotate` only: path to the validation hook. The
+    /// rotation orchestration generates a candidate value, pipes
+    /// it to this hook on stdin, and only commits if the hook
+    /// exits 0. Required for `kepr rotate`; ignored elsewhere.
+    pub hook_path: Option<std::path::PathBuf>,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -62,6 +67,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut exec_argv: Vec<String> = Vec::new();
     let mut manifest_path: Option<std::path::PathBuf> = None;
     let mut ttl_secs: Option<u64> = None;
+    let mut hook_path: Option<std::path::PathBuf> = None;
 
     let mut i = 1usize;
 
@@ -157,6 +163,16 @@ pub fn parse_args() -> Result<Args, String> {
                 manifest_path = Some(std::path::PathBuf::from(p));
                 i += 1;
             }
+            "--hook" => {
+                // `kepr rotate NAME --hook ./refresh.sh` — path to
+                // the validation hook. We don't existence-check
+                // here so the parser stays pure; cli_rotate
+                // re-checks before generating.
+                i += 1;
+                let p = raw.get(i).ok_or("--hook needs a path")?;
+                hook_path = Some(std::path::PathBuf::from(p));
+                i += 1;
+            }
             "--ttl" => {
                 // `kepr set NAME --ttl 60` → cred expires 60 seconds
                 // from now. Reject 0 (would expire instantly, which
@@ -205,6 +221,7 @@ pub fn parse_args() -> Result<Args, String> {
         exec_argv,
         manifest_path,
         ttl_secs,
+        hook_path,
     })
 }
 
@@ -223,6 +240,7 @@ pub fn print_help() {
     println!("  exec [--env CSV|--manifest PATH] -- CMD ARGS  run CMD with creds in env");
     println!("  doctor                               diagnose common setup issues");
     println!("  env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval");
+    println!("  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid]   atomic rotation");
     println!();
     println!("GLOBAL FLAGS:");
     println!("  --json       machine-readable output; no stderr on clean errors");
@@ -248,6 +266,8 @@ pub fn print_help() {
     println!("  kepr exec --env OPENAI_API_KEY -- python train.py");
     println!("                                       # provision creds in env, replace process");
     println!("  kepr doctor                          # ✓/✗ list of setup checks");
+    println!("  kepr rotate STRIPE_KEY --hook ./bin/refresh-stripe.sh");
+    println!("                                       # generate, validate via hook, commit on hook exit 0");
     println!("  eval \"$(kepr env --env DB_PASS,DB_USER)\"  # source creds into the current shell");
     println!("  kepr exec -- python train.py         # uses .kepr.toml in/above PWD");
     println!();
