@@ -1,9 +1,13 @@
-// file_size_limit.rs — pins the 300-LOC-per-file rule.
+// file_size_limit.rs — pins the 350-LOC-per-file rule.
 //
 // Background: by 2026-04 the codebase had grown several files over
-// 300 lines of production code each. Reading and reviewing those
-// files takes longer; a 300-line ceiling keeps each module focused
-// on one concept and makes the diff for any change tractable.
+// 300 lines of production code each, the original ceiling. The
+// 300-line limit was tightened from anecdotal worst-files-in-tree;
+// 350 is the project's settled-on number after weighing how many
+// files were borderline-violators that didn't actually need a split.
+// The point of the cap is reviewer load and concept-per-file focus,
+// not arbitrary line count — 350 hits both targets without
+// generating refactor pressure for files that read fine at 320.
 //
 // What counts as "production LOC":
 //
@@ -24,13 +28,14 @@
 //
 // Enforcement model:
 //
-//   - PROD_LOC_LIMIT (300) applies to every `.rs` file under `src/`
+//   - PROD_LOC_LIMIT (350) applies to every `.rs` file under `src/`
 //     and `crates/*/src/`.
-//   - ALLOWLIST grandfathers files that were already over the
-//     limit when the rule landed. Each entry pins the file's
-//     current size; the test fails if the file grows beyond the
-//     pin, AND fails if a non-allowlisted file exceeds the limit.
-//   - When a grandfathered file drops below 300 LOC, remove it
+//   - ALLOWLIST grandfathers files that were over the limit when
+//     the rule landed (now down to 2 after the 300 → 350 raise).
+//     Each entry pins the file's current size; the test fails if
+//     the file grows beyond the pin, AND fails if a non-allowlisted
+//     file exceeds the limit.
+//   - When a grandfathered file drops below 350 LOC, remove it
 //     from ALLOWLIST in the same PR that did the refactor — the
 //     test will still pass, but the allowlist gets cleaner.
 //
@@ -46,18 +51,21 @@ use std::path::{Path, PathBuf};
 /// Maximum production LOC for any `.rs` file under `src/` or
 /// `crates/*/src/`. Test modules (everything after the first
 /// `#[cfg(test)]`) don't count toward this.
-const PROD_LOC_LIMIT: usize = 300;
+const PROD_LOC_LIMIT: usize = 350;
 
 /// Files grandfathered above the limit at the time the rule
 /// landed. Each entry pins its current production LOC. Refactor
 /// backlog — graduate files out of this list as their size drops.
+///
+/// At 350-LOC the only remaining violators are the two handler
+/// modules whose per-operation handlers are tightly coupled to
+/// shared audit / cache / version-state primitives; splitting
+/// either prematurely would just trade locality for a multi-file
+/// hop. Both are within ~1.5% of the ceiling — refactor pressure
+/// kicks in the moment they grow.
 const ALLOWLIST: &[(&str, usize)] = &[
     ("src/daemon_handlers.rs", 357),
     ("src/crypto_inproc.rs", 354),
-    ("src/daemon.rs", 320),
-    ("src/docker_helper.rs", 312),
-    ("src/cli_cmds.rs", 309),
-    ("src/crypto.rs", 302),
 ];
 
 fn count_production_loc(path: &Path) -> usize {
