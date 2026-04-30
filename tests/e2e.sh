@@ -937,6 +937,41 @@ else
     fail "rotate: missing hook check failed: $(printf '%s' "$miss_out" | tr '\n' ' ')"
 fi
 
+# ── 24. audit chain extends on operations (root or sudo) ─────────────────────
+# Phase 2 δ.2: every audit::log call also appends a hash-chained
+# entry to /var/lib/kepr/audit.log. Skip if not root/sudo (chain
+# file is 0o640 root:root).
+step "24. audit chain at /var/lib/kepr/audit.log grows on operations"
+
+if [ "$can_root" = 1 ]; then
+    AUDIT_CHAIN_PATH="/var/lib/kepr/audit.log"
+    if ! run_root test -f "$AUDIT_CHAIN_PATH"; then
+        skip "audit.log not yet present — daemon must be Phase-2-δ-aware (rebuild + restart)"
+    else
+        before=$(run_root wc -l "$AUDIT_CHAIN_PATH" | awk '{print $1}')
+        # Trigger one extra audit-emitting op.
+        kepr --json set "${PREFIX}AUDIT_TEE" --value "x" >/dev/null
+        # Audit append happens synchronously inside the daemon
+        # before the response, so no sleep is needed.
+        after=$(run_root wc -l "$AUDIT_CHAIN_PATH" | awk '{print $1}')
+        if [ "$after" -gt "$before" ]; then
+            pass "audit.log line count grew $before → $after on a kepr set"
+        else
+            fail "audit.log did NOT grow on kepr set: was $before, still $before"
+        fi
+
+        # Sanity-check: each line is JSON with the expected fields.
+        last_line=$(run_root tail -n 1 "$AUDIT_CHAIN_PATH")
+        if echo "$last_line" | jq -e '.seq and .hash and .prev_hash and .op' >/dev/null 2>&1; then
+            pass "audit.log entries are JSON with seq/hash/prev_hash/op fields"
+        else
+            fail "audit.log entry shape unexpected: $last_line"
+        fi
+    fi
+else
+    skip "no root/sudo — cannot read /var/lib/kepr/audit.log"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n%s  %d passed, %d failed, %d skipped\n' \
     "$(yellow '──')" "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
