@@ -47,6 +47,13 @@ pub enum Request {
         /// or until the sweeper lands.
         #[serde(skip_serializing_if = "Option::is_none")]
         ttl_secs: Option<u64>,
+        /// Phase 2 ε: gate `get` behind a polkit consent prompt.
+        /// When `Some(true)`, the daemon writes a `requires_consent`
+        /// flag into the sidecar metadata; subsequent `Get` calls
+        /// pkcheck the calling process before decrypting. Pre-Phase-
+        /// 2-ε daemons ignore the field (skip_serializing_if).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        requires_consent: Option<bool>,
     },
     Get {
         name: String,
@@ -160,6 +167,12 @@ pub struct CredInfo {
     /// new clients tolerate the missing-field path).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub expires_at: Option<String>,
+    /// Phase 2 ε: true iff `kepr get` for this credential requires
+    /// a polkit consent prompt before the daemon decrypts. Surfaces
+    /// in `kepr list` so the user can spot consent-flagged creds at
+    /// a glance. Same backward-compat shape as `expires_at`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_consent: Option<bool>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -198,6 +211,7 @@ mod tests {
                 value: None,
                 generate: None,
                 ttl_secs: None,
+                requires_consent: None,
             })["cmd"],
             json!("set"),
         );
@@ -218,18 +232,21 @@ mod tests {
                 value: Some("v".into()),
                 generate: None,
                 ttl_secs: None,
+                requires_consent: None,
             },
             Request::Set {
                 name: "K".into(),
                 value: None,
                 generate: Some("hex".into()),
                 ttl_secs: None,
+                requires_consent: None,
             },
             Request::Set {
                 name: "K".into(),
                 value: None,
                 generate: None,
                 ttl_secs: None,
+                requires_consent: None,
             },
             // Phase 2 α: TTL-bearing variant must round-trip cleanly.
             Request::Set {
@@ -237,6 +254,15 @@ mod tests {
                 value: Some("v".into()),
                 generate: None,
                 ttl_secs: Some(60),
+                requires_consent: None,
+            },
+            // Phase 2 ε: consent-bearing variant must round-trip cleanly.
+            Request::Set {
+                name: "GUARDED".into(),
+                value: Some("v".into()),
+                generate: None,
+                ttl_secs: None,
+                requires_consent: Some(true),
             },
         ];
         for req in cases {
@@ -251,6 +277,7 @@ mod tests {
             value: None,
             generate: None,
             ttl_secs: None,
+            requires_consent: None,
         };
         let v = as_value(&req);
         assert!(v.get("value").is_none(), "value should be absent: {v}");
@@ -309,6 +336,7 @@ mod tests {
                 size: 42,
                 modified: "2024-01-01 00:00".into(),
                 expires_at: None,
+                requires_consent: None,
             }],
             count: 1,
         };
