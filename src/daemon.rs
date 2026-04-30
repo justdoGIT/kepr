@@ -9,6 +9,7 @@
 // worker pool so a flood can't spawn unbounded threads.
 
 mod audit;
+mod audit_chain;
 mod crypto;
 mod crypto_inproc;
 mod daemon_cache;
