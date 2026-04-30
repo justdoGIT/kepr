@@ -85,6 +85,12 @@ const MASTER_KEY_PATH: &str = "/var/lib/kepr/master.key";
 /// is detected at decrypt time.
 const VERSION_STATE_PATH: &str = "/var/lib/kepr/cred-versions.json";
 
+/// Path to the append-only hash-chained audit log. Phase 2 δ
+/// (PR #74 added the primitives). This is the secondary, tamper-
+/// evident audit channel; journald remains primary. See
+/// `audit_chain::AuditChain` for the wire format and verifier.
+const AUDIT_CHAIN_PATH: &str = "/var/lib/kepr/audit.log";
+
 /// Magic prefixes written by the InProc AEAD backend. Files in
 /// `/etc/credstore.encrypted/` that match the `kepr-*` prefix but do
 /// not start with one of these magics are leftover from the legacy
@@ -210,6 +216,22 @@ fn main() {
     // dies with the daemon when systemd SIGTERMs the unit. See
     // `daemon_expiry::spawn_sweeper` for the per-tick contract.
     daemon_expiry::spawn_sweeper(versions_for_sweeper);
+
+    // Phase 2 δ.2 — install the hash-chained audit handle so
+    // every `audit::log` call also extends the tamper-evident
+    // chain at /var/lib/kepr/audit.log. Failure to open is a
+    // hard-error: the daemon refuses to start rather than
+    // silently regress to journald-only audit (which would be
+    // indistinguishable from a tampered chain by post-mortem).
+    let chain = audit_chain::AuditChain::open(std::path::PathBuf::from(AUDIT_CHAIN_PATH))
+        .unwrap_or_else(|e| {
+            eprintln!("[kepr-daemon] cannot open audit chain: {e}");
+            std::process::exit(1);
+        });
+    audit::install_chain(std::sync::Arc::new(chain)).unwrap_or_else(|e| {
+        eprintln!("[kepr-daemon] cannot install audit chain: {e}");
+        std::process::exit(1);
+    });
 
     setup_socket_dir();
     let _ = fs::remove_file(SOCKET_PATH);
