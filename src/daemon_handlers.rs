@@ -43,14 +43,24 @@ pub fn handle_set(
 
     match crypto::default_backend().encrypt(uid, &upper, secret.as_bytes()) {
         Ok(()) => {
-            // TTL handling lives in the success branch ONLY: if the
-            // encrypt failed, there's no cred on disk for the meta
-            // file to attach to. A meta-write failure on the success
-            // path is reported as a soft failure — the cred IS
-            // written and readable, but the expiry constraint isn't
-            // durable. The handler returns Err so the user retries
-            // with a fresh `--ttl`, picking up a new
-            // `now + ttl_secs` window.
+            // TTL handling: when --ttl is requested, the cred file is
+            // already on disk after `encrypt`. If meta-write fails,
+            // we MUST roll back the cred file. Otherwise the user
+            // would see "ttl metadata write failed" believing nothing
+            // was stored, while a TTL-less cred sat on disk forever
+            // — the silent-persistent-secret bug self-review caught.
+            //
+            // Rollback strategy: best-effort `delete`. If it fails
+            // we surface a stronger error message naming both the
+            // meta-write reason AND the rollback failure, so a
+            // human can clean up the orphan cred manually. The
+            // alternative ordering (meta-first, then encrypt) was
+            // considered but rejected: meta without a cred is
+            // harmless (decrypt 404s either way), but cred without
+            // meta is the actively dangerous state, and the meta-
+            // first ordering doesn't actually shrink that window
+            // because meta-write can still fail AFTER encrypt
+            // succeeds in this ordering. Same exposure, more code.
             if let Some(ttl) = ttl_secs {
                 let cp = cred_path(uid, &upper);
                 let mp = expiry::meta_path_for(&cp);
@@ -58,25 +68,44 @@ pub fn handle_set(
                 let expires = match expiry::compute_expires_at(now, ttl) {
                     Some(t) => t,
                     None => {
+                        // u64 overflow on `now + ttl`. The parser
+                        // already prevents 0; an attacker-supplied
+                        // gigantic ttl is the only way here. Roll
+                        // the cred back before returning so we
+                        // don't leak a TTL-less persistent cred.
+                        let _ = crypto::default_backend().delete(uid, &upper);
                         audit::log(&AuditEvent {
                             op: "set",
                             name: Some(&upper),
                             uid,
                             username,
-                            result: AuditResult::Fail("ttl overflow".into()),
+                            result: AuditResult::Fail("ttl overflow (cred rolled back)".into()),
                         });
                         return Response::fail("ttl too large to fit in u64");
                     }
                 };
                 if let Err(e) = expiry::write_meta(&mp, expires) {
+                    let rollback = crypto::default_backend().delete(uid, &upper);
+                    let audit_msg = match &rollback {
+                        Ok(()) => format!("meta write: {e} (cred rolled back)"),
+                        Err(re) => format!("meta write: {e}; rollback also failed: {re}"),
+                    };
                     audit::log(&AuditEvent {
                         op: "set",
                         name: Some(&upper),
                         uid,
                         username,
-                        result: AuditResult::Fail(format!("meta write: {e}")),
+                        result: AuditResult::Fail(audit_msg),
                     });
-                    return Response::fail(format!("ttl metadata write failed: {e}"));
+                    let user_msg = match rollback {
+                        Ok(()) => format!("ttl metadata write failed: {e}"),
+                        Err(re) => format!(
+                            "ttl metadata write failed: {e}; \
+                             cred rollback also failed: {re} \
+                             (cred {upper} may persist without TTL — delete manually)"
+                        ),
+                    };
+                    return Response::fail(user_msg);
                 }
             }
 

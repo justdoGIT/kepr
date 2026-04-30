@@ -100,7 +100,7 @@ pub fn write_meta(meta_path: &Path, expires_at_unix: u64) -> Result<(), String> 
     let mut f = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(0o640)
+        .mode(0o600)
         .open(&tmp)
     {
         Ok(f) => f,
@@ -110,7 +110,7 @@ pub fn write_meta(meta_path: &Path, expires_at_unix: u64) -> Result<(), String> 
             fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .mode(0o640)
+                .mode(0o600)
                 .open(&tmp)
                 .map_err(|e| format!("open meta temp (after stale-cleanup): {e}"))?
         }
@@ -246,13 +246,19 @@ mod tests {
     }
 
     #[test]
-    fn write_meta_uses_0640_mode() {
+    fn write_meta_uses_0600_mode() {
+        // Self-review fix: meta must match the cred file's 0o600
+        // (see crypto_inproc::write_atomic). The earlier 0o640 was
+        // functionally equivalent under root:root ownership today
+        // but would leak group-readability if a future PR moves
+        // /etc/credstore.encrypted/ to root:kepr ownership as part
+        // of dropping User=root in the unit.
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("perm.meta");
         write_meta(&path, 42).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o640, "meta must be 0o640, got {mode:o}");
+        assert_eq!(mode, 0o600, "meta must be 0o600, got {mode:o}");
     }
 
     #[test]
