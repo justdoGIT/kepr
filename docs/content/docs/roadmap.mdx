@@ -19,8 +19,8 @@ citation) or refuted. See `Gap analysis` below for the audit trail.
 | Milestone | Phase | Theme |
 | --- | --- | --- |
 | `v1.0.0` | Phase 0 | In-process AEAD, end-to-end zeroize, capability drop, fuzz/proptest |
-| `v1.5.0` | Phase 1 | `kepr exec`, docker helper, direnv, macOS Keychain backend, public launch |
-| `v2.0.0` | Phase 2 | Rotation hooks, TTL, FIDO2 unlock, polkit consent, ESO + cloud sync, audit chain |
+| `v1.5.0` | Phase 1 | `kepr exec`, docker helper, direnv, `.kepr.toml` manifest, `kepr doctor`, public launch |
+| `v2.0.0` | Phase 2 | macOS Keychain backend, rotation hooks, TTL, FIDO2 unlock, polkit consent, ESO + cloud sync, audit chain |
 | `v3.0.0` | Phase 3 | Team mode (age + Git), Sigstore Rekor anchor, SLSA-3 hermetic build, STRIDE doc |
 
 `v1.0.0` is reserved for the Phase 0 crypto rewrite — that decision
@@ -192,7 +192,7 @@ under a public security review.
 - `LICENSE-MIT` and `LICENSE-APACHE` present; `Cargo.toml` matches.
 - v1.0.0 tagged.
 
-## Phase 1 — Useful (`v1.5.0`, weeks 4–12, ~280-340h)
+## Phase 1 — Useful (`v1.5.0`, weeks 4–12, ~220-280h)
 
 Make kepr genuinely useful in a developer's daily workflow on Linux.
 Five high-leverage UX entry points (`exec`, `env`, `doctor`,
