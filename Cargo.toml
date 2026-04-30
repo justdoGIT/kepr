@@ -51,6 +51,12 @@ libc = "0.2"
 # CLI startup, far cheaper than serde_json's existing path. CLI-only —
 # the daemon never reads the manifest, so this stays out of kepr-core.
 toml = { version = "0.8", default-features = false, features = ["parse"] }
+# `kepr sync` cloud-backed credentials. ureq is the smallest sync
+# HTTP client in the Rust ecosystem (no async runtime, no Tokio).
+# rustls feature gives TLS without OpenSSL system dep, matching the
+# rest of kepr's "pure-Rust crypto" stance. Used by sync_vault today;
+# future sync_aws / sync_gcp will add their own SDK deps.
+ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
 
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git
