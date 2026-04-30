@@ -241,6 +241,7 @@ pub fn print_help() {
     println!("  doctor                               diagnose common setup issues");
     println!("  env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval");
     println!("  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid]   atomic rotation");
+    println!("  audit-verify                         verify the hash-chained audit log");
     println!();
     println!("GLOBAL FLAGS:");
     println!("  --json       machine-readable output; no stderr on clean errors");

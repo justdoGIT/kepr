@@ -56,6 +56,13 @@ pub enum Request {
         name: String,
     },
     Check,
+    /// Phase 2 δ.3 — verify the daemon's hash-chained audit log at
+    /// `/var/lib/kepr/audit.log`. The daemon walks the file and
+    /// returns `Response::AuditOk { entries, last_hash }` on
+    /// success or `Response::Err` with a line-number-tagged tamper
+    /// reason. The chain file itself is root-only readable, so
+    /// this is the only path a kepr-group member has to inspect it.
+    AuditVerify,
     Ping,
 }
 
@@ -89,6 +96,14 @@ pub enum Response {
         results: HashMap<String, String>,
         count: usize,
         all_ok: bool,
+    },
+    /// Phase 2 δ.3 — successful audit-chain verification. `entries`
+    /// is the count of validated chain entries; `last_hash` is the
+    /// hex-encoded head, intended for external attestation against
+    /// a checkpoint store (Phase 3 Sigstore Rekor anchor).
+    AuditOk {
+        entries: usize,
+        last_hash: String,
     },
     Pong,
     Err {
