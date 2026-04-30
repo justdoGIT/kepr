@@ -194,76 +194,117 @@ under a public security review.
 
 ## Phase 1 — Useful (`v1.5.0`, weeks 4–12, ~280-340h)
 
-Make kepr genuinely useful in a developer's daily workflow on Linux,
-then start the cross-platform crossing. By the end of this phase kepr
-ships on macOS, has three high-leverage UX entry points, and is
-defensible at a public launch.
+Make kepr genuinely useful in a developer's daily workflow on Linux.
+Five high-leverage UX entry points (`exec`, `env`, `doctor`,
+`.kepr.toml`, `docker-credential-kepr`) plus a fix to the latent
+shell-injection in `kepr get --export`. macOS support was originally
+scoped here; it is moved to Phase 2 because the launchd / XPC /
+audit-token rewrite is large enough to warrant its own milestone and
+needs hands-on Mac validation that the Linux engineer can't supply
+alone.
 
-**New modules.**
+**New modules — shipped.**
 
-- `src/cli_exec.rs` — `kepr exec --env VAR1,VAR2 -- python train.py`.
-  Fetches `Get` for each var, sets env, `execvpe`s the child via
-  `nix::unistd::execvpe`, wipes the parent's env after fork.
-- `src/cli_manifest.rs` — parses `.kepr.toml` (walk-up from `$PWD`)
-  with an `[env]` section listing required keys. Drops the `--env`
-  argument when a manifest is found.
-- `src/cli_envdump.rs` — emits `export VAR=value` lines for direnv;
-  generalises the existing `cmd_get --export` path.
-- `src/cli_doctor.rs` — diagnoses common setup issues: kepr group
-  missing, daemon down, socket permissions wrong, backend binary
-  digest mismatch.
-- Third `[[bin]]` `docker-credential-kepr` at `src/docker_helper.rs` —
-  implements the docker credential-helper protocol (`get` / `store` /
-  `erase` / `list` over stdin/stdout JSON) by wrapping
-  `client::send_request`.
+- `src/cli_exec.rs` (PR #63) — `kepr exec --env VAR1,VAR2 -- python
+  train.py`. Fetches `Get` for each var via the `CredFetcher` trait,
+  then `execvp`s the child with the env merged in. The parent
+  process is REPLACED (no fork), so the secret-bearing env is never
+  observable post-fact (`/proc/<pid>/environ`, shell history, temp
+  files). Any single fetch failure aborts BEFORE the child runs.
+- `src/cli_doctor.rs` (PR #64) — `kepr doctor`. Three production
+  checks (socket presence/mode, kepr-group membership, daemon Ping)
+  plus a `Diagnostic` trait so orchestration is unit-testable
+  without a live daemon. ✓/✗ list with copy-pasteable remediation
+  hints per check.
+- `src/cli_envdump.rs` (PR #65) — `kepr env --env VAR1,VAR2`. Emits
+  POSIX-safe `export VAR='value'` lines for `eval` / direnv. POSIX
+  single-quote-with-backslashed-quote escape closes the latent
+  shell-injection in the existing `kepr get --export` path
+  (previously printed `export NAME=value` unquoted; any `$VAR` /
+  `$(cmd)` would have detonated inside the user's `eval`).
+- `src/cli_manifest.rs` (PR #66) — `.kepr.toml` parser + walk-up
+  auto-discovery from `$PWD`. Resolution precedence
+  `--env CSV > --manifest PATH > auto-discovery`; both `kepr exec`
+  and `kepr env` route through `cli_activity::resolve_env_for` so
+  the precedence is centralised.
+- Third `[[bin]]` `docker-credential-kepr` at `src/docker_helper.rs`
+  (PR #67) — implements the docker credential-helper protocol
+  (`get` / `store` / `erase` / `list` over stdin/stdout JSON) by
+  wrapping `client::send_request`. Same socket, same `kepr` group
+  gate. URL → kepr cred-name mapping is lossy by design (scheme +
+  path stripped, port preserved, non-alnum→`_`, uppercased) — the
+  `validate_name` constraint is `[A-Z0-9_]`.
+
+**Modified modules — shipped.**
+
+- `src/cli_activity.rs` added `Exec`, `Doctor`, `Env`, plus the
+  central `resolve_env_for` for the manifest precedence.
+- `src/cli_args.rs` learned the `--` separator, `--env CSV`, and a
+  `--manifest PATH` override.
+- `src/cli_cmds.rs` wires the new activities; `--export` path now
+  uses `cli_envdump::shell_escape` so values containing shell
+  metachars are POSIX-quoted (the latent injection fix).
+- `Cargo.toml` declares the third bin and adds `libc` + `toml` deps.
+- `install.sh` and the cargo-deb / cargo-generate-rpm asset maps
+  install `docker-credential-kepr` alongside the existing CLI.
+
+**Deferred to Phase 2.**
+
 - `crates/kepr-backend-keychain/` — macOS Keychain backend over
-  `security-framework`. The "daemon" goes away on macOS — the launchd
-  service per user is enough; the CLI is a thin wrapper over
-  `SecItemAdd` / `SecItemCopyMatching` / `SecItemDelete`.
+  `security-framework`. Originally Phase 1; moved here because the
+  launchd / XPC / audit-token rewrite is large enough to warrant
+  its own milestone, and validation requires hands-on Mac testing
+  the Linux engineer can't supply alone. The Linux release line
+  remains the gold path; macOS gets first-class support in v2.0.
 
-**Modified modules.**
+**Risks (still relevant).**
 
-- `src/cli_activity.rs` adds `Exec`, `Doctor`, `Env`.
-- `src/cli_args.rs` learns the `--` separator, `--env CSV`, and a
-  `--manifest path` override.
-- `src/cli_cmds.rs` wires the new activities.
-- `Cargo.toml` declares the third bin.
-- `README.md` splits into Linux / macOS / Windows-(planned) installation
-  paths and gets the comparison table from the *Competitor matrix*
-  section below.
-- New doc page: `docs/content/docs/installation/macos.mdx`.
+- The `.kepr.toml` schema will be argued over forever. Shipped
+  minimal (`[env].required = ["VAR", …]`); unknown sections are
+  ignored so Phase-2 fields land additively. Document a deprecation
+  policy before extending.
+- `docker-credential-kepr` competes with `docker-credential-pass`
+  and `docker-credential-secretservice`. Be explicit about why kepr
+  is better — per-uid isolation and the audit log — in launch copy.
 
-**Risks.**
+**Success criteria — met.**
 
-- macOS has no `SO_PEERCRED` for Unix sockets. Use Apple XPC or
-  audit-token rather than rolling a custom IPC. Budget conservatively;
-  this is the largest single block of platform work in the roadmap.
-- The `.kepr.toml` schema will be argued over forever. Ship it minimal,
-  document a deprecation policy, and don't extend before v3.0.
-- `docker-credential-kepr` competes with `docker-credential-pass` and
-  `docker-credential-secretservice`. Be explicit about why kepr is
-  better — per-uid isolation and the audit log.
-
-**Success criteria.**
-
-- `kepr exec --env OPENAI_API_KEY -- python -c 'import os;
+- ✓ `kepr exec --env OPENAI_API_KEY -- python -c 'import os;
   print(os.environ["OPENAI_API_KEY"])'` works end-to-end. The parent
-  process's env is clean afterwards.
-- macOS: a Homebrew tap install, then `kepr set FOO --value bar &&
-  kepr get FOO` works without a daemon.
-- `kepr doctor` produces actionable diagnostics for the four most
-  common setup failures.
-- Public launch: README sells (badges, comparison table, asciicast),
-  v1.5.0 tagged, HN/Reddit submissions queued.
+  process's env is clean afterwards (it never had it — `execvp` not
+  `fork`).
+- ✓ `kepr doctor` produces actionable diagnostics for the three
+  most common setup failures (socket, group, daemon protocol).
+  Fourth check (backend binary digest mismatch) folded into Phase 2
+  alongside the audit chain since both want the same supply-chain
+  metadata.
+- ⏳ Public launch: README sells, comparison table, asciicast, v1.5.0
+  tag — pending the manual Phase-0 e2e validation step that gates
+  v1.0.0 first.
 
-## Phase 2 — Indispensable (`v2.0.0`, months 4–6, ~280-340h)
+**Success criteria — deferred to Phase 2.**
+
+- macOS: Homebrew tap install + `kepr set FOO --value bar && kepr
+  get FOO` without a daemon. Moved with the keychain backend.
+
+## Phase 2 — Indispensable (`v2.0.0`, months 4–6, ~340-400h)
 
 Features that turn kepr from "nice utility" into "we depend on this."
 By the end of this phase the rotation story, the hardware-key-touch
-story, and the Kubernetes story all exist.
+story, the Kubernetes story, and macOS support all exist. Hour budget
+revised upward from the original ~280-340h to absorb the deferred
+macOS work from Phase 1.
 
 **New modules.**
 
+- `crates/kepr-backend-keychain/` (carried over from Phase 1) —
+  macOS Keychain backend over `security-framework`. The "daemon"
+  goes away on macOS — the launchd service per user is enough; the
+  CLI is a thin wrapper over `SecItemAdd` / `SecItemCopyMatching` /
+  `SecItemDelete`. macOS has no `SO_PEERCRED`; auth uses XPC +
+  audit-token instead. New doc page:
+  `docs/content/docs/installation/macos.mdx`. Splits the README
+  into Linux / macOS / Windows-(planned) install paths.
 - `src/cli_rotate.rs` — `kepr rotate KEY --hook ./refresh.sh`. Pipes
   the new value to the hook on stdin, atomically commits on hook exit
   0, restores the prior value otherwise.
@@ -297,6 +338,9 @@ story, and the Kubernetes story all exist.
 
 **Risks.**
 
+- macOS has no `SO_PEERCRED` for Unix sockets. Use Apple XPC or
+  audit-token rather than rolling a custom IPC. Budget conservatively;
+  this is the largest single block of platform work in the milestone.
 - `libfido2` quality varies wildly across distros; budget time for
   wrapper bugs and document supported kernels / udev rules.
 - TTL sweeper interacts with `src/daemon_cache.rs`. Invalidate
@@ -307,6 +351,8 @@ story, and the Kubernetes story all exist.
 
 **Success criteria.**
 
+- macOS: a Homebrew tap install, then `kepr set FOO --value bar &&
+  kepr get FOO` works without a daemon.
 - `kepr rotate STRIPE_KEY --hook ./bin/refresh-stripe.sh` rolls forward
   on success and rolls back on hook failure (proptest with random
   hook exit codes).
