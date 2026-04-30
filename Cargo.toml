@@ -40,6 +40,11 @@ aes-gcm = "0.10"
 # standard pure-Rust impl; aes-gcm already pulls related primitives,
 # so the marginal binary size is small.
 sha2 = "0.10"
+# AWS SigV4 signing for `kepr sync-{push,pull} --url aws-sm:…`.
+# `hmac` composes with sha2 to produce HMAC-SHA256, the primitive
+# that drives SigV4's signing-key derivation chain. RustCrypto, no
+# system deps, shares sha2's compiled code.
+hmac = "0.12"
 # `kepr doctor` calls getgrnam(3) and getgroups(2) to verify the
 # invoking user is in the `kepr` group. The std lib has no portable
 # wrapper for either, so the libc crate is the lightest dep that
