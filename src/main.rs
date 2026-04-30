@@ -16,6 +16,8 @@ mod cli_mode;
 mod cli_rotate;
 mod cli_ui;
 mod client;
+mod sync;
+mod sync_vault;
 
 use cli_args::parse_args;
 use cli_ui::{err, json_mode, print_json};

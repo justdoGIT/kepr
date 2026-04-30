@@ -44,6 +44,8 @@ impl CliActivity {
             "env" => "env",
             "rotate" => "rotate",
             "audit-verify" => "audit-verify",
+            "sync-push" => "sync-push",
+            "sync-pull" => "sync-pull",
             other => return Err(format!("unknown command: {other}")),
         };
         Ok(Self(canonical.to_string()))
@@ -79,6 +81,16 @@ impl CliActivity {
                 (_, None) => Response::fail("rotate requires --hook PATH"),
             },
             "audit-verify" => cli_cmds::cmd_audit_verify(args),
+            "sync-push" => match (&args.name, &args.url) {
+                (Some(n), Some(u)) => crate::sync::cmd_sync_push(n, u),
+                (None, _) => Response::fail("sync-push requires NAME"),
+                (_, None) => Response::fail("sync-push requires --url"),
+            },
+            "sync-pull" => match (&args.name, &args.url) {
+                (Some(n), Some(u)) => crate::sync::cmd_sync_pull(n, u),
+                (None, _) => Response::fail("sync-pull requires NAME"),
+                (_, None) => Response::fail("sync-pull requires --url"),
+            },
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }
@@ -101,6 +113,8 @@ mod tests {
             "env",
             "rotate",
             "audit-verify",
+            "sync-push",
+            "sync-pull",
         ] {
             assert_eq!(CliActivity::parse(v).unwrap().as_str(), v);
         }
