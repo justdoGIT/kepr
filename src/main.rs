@@ -7,6 +7,7 @@
 mod cli_activity;
 mod cli_args;
 mod cli_cmds;
+mod cli_fido2;
 mod cli_doctor;
 mod cli_envdump;
 mod cli_exec;
