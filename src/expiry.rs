@@ -54,6 +54,10 @@ pub struct CredMeta {
     /// the daemon decrypts. Phase 2 ε.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub requires_consent: Option<bool>,
+    /// True iff `kepr get` requires a FIDO2 hardware-key assertion
+    /// before the daemon decrypts. Phase 2 η.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_fido2: Option<bool>,
 }
 
 impl CredMeta {
@@ -61,7 +65,9 @@ impl CredMeta {
     /// decide whether to bother writing the file at all — an empty
     /// meta is identical to no meta from the read path's perspective.
     pub fn is_empty(&self) -> bool {
-        self.expires_at_unix.is_none() && self.requires_consent.is_none()
+        self.expires_at_unix.is_none()
+            && self.requires_consent.is_none()
+            && self.requires_fido2.is_none()
     }
 
     /// Build a `CredMeta` from per-flag CLI inputs. Returns `Err`
@@ -72,6 +78,7 @@ impl CredMeta {
         now_unix: u64,
         ttl_secs: Option<u64>,
         requires_consent: Option<bool>,
+        requires_fido2: Option<bool>,
     ) -> Result<Self, String> {
         let mut meta = Self::default();
         if let Some(ttl) = ttl_secs {
@@ -82,6 +89,9 @@ impl CredMeta {
         }
         if matches!(requires_consent, Some(true)) {
             meta.requires_consent = Some(true);
+        }
+        if matches!(requires_fido2, Some(true)) {
+            meta.requires_fido2 = Some(true);
         }
         Ok(meta)
     }
@@ -260,6 +270,7 @@ mod tests {
             &CredMeta {
                 expires_at_unix: Some(1_777_500_000),
                 requires_consent: None,
+                requires_fido2: None,
             },
         )
         .unwrap();
@@ -304,6 +315,7 @@ mod tests {
             &CredMeta {
                 expires_at_unix: Some(42),
                 requires_consent: None,
+                requires_fido2: None,
             },
         )
         .unwrap();
@@ -321,6 +333,7 @@ mod tests {
             &CredMeta {
                 expires_at_unix: Some(1),
                 requires_consent: None,
+                requires_fido2: None,
             },
         )
         .unwrap();
