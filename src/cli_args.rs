@@ -16,41 +16,26 @@ pub struct Args {
     pub export: bool,
     pub json: bool,
     pub force: bool,
-    /// `kepr exec` only: list of env-var names parsed from `--env`.
-    /// Empty for every other command. The CLI parser owns the
-    /// CSV-split + name uppercasing; downstream code consumes the
-    /// list as-is.
+    /// `kepr exec` only: env-var names from `--env CSV`. Parser does CSV-split + uppercasing.
     pub env_vars: Vec<String>,
-    /// `kepr exec` only: argv to exec, gathered from everything
-    /// after the `--` separator. The first element is the binary;
-    /// subsequent elements are its arguments.
+    /// `kepr exec` only: argv after `--`. First element is the binary.
     pub exec_argv: Vec<String>,
-    /// `kepr exec` / `kepr env`: explicit pin to a `.kepr.toml`
-    /// manifest. If unset, the resolver falls back to walking up
-    /// from `$PWD` and finally to "no manifest". `--env CSV`
-    /// overrides whatever the manifest says.
+    /// Explicit `.kepr.toml` path. Falls back to walk-up then no-manifest.
     pub manifest_path: Option<std::path::PathBuf>,
-    /// `kepr set` only: optional TTL in seconds. When set, the
-    /// daemon writes a sidecar metadata file recording the absolute
-    /// expiry time. After that instant, `kepr get` for this name
-    /// returns `credential unavailable`. None = no expiry, the
-    /// pre-Phase-2 default.
+    /// `kepr set` only: TTL in seconds. Daemon writes sidecar meta; None = no expiry.
     pub ttl_secs: Option<u64>,
-    /// `kepr rotate` only: path to the validation hook. The
-    /// rotation orchestration generates a candidate value, pipes
-    /// it to this hook on stdin, and only commits if the hook
-    /// exits 0. Required for `kepr rotate`; ignored elsewhere.
+    /// `kepr rotate` only: validation hook path. Candidate piped on stdin.
     pub hook_path: Option<std::path::PathBuf>,
-    /// `kepr sync-push` / `kepr sync-pull`: scheme-prefixed
-    /// remote URL (e.g. `vault:secret/team/db_pass`). The CLI
-    /// dispatches to the right backend by URL scheme. Phase 2 ζ.
+    /// `kepr sync-push|pull`: scheme-prefixed remote URL. Phase 2 ζ.
     pub url: Option<String>,
-    /// `kepr set` only: gate `kepr get` for this credential
-    /// behind a polkit consent prompt. The daemon writes a
-    /// `requires_consent: true` flag into the sidecar metadata;
-    /// subsequent `Get` calls run `pkcheck` against the calling
-    /// user before decrypting. Phase 2 ε.
+    /// `kepr set` only: polkit consent gate. Phase 2 ε.
     pub requires_consent: bool,
+    /// `kepr set` only: FIDO2 hardware-key assertion gate. Phase 2 η.
+    pub requires_fido2: bool,
+    /// `kepr fido2-register` only: hex credential ID from authenticator.
+    pub fido2_credential_id: Option<String>,
+    /// `kepr fido2-register` only: hex COSE_Key public key from authenticator.
+    pub fido2_public_key_cose: Option<String>,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -80,6 +65,9 @@ pub fn parse_args() -> Result<Args, String> {
     let mut hook_path: Option<std::path::PathBuf> = None;
     let mut url: Option<String> = None;
     let mut requires_consent = false;
+    let mut requires_fido2 = false;
+    let mut fido2_credential_id: Option<String> = None;
+    let mut fido2_public_key_cose: Option<String> = None;
 
     let mut i = 1usize;
 
@@ -191,6 +179,11 @@ pub fn parse_args() -> Result<Args, String> {
                 requires_consent = true;
                 i += 1;
             }
+            "--requires-fido2" => {
+                // Phase 2 η. No value: presence flips the flag.
+                requires_fido2 = true;
+                i += 1;
+            }
             "--hook" => {
                 // `kepr rotate NAME --hook ./refresh.sh` — path to
                 // the validation hook. We don't existence-check
@@ -227,8 +220,16 @@ pub fn parse_args() -> Result<Args, String> {
                 exec_argv = raw[i..].to_vec();
                 break;
             }
-            s if !s.starts_with('-') && name.is_none() => {
-                name = Some(s.to_uppercase());
+            s if !s.starts_with('-') => {
+                if name.is_none() {
+                    name = Some(s.to_uppercase());
+                } else if fido2_credential_id.is_none() {
+                    fido2_credential_id = Some(s.to_string());
+                } else if fido2_public_key_cose.is_none() {
+                    fido2_public_key_cose = Some(s.to_string());
+                } else {
+                    return Err(format!("unexpected extra argument: {s}"));
+                }
                 i += 1;
             }
             other => return Err(format!("unknown flag: {other}")),
@@ -252,6 +253,9 @@ pub fn parse_args() -> Result<Args, String> {
         hook_path,
         url,
         requires_consent,
+        requires_fido2,
+        fido2_credential_id,
+        fido2_public_key_cose,
     })
 }
 
@@ -262,7 +266,7 @@ pub fn print_help() {
     println!("  kepr [--json] [--color] COMMAND [args]");
     println!();
     println!("COMMANDS:");
-    println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid] [--ttl SECS] [--requires-consent]");
+    println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid] [--ttl SECS] [--requires-consent] [--requires-fido2]");
     println!("  get KEY [--quiet] [--export]");
     println!("  list                                 (alias: ls)");
     println!("  delete KEY [--force]                 (alias: rm)");
@@ -276,6 +280,8 @@ pub fn print_help() {
         "  sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:|gcp-sm:)"
     );
     println!("  sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally");
+    println!("  fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions");
+    println!("  fido2-list                             list registered FIDO2 keys");
     println!();
     println!("GLOBAL FLAGS:");
     println!("  --json       machine-readable output; no stderr on clean errors");
@@ -292,6 +298,7 @@ pub fn print_help() {
     println!("  kepr set MY_KEY --value abc123       # non-interactive");
     println!("  kepr set TMP_TOKEN --generate --ttl 3600   # expires in 1h");
     println!("  kepr set DB_PASS --value secret --requires-consent  # polkit prompts on every get");
+    println!("  kepr set API_KEY --value secret --requires-fido2   # FIDO2 touch required on every get");
     println!("  kepr get OPENAI_API_KEY              # decrypt and print");
     println!("  kepr get OPENAI_API_KEY --export     # print as: export VAR=value");
     println!("  kepr get OPENAI_API_KEY --quiet      # raw value only");
