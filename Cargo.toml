@@ -49,6 +49,25 @@ hmac = "0.12"
 # wraps payload bytes in base64. RustCrypto-adjacent crate, ~30 KB,
 # pure Rust, no system deps.
 base64 = "0.22"
+# Phase 2 η: FIDO2 assertion verification. Most FIDO2 authenticators
+# use ECDSA P-256 (ES256). `p256` is RustCrypto, pure Rust, ~1MB total
+# with its dependencies — comparable to the existing sha2+hmac footprint.
+# Signature verification only (no keygen), so the prime-field arithmetic
+# is verification-side only and audit-safe.
+p256 = { version = "0.13", features = ["ecdsa"] }
+# Phase 2 η: minimal CBOR parsing for FIDO2 authenticator data and
+# COSE_Key structures. `ciborium` is the lightest pure-Rust CBOR
+# crate (~50KB). Only used in the daemon for parsing registration
+# responses and assertion authenticator data — never on the hot path.
+ciborium = "0.2"
+# Phase 2 η: hex encoding for FIDO2 byte fields. Pure Rust, zero deps,
+# ~10KB. Used by both fido2.rs (daemon) and the CLI for challenge/assertion
+# transport.
+hex = "0.4"
+# Phase 2 η: getrandom is used by fido2.rs for challenge generation.
+# Already in the dep tree via rand_core (pulled by aes-gcm), but we
+# declare it explicitly so the module can `use getrandom` directly.
+getrandom = "0.2"
 # `kepr doctor` calls getgrnam(3) and getgroups(2) to verify the
 # invoking user is in the `kepr` group. The std lib has no portable
 # wrapper for either, so the libc crate is the lightest dep that

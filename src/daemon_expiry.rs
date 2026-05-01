@@ -285,6 +285,7 @@ mod tests {
             &expiry::CredMeta {
                 expires_at_unix: Some(expires_at_unix),
                 requires_consent: None,
+                requires_fido2: None,
             },
         )
         .unwrap();
@@ -300,6 +301,7 @@ mod tests {
             &expiry::CredMeta {
                 expires_at_unix: Some(expires_at_unix),
                 requires_consent: None,
+                requires_fido2: None,
             },
         )
         .unwrap();

@@ -54,9 +54,25 @@ pub enum Request {
         /// 2-ε daemons ignore the field (skip_serializing_if).
         #[serde(skip_serializing_if = "Option::is_none")]
         requires_consent: Option<bool>,
+        /// Phase 2 η: gate `get` behind a FIDO2 hardware-key
+        /// assertion. When `Some(true)`, the daemon writes a
+        /// `requires_fido2` flag into the sidecar metadata;
+        /// subsequent `Get` calls receive a `Fido2Needed` challenge
+        /// and must be retried with a valid FIDO2 assertion.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        requires_fido2: Option<bool>,
     },
     Get {
         name: String,
+        /// Phase 2 η: FIDO2 assertion payload for the second
+        /// round-trip of a FIDO2-gated Get. Absent on the first
+        /// call (daemon returns `Fido2Needed`), present on the
+        /// retry. Old daemons ignore the field (skip_serializing_if);
+        /// old clients never send it. Hex-encoded bytes fields
+        /// match the wire shape of the `Fido2Assertion` client-side
+        /// struct so the JSON round-trip is transparent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fido2_assertion: Option<Fido2Assertion>,
     },
     List,
     Delete {
@@ -70,6 +86,18 @@ pub enum Request {
     /// reason. The chain file itself is root-only readable, so
     /// this is the only path a kepr-group member has to inspect it.
     AuditVerify,
+    /// Phase 2 η: register a FIDO2 credential with the daemon.
+    /// The client sends the credential ID and public key (in COSE
+    /// format, hex-encoded). The daemon stores the mapping and
+    /// returns the credential ID on success. The `label` is a
+    /// human-readable name for `kepr fido2 list`.
+    Fido2Register {
+        label: String,
+        credential_id: String, // hex
+        public_key_cose: String, // hex — COSE_Key CBOR bytes
+    },
+    /// Phase 2 η: list registered FIDO2 credentials.
+    Fido2List,
     Ping,
 }
 
@@ -111,6 +139,30 @@ pub enum Response {
     AuditOk {
         entries: usize,
         last_hash: String,
+    },
+    /// Phase 2 η: a FIDO2 assertion is required to decrypt this
+    /// credential. The client should obtain an assertion from the
+    /// FIDO2 authenticator identified by `credential_ids` over
+    /// `challenge`, then retry `Get` with `fido2_assertion` set.
+    Fido2Needed {
+        name: String,
+        /// 32 random bytes, hex-encoded. The client must include
+        /// this challenge verbatim in the `clientDataJSON` passed
+        /// to the authenticator.
+        challenge: String,
+        /// The credential IDs registered for this user whose
+        /// associated public keys the daemon can verify. The
+        /// client picks one that the user's authenticator holds.
+        credential_ids: Vec<String>, // hex
+    },
+    /// Phase 2 η: successful FIDO2 registration. The daemon echoes
+    /// the credential ID it stored.
+    Fido2RegisterOk {
+        credential_id: String,
+    },
+    /// Phase 2 η: list of registered FIDO2 credentials.
+    Fido2ListOk {
+        credentials: Vec<Fido2CredInfo>,
     },
     Pong,
     Err {
@@ -173,6 +225,42 @@ pub struct CredInfo {
     /// a glance. Same backward-compat shape as `expires_at`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub requires_consent: Option<bool>,
+    /// Phase 2 η: true iff `kepr get` for this credential requires a
+    /// FIDO2 hardware-key assertion before the daemon decrypts.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_fido2: Option<bool>,
+}
+
+// ── FIDO2 types (Phase 2 η) ─────────────────────────────────────────────────
+
+/// A FIDO2 assertion produced by the client's authenticator. Sent as
+/// the second round-trip payload on `Request::Get` when the daemon
+/// returned `Fido2Needed`. All byte fields are hex-encoded.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Fido2Assertion {
+    /// The credential ID (from the authenticator). Hex-encoded.
+    pub credential_id: String,
+    /// The clientDataJSON that was hashed and signed. Hex-encoded
+    /// raw bytes — the daemon reconstructs the SHA-256 hash and
+    /// verifies it against the authenticator data.
+    pub client_data_json: String, // hex
+    /// The authenticatorData bytes returned by the authenticator.
+    /// Contains the RP ID hash, flags, and signature counter.
+    pub authenticator_data: String, // hex
+    /// The assertion signature over (authenticator_data ||
+    /// sha256(client_data_json)). Hex-encoded raw bytes.
+    pub signature: String, // hex
+}
+
+/// A registered FIDO2 credential, returned by `Fido2ListOk`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Fido2CredInfo {
+    /// Human-readable label assigned at registration time.
+    pub label: String,
+    /// The FIDO2 credential ID, hex-encoded.
+    pub credential_id: String,
+    /// The user ID (kepr uid) this credential is registered for.
+    pub uid: u32,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -198,7 +286,10 @@ mod tests {
         assert_eq!(as_value(&Request::List)["cmd"], json!("list"));
         assert_eq!(as_value(&Request::Check)["cmd"], json!("check"));
         assert_eq!(
-            as_value(&Request::Get { name: "X".into() })["cmd"],
+            as_value(&Request::Get {
+                name: "X".into(),
+                fido2_assertion: None,
+            })["cmd"],
             json!("get")
         );
         assert_eq!(
@@ -212,6 +303,7 @@ mod tests {
                 generate: None,
                 ttl_secs: None,
                 requires_consent: None,
+                requires_fido2: None,
             })["cmd"],
             json!("set"),
         );
@@ -225,6 +317,7 @@ mod tests {
             Request::Check,
             Request::Get {
                 name: "OPENAI".into(),
+                fido2_assertion: None,
             },
             Request::Delete { name: "FOO".into() },
             Request::Set {
@@ -233,6 +326,7 @@ mod tests {
                 generate: None,
                 ttl_secs: None,
                 requires_consent: None,
+                requires_fido2: None,
             },
             Request::Set {
                 name: "K".into(),
@@ -240,6 +334,7 @@ mod tests {
                 generate: Some("hex".into()),
                 ttl_secs: None,
                 requires_consent: None,
+                requires_fido2: None,
             },
             Request::Set {
                 name: "K".into(),
@@ -247,6 +342,7 @@ mod tests {
                 generate: None,
                 ttl_secs: None,
                 requires_consent: None,
+                requires_fido2: None,
             },
             // Phase 2 α: TTL-bearing variant must round-trip cleanly.
             Request::Set {
@@ -255,6 +351,7 @@ mod tests {
                 generate: None,
                 ttl_secs: Some(60),
                 requires_consent: None,
+                requires_fido2: None,
             },
             // Phase 2 ε: consent-bearing variant must round-trip cleanly.
             Request::Set {
@@ -263,6 +360,16 @@ mod tests {
                 generate: None,
                 ttl_secs: None,
                 requires_consent: Some(true),
+                requires_fido2: None,
+            },
+            // Phase 2 η: FIDO2-bearing variant must round-trip cleanly.
+            Request::Set {
+                name: "FIDO2_GUARDED".into(),
+                value: Some("v".into()),
+                generate: None,
+                ttl_secs: None,
+                requires_consent: None,
+                requires_fido2: Some(true),
             },
         ];
         for req in cases {
@@ -278,6 +385,7 @@ mod tests {
             generate: None,
             ttl_secs: None,
             requires_consent: None,
+            requires_fido2: None,
         };
         let v = as_value(&req);
         assert!(v.get("value").is_none(), "value should be absent: {v}");
@@ -290,6 +398,11 @@ mod tests {
         assert!(
             v.get("generate").is_none(),
             "generate should be absent: {v}"
+        );
+        // Phase 2 η: requires_fido2 uses skip_serializing_if.
+        assert!(
+            v.get("requires_fido2").is_none(),
+            "requires_fido2 should be absent when None: {v}"
         );
     }
 
@@ -337,6 +450,7 @@ mod tests {
                 modified: "2024-01-01 00:00".into(),
                 expires_at: None,
                 requires_consent: None,
+                requires_fido2: None,
             }],
             count: 1,
         };

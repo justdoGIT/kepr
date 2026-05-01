@@ -64,15 +64,14 @@ const PROD_LOC_LIMIT: usize = 350;
 /// hop. Both are within ~1.5% of the ceiling — refactor pressure
 /// kicks in the moment they grow.
 const ALLOWLIST: &[(&str, usize)] = &[
-    // daemon_handlers.rs grew from 357 → 373 in PR #77 (Phase 2 ε
-    // polkit consent). The additions: a `precheck_meta` helper
-    // that gates handle_get on TTL + consent (replacing two
-    // open-coded match arms), and a refactored handle_set that
-    // routes through the new `CredMeta::from_flags`. Refactor
-    // candidate: split set/get/list/delete/check into per-verb
-    // files so each module stays small. Pinning at 380 leaves
-    // ~7-LOC headroom; further growth must come with the split.
-    ("src/daemon_handlers.rs", 380),
+    // daemon.rs grew from 349 → 391 in PR #?? (Phase 2 η FIDO2
+    // unlock). The additions: FIDO2 dispatch arms (Fido2Register,
+    // Fido2List), the new `daemon_handlers_get` module declaration,
+    // and the `fido2` module declaration. Refactor candidate: move
+    // the per-request handler dispatch into its own module
+    // (`daemon_dispatch.rs`) so daemon.rs stays focused on the
+    // accept loop and setup.
+    ("src/daemon.rs", 400),
     ("src/crypto_inproc.rs", 354),
 ];
 
