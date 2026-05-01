@@ -44,6 +44,7 @@ impl CredFetcher for DaemonFetcher {
     fn fetch(&self, name: &str) -> Result<ZeroString, String> {
         match client::send_request(&Request::Get {
             name: name.to_string(),
+            fido2_assertion: None,
         }) {
             Ok(Response::GetOk { value, .. }) => Ok(value),
             Ok(Response::Err { error }) => Err(error),

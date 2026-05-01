@@ -174,6 +174,7 @@ pub fn cmd_rotate(name: &str, kind: GenKind, hook_path: &Path) -> Response {
             generate: None,
             ttl_secs: None,
             requires_consent: None,
+            requires_fido2: None,
         }) {
             Ok(Response::SetOk { cred_name, .. }) => Ok(cred_name),
             Ok(Response::Err { error }) => Err(error),

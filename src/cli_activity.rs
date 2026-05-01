@@ -46,6 +46,8 @@ impl CliActivity {
             "audit-verify" => "audit-verify",
             "sync-push" => "sync-push",
             "sync-pull" => "sync-pull",
+            "fido2-register" => "fido2-register",
+            "fido2-list" => "fido2-list",
             other => return Err(format!("unknown command: {other}")),
         };
         Ok(Self(canonical.to_string()))
@@ -91,6 +93,8 @@ impl CliActivity {
                 (None, _) => Response::fail("sync-pull requires NAME"),
                 (_, None) => Response::fail("sync-pull requires --url"),
             },
+            "fido2-register" => cli_cmds::cmd_fido2_register(args),
+            "fido2-list" => cli_cmds::cmd_fido2_list(args),
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }
@@ -115,6 +119,8 @@ mod tests {
             "audit-verify",
             "sync-push",
             "sync-pull",
+            "fido2-register",
+            "fido2-list",
         ] {
             assert_eq!(CliActivity::parse(v).unwrap().as_str(), v);
         }
