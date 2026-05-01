@@ -1,7 +1,5 @@
-// cli_cmds.rs — user-facing commands (set/get/list/delete/check).
-//
-// Pure presentation + orchestration: build a Request, call client::send_request,
-// render the Response via cli_ui. No socket / crypto logic lives here.
+// cli_cmds.rs — user-facing commands. Build Request, call client::send_request,
+// render Response via cli_ui. No socket / crypto logic lives here.
 
 use std::io::{self, BufRead, Write};
 
@@ -13,9 +11,8 @@ use crate::client::send_request;
 use kepr_core::generate::{generate_secret, GenKind};
 use kepr_core::protocol::{Request, Response};
 
-// Dispatch a request, turning transport errors into a Response::Err.
-// Centralises the "on send failure, print and fail" pattern.
-fn dispatch(a: &Args, req: &Request) -> Response {
+// Dispatch: on send failure, print and fail.
+pub(crate) fn dispatch(a: &Args, req: &Request) -> Response {
     match send_request(req) {
         Ok(resp) => resp,
         Err(e) => {
@@ -35,13 +32,9 @@ pub fn cmd_set(a: &Args) -> Response {
                 return Response::fail("NAME required");
             }
             bold("\n  kepr — set credential\n");
-            eprint!(
-                "  {}",
-                color("0;36", "Credential name (e.g. OPENAI_API_KEY): ")
-            );
+            eprint!("  {}", color("0;36", "Credential name (e.g. OPENAI_API_KEY): "));
             io::stderr().flush().ok();
-            let mut n = String::new();
-            io::stdin().lock().read_line(&mut n).ok();
+            let mut n = String::new(); io::stdin().lock().read_line(&mut n).ok();
             n.trim().to_uppercase()
         }
     };
@@ -57,11 +50,7 @@ pub fn cmd_set(a: &Args) -> Response {
         } else if a.generate {
             let s = generate_secret(a.gen_kind);
             if !a.json {
-                ok(&format!(
-                    "Generated {} secret ({} chars)",
-                    a.gen_kind.as_str(),
-                    s.len()
-                ));
+                ok(&format!("Generated {} secret ({} chars)", a.gen_kind.as_str(), s.len()));
             }
             (Some(s), None)
         } else {
@@ -72,18 +61,12 @@ pub fn cmd_set(a: &Args) -> Response {
             println!();
             bold(&format!("  Setting: {}", color("1;33", &name)));
 
-            // Peek: does this credential already exist? Ignore network errors here —
-            // the actual set call will surface them.
-            if let Response::GetOk { .. } = dispatch(a, &Request::Get { name: name.clone() }) {
+            // Peek: does cred exist? Ignore errors — set call surfaces them.
+            if let Response::GetOk { .. } = dispatch(a, &Request::Get { name: name.clone(), fido2_assertion: None }) {
                 warn(&format!("'{}' already exists.", name));
-                eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
-                io::stderr().flush().ok();
-                let mut ans = String::new();
-                io::stdin().lock().read_line(&mut ans).ok();
-                if ans.trim().to_lowercase() != "y" {
-                    info("Aborted.");
-                    return Response::fail("aborted");
-                }
+                eprint!("  {} ", color("0;36", "Overwrite? [y/N]:")); io::stderr().flush().ok();
+                let mut ans = String::new(); io::stdin().lock().read_line(&mut ans).ok();
+                if ans.trim().to_lowercase() != "y" { info("Aborted."); return Response::fail("aborted"); }
             }
 
             dim("  Leave blank to auto-generate. Input is hidden.\n");
@@ -98,12 +81,8 @@ pub fn cmd_set(a: &Args) -> Response {
             if val.is_empty() {
                 println!();
                 info("Generating automatically.");
-                info("  [1] hex      — 64-char hex token     (default)");
-                info("  [2] base62   — 48-char alphanumeric");
-                info("  [3] pass     — 32-char mixed symbols");
-                info("  [4] uuid     — UUID4 format");
-                eprint!("  {}", color("0;36", "Choice [1-4, default=1]: "));
-                io::stderr().flush().ok();
+                info("  [1] hex    [2] base62   [3] pass   [4] uuid  (default: 1)");
+                eprint!("  {}", color("0;36", "Choice [1-4, default=1]: ")); io::stderr().flush().ok();
                 let mut c = String::new();
                 io::stdin().lock().read_line(&mut c).ok();
                 let kind = match c.trim() {
@@ -133,6 +112,7 @@ pub fn cmd_set(a: &Args) -> Response {
         generate: gen_opt,
         ttl_secs: a.ttl_secs,
         requires_consent: if a.requires_consent { Some(true) } else { None },
+        requires_fido2: if a.requires_fido2 { Some(true) } else { None },
     };
     let resp = dispatch(a, &req);
 
@@ -160,7 +140,7 @@ pub fn cmd_get(a: &Args) -> Response {
         }
     };
 
-    let resp = dispatch(a, &Request::Get { name: name.clone() });
+    let resp = dispatch(a, &Request::Get { name: name.clone(), fido2_assertion: None });
 
     match &resp {
         Response::GetOk { name, value } => {
@@ -172,14 +152,8 @@ pub fn cmd_get(a: &Args) -> Response {
                 return resp;
             }
             if a.export {
-                // Single-quote-escape via shell_escape so a value
-                // containing $, backticks, or quotes is safe to
-                // `eval`. The previous shape `export {name}={value}`
-                // was an injection-vector if the value carried any
-                // shell metachars; the multi-var sibling
-                // `kepr env --env CSV` and this single-var form now
-                // share the same escaping helper.
-                println!("export {name}={}", shell_escape(value.as_str()));
+                // shell_escape prevents injection of $, backticks, quotes.
+            println!("export {name}={}", shell_escape(value.as_str()));
                 return resp;
             }
             println!();
@@ -187,6 +161,36 @@ pub fn cmd_get(a: &Args) -> Response {
             println!("  {}", color("0;32", value));
             println!();
             resp
+        }
+        Response::Fido2Needed { challenge, credential_ids, .. } => {
+            if !a.json {
+                match crate::cli_fido2::run_fido2_ceremony(challenge, credential_ids) {
+                    Ok(assertion) => {
+                        let resp2 = dispatch(a, &Request::Get {
+                            name: name.clone(),
+                            fido2_assertion: Some(assertion),
+                        });
+                        match &resp2 {
+                            Response::GetOk { value, .. } => {
+                                if a.quiet { println!("{value}"); }
+                                else if a.export { println!("export {name}={}", shell_escape(value.as_str())); }
+                                else { println!(); bold(&format!("  {name}")); println!("  {}", color("0;32", value)); println!(); }
+                            }
+                            Response::Err { error } => err(error),
+                            _ => err("unexpected response after FIDO2"),
+                        }
+                        return resp2;
+                    }
+                    Err(e) => {
+                        err(&format!("{} requires FIDO2 assertion.", name));
+                        einfo(&format!("Ceremony failed: {e}"));
+                        if credential_ids.is_empty() {
+                            einfo("No keys. Register: kepr fido2-register LABEL CRED_ID COSE_KEY");
+                        }
+                    }
+                }
+            }
+            Response::fail("fido2 required")
         }
         Response::Err { error } => {
             if !a.json {
@@ -254,14 +258,9 @@ pub fn cmd_delete(a: &Args) -> Response {
 
     if !a.json && !a.force {
         warn(&format!("Delete '{name}'?"));
-        eprint!("  {} ", color("0;36", "Confirm [y/N]:"));
-        io::stderr().flush().ok();
-        let mut ans = String::new();
-        io::stdin().lock().read_line(&mut ans).ok();
-        if ans.trim().to_lowercase() != "y" {
-            info("Aborted.");
-            return Response::fail("aborted");
-        }
+        eprint!("  {} ", color("0;36", "Confirm [y/N]:")); io::stderr().flush().ok();
+        let mut ans = String::new(); io::stdin().lock().read_line(&mut ans).ok();
+        if ans.trim().to_lowercase() != "y" { info("Aborted."); return Response::fail("aborted"); }
     }
 
     let resp = dispatch(a, &Request::Delete { name: name.clone() });
@@ -291,19 +290,13 @@ pub fn cmd_check(a: &Args) -> Response {
             bold(&format!("  Checking {} credential(s)...\n", results.len()));
             let mut entries: Vec<(&String, &String)> = results.iter().collect();
             entries.sort_by(|a, b| a.0.cmp(b.0));
-            for (name, status) in entries {
-                if status == "ok" {
-                    ok(&format!("{:<40}", name));
-                } else {
-                    err(&format!("{:<40} FAILED", name));
-                }
+            for (n, s) in entries {
+                if s == "ok" { ok(&format!("{:<40}", n)); }
+                else { err(&format!("{:<40} FAILED", n)); }
             }
             println!();
-            if *all_ok {
-                ok("All credentials verified.");
-            } else {
-                warn("Some credentials failed.");
-            }
+            if *all_ok { ok("All credentials verified."); }
+            else { warn("Some credentials failed."); }
             println!();
         }
         Response::Err { error } => err(error),
@@ -312,22 +305,15 @@ pub fn cmd_check(a: &Args) -> Response {
     resp
 }
 
-/// Phase 2 δ.3 — `kepr audit-verify`. Asks the daemon to walk
-/// /var/lib/kepr/audit.log and report the entry count + head hash.
-/// Tamper detection is server-side; the CLI just renders the
-/// outcome.
+/// `kepr audit-verify` — verify the hash-chained audit log (Phase 2 δ.3).
 pub fn cmd_audit_verify(a: &Args) -> Response {
     let resp = dispatch(a, &Request::AuditVerify);
-    if a.json {
-        return resp;
-    }
+    if a.json { return resp; }
     match &resp {
         Response::AuditOk { entries, last_hash } => {
             println!();
-            ok(&format!(
-                "audit chain verified: {entries} entr{}",
-                if *entries == 1 { "y" } else { "ies" }
-            ));
+            let s = if *entries == 1 { "y" } else { "ies" };
+            ok(&format!("audit chain verified: {entries} entr{s}"));
             dim(&format!("  head: {last_hash}"));
             println!();
         }
@@ -336,3 +322,5 @@ pub fn cmd_audit_verify(a: &Args) -> Response {
     }
     resp
 }
+
+pub use crate::cli_fido2::{cmd_fido2_list, cmd_fido2_register};

@@ -107,7 +107,10 @@ pub fn cmd_get() -> ExitCode {
         }
     };
     let name = url_to_kepr_name(&url);
-    let resp = match client::send_request(&Request::Get { name }) {
+    let resp = match client::send_request(&Request::Get {
+        name,
+        fido2_assertion: None,
+    }) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("docker-credential-kepr: {e}");
@@ -178,6 +181,7 @@ pub fn cmd_store() -> ExitCode {
         // expiry to the consumer.
         ttl_secs: None,
         requires_consent: None,
+        requires_fido2: None,
     };
     match client::send_request(&req) {
         Ok(Response::SetOk { .. }) => ExitCode::from(0),
@@ -264,7 +268,10 @@ pub fn cmd_list() -> ExitCode {
 
     let mut out = serde_json::Map::new();
     for name in names {
-        let resp = match client::send_request(&Request::Get { name: name.clone() }) {
+        let resp = match client::send_request(&Request::Get {
+            name: name.clone(),
+            fido2_assertion: None,
+        }) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("docker-credential-kepr: {e}");

@@ -78,6 +78,7 @@ pub fn cmd_sync_push(name: &str, url: &str) -> kepr_core::protocol::Response {
     let upper = name.to_uppercase();
     let resp = match crate::client::send_request(&Request::Get {
         name: upper.clone(),
+        fido2_assertion: None,
     }) {
         Ok(r) => r,
         Err(e) => return Response::fail(format!("daemon: {e}")),
@@ -117,6 +118,7 @@ pub fn cmd_sync_pull(name: &str, url: &str) -> kepr_core::protocol::Response {
         generate: None,
         ttl_secs: None,
         requires_consent: None,
+        requires_fido2: None,
     };
     match crate::client::send_request(&req) {
         Ok(r @ Response::SetOk { .. }) => r,
