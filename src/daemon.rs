@@ -16,12 +16,14 @@ mod daemon_audit;
 mod daemon_cache;
 mod daemon_expiry;
 mod daemon_handlers;
+mod daemon_handlers_get;
 mod daemon_peer;
 mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
 mod daemon_socket;
 mod expiry;
+mod fido2;
 mod master_key;
 mod store;
 mod version_state;
@@ -32,7 +34,7 @@ use std::sync::OnceLock;
 
 use audit::{username_for_uid, AuditEvent, AuditResult};
 use daemon_audit::handle_audit_verify;
-use daemon_handlers::{handle_check, handle_delete, handle_get, handle_list, handle_set};
+use daemon_handlers::{handle_check, handle_delete, handle_list, handle_set};
 use daemon_peer::get_peer_creds;
 use daemon_pool::Pool;
 use daemon_ratelimit::RateLimiter;
@@ -321,6 +323,7 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
             generate,
             ttl_secs,
             requires_consent,
+            requires_fido2,
         } => handle_set(
             uid,
             username,
@@ -329,12 +332,60 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
             generate.as_deref(),
             ttl_secs,
             requires_consent,
+            requires_fido2,
         ),
-        Request::Get { name } => handle_get(uid, peer_pid, username, &name),
+        Request::Get {
+            name,
+            fido2_assertion,
+        } => daemon_handlers_get::handle_get(
+            uid,
+            peer_pid,
+            username,
+            &name,
+            fido2_assertion.as_ref(),
+        ),
         Request::List => handle_list(uid, username),
         Request::Delete { name } => handle_delete(uid, username, &name),
         Request::Check => handle_check(uid, username),
         Request::AuditVerify => handle_audit_verify(uid, username, AUDIT_CHAIN_PATH),
+        Request::Fido2Register {
+            label,
+            credential_id,
+            public_key_cose,
+        } => match fido2::register(uid, &label, &credential_id, &public_key_cose) {
+            Ok(()) => {
+                audit::log(&AuditEvent {
+                    op: "fido2-register",
+                    name: Some(&label),
+                    uid,
+                    username,
+                    result: AuditResult::Ok,
+                });
+                Response::Fido2RegisterOk { credential_id }
+            }
+            Err(e) => {
+                audit::log(&AuditEvent {
+                    op: "fido2-register",
+                    name: Some(&label),
+                    uid,
+                    username,
+                    result: AuditResult::Fail(e.clone()),
+                });
+                Response::fail(e)
+            }
+        },
+        Request::Fido2List => {
+            audit::log(&AuditEvent {
+                op: "fido2-list",
+                name: None,
+                uid,
+                username,
+                result: AuditResult::Ok,
+            });
+            Response::Fido2ListOk {
+                credentials: fido2::list_for_uid(uid),
+            }
+        }
     }
 }
 
