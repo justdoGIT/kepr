@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kepr-eso-provider
+  labels:
+    app: kepr-eso-provider
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kepr-eso-provider
+  template:
+    metadata:
+      labels:
+        app: kepr-eso-provider
+    spec:
+      containers:
+        - name: provider
+          image: kepr-eso-provider:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: KEPR_ESO_LISTEN
+              value: "0.0.0.0:8080"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 8Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          volumeMounts:
+            - name: kepr-socket
+              mountPath: /run/kepr
+              readOnly: true
+      volumes:
+        - name: kepr-socket
+          hostPath:
+            path: /run/kepr
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kepr-eso-provider
+  labels:
+    app: kepr-eso-provider
+spec:
+  selector:
+    app: kepr-eso-provider
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http

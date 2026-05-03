@@ -27,7 +27,7 @@ name = "docker-credential-kepr"
 path = "src/docker_helper.rs"
 
 [workspace]
-members = ["crates/kepr-core"]
+members = ["crates/kepr-core", "crates/kepr-eso-provider"]
 
 [dependencies]
 kepr-core = { path = "crates/kepr-core", version = "0.3.0" }
