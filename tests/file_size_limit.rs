@@ -73,6 +73,11 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // accept loop and setup.
     ("src/daemon.rs", 400),
     ("src/crypto_inproc.rs", 354),
+    // cli_cmds.rs was pushed over the limit by rustfmt 1.95.0 line-splitting
+    // (single-line if/let → multi-line). The file was already near the cap
+    // before the eso-provider branch. Refactor candidate: split interactive
+    // credential entry (cmd_set) from the rest of the command dispatch.
+    ("src/cli_cmds.rs", 385),
 ];
 
 fn count_production_loc(path: &Path) -> usize {
