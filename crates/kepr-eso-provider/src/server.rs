@@ -13,6 +13,7 @@ use crate::client::send_request;
 
 const MAX_BODY_BYTES: usize = 65_536; // 64 KB max HTTP body
 const MAX_BATCH_KEYS: usize = 100; // max keys per batch request
+const MAX_HEADERS: usize = 64; // cap header count to prevent memory exhaustion
 
 /// Mirror daemon's `store::validate_name` so bad names are rejected early.
 fn validate_name(name: &str) -> Result<(), String> {
@@ -101,6 +102,9 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
                 .parse::<usize>()
                 .map_err(|e| format!("invalid Content-Length: {e}"))?;
         }
+        if headers.len() >= MAX_HEADERS {
+            return Err(format!("too many headers (> {MAX_HEADERS})"));
+        }
         headers.push(trimmed.to_string());
     }
 
@@ -169,7 +173,8 @@ pub fn handle_connection(mut stream: TcpStream) {
     let req = match parse_request(&mut stream) {
         Ok(r) => r,
         Err(e) => {
-            let _ = write_response(&mut stream, 400, &format!(r#"{{"error":"{e}"}}"#));
+            let body = serde_json::json!({"error": e}).to_string();
+            let _ = write_response(&mut stream, 400, &body);
             return;
         }
     };
