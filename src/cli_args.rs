@@ -298,7 +298,9 @@ pub fn print_help() {
     println!("  kepr set MY_KEY --value abc123       # non-interactive");
     println!("  kepr set TMP_TOKEN --generate --ttl 3600   # expires in 1h");
     println!("  kepr set DB_PASS --value secret --requires-consent  # polkit prompts on every get");
-    println!("  kepr set API_KEY --value secret --requires-fido2   # FIDO2 touch required on every get");
+    println!(
+        "  kepr set API_KEY --value secret --requires-fido2   # FIDO2 touch required on every get"
+    );
     println!("  kepr get OPENAI_API_KEY              # decrypt and print");
     println!("  kepr get OPENAI_API_KEY --export     # print as: export VAR=value");
     println!("  kepr get OPENAI_API_KEY --quiet      # raw value only");

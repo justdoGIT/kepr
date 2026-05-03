@@ -1,0 +1,47 @@
+# kepr-eso-provider
+
+Bridge between External Secrets Operator and kepr. ESO polls this HTTP
+service via its webhook provider; the service translates each request
+into a kepr daemon Get call over the Unix socket and returns the secret
+as JSON.
+
+## Quick start
+
+### 1. Deploy the provider
+kubectl apply -f deploy/deployment.yaml
+
+The deployment mounts /run/kepr/kepr.sock from the host via hostPath.
+
+### 2. Configure the SecretStore
+kubectl apply -f deploy/cluster-secret-store.yaml
+
+### 3. Create an ExternalSecret
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: openai-key
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: kepr
+    kind: ClusterSecretStore
+  target:
+    name: openai-api-key
+  data:
+    - secretKey: OPENAI_API_KEY
+      remoteRef:
+        key: OPENAI_API_KEY
+
+## Endpoints
+
+| Method | Path               | Description   |
+|--------|--------------------|---------------|
+| GET    | /health            | health check  |
+| GET    | /v1/secrets/<NAME> | single secret |
+| POST   | /v1/secrets        | batch secrets |
+
+## Configuration
+
+| Env variable      | Default         | Description        |
+|-------------------|-----------------|--------------------|
+| KEPR_ESO_LISTEN   | 0.0.0.0:8080    | Listen address:port|

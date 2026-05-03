@@ -93,7 +93,7 @@ pub enum Request {
     /// human-readable name for `kepr fido2 list`.
     Fido2Register {
         label: String,
-        credential_id: String, // hex
+        credential_id: String,   // hex
         public_key_cose: String, // hex — COSE_Key CBOR bytes
     },
     /// Phase 2 η: list registered FIDO2 credentials.

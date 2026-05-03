@@ -32,9 +32,13 @@ pub fn cmd_set(a: &Args) -> Response {
                 return Response::fail("NAME required");
             }
             bold("\n  kepr — set credential\n");
-            eprint!("  {}", color("0;36", "Credential name (e.g. OPENAI_API_KEY): "));
+            eprint!(
+                "  {}",
+                color("0;36", "Credential name (e.g. OPENAI_API_KEY): ")
+            );
             io::stderr().flush().ok();
-            let mut n = String::new(); io::stdin().lock().read_line(&mut n).ok();
+            let mut n = String::new();
+            io::stdin().lock().read_line(&mut n).ok();
             n.trim().to_uppercase()
         }
     };
@@ -50,7 +54,11 @@ pub fn cmd_set(a: &Args) -> Response {
         } else if a.generate {
             let s = generate_secret(a.gen_kind);
             if !a.json {
-                ok(&format!("Generated {} secret ({} chars)", a.gen_kind.as_str(), s.len()));
+                ok(&format!(
+                    "Generated {} secret ({} chars)",
+                    a.gen_kind.as_str(),
+                    s.len()
+                ));
             }
             (Some(s), None)
         } else {
@@ -62,11 +70,22 @@ pub fn cmd_set(a: &Args) -> Response {
             bold(&format!("  Setting: {}", color("1;33", &name)));
 
             // Peek: does cred exist? Ignore errors — set call surfaces them.
-            if let Response::GetOk { .. } = dispatch(a, &Request::Get { name: name.clone(), fido2_assertion: None }) {
+            if let Response::GetOk { .. } = dispatch(
+                a,
+                &Request::Get {
+                    name: name.clone(),
+                    fido2_assertion: None,
+                },
+            ) {
                 warn(&format!("'{}' already exists.", name));
-                eprint!("  {} ", color("0;36", "Overwrite? [y/N]:")); io::stderr().flush().ok();
-                let mut ans = String::new(); io::stdin().lock().read_line(&mut ans).ok();
-                if ans.trim().to_lowercase() != "y" { info("Aborted."); return Response::fail("aborted"); }
+                eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
+                io::stderr().flush().ok();
+                let mut ans = String::new();
+                io::stdin().lock().read_line(&mut ans).ok();
+                if ans.trim().to_lowercase() != "y" {
+                    info("Aborted.");
+                    return Response::fail("aborted");
+                }
             }
 
             dim("  Leave blank to auto-generate. Input is hidden.\n");
@@ -82,7 +101,8 @@ pub fn cmd_set(a: &Args) -> Response {
                 println!();
                 info("Generating automatically.");
                 info("  [1] hex    [2] base62   [3] pass   [4] uuid  (default: 1)");
-                eprint!("  {}", color("0;36", "Choice [1-4, default=1]: ")); io::stderr().flush().ok();
+                eprint!("  {}", color("0;36", "Choice [1-4, default=1]: "));
+                io::stderr().flush().ok();
                 let mut c = String::new();
                 io::stdin().lock().read_line(&mut c).ok();
                 let kind = match c.trim() {
@@ -140,7 +160,13 @@ pub fn cmd_get(a: &Args) -> Response {
         }
     };
 
-    let resp = dispatch(a, &Request::Get { name: name.clone(), fido2_assertion: None });
+    let resp = dispatch(
+        a,
+        &Request::Get {
+            name: name.clone(),
+            fido2_assertion: None,
+        },
+    );
 
     match &resp {
         Response::GetOk { name, value } => {
@@ -153,7 +179,7 @@ pub fn cmd_get(a: &Args) -> Response {
             }
             if a.export {
                 // shell_escape prevents injection of $, backticks, quotes.
-            println!("export {name}={}", shell_escape(value.as_str()));
+                println!("export {name}={}", shell_escape(value.as_str()));
                 return resp;
             }
             println!();
@@ -162,19 +188,33 @@ pub fn cmd_get(a: &Args) -> Response {
             println!();
             resp
         }
-        Response::Fido2Needed { challenge, credential_ids, .. } => {
+        Response::Fido2Needed {
+            challenge,
+            credential_ids,
+            ..
+        } => {
             if !a.json {
                 match crate::cli_fido2::run_fido2_ceremony(challenge, credential_ids) {
                     Ok(assertion) => {
-                        let resp2 = dispatch(a, &Request::Get {
-                            name: name.clone(),
-                            fido2_assertion: Some(assertion),
-                        });
+                        let resp2 = dispatch(
+                            a,
+                            &Request::Get {
+                                name: name.clone(),
+                                fido2_assertion: Some(assertion),
+                            },
+                        );
                         match &resp2 {
                             Response::GetOk { value, .. } => {
-                                if a.quiet { println!("{value}"); }
-                                else if a.export { println!("export {name}={}", shell_escape(value.as_str())); }
-                                else { println!(); bold(&format!("  {name}")); println!("  {}", color("0;32", value)); println!(); }
+                                if a.quiet {
+                                    println!("{value}");
+                                } else if a.export {
+                                    println!("export {name}={}", shell_escape(value.as_str()));
+                                } else {
+                                    println!();
+                                    bold(&format!("  {name}"));
+                                    println!("  {}", color("0;32", value));
+                                    println!();
+                                }
                             }
                             Response::Err { error } => err(error),
                             _ => err("unexpected response after FIDO2"),
@@ -258,9 +298,14 @@ pub fn cmd_delete(a: &Args) -> Response {
 
     if !a.json && !a.force {
         warn(&format!("Delete '{name}'?"));
-        eprint!("  {} ", color("0;36", "Confirm [y/N]:")); io::stderr().flush().ok();
-        let mut ans = String::new(); io::stdin().lock().read_line(&mut ans).ok();
-        if ans.trim().to_lowercase() != "y" { info("Aborted."); return Response::fail("aborted"); }
+        eprint!("  {} ", color("0;36", "Confirm [y/N]:"));
+        io::stderr().flush().ok();
+        let mut ans = String::new();
+        io::stdin().lock().read_line(&mut ans).ok();
+        if ans.trim().to_lowercase() != "y" {
+            info("Aborted.");
+            return Response::fail("aborted");
+        }
     }
 
     let resp = dispatch(a, &Request::Delete { name: name.clone() });
@@ -291,12 +336,18 @@ pub fn cmd_check(a: &Args) -> Response {
             let mut entries: Vec<(&String, &String)> = results.iter().collect();
             entries.sort_by(|a, b| a.0.cmp(b.0));
             for (n, s) in entries {
-                if s == "ok" { ok(&format!("{:<40}", n)); }
-                else { err(&format!("{:<40} FAILED", n)); }
+                if s == "ok" {
+                    ok(&format!("{:<40}", n));
+                } else {
+                    err(&format!("{:<40} FAILED", n));
+                }
             }
             println!();
-            if *all_ok { ok("All credentials verified."); }
-            else { warn("Some credentials failed."); }
+            if *all_ok {
+                ok("All credentials verified.");
+            } else {
+                warn("Some credentials failed.");
+            }
             println!();
         }
         Response::Err { error } => err(error),
@@ -308,7 +359,9 @@ pub fn cmd_check(a: &Args) -> Response {
 /// `kepr audit-verify` — verify the hash-chained audit log (Phase 2 δ.3).
 pub fn cmd_audit_verify(a: &Args) -> Response {
     let resp = dispatch(a, &Request::AuditVerify);
-    if a.json { return resp; }
+    if a.json {
+        return resp;
+    }
     match &resp {
         Response::AuditOk { entries, last_hash } => {
             println!();
