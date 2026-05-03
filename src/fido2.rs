@@ -33,7 +33,9 @@ pub fn generate_challenge() -> String {
     let mut buf = [0u8; 32];
     getrandom::getrandom(&mut buf).expect("CSPRNG must not fail");
     let h = hex::encode(buf);
-    cs().lock().unwrap().insert(h.clone(), std::time::Instant::now());
+    cs().lock()
+        .unwrap()
+        .insert(h.clone(), std::time::Instant::now());
     h
 }
 
@@ -162,11 +164,8 @@ fn verify_challenge(client_data_json: &[u8]) -> Result<(), String> {
         .get("challenge")
         .and_then(|c| c.as_str())
         .ok_or("fido2: clientDataJSON missing challenge")?;
-    let decoded = base64::Engine::decode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        b64u,
-    )
-    .map_err(|e| format!("fido2: challenge base64 decode: {e}"))?;
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, b64u)
+        .map_err(|e| format!("fido2: challenge base64 decode: {e}"))?;
     let hex_challenge = hex::encode(&decoded);
     let mut store = cs().lock().unwrap();
     store.retain(|_, t| t.elapsed().as_secs() < CHALLENGE_TTL_SECS);
@@ -188,8 +187,8 @@ pub fn verify_assertion(uid: u32, assertion: &Fido2Assertion) -> Result<(), Stri
         .map_err(|e| format!("fido2: client_data_json hex: {e}"))?;
     let auth_data = hex::decode(&assertion.authenticator_data)
         .map_err(|e| format!("fido2: authenticator_data hex: {e}"))?;
-    let sig_bytes = hex::decode(&assertion.signature)
-        .map_err(|e| format!("fido2: signature hex: {e}"))?;
+    let sig_bytes =
+        hex::decode(&assertion.signature).map_err(|e| format!("fido2: signature hex: {e}"))?;
 
     // 0. Verify challenge freshness (one-time-use, 60s TTL).
     verify_challenge(&client_data_json)?;
@@ -301,10 +300,7 @@ fn parse_es256_public_key(cose_bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(point)
 }
 
-fn get_integer(
-    fields: &HashMap<i128, ciborium::value::Value>,
-    key: i128,
-) -> Result<i128, String> {
+fn get_integer(fields: &HashMap<i128, ciborium::value::Value>, key: i128) -> Result<i128, String> {
     match fields.get(&key) {
         Some(ciborium::value::Value::Integer(i)) => Ok(i128::from(*i)),
         Some(v) => Err(format!("fido2: COSE_Key field {key} is not integer: {v:?}")),
@@ -312,10 +308,7 @@ fn get_integer(
     }
 }
 
-fn get_bstr(
-    fields: &HashMap<i128, ciborium::value::Value>,
-    key: i128,
-) -> Result<Vec<u8>, String> {
+fn get_bstr(fields: &HashMap<i128, ciborium::value::Value>, key: i128) -> Result<Vec<u8>, String> {
     match fields.get(&key) {
         Some(ciborium::value::Value::Bytes(b)) => Ok(b.clone()),
         Some(v) => Err(format!("fido2: COSE_Key field {key} is not bytes: {v:?}")),
@@ -475,10 +468,7 @@ mod tests {
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
         verify_challenge(&cdj_bytes).expect("first use should pass");
         let err = verify_challenge(&cdj_bytes).unwrap_err();
-        assert!(
-            err.contains("not found"),
-            "second use should fail: {err}"
-        );
+        assert!(err.contains("not found"), "second use should fail: {err}");
     }
 
     #[test]
@@ -487,10 +477,7 @@ mod tests {
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
         let err = verify_challenge(&cdj_bytes).unwrap_err();
-        assert!(
-            err.contains("missing challenge"),
-            "msg: {err}"
-        );
+        assert!(err.contains("missing challenge"), "msg: {err}");
     }
 
     #[test]

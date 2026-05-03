@@ -95,9 +95,7 @@ pub fn handle_get(
                     name: Some(&upper),
                     uid,
                     username,
-                    result: AuditResult::Fail(
-                        "fido2 required but no keys registered".to_string(),
-                    ),
+                    result: AuditResult::Fail("fido2 required but no keys registered".to_string()),
                 });
                 return Response::fail(
                     "credential unavailable (fido2 required, no keys registered)",
