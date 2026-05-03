@@ -50,6 +50,8 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 30
+          # /run/kepr socket is owned root:kepr (0660). Set runAsGroup
+          # to your host kepr group GID: getent group kepr | cut -d: -f3
           volumeMounts:
             - name: kepr-socket
               mountPath: /run/kepr

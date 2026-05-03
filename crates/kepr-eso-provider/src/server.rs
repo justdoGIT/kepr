@@ -198,11 +198,7 @@ pub fn handle_connection(mut stream: TcpStream) {
         }
 
         _ => {
-            json_response(
-                &mut stream,
-                404,
-                &serde_json::json!({"error": "not found"}),
-            );
+            json_response(&mut stream, 404, &serde_json::json!({"error": "not found"}));
         }
     }
 }
@@ -249,7 +245,11 @@ fn handle_batch_secrets(stream: &mut TcpStream, body: &[u8]) {
     let batch_req: BatchRequest = match serde_json::from_slice(body) {
         Ok(r) => r,
         Err(e) => {
-            json_response(stream, 400, &serde_json::json!({"error": format!("invalid body: {e}")}));
+            json_response(
+                stream,
+                400,
+                &serde_json::json!({"error": format!("invalid body: {e}")}),
+            );
             return;
         }
     };
@@ -350,5 +350,4 @@ mod tests {
         assert_eq!(req.keys.len(), 101);
         assert!(req.keys.len() > MAX_BATCH_KEYS);
     }
-
 }
