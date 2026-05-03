@@ -153,9 +153,13 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> Result<(),
 }
 
 fn json_response(stream: &mut TcpStream, status: u16, payload: &impl Serialize) {
-    let body =
-        serde_json::to_string(payload).unwrap_or_else(|_| r#"{"error":"encode failed"}"#.into());
-    let _ = write_response(stream, status, &body);
+    let body = serde_json::to_string(payload).unwrap_or_else(|e| {
+        eprintln!("kepr-eso-provider: json_response serialize failed: {e}");
+        r#"{"error":"encode failed"}"#.into()
+    });
+    if let Err(e) = write_response(stream, status, &body) {
+        eprintln!("kepr-eso-provider: write_response failed: {e}");
+    }
 }
 
 // ── Route dispatch ───────────────────────────────────────────────────
@@ -173,6 +177,7 @@ pub fn handle_connection(mut stream: TcpStream) {
     let req = match parse_request(&mut stream) {
         Ok(r) => r,
         Err(e) => {
+            eprintln!("kepr-eso-provider: parse_request failed: {e}");
             let body = serde_json::json!({"error": e}).to_string();
             let _ = write_response(&mut stream, 400, &body);
             return;
@@ -240,7 +245,8 @@ fn handle_get_secret(stream: &mut TcpStream, name: &str) {
                 &serde_json::json!({"error": format!("unexpected response: {other:?}")}),
             );
         }
-        Err(_e) => {
+        Err(e) => {
+            eprintln!("kepr-eso-provider: send_request(GET {name}) failed: {e}");
             json_response(stream, 500, &serde_json::json!({"error": "internal error"}));
         }
     }
@@ -274,15 +280,24 @@ fn handle_batch_secrets(stream: &mut TcpStream, body: &[u8]) {
 
     for key in &batch_req.keys {
         let name = key.to_uppercase();
-        if validate_name(&name).is_err() {
+        if let Err(e) = validate_name(&name) {
+            eprintln!("kepr-eso-provider: batch skip invalid name '{name}': {e}");
             continue;
         }
         let req = kepr_core::protocol::Request::Get {
             name: name.clone(),
             fido2_assertion: None,
         };
-        if let Ok(kepr_core::protocol::Response::GetOk { value, .. }) = send_request(&req) {
-            secrets.insert(name, value.as_str().into());
+        match send_request(&req) {
+            Ok(kepr_core::protocol::Response::GetOk { value, .. }) => {
+                secrets.insert(name, value.as_str().into());
+            }
+            Ok(other) => {
+                eprintln!("kepr-eso-provider: batch key '{name}' unexpected response: {other:?}");
+            }
+            Err(e) => {
+                eprintln!("kepr-eso-provider: batch key '{name}' failed: {e}");
+            }
         }
     }
 

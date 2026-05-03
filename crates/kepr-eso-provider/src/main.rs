@@ -20,7 +20,9 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                let _ = s.set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)));
+                if let Err(e) = s.set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS))) {
+                    eprintln!("kepr-eso-provider: set_read_timeout failed: {e}");
+                }
                 server::handle_connection(s);
             }
             Err(e) => eprintln!("kepr-eso-provider: accept error: {e}"),

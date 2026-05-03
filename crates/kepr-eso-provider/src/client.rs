@@ -18,8 +18,12 @@ pub fn send_request(req: &Request) -> Result<Response, String> {
     })?;
 
     let timeout = Duration::from_secs(TIMEOUT_SECS);
-    stream.set_read_timeout(Some(timeout)).ok();
-    stream.set_write_timeout(Some(timeout)).ok();
+    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
+        eprintln!("kepr-eso-provider: set_read_timeout failed: {e}");
+    }
+    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
+        eprintln!("kepr-eso-provider: set_write_timeout failed: {e}");
+    }
 
     let json = serde_json::to_vec(req).map_err(|e| format!("encode: {e}"))?;
     write_frame(&mut stream, &json).map_err(|e| format!("send: {e}"))?;
