@@ -78,7 +78,7 @@ libc = "0.2"
 # on `serde`/`toml_edit`-internal; the runtime cost is one parse on
 # CLI startup, far cheaper than serde_json's existing path. CLI-only —
 # the daemon never reads the manifest, so this stays out of kepr-core.
-toml = { version = "0.8", default-features = false, features = ["parse"] }
+toml = { version = "1.1", default-features = false, features = ["parse"] }
 # `kepr sync` cloud-backed credentials. ureq is the smallest sync
 # HTTP client in the Rust ecosystem (no async runtime, no Tokio).
 # rustls feature gives TLS without OpenSSL system dep, matching the
