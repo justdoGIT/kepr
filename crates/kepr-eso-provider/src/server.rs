@@ -76,7 +76,7 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     if parts.len() < 2 {
         return Err("malformed request line".into());
     }
-    let method = parts[0].to_uppercase();
+    let method = parts[0].to_ascii_uppercase();
     let path = parts[1].to_string();
 
     let mut header_count: usize = 0;
@@ -187,7 +187,7 @@ pub fn handle_connection(mut stream: TcpStream) {
             let name = path
                 .strip_prefix("/v1/secrets/")
                 .unwrap_or("")
-                .to_uppercase();
+                .to_ascii_uppercase();
             handle_get_secret(&mut stream, &name);
         }
 
@@ -231,10 +231,11 @@ fn handle_get_secret(stream: &mut TcpStream, name: &str) {
             );
         }
         Ok(other) => {
+            eprintln!("kepr-eso-provider: GET {name} unexpected response: {other:?}");
             json_response(
                 stream,
                 500,
-                &serde_json::json!({"error": format!("unexpected response: {other:?}")}),
+                &serde_json::json!({"error": "unexpected daemon response"}),
             );
         }
         Err(e) => {
@@ -276,7 +277,7 @@ fn handle_batch_secrets(stream: &mut TcpStream, body: &[u8]) {
     let mut errors = std::collections::HashMap::new();
 
     for key in &batch_req.keys {
-        let name = key.to_uppercase();
+        let name = key.to_ascii_uppercase();
         if let Err(e) = validate_name(&name) {
             eprintln!("kepr-eso-provider: batch skip invalid name '{name}': {e}");
             errors.insert(name, format!("invalid name: {e}"));
