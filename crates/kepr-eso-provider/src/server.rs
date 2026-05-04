@@ -45,6 +45,8 @@ struct SecretValue {
 #[derive(Debug, Serialize)]
 struct BatchResponse {
     secrets: std::collections::HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    errors: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,7 +175,9 @@ pub fn handle_connection(mut stream: TcpStream) {
         Err(e) => {
             eprintln!("kepr-eso-provider: parse_request failed: {e}");
             let body = serde_json::json!({"error": e}).to_string();
-            let _ = write_response(&mut stream, 400, &body);
+            if let Err(we) = write_response(&mut stream, 400, &body) {
+                eprintln!("kepr-eso-provider: write 400 response failed: {we}");
+            }
             return;
         }
     };
@@ -228,7 +232,7 @@ fn handle_get_secret(stream: &mut TcpStream, name: &str) {
             );
         }
         Ok(kepr_core::protocol::Response::Err { error }) => {
-            json_response(stream, 500, &serde_json::json!({"error": error}));
+            json_response(stream, 500, &serde_json::json!({"error": format!("daemon error: {error}")}));
         }
         Ok(other) => {
             json_response(
@@ -238,8 +242,8 @@ fn handle_get_secret(stream: &mut TcpStream, name: &str) {
             );
         }
         Err(e) => {
-            eprintln!("kepr-eso-provider: send_request(GET {name}) failed: {e}");
-            json_response(stream, 500, &serde_json::json!({"error": "internal error"}));
+            eprintln!("kepr-eso-provider: send_request(GET {name}) transport error: {e}");
+            json_response(stream, 500, &serde_json::json!({"error": "daemon unreachable"}));
         }
     }
 }
@@ -269,11 +273,13 @@ fn handle_batch_secrets(stream: &mut TcpStream, body: &[u8]) {
     }
 
     let mut secrets = std::collections::HashMap::with_capacity(batch_req.keys.len());
+    let mut errors = std::collections::HashMap::new();
 
     for key in &batch_req.keys {
         let name = key.to_uppercase();
         if let Err(e) = validate_name(&name) {
             eprintln!("kepr-eso-provider: batch skip invalid name '{name}': {e}");
+            errors.insert(name, format!("invalid name: {e}"));
             continue;
         }
         let req = kepr_core::protocol::Request::Get {
@@ -284,16 +290,23 @@ fn handle_batch_secrets(stream: &mut TcpStream, body: &[u8]) {
             Ok(kepr_core::protocol::Response::GetOk { value, .. }) => {
                 secrets.insert(name, value.as_str().into());
             }
+            Ok(kepr_core::protocol::Response::Err { error }) => {
+                eprintln!("kepr-eso-provider: batch key '{name}' daemon error: {error}");
+                errors.insert(name, error);
+            }
             Ok(other) => {
                 eprintln!("kepr-eso-provider: batch key '{name}' unexpected response: {other:?}");
+                errors.insert(name, "unexpected daemon response".into());
             }
             Err(e) => {
-                eprintln!("kepr-eso-provider: batch key '{name}' failed: {e}");
+                eprintln!("kepr-eso-provider: batch key '{name}' transport error: {e}");
+                errors.insert(name, format!("daemon unreachable: {e}"));
             }
         }
     }
 
-    json_response(stream, 200, &BatchResponse { secrets });
+    let errors = if errors.is_empty() { None } else { Some(errors) };
+    json_response(stream, 200, &BatchResponse { secrets, errors });
 }
 
 #[cfg(test)]
@@ -322,10 +335,31 @@ mod tests {
         let mut secrets = std::collections::HashMap::new();
         secrets.insert("K1".into(), "v1".into());
         secrets.insert("K2".into(), "v2".into());
-        let r = BatchResponse { secrets };
+        let r = BatchResponse {
+            secrets,
+            errors: None,
+        };
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains(r#""K1":"v1""#));
         assert!(json.contains(r#""K2":"v2""#));
+        // errors: None should be absent from serialized output
+        assert!(!json.contains("errors"));
+    }
+
+    #[test]
+    fn batch_response_serializes_with_errors() {
+        let mut secrets = std::collections::HashMap::new();
+        secrets.insert("K1".into(), "v1".into());
+        let mut errors = std::collections::HashMap::new();
+        errors.insert("K2".into(), "invalid name: bad chars".into());
+        let r = BatchResponse {
+            secrets,
+            errors: Some(errors),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains(r#""K1":"v1""#));
+        assert!(json.contains(r#""errors""#));
+        assert!(json.contains(r#""K2":"invalid name: bad chars""#));
     }
     #[test]
     fn validate_name_accepts_valid() {
@@ -465,5 +499,129 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         handle_connection(stream);
         t.join().unwrap();
+    }
+
+    // ── validate_name boundary tests ─────────────────────────────────
+
+    #[test]
+    fn validate_name_accepts_128_chars() {
+        let name = "A".repeat(128);
+        assert!(validate_name(&name).is_ok());
+    }
+
+    #[test]
+    fn validate_name_rejects_non_ascii() {
+        assert!(validate_name("KÉY").is_err());
+        assert!(validate_name("キー").is_err());
+        assert!(validate_name("ключ").is_err());
+    }
+
+    // ── Content-Length edge cases ────────────────────────────────────
+
+    #[test]
+    fn parse_request_rejects_negative_content_length() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(b"POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n")
+                .unwrap();
+        });
+        let (mut s, _) = listener.accept().unwrap();
+        let err = parse_request(&mut s).unwrap_err();
+        assert!(err.contains("invalid Content-Length"));
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn parse_request_rejects_non_numeric_content_length() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(b"POST / HTTP/1.1\r\nContent-Length: abc\r\n\r\n")
+                .unwrap();
+        });
+        let (mut s, _) = listener.accept().unwrap();
+        let err = parse_request(&mut s).unwrap_err();
+        assert!(err.contains("invalid Content-Length"));
+        t.join().unwrap();
+    }
+
+    // ── Route dispatch integration tests ─────────────────────────────
+
+    #[test]
+    fn handle_connection_get_health_returns_200() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            assert!(resp.contains("200 OK"));
+            assert!(resp.contains("Content-Type: application/json"));
+            assert!(resp.contains(r#"{"status":"ok"}"#));
+        });
+        let (stream, _) = listener.accept().unwrap();
+        handle_connection(stream);
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn error_response_includes_content_type_json() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(b"garbage\r\n\r\n").unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            assert!(resp.contains("Content-Type: application/json"));
+        });
+        let (stream, _) = listener.accept().unwrap();
+        handle_connection(stream);
+        t.join().unwrap();
+    }
+
+    // ── write_response status code tests ─────────────────────────────
+
+    #[test]
+    fn write_response_400_format() {
+        let mut buf = Vec::new();
+        write_response(&mut buf, 400, r#"{"error":"bad"}"#).unwrap();
+        let resp = String::from_utf8(buf).unwrap();
+        assert!(resp.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    }
+
+    #[test]
+    fn write_response_404_format() {
+        let mut buf = Vec::new();
+        write_response(&mut buf, 404, r#"{"error":"nf"}"#).unwrap();
+        let resp = String::from_utf8(buf).unwrap();
+        assert!(resp.starts_with("HTTP/1.1 404 Not Found\r\n"));
+    }
+
+    #[test]
+    fn write_response_500_format() {
+        let mut buf = Vec::new();
+        write_response(&mut buf, 500, r#"{"error":"ise"}"#).unwrap();
+        let resp = String::from_utf8(buf).unwrap();
+        assert!(resp.starts_with("HTTP/1.1 500 Internal Server Error\r\n"));
+    }
+
+    #[test]
+    fn json_response_writes_to_vec() {
+        let mut buf = Vec::new();
+        json_response(
+            &mut buf,
+            200,
+            &serde_json::json!({"key": "val"}),
+        );
+        let resp = String::from_utf8(buf).unwrap();
+        assert!(resp.contains(r#"{"key":"val"}"#));
+        assert!(resp.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(resp.contains("Content-Type: application/json"));
     }
 }
