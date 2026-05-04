@@ -52,17 +52,12 @@ struct BatchRequest {
     keys: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
-struct HealthResponse {
-    status: String,
-}
-
 // ── HTTP parsing ─────────────────────────────────────────────────────
 
+#[derive(Debug)]
 struct HttpRequest {
     method: String,
     path: String,
-    _headers: Vec<String>,
     body: Vec<u8>,
 }
 
@@ -124,12 +119,11 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     Ok(HttpRequest {
         method,
         path,
-        _headers: headers,
         body,
     })
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
+fn write_response(mut writer: impl Write, status: u16, body: &str) -> Result<(), String> {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -147,17 +141,17 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> Result<(),
          {body}",
         body.len()
     );
-    stream
+    writer
         .write_all(response.as_bytes())
         .map_err(|e| format!("write response: {e}"))
 }
 
-fn json_response(stream: &mut TcpStream, status: u16, payload: &impl Serialize) {
+fn json_response(mut writer: impl Write, status: u16, payload: &impl Serialize) {
     let body = serde_json::to_string(payload).unwrap_or_else(|e| {
         eprintln!("kepr-eso-provider: json_response serialize failed: {e}");
         r#"{"error":"encode failed"}"#.into()
     });
-    if let Err(e) = write_response(stream, status, &body) {
+    if let Err(e) = write_response(&mut writer, status, &body) {
         eprintln!("kepr-eso-provider: write_response failed: {e}");
     }
 }
@@ -189,9 +183,7 @@ pub fn handle_connection(mut stream: TcpStream) {
             json_response(
                 &mut stream,
                 200,
-                &HealthResponse {
-                    status: "ok".into(),
-                },
+                &serde_json::json!({"status": "ok"}),
             );
         }
 
@@ -309,14 +301,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn health_response_serializes() {
-        let r = HealthResponse {
-            status: "ok".into(),
-        };
-        assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"status":"ok"}"#);
-    }
-
-    #[test]
     fn secret_value_serializes() {
         let r = SecretValue {
             name: "MY_KEY".into(),
@@ -369,5 +353,117 @@ mod tests {
         let req: BatchRequest = serde_json::from_slice(&body).unwrap();
         assert_eq!(req.keys.len(), 101);
         assert!(req.keys.len() > MAX_BATCH_KEYS);
+    }
+
+    // ── HTTP protocol tests ──────────────────────────────────────────
+
+    #[test]
+    fn parse_request_valid_get() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            s.shutdown(std::net::Shutdown::Write).unwrap();
+        });
+        let (mut s, _) = listener.accept().unwrap();
+        let req = parse_request(&mut s).unwrap();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/health");
+        assert!(req.body.is_empty());
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn parse_request_rejects_malformed_line() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(b"garbage\r\n\r\n").unwrap();
+        });
+        let (mut s, _) = listener.accept().unwrap();
+        assert!(parse_request(&mut s).is_err());
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn parse_request_rejects_large_body() {
+        let large = vec![b'X'; 65_537];
+        let req = format!(
+            "POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            large.len()
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(req.as_bytes()).unwrap();
+        });
+        let (mut s, _) = listener.accept().unwrap();
+        let err = parse_request(&mut s).unwrap_err();
+        assert!(err.contains("body too large"));
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn parse_request_rejects_too_many_headers() {
+        let mut raw = "GET / HTTP/1.1\r\n".to_string();
+        for i in 0..65 {
+            raw.push_str(&format!("X-Hdr: {i}\r\n"));
+        }
+        raw.push_str("\r\n");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(raw.as_bytes()).unwrap();
+        });
+        let (mut s, _) = listener.accept().unwrap();
+        let err = parse_request(&mut s).unwrap_err();
+        assert!(err.contains("too many headers"));
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn write_response_200_format() {
+        let mut buf = Vec::new();
+        write_response(&mut buf, 200, r#"{"status":"ok"}"#).unwrap();
+        let resp = String::from_utf8(buf).unwrap();
+        assert!(resp.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(resp.contains("Content-Length: 15\r\n"));
+        assert!(resp.ends_with("\r\n\r\n{\"status\":\"ok\"}"));
+    }
+
+    #[test]
+    fn handle_connection_parse_error_returns_400() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(b"garbage\r\n\r\n").unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            assert!(resp.contains("400 Bad Request"));
+        });
+        let (stream, _) = listener.accept().unwrap();
+        handle_connection(stream);
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn handle_connection_unknown_route_returns_404() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            s.write_all(b"PUT /v1/secrets HTTP/1.1\r\n\r\n").unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            assert!(resp.contains("404 Not Found"));
+        });
+        let (stream, _) = listener.accept().unwrap();
+        handle_connection(stream);
+        t.join().unwrap();
     }
 }
