@@ -79,7 +79,7 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     let method = parts[0].to_uppercase();
     let path = parts[1].to_string();
 
-    let mut headers: Vec<String> = Vec::new();
+    let mut header_count: usize = 0;
     let mut content_length: usize = 0;
     loop {
         let mut line = String::new();
@@ -90,6 +90,10 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         if trimmed.is_empty() {
             break;
         }
+        if header_count >= MAX_HEADERS {
+            return Err(format!("too many headers (> {MAX_HEADERS})"));
+        }
+        header_count += 1;
         if let Some(len_str) = trimmed
             .to_lowercase()
             .strip_prefix("content-length:")
@@ -99,10 +103,6 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
                 .parse::<usize>()
                 .map_err(|e| format!("invalid Content-Length: {e}"))?;
         }
-        if headers.len() >= MAX_HEADERS {
-            return Err(format!("too many headers (> {MAX_HEADERS})"));
-        }
-        headers.push(trimmed.to_string());
     }
 
     let mut body = Vec::new();
@@ -121,7 +121,7 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     Ok(HttpRequest { method, path, body })
 }
 
-fn write_response(mut writer: impl Write, status: u16, body: &str) -> Result<(), String> {
+fn write_response(writer: &mut impl Write, status: u16, body: &str) -> Result<(), String> {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -144,12 +144,12 @@ fn write_response(mut writer: impl Write, status: u16, body: &str) -> Result<(),
         .map_err(|e| format!("write response: {e}"))
 }
 
-fn json_response(mut writer: impl Write, status: u16, payload: &impl Serialize) {
+fn json_response(writer: &mut impl Write, status: u16, payload: &impl Serialize) {
     let body = serde_json::to_string(payload).unwrap_or_else(|e| {
         eprintln!("kepr-eso-provider: json_response serialize failed: {e}");
         r#"{"error":"encode failed"}"#.into()
     });
-    if let Err(e) = write_response(&mut writer, status, &body) {
+    if let Err(e) = write_response(writer, status, &body) {
         eprintln!("kepr-eso-provider: write_response failed: {e}");
     }
 }
@@ -300,7 +300,7 @@ fn handle_batch_secrets(stream: &mut TcpStream, body: &[u8]) {
             }
             Err(e) => {
                 eprintln!("kepr-eso-provider: batch key '{name}' transport error: {e}");
-                errors.insert(name, format!("daemon unreachable: {e}"));
+                errors.insert(name, "daemon unreachable".into());
             }
         }
     }
