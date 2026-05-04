@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn read_env_complains_when_creds_missing() {
-        let _guard = ENV_TEST_MUTEX.lock().unwrap();
+        let _guard = ENV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // Snapshot + restore so other tests in the same binary
         // can't trip on whichever set we leave behind.
         let prior_ak = std::env::var("AWS_ACCESS_KEY_ID").ok();
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn read_env_falls_back_to_default_region() {
-        let _guard = ENV_TEST_MUTEX.lock().unwrap();
+        let _guard = ENV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let prior_ak = std::env::var("AWS_ACCESS_KEY_ID").ok();
         let prior_sk = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
         let prior_region = std::env::var("AWS_REGION").ok();
