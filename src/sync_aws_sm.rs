@@ -216,7 +216,11 @@ impl Syncer for AwsSmSyncer {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn from_path_stores_secret_id() {
@@ -236,6 +240,7 @@ mod tests {
 
     #[test]
     fn read_env_complains_when_creds_missing() {
+        let _guard = ENV_TEST_MUTEX.lock().unwrap();
         // Snapshot + restore so other tests in the same binary
         // can't trip on whichever set we leave behind.
         let prior_ak = std::env::var("AWS_ACCESS_KEY_ID").ok();
@@ -289,6 +294,7 @@ mod tests {
 
     #[test]
     fn read_env_falls_back_to_default_region() {
+        let _guard = ENV_TEST_MUTEX.lock().unwrap();
         let prior_ak = std::env::var("AWS_ACCESS_KEY_ID").ok();
         let prior_sk = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
         let prior_region = std::env::var("AWS_REGION").ok();
