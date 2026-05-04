@@ -118,11 +118,7 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
             .map_err(|e| format!("read body: {e}"))?;
     }
 
-    Ok(HttpRequest {
-        method,
-        path,
-        body,
-    })
+    Ok(HttpRequest { method, path, body })
 }
 
 fn write_response(mut writer: impl Write, status: u16, body: &str) -> Result<(), String> {
@@ -184,11 +180,7 @@ pub fn handle_connection(mut stream: TcpStream) {
 
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/health") => {
-            json_response(
-                &mut stream,
-                200,
-                &serde_json::json!({"status": "ok"}),
-            );
+            json_response(&mut stream, 200, &serde_json::json!({"status": "ok"}));
         }
 
         ("GET", path) if path.starts_with("/v1/secrets/") => {
@@ -232,7 +224,11 @@ fn handle_get_secret(stream: &mut TcpStream, name: &str) {
             );
         }
         Ok(kepr_core::protocol::Response::Err { error }) => {
-            json_response(stream, 500, &serde_json::json!({"error": format!("daemon error: {error}")}));
+            json_response(
+                stream,
+                500,
+                &serde_json::json!({"error": format!("daemon error: {error}")}),
+            );
         }
         Ok(other) => {
             json_response(
@@ -243,7 +239,11 @@ fn handle_get_secret(stream: &mut TcpStream, name: &str) {
         }
         Err(e) => {
             eprintln!("kepr-eso-provider: send_request(GET {name}) transport error: {e}");
-            json_response(stream, 500, &serde_json::json!({"error": "daemon unreachable"}));
+            json_response(
+                stream,
+                500,
+                &serde_json::json!({"error": "daemon unreachable"}),
+            );
         }
     }
 }
@@ -305,7 +305,11 @@ fn handle_batch_secrets(stream: &mut TcpStream, body: &[u8]) {
         }
     }
 
-    let errors = if errors.is_empty() { None } else { Some(errors) };
+    let errors = if errors.is_empty() {
+        None
+    } else {
+        Some(errors)
+    };
     json_response(stream, 200, &BatchResponse { secrets, errors });
 }
 
@@ -397,7 +401,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let t = std::thread::spawn(move || {
             let mut s = std::net::TcpStream::connect(addr).unwrap();
-            s.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            s.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .unwrap();
             s.shutdown(std::net::Shutdown::Write).unwrap();
         });
         let (mut s, _) = listener.accept().unwrap();
@@ -424,10 +429,7 @@ mod tests {
     #[test]
     fn parse_request_rejects_large_body() {
         let large = vec![b'X'; 65_537];
-        let req = format!(
-            "POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
-            large.len()
-        );
+        let req = format!("POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n", large.len());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let t = std::thread::spawn(move || {
@@ -614,11 +616,7 @@ mod tests {
     #[test]
     fn json_response_writes_to_vec() {
         let mut buf = Vec::new();
-        json_response(
-            &mut buf,
-            200,
-            &serde_json::json!({"key": "val"}),
-        );
+        json_response(&mut buf, 200, &serde_json::json!({"key": "val"}));
         let resp = String::from_utf8(buf).unwrap();
         assert!(resp.contains(r#"{"key":"val"}"#));
         assert!(resp.starts_with("HTTP/1.1 200 OK\r\n"));
