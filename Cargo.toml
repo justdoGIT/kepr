@@ -67,7 +67,7 @@ hex = "0.4"
 # Phase 2 η: getrandom is used by fido2.rs for challenge generation.
 # Already in the dep tree via rand_core (pulled by aes-gcm), but we
 # declare it explicitly so the module can `use getrandom` directly.
-getrandom = "0.2"
+getrandom = "0.4"
 # `kepr doctor` calls getgrnam(3) and getgroups(2) to verify the
 # invoking user is in the `kepr` group. The std lib has no portable
 # wrapper for either, so the libc crate is the lightest dep that
