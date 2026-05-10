@@ -32,7 +32,7 @@
 // the auth header) DON'T contain the secret — they contain the
 // derived signature, which is one-way.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use kepr_core::generate::ZeroString;
 use sha2::{Digest, Sha256};
 
