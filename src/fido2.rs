@@ -31,7 +31,7 @@ fn cs() -> &'static std::sync::Mutex<HashMap<String, std::time::Instant>> {
 /// Fresh 32-byte challenge, hex-encoded, stored for later verification.
 pub fn generate_challenge() -> String {
     let mut buf = [0u8; 32];
-    getrandom::getrandom(&mut buf).expect("CSPRNG must not fail");
+    getrandom::fill(&mut buf).expect("CSPRNG must not fail");
     let h = hex::encode(buf);
     cs().lock()
         .unwrap()
