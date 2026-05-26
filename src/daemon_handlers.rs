@@ -45,7 +45,19 @@ pub fn handle_set(
         generate::ZeroString::from_string(v.to_string())
     } else {
         let kind = generate.and_then(GenKind::from_str).unwrap_or(GenKind::Hex);
-        generate_secret(kind)
+        match generate_secret(kind) {
+            Ok(s) => s,
+            Err(e) => {
+                audit::log(&AuditEvent {
+                    op: "set",
+                    name: Some(&upper),
+                    uid,
+                    username,
+                    result: AuditResult::Fail(e.clone()),
+                });
+                return Response::fail(e);
+            }
+        }
     };
 
     match crypto::default_backend().encrypt(uid, &upper, secret.as_bytes()) {
@@ -173,6 +185,13 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
 
 pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
     if let Err(e) = validate_name(name) {
+        audit::log(&AuditEvent {
+            op: "delete",
+            name: Some(name),
+            uid,
+            username,
+            result: AuditResult::Fail(e.clone()),
+        });
         return Response::fail(e);
     }
 

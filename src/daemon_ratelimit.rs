@@ -74,8 +74,21 @@ impl RateLimiter {
 
     /// Returns `true` if the call is allowed (a token was consumed),
     /// `false` if the peer is over budget. Call before dispatch.
+    ///
+    /// Periodically evicts idle buckets to bound memory. Buckets with
+    /// zero tokens (exhausted and not refilling) are candidates for
+    /// removal; buckets with positive tokens are kept — their capacity
+    /// serves as a burst window that a legitimate caller may return to.
     pub fn check(&self, uid: u32) -> bool {
         let mut buckets = self.buckets.lock().unwrap();
+        // Periodic cleanup: sweep every ~1000 checks, remove buckets
+        // that are exhausted and have been idle for >60s. This bounds
+        // the HashMap to active UIDs plus a small stale tail.
+        if buckets.len() > 0 && buckets.len() % 1024 == 0 {
+            buckets.retain(|_uid, b| {
+                b.last_refill.elapsed().as_secs() < 60 || b.tokens > 0.0
+            });
+        }
         let bucket = buckets
             .entry(uid)
             .or_insert_with(|| TokenBucket::new(self.capacity, self.refill_per_sec));

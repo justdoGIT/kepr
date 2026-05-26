@@ -83,7 +83,19 @@ pub fn handle_get(
         // "credential unavailable". This lets the CLI transparently
         // initiate the FIDO2 ceremony.
         if reason.starts_with("fido2:") && fido2_assertion.is_none() {
-            let challenge = crate::fido2::generate_challenge();
+            let challenge = match crate::fido2::generate_challenge() {
+                Ok(c) => c,
+                Err(e) => {
+                    audit::log(&AuditEvent {
+                        op: "get",
+                        name: Some(&upper),
+                        uid,
+                        username,
+                        result: AuditResult::Fail(format!("fido2 challenge generation: {e}")),
+                    });
+                    return Response::fail("credential unavailable");
+                }
+            };
             let credential_ids = crate::fido2::credential_ids_for_uid(uid);
             // If we have no registered credentials for this user,
             // we can't return a useful challenge. In that case,

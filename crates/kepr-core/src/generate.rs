@@ -152,19 +152,21 @@ impl GenKind {
 struct UrandomRng;
 
 impl UrandomRng {
-    fn bytes(n: usize) -> Vec<u8> {
+    fn bytes(n: usize) -> Result<Vec<u8>, String> {
         let mut buf = vec![0u8; n];
-        let mut f = fs::File::open("/dev/urandom").expect("cannot open /dev/urandom");
-        f.read_exact(&mut buf).expect("cannot read /dev/urandom");
-        buf
+        let mut f =
+            fs::File::open("/dev/urandom").map_err(|e| format!("cannot open /dev/urandom: {e}"))?;
+        f.read_exact(&mut buf)
+            .map_err(|e| format!("cannot read /dev/urandom: {e}"))?;
+        Ok(buf)
     }
 
     /// Rejection sampling — uniform distribution, no modulo bias.
-    fn sample(alphabet: &[u8], len: usize) -> Vec<u8> {
+    fn sample(alphabet: &[u8], len: usize) -> Result<Vec<u8>, String> {
         let max = (256 / alphabet.len()) * alphabet.len();
         let mut result = Vec::with_capacity(len);
         while result.len() < len {
-            let batch = Self::bytes(len * 3);
+            let batch = Self::bytes(len * 3)?;
             for &b in &batch {
                 if result.len() >= len {
                     break;
@@ -174,16 +176,16 @@ impl UrandomRng {
                 }
             }
         }
-        result
+        Ok(result)
     }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-pub fn generate_secret(kind: GenKind) -> ZeroString {
+pub fn generate_secret(kind: GenKind) -> Result<ZeroString, String> {
     let s = match kind {
         GenKind::Hex => {
-            let bytes = UrandomRng::bytes(32);
+            let bytes = UrandomRng::bytes(32)?;
             bytes
                 .iter()
                 .map(|b| format!("{:02x}", b))
@@ -192,15 +194,17 @@ pub fn generate_secret(kind: GenKind) -> ZeroString {
 
         GenKind::Base62 => {
             const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-            String::from_utf8(UrandomRng::sample(ALPHA, 48)).unwrap()
+            String::from_utf8(UrandomRng::sample(ALPHA, 48)?)
+                .map_err(|e| format!("base62 generation: invalid UTF-8: {e}"))?
         }
 
         GenKind::Pass => {
             const ALPHA: &[u8] =
                 b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*-_=+";
             loop {
-                let bytes = UrandomRng::sample(ALPHA, 32);
-                let s = String::from_utf8(bytes).unwrap();
+                let bytes = UrandomRng::sample(ALPHA, 32)?;
+                let s = String::from_utf8(bytes)
+                    .map_err(|e| format!("pass generation: invalid UTF-8: {e}"))?;
                 if s.bytes().any(|b| b.is_ascii_uppercase())
                     && s.bytes().any(|b| b.is_ascii_lowercase())
                     && s.bytes().any(|b| b.is_ascii_digit())
@@ -212,7 +216,7 @@ pub fn generate_secret(kind: GenKind) -> ZeroString {
         }
 
         GenKind::Uuid => {
-            let b = UrandomRng::bytes(16);
+            let b = UrandomRng::bytes(16)?;
             // v4 third group is exactly 4 chars: literal '4' + 3 hex digits
             // (nibble from b[6] + full byte b[7]). {:x} on a masked nibble
             // emits one hex char; {:02x} on b[7] emits two.
@@ -227,7 +231,7 @@ pub fn generate_secret(kind: GenKind) -> ZeroString {
         }
     };
 
-    ZeroString(s)
+    Ok(ZeroString(s))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -268,7 +272,7 @@ mod tests {
 
     #[test]
     fn hex_format() {
-        let s = generate_secret(GenKind::Hex);
+        let s = generate_secret(GenKind::Hex).unwrap();
         assert_eq!(s.len(), 64, "hex secret is 32 bytes as hex");
         assert!(
             s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
@@ -278,7 +282,7 @@ mod tests {
 
     #[test]
     fn base62_format() {
-        let s = generate_secret(GenKind::Base62);
+        let s = generate_secret(GenKind::Base62).unwrap();
         assert_eq!(s.len(), 48);
         assert!(
             s.bytes().all(|b| b.is_ascii_alphanumeric()),
@@ -293,7 +297,7 @@ mod tests {
         // requirements. If that retry loop is ever removed, this test becomes
         // probabilistic — see the `loop { … }` inside `generate_secret`.
         for _ in 0..8 {
-            let s = generate_secret(GenKind::Pass);
+            let s = generate_secret(GenKind::Pass).unwrap();
             assert_eq!(s.len(), 32);
             assert!(s.bytes().any(|b| b.is_ascii_uppercase()), "needs upper");
             assert!(s.bytes().any(|b| b.is_ascii_lowercase()), "needs lower");
@@ -307,7 +311,7 @@ mod tests {
 
     #[test]
     fn uuid_v4_format() {
-        let s = generate_secret(GenKind::Uuid);
+        let s = generate_secret(GenKind::Uuid).unwrap();
         let bytes = s.as_bytes();
         assert_eq!(bytes.len(), 36, "uuid is 36 chars");
         // 8-4-4-4-12 dash positions
