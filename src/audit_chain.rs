@@ -516,8 +516,15 @@ mod tests {
     #[test]
     fn append_uses_0640_mode() {
         use std::os::unix::fs::PermissionsExt;
+        // The production code opens with .mode(0o640). The test
+        // process may have a restrictive umask that would strip
+        // group bits (e.g. 0o077 → file lands at 0o600).
+        // Temporarily clear umask so the test sees the intended
+        // mode rather than the umask-masked mode.
+        let saved = unsafe { libc::umask(0) };
         let (chain, dir) = fresh_chain();
         chain.append("set", None, 1000, "alice", "ok").unwrap();
+        unsafe { libc::umask(saved) };
         let mode = fs::metadata(dir.path().join("audit.log"))
             .unwrap()
             .permissions()
