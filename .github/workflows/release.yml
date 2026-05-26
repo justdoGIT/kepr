@@ -156,7 +156,7 @@ jobs:
           ref: ${{ needs.tag-check.outputs.tag }}
           fetch-depth: 0
 
-      - uses: taiki-e/install-action@db5fb34fa772531a3ece57ca434f579eb334e0fb # v2
+      - uses: taiki-e/install-action@920ab1831fbf4fb3ef75c8ead83556c918bb7290 # v2
         with:
           # Pin to a known git-cliff version so re-running the release
           # workflow against the same tag produces an identical changelog.
