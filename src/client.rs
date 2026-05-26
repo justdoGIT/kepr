@@ -15,8 +15,12 @@ pub fn send_request(req: &Request) -> Result<Response, String> {
     })?;
 
     let timeout = Duration::from_secs(TIMEOUT_SECS);
-    stream.set_read_timeout(Some(timeout)).ok();
-    stream.set_write_timeout(Some(timeout)).ok();
+    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
+        eprintln!("kepr: warning: failed to set read timeout: {e}");
+    }
+    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
+        eprintln!("kepr: warning: failed to set write timeout: {e}");
+    }
 
     let json = serde_json::to_vec(req).map_err(|e| format!("request encoding error: {e}"))?;
 

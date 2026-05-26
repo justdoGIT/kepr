@@ -122,6 +122,12 @@ impl AuditChain {
     /// tampered existing file is a hard error — the daemon
     /// should refuse to start rather than silently begin a fresh
     /// chain on top of corruption.
+    ///
+    /// NOTE: full-chain verification on every daemon start is O(N)
+    /// in the number of audit entries. A chain with millions of
+    /// entries may cause significant startup delay. TODO(#future):
+    /// defer verification to a background thread, or cache the last
+    /// verified head hash in a sibling checkpoint file.
     pub fn open(path: PathBuf) -> Result<Self, String> {
         let state = match fs::metadata(&path) {
             Ok(_) => {

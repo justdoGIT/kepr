@@ -29,14 +29,14 @@ fn cs() -> &'static std::sync::Mutex<HashMap<String, std::time::Instant>> {
 }
 
 /// Fresh 32-byte challenge, hex-encoded, stored for later verification.
-pub fn generate_challenge() -> String {
+pub fn generate_challenge() -> Result<String, String> {
     let mut buf = [0u8; 32];
-    getrandom::fill(&mut buf).expect("CSPRNG must not fail");
+    getrandom::fill(&mut buf).map_err(|e| format!("CSPRNG failure: {e}"))?;
     let h = hex::encode(buf);
     cs().lock()
         .unwrap()
         .insert(h.clone(), std::time::Instant::now());
-    h
+    Ok(h)
 }
 
 /// List credential IDs registered for a given uid.
@@ -324,15 +324,15 @@ mod tests {
 
     #[test]
     fn generate_challenge_is_64_hex_chars() {
-        let c = generate_challenge();
+        let c = generate_challenge().unwrap();
         assert_eq!(c.len(), 64);
         hex::decode(&c).expect("valid hex");
     }
 
     #[test]
     fn generate_challenge_is_unique() {
-        let a = generate_challenge();
-        let b = generate_challenge();
+        let a = generate_challenge().unwrap();
+        let b = generate_challenge().unwrap();
         assert_ne!(a, b);
     }
 
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn verify_challenge_accepts_valid_client_data_json() {
-        let hex_challenge = generate_challenge();
+        let hex_challenge = generate_challenge().unwrap();
         // Build clientDataJSON as the CLI would: hex-decode → base64url → JSON → hex
         let challenge_bytes = hex::decode(&hex_challenge).unwrap();
         use base64::Engine;
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn verify_challenge_is_one_time_use() {
-        let hex_challenge = generate_challenge();
+        let hex_challenge = generate_challenge().unwrap();
         let challenge_bytes = hex::decode(&hex_challenge).unwrap();
         use base64::Engine;
         let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge_bytes);
@@ -506,8 +506,8 @@ mod tests {
 
     #[test]
     fn generate_challenge_stores_in_global_store() {
-        let c1 = generate_challenge();
-        let c2 = generate_challenge();
+        let c1 = generate_challenge().unwrap();
+        let c2 = generate_challenge().unwrap();
         // Both should be in the store (not the same)
         assert_ne!(c1, c2);
         // Verify c1 is usable

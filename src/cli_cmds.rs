@@ -52,7 +52,10 @@ pub fn cmd_set(a: &Args) -> Response {
         if let Some(v) = &a.value {
             (Some(v.clone().into()), None)
         } else if a.generate {
-            let s = generate_secret(a.gen_kind);
+            let s = match generate_secret(a.gen_kind) {
+                Ok(s) => s,
+                Err(e) => return Response::fail(e),
+            };
             if !a.json {
                 ok(&format!(
                     "Generated {} secret ({} chars)",
@@ -111,7 +114,10 @@ pub fn cmd_set(a: &Args) -> Response {
                     "4" => GenKind::Uuid,
                     _ => GenKind::Hex,
                 };
-                let s = generate_secret(kind);
+                let s = match generate_secret(kind) {
+                    Ok(s) => s,
+                    Err(e) => return Response::fail(e),
+                };
                 // Intentionally do not preview the value — even a 12-char
                 // slice of a 36-char UUID leaks a third of the secret into
                 // stdout (and shell history). Confirm only kind + length.

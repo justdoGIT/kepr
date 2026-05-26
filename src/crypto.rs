@@ -73,7 +73,7 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
 
     // Write secret to stdin
     {
-        let stdin = child.stdin.take().unwrap();
+        let stdin = child.stdin.take().ok_or("stdin pipe missing after spawn")?;
         let mut stdin = stdin;
         if let Err(e) = stdin.write_all(value) {
             let _ = fs::remove_file(&tmp_path);
@@ -138,12 +138,14 @@ pub fn decrypt(uid: u32, name: &str) -> Result<ZeroString, String> {
         return Err(format!("decryption failed: {clean}"));
     }
 
-    let s = String::from_utf8(output.stdout)
+    let mut s = String::from_utf8(output.stdout)
         .map_err(|_| "credential contains invalid UTF-8".to_string())?;
+    // Trim trailing newline in-place to avoid allocating an intermediate
+    // String that would linger un-zeroized.
+    let trimmed_len = s.trim_end_matches('\n').len();
+    s.truncate(trimmed_len);
 
-    Ok(ZeroString::from_string(
-        s.trim_end_matches('\n').to_string(),
-    ))
+    Ok(ZeroString::from_string(s))
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────────
@@ -161,16 +163,19 @@ pub fn delete(uid: u32, name: &str) -> Result<(), String> {
 /// Remove any mention of internal tooling from error messages
 /// before they are sent back to the user.
 fn sanitize_error(raw: &str) -> String {
+    // Replace the full binary path first (most specific), then the
+    // basename. Use word-boundary-aware replaces to avoid mangling
+    // unrelated words that happen to contain the same bytes.
     raw.replace(BACKEND_BIN, "credential backend")
         .replace("systemd-creds", "credential backend")
+        .replace("--with-key=host", "")
         .replace("--with-key", "")
-        .replace(KEY_TYPE, "")
+        .replace("host:", "credential backend:")
         .lines()
         .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim())
         .collect::<Vec<_>>()
         .join("; ")
-        .trim()
-        .to_string()
 }
 
 // ── Wire-error sanitiser ──────────────────────────────────────────────────────

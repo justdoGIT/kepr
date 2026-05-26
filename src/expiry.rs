@@ -100,9 +100,12 @@ impl CredMeta {
 /// Compute the expected meta-file path for a given cred path.
 /// Pure function; no I/O. The caller decides whether to read or write.
 pub fn meta_path_for(cred_path: &Path) -> PathBuf {
-    let mut p = cred_path.as_os_str().to_owned();
-    p.push(META_SUFFIX);
-    PathBuf::from(p)
+    // Append <cred>.meta by converting to a string and pushing the
+    // suffix. Using PathBuf methods avoids the raw OsStr manipulation
+    // the previous implementation relied on.
+    let mut s = cred_path.to_path_buf().into_os_string();
+    s.push(META_SUFFIX);
+    PathBuf::from(s)
 }
 
 /// Current wall-clock time as a unix timestamp. Wraps the
