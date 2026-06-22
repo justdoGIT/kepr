@@ -22,7 +22,7 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -34,7 +34,7 @@ jobs:
       run:
         working-directory: docs
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: "20"
@@ -63,7 +63,7 @@ jobs:
   #     matrix:
   #       language: [rust, javascript-typescript]
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7
   #
   #     - name: Install Rust toolchain
   #       if: matrix.language == 'rust'
@@ -89,7 +89,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           format: spdx-json
