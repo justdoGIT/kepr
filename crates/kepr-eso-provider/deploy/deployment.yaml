@@ -24,6 +24,11 @@ spec:
           env:
             - name: KEPR_ESO_LISTEN
               value: "0.0.0.0:8080"
+            - name: KEPR_ESO_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kepr-eso-provider-auth
+                  key: token
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false

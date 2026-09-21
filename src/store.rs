@@ -29,13 +29,13 @@ pub fn to_cred_name(uid: u32, env_var: &str) -> String {
 
 /// kepr-<uid>-env-var-name → ENV_VAR_NAME
 pub fn from_cred_name(cred_name: &str) -> Option<(u32, String)> {
-    // Strip "kepr-" prefix
+    // Strip "kepr-" prefix and parse the uid.
     let rest = cred_name.strip_prefix(&format!("{}-", CRED_PREFIX))?;
-    // Parse uid
     let dash = rest.find('-')?;
     let uid: u32 = rest[..dash].parse().ok()?;
     let env_var = rest[dash + 1..].to_uppercase().replace('-', "_");
-    Some((uid, env_var))
+    validate_name(&env_var).ok()?;
+    (to_cred_name(uid, &env_var) == cred_name).then_some((uid, env_var))
 }
 
 /// Validate credential name — only A-Z, 0-9, underscore allowed.
@@ -161,6 +161,12 @@ mod tests {
         assert!(from_cred_name("notkepr-1000-foo").is_none());
         assert!(from_cred_name("kepr-abc-foo").is_none()); // non-numeric uid
         assert!(from_cred_name("kepr-").is_none()); // no uid/name
+    }
+
+    #[test]
+    fn from_cred_name_rejects_sidecars() {
+        assert!(from_cred_name("kepr-1000-foo.meta").is_none());
+        assert!(from_cred_name("kepr-1000-foo.tmp.123").is_none());
     }
 
     #[test]
