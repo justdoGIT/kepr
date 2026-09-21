@@ -22,8 +22,12 @@ use kepr_core::protocol::Response;
 /// the resolver call.
 fn resolve_env_for(args: &Args) -> Result<Vec<String>, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("getcwd: {e}"))?;
-    let (resolved, _used) =
-        cli_manifest::resolve(&args.env_vars, args.manifest_path.as_deref(), &cwd)?;
+    let resolver = if std::env::var("KEPR_AUTO_MANIFEST").as_deref() == Ok("1") {
+        cli_manifest::resolve_with_auto_discovery
+    } else {
+        cli_manifest::resolve
+    };
+    let (resolved, _used) = resolver(&args.env_vars, args.manifest_path.as_deref(), &cwd)?;
     Ok(resolved)
 }
 
