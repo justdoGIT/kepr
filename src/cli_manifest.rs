@@ -20,10 +20,10 @@
 //
 //   1. `--env CSV` on the CLI (explicit user override)
 //   2. `--manifest /path/to/.kepr.toml` (explicit pin)
-//   3. auto-discovery by walking up from `$PWD`
 //
-// If none yield a non-empty list, the calling command falls back
-// to its existing "no vars specified" error.
+// Ancestor auto-discovery is intentionally opt-in through
+// `KEPR_AUTO_MANIFEST=1`; this prevents an untrusted checkout from
+// supplying a manifest that injects credentials into a child process.
 
 use std::fs;
 use std::path::{Path, PathBuf};

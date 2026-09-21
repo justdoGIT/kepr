@@ -243,11 +243,12 @@ alone.
   shell-injection in the existing `kepr get --export` path
   (previously printed `export NAME=value` unquoted; any `$VAR` /
   `$(cmd)` would have detonated inside the user's `eval`).
-- `src/cli_manifest.rs` (PR #66) — `.kepr.toml` parser + walk-up
-  auto-discovery from `$PWD`. Resolution precedence
-  `--env CSV > --manifest PATH > auto-discovery`; both `kepr exec`
-  and `kepr env` route through `cli_activity::resolve_env_for` so
-  the precedence is centralised.
+- `src/cli_manifest.rs` (PR #66) — `.kepr.toml` parser with explicit
+  `--manifest PATH` loading and opt-in walk-up discovery from `$PWD`.
+  Safe default resolution is `--env CSV > --manifest PATH`; callers that
+  intentionally trust the working tree can set `KEPR_AUTO_MANIFEST=1` to
+  enable the third `auto-discovery` fallback. Both `kepr exec` and
+  `kepr env` route through `cli_activity::resolve_env_for`.
 - Third `[[bin]]` `docker-credential-kepr` at `src/docker_helper.rs`
   (PR #67) — implements the docker credential-helper protocol
   (`get` / `store` / `erase` / `list` over stdin/stdout JSON) by
