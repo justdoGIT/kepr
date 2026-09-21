@@ -137,8 +137,7 @@ pub fn rotate_with_hook<H: HookRunner>(
     if name.is_empty() {
         return Err("rotate requires a credential name".to_string());
     }
-    let new_value = generate_secret(kind)
-        .map_err(|e| format!("rotate: generate failed: {e}"))?;
+    let new_value = generate_secret(kind).map_err(|e| format!("rotate: generate failed: {e}"))?;
 
     // Hook gets the candidate value. If it returns Err, we
     // return Err — the cred-store is NEVER touched.
