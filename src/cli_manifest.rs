@@ -102,17 +102,33 @@ pub fn parse_file(path: &Path) -> Result<Manifest, String> {
 }
 
 /// Resolve the effective list of required env vars, applying the
-/// precedence: CLI `--env` > `--manifest path` > auto-discovery.
-/// Returns the resolved list (possibly empty) and the path of the
-/// manifest used (or None if the CLI list was the only input).
-///
-/// The caller decides what to do with an empty result: `cmd_exec`
-/// rejects it as "must specify --env", but a hypothetical
-/// `kepr env --all` could surface every cred in the user's store.
+/// precedence: CLI `--env` > `--manifest path`. Auto-discovery is
+/// intentionally disabled by this safe default because an untrusted
+/// checkout can provide a `.kepr.toml` that causes secrets to be
+/// injected into an arbitrary child process.
 pub fn resolve(
     cli_env: &[String],
     explicit_manifest: Option<&Path>,
     auto_start: &Path,
+) -> Result<(Vec<String>, Option<PathBuf>), String> {
+    resolve_internal(cli_env, explicit_manifest, auto_start, false)
+}
+
+/// Resolve credentials with ancestor manifest discovery explicitly enabled.
+/// The CLI exposes this through `KEPR_AUTO_MANIFEST=1`.
+pub fn resolve_with_auto_discovery(
+    cli_env: &[String],
+    explicit_manifest: Option<&Path>,
+    auto_start: &Path,
+) -> Result<(Vec<String>, Option<PathBuf>), String> {
+    resolve_internal(cli_env, explicit_manifest, auto_start, true)
+}
+
+fn resolve_internal(
+    cli_env: &[String],
+    explicit_manifest: Option<&Path>,
+    auto_start: &Path,
+    auto_discover: bool,
 ) -> Result<(Vec<String>, Option<PathBuf>), String> {
     if !cli_env.is_empty() {
         return Ok((cli_env.to_vec(), None));
@@ -121,9 +137,11 @@ pub fn resolve(
         let m = parse_file(p)?;
         return Ok((m.env_required, Some(p.to_path_buf())));
     }
-    if let Some(p) = find_manifest(auto_start) {
-        let m = parse_file(&p)?;
-        return Ok((m.env_required, Some(p)));
+    if auto_discover {
+        if let Some(p) = find_manifest(auto_start) {
+            let m = parse_file(&p)?;
+            return Ok((m.env_required, Some(p)));
+        }
     }
     Ok((Vec::new(), None))
 }
@@ -310,9 +328,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(MANIFEST_FILENAME);
         fs::write(&path, "[env]\nrequired = [\"FOO\"]\n").unwrap();
-        let (resolved, used) = resolve(&[], None, dir.path()).unwrap();
+        let (resolved, used) = resolve_with_auto_discovery(&[], None, dir.path()).unwrap();
         assert_eq!(resolved, vec!["FOO"]);
         assert!(used.is_some(), "auto-discovered path must be reported");
+    }
+
+    #[test]
+    fn resolve_does_not_auto_discover_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(MANIFEST_FILENAME),
+            "[env]\nrequired = [\"UNTRUSTED\"]\n",
+        )
+        .unwrap();
+        let (resolved, used) = resolve(&[], None, dir.path()).unwrap();
+        assert!(resolved.is_empty());
+        assert!(used.is_none());
     }
 
     #[test]

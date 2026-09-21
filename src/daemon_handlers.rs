@@ -108,6 +108,11 @@ pub fn handle_set(
                     };
                     return Response::fail(user_msg);
                 }
+            } else {
+                // Replacing a flagged credential without flags must clear
+                // the old sidecar, otherwise TTL/consent/FIDO2 policy leaks
+                // into the replacement and can make it inaccessible.
+                expiry::delete_meta(&expiry::meta_path_for(&cred_path(uid, &upper)));
             }
 
             let cred_name = store::to_cred_name(uid, &upper);
