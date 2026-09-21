@@ -17,9 +17,8 @@ use kepr_core::protocol::Response;
 
 /// Resolve `(env_vars, manifest_path)` into the effective list of
 /// credentials for this invocation. Centralised here so `kepr exec`
-/// and `kepr env` apply the same precedence (CLI > --manifest >
-/// auto-discovery from $PWD) without each module re-implementing
-/// the resolver call.
+/// and `kepr env` apply the same safe precedence (CLI > --manifest).
+/// Ancestor discovery is available only with `KEPR_AUTO_MANIFEST=1`.
 fn resolve_env_for(args: &Args) -> Result<Vec<String>, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("getcwd: {e}"))?;
     let resolver = if std::env::var("KEPR_AUTO_MANIFEST").as_deref() == Ok("1") {
