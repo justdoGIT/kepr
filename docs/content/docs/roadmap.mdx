@@ -35,6 +35,27 @@ codebase. `valid` means the finding stands and is on the roadmap;
 `already-done` means the property is in place and we will pin it with a
 test instead of a rewrite.
 
+## Current implementation status
+
+The gap analysis below is the historical Phase 0 review that guided the
+roadmap. The current `main` tree has since landed the Phase 0 foundation and
+most of the Phase 1 and Phase 2 Linux work:
+
+- **Shipped:** in-process AES-GCM encryption, sealed master key loading,
+  end-to-end `ZeroString` protocol values, socket umask hardening, per-UID
+  rate limiting, capability and syscall sandboxing, `kepr-core`, `kepr exec`,
+  `kepr env`, `.kepr.toml` manifests, `kepr doctor`, Docker credential
+  helper, rotation hooks, TTL expiry, polkit consent, FIDO2 registration and
+  unlock, hash-chained audit verification, ESO integration, and Vault/AWS/GCP
+  sync adapters.
+- **Still missing:** macOS Keychain/XPC support, Phase 3 team mode, Rekor
+  anchoring, SLSA-3 hermetic builds, the STRIDE threat-model document, and
+  committed fuzz harnesses. The Phase 0/Phase 1 release tags and the manual
+  end-to-end validation gate are also still pending.
+- **Operational follow-up:** the historical gap bullets should not be read as
+  a report of the current tree; use the shipped/missing lists above when
+  prioritising the next release.
+
 ### Architecture
 
 - **Fork+exec per operation, plaintext via `Command::output()`** —
@@ -222,11 +243,12 @@ alone.
   shell-injection in the existing `kepr get --export` path
   (previously printed `export NAME=value` unquoted; any `$VAR` /
   `$(cmd)` would have detonated inside the user's `eval`).
-- `src/cli_manifest.rs` (PR #66) — `.kepr.toml` parser + walk-up
-  auto-discovery from `$PWD`. Resolution precedence
-  `--env CSV > --manifest PATH > auto-discovery`; both `kepr exec`
-  and `kepr env` route through `cli_activity::resolve_env_for` so
-  the precedence is centralised.
+- `src/cli_manifest.rs` (PR #66) — `.kepr.toml` parser with explicit
+  `--manifest PATH` loading and opt-in walk-up discovery from `$PWD`.
+  Safe default resolution is `--env CSV > --manifest PATH`; callers that
+  intentionally trust the working tree can set `KEPR_AUTO_MANIFEST=1` to
+  enable the third `auto-discovery` fallback. Both `kepr exec` and
+  `kepr env` route through `cli_activity::resolve_env_for`.
 - Third `[[bin]]` `docker-credential-kepr` at `src/docker_helper.rs`
   (PR #67) — implements the docker credential-helper protocol
   (`get` / `store` / `erase` / `list` over stdin/stdout JSON) by

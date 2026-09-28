@@ -155,9 +155,9 @@ pub fn parse_args() -> Result<Args, String> {
                 i += 1;
             }
             "--manifest" => {
-                // Explicit pin to a `.kepr.toml`. Beats auto-discovery,
-                // loses to an explicit `--env CSV`. The resolver in
-                // cli_manifest::resolve enforces the precedence.
+                // Explicit pin to a `.kepr.toml`; it loses only to an
+                // explicit `--env CSV`. Ancestor auto-discovery is opt-in
+                // through `KEPR_AUTO_MANIFEST=1`.
                 i += 1;
                 let p = raw.get(i).ok_or("--manifest needs a path")?;
                 manifest_path = Some(std::path::PathBuf::from(p));

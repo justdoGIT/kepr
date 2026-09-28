@@ -9,12 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::client::send_request;
 
-// ── Limits ────────────────────────────────────────────
-
 const MAX_BODY_BYTES: usize = 65_536; // 64 KB max HTTP body
 const MAX_BATCH_KEYS: usize = 100; // max keys per batch request
 const MAX_HEADERS: usize = 64; // cap header count to prevent memory exhaustion
-
+const MAX_HEADER_BYTES: usize = 8_192; // bound a single request/header line
 /// Mirror daemon's `store::validate_name` so bad names are rejected early.
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
@@ -54,15 +52,13 @@ struct BatchRequest {
     keys: Vec<String>,
 }
 
-// ── HTTP parsing ─────────────────────────────────────────────────────
-
 #[derive(Debug)]
 struct HttpRequest {
     method: String,
     path: String,
+    authorization: Option<String>,
     body: Vec<u8>,
 }
-
 /// Parse a minimal HTTP request. Only handles what ESO sends — no
 /// chunked encoding, no keep-alive, no multi-line headers.
 fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
@@ -72,6 +68,9 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     reader
         .read_line(&mut request_line)
         .map_err(|e| format!("read request line: {e}"))?;
+    if request_line.len() > MAX_HEADER_BYTES {
+        return Err("request line too large".into());
+    }
     let parts: Vec<&str> = request_line.trim().splitn(3, ' ').collect();
     if parts.len() < 2 {
         return Err("malformed request line".into());
@@ -81,11 +80,15 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
 
     let mut header_count: usize = 0;
     let mut content_length: usize = 0;
+    let mut authorization = None;
     loop {
         let mut line = String::new();
         reader
             .read_line(&mut line)
             .map_err(|e| format!("read header: {e}"))?;
+        if line.len() > MAX_HEADER_BYTES {
+            return Err("header line too large".into());
+        }
         let trimmed = line.trim();
         if trimmed.is_empty() {
             break;
@@ -94,14 +97,15 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
             return Err(format!("too many headers (> {MAX_HEADERS})"));
         }
         header_count += 1;
-        if let Some(len_str) = trimmed
-            .to_lowercase()
-            .strip_prefix("content-length:")
-            .map(|s| s.trim().to_string())
-        {
-            content_length = len_str
-                .parse::<usize>()
-                .map_err(|e| format!("invalid Content-Length: {e}"))?;
+        if let Some((name, value)) = trimmed.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid Content-Length: {e}"))?;
+            } else if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_string());
+            }
         }
     }
 
@@ -116,15 +120,24 @@ fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         limited
             .read_to_end(&mut body)
             .map_err(|e| format!("read body: {e}"))?;
+        if body.len() != content_length {
+            return Err("request body truncated".into());
+        }
     }
 
-    Ok(HttpRequest { method, path, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        authorization,
+        body,
+    })
 }
 
 fn write_response(writer: &mut impl Write, status: u16, body: &str) -> Result<(), String> {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
         500 => "Internal Server Error",
@@ -142,6 +155,19 @@ fn write_response(writer: &mut impl Write, status: u16, body: &str) -> Result<()
     writer
         .write_all(response.as_bytes())
         .map_err(|e| format!("write response: {e}"))
+}
+
+fn authorized(request: &HttpRequest, expected: Option<&str>) -> bool {
+    match expected {
+        Some(token) => {
+            request
+                .authorization
+                .as_deref()
+                .and_then(|value| value.strip_prefix("Bearer "))
+                == Some(token)
+        }
+        None => true,
+    }
 }
 
 fn json_response(writer: &mut impl Write, status: u16, payload: &impl Serialize) {
@@ -163,9 +189,7 @@ fn json_response(writer: &mut impl Write, status: u16, payload: &impl Serialize)
 ///   POST /v1/secrets       → batch (body: {"keys": [...]})
 ///
 /// ESO SecretStore config:
-///   url: "http://<host>:8080/v1/secrets/{{ .remoteRef.key }}"
-///   result.jsonPath: "$.value"
-pub fn handle_connection(mut stream: TcpStream) {
+pub fn handle_connection(mut stream: TcpStream, auth_token: Option<&str>) {
     let req = match parse_request(&mut stream) {
         Ok(r) => r,
         Err(e) => {
@@ -177,6 +201,16 @@ pub fn handle_connection(mut stream: TcpStream) {
             return;
         }
     };
+
+    let protected = req.path == "/v1/secrets" || req.path.starts_with("/v1/secrets/");
+    if protected && !authorized(&req, auth_token) {
+        json_response(
+            &mut stream,
+            401,
+            &serde_json::json!({"error": "unauthorized"}),
+        );
+        return;
+    }
 
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/health") => {
@@ -366,6 +400,20 @@ mod tests {
         assert!(json.contains(r#""errors""#));
         assert!(json.contains(r#""K2":"invalid name: bad chars""#));
     }
+
+    #[test]
+    fn bearer_auth_requires_exact_expected_token() {
+        let request = HttpRequest {
+            method: "GET".into(),
+            path: "/v1/secrets/KEY".into(),
+            authorization: Some("Bearer secret".into()),
+            body: Vec::new(),
+        };
+        assert!(authorized(&request, Some("secret")));
+        assert!(!authorized(&request, Some("other")));
+        assert!(!authorized(&request, Some("secret ")));
+        assert!(authorized(&request, None));
+    }
     #[test]
     fn validate_name_accepts_valid() {
         assert!(validate_name("MY_KEY").is_ok());
@@ -484,7 +532,7 @@ mod tests {
             assert!(resp.contains("400 Bad Request"));
         });
         let (stream, _) = listener.accept().unwrap();
-        handle_connection(stream);
+        handle_connection(stream, None);
         t.join().unwrap();
     }
 
@@ -500,7 +548,7 @@ mod tests {
             assert!(resp.contains("404 Not Found"));
         });
         let (stream, _) = listener.accept().unwrap();
-        handle_connection(stream);
+        handle_connection(stream, None);
         t.join().unwrap();
     }
 
@@ -568,7 +616,7 @@ mod tests {
             assert!(resp.contains(r#"{"status":"ok"}"#));
         });
         let (stream, _) = listener.accept().unwrap();
-        handle_connection(stream);
+        handle_connection(stream, None);
         t.join().unwrap();
     }
 
@@ -584,7 +632,7 @@ mod tests {
             assert!(resp.contains("Content-Type: application/json"));
         });
         let (stream, _) = listener.accept().unwrap();
-        handle_connection(stream);
+        handle_connection(stream, None);
         t.join().unwrap();
     }
 
