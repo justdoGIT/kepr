@@ -21,9 +21,7 @@ jobs:
       tag:     ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v7
 
       - id: resolve
         env:
@@ -67,7 +65,7 @@ jobs:
     env:
       VERSION: ${{ needs.tag-check.outputs.version }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@v7
         with:
           # workflow_dispatch may target an older tag — pin to the
           # resolved tag, not whatever main currently points at.
@@ -164,7 +162,7 @@ jobs:
     outputs:
       body: ${{ steps.cliff.outputs.content }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@v7
         with:
           # Same reason as the build job — re-runs may target an older tag.
           ref: ${{ needs.tag-check.outputs.tag }}
