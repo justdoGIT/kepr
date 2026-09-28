@@ -84,10 +84,8 @@ impl RateLimiter {
         // Periodic cleanup: sweep every ~1000 checks, remove buckets
         // that are exhausted and have been idle for >60s. This bounds
         // the HashMap to active UIDs plus a small stale tail.
-        if buckets.len() > 0 && buckets.len() % 1024 == 0 {
-            buckets.retain(|_uid, b| {
-                b.last_refill.elapsed().as_secs() < 60 || b.tokens > 0.0
-            });
+        if !buckets.is_empty() && buckets.len().is_multiple_of(1024) {
+            buckets.retain(|_uid, b| b.last_refill.elapsed().as_secs() < 60 || b.tokens > 0.0);
         }
         let bucket = buckets
             .entry(uid)

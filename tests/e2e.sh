@@ -707,11 +707,12 @@ else
     fail "kepr env emitted ${NAME_A} despite ${MISSING_C} missing"
 fi
 
-# ── 20. .kepr.toml manifest auto-discovery ───────────────────────────────────
+# Auto-discovery is an explicit opt-in because a checkout can contain an
+# untrusted `.kepr.toml`; production callers should pass `--env` or `--manifest`.
+# This test exercises the opt-in compatibility path.
 # Phase 1 γ: a project-local `.kepr.toml` declares which credentials
-# this directory expects. `kepr exec` / `kepr env` find it by walking
-# up from $PWD, the same way `git`, `cargo`, and `direnv` do.
-step "20. .kepr.toml manifest is auto-discovered and supplies --env"
+# this directory expects.
+step "20. opt-in .kepr.toml manifest discovery supplies --env"
 
 NAME="${PREFIX}MANIFEST_VAR"
 VAL="manifest-sentinel-$(date +%N)"
@@ -728,7 +729,7 @@ required = ["$NAME"]
 TOML
 mkdir -p "$proj/sub/dir"
 
-env_out=$(cd "$proj/sub/dir" && kepr env 2>&1 || true)
+env_out=$(cd "$proj/sub/dir" && KEPR_AUTO_MANIFEST=1 kepr env 2>&1 || true)
 if echo "$env_out" | grep -qF "export ${NAME}=" \
     && echo "$env_out" | grep -qF "$VAL"; then
     pass "kepr env discovers .kepr.toml from a nested cwd"
@@ -742,7 +743,7 @@ NAME2="${PREFIX}MANIFEST_OVERRIDE"
 VAL2="override-sentinel-$(date +%N)"
 kepr --json set "$NAME2" --value "$VAL2" >/dev/null
 
-env_out=$(cd "$proj/sub/dir" && kepr env --env "$NAME2" 2>&1 || true)
+env_out=$(cd "$proj/sub/dir" && KEPR_AUTO_MANIFEST=1 kepr env --env "$NAME2" 2>&1 || true)
 if echo "$env_out" | grep -qF "export ${NAME2}=" \
     && ! echo "$env_out" | grep -qF "export ${NAME}="; then
     pass "--env CSV overrides the manifest"

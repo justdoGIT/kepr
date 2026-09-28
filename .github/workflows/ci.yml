@@ -21,10 +21,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, beta]
+        toolchain: ["1.87.0", stable, beta]
     steps:
       - uses: actions/checkout@v7
-
       - name: Install Rust toolchain
         # Pinned to a specific commit (stable branch) to prevent supply-chain
         # drift. Dependabot keeps this current.
@@ -55,8 +54,7 @@ jobs:
         working-directory: docs
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "20"
           cache: npm
