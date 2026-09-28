@@ -21,7 +21,7 @@ jobs:
       tag:     ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - id: resolve
         env:
@@ -30,8 +30,20 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${DISPATCH_TAG:-$REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            echo "::error::release pushes must come from a v* tag"
+            exit 1
+          fi
+          if [[ "$TAG" != v* ]]; then
+            echo "::error::release tag must start with v"
+            exit 1
+          fi
+          if [ "$(git cat-file -t "refs/tags/$TAG" 2>/dev/null || true)" != "tag" ]; then
+            echo "::error::$TAG must be an annotated tag"
+            exit 1
+          fi
           VERSION="${TAG#v}"
-          CRATE_VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          CRATE_VERSION=$(git show "refs/tags/$TAG:Cargo.toml" | grep -m1 '^version' | cut -d'"' -f2)
           if [ "$VERSION" != "$CRATE_VERSION" ] && [ "${VERSION%-*}" != "$CRATE_VERSION" ]; then
             echo "::error::tag $TAG (version $VERSION) does not match Cargo.toml version $CRATE_VERSION"
             exit 1
@@ -53,7 +65,7 @@ jobs:
     env:
       VERSION: ${{ needs.tag-check.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # workflow_dispatch may target an older tag — pin to the
           # resolved tag, not whatever main currently points at.
@@ -128,7 +140,7 @@ jobs:
       # public, this step will start running again with no further changes.
       - name: Attest build provenance
         if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4 # v4
         with:
           subject-path: |
             dist/*.deb
@@ -136,7 +148,7 @@ jobs:
             dist/*.tar.gz
 
       - name: Upload dist/ as workflow artefact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: kepr-release
           path: dist/
@@ -150,7 +162,7 @@ jobs:
     outputs:
       body: ${{ steps.cliff.outputs.content }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Same reason as the build job — re-runs may target an older tag.
           ref: ${{ needs.tag-check.outputs.tag }}
@@ -183,13 +195,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: kepr-release
           path: dist/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           tag_name: ${{ needs.tag-check.outputs.tag }}
           name:     kepr ${{ needs.tag-check.outputs.tag }}

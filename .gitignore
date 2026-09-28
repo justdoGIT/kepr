@@ -2,6 +2,7 @@
 .claude/settings.local.json
 .claude/.session*
 .claude/todos*
+.claude/agents/deep*
 
 # Claude Plugins
 entities.json
@@ -12,9 +13,8 @@ mempalace.yaml
 .omc/
 .remember/
 .serena/
+.grepai
+graphify-out
 
 # Rust build
 target/
-
-
-
