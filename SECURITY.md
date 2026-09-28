@@ -60,19 +60,23 @@ Settings → Code security.
 Documented in `DOCS.md` §2 (Design patterns) and §3.4 (Hardening).
 Highlights:
 
-- The CLI is unprivileged; all cryptographic operations happen in
-  the root daemon over a Unix socket.
-- Peer identity is kernel-attested (`SO_PEERCRED`) — request uids
-  are never trusted.
-- Credential values are kept in `ZeroString` buffers that wipe
-  memory on drop; the daemon calls `mlockall` to keep decrypted
-  bytes off swap.
-- Credential values are never written to the audit log. Only
-  `op`, `name`, `uid`, `user`, and `result` fields appear in the
-  journal.
+- The CLI is unprivileged; cryptographic operations happen in the daemon over
+  a Unix socket. User mode runs entirely under the invoking user's account;
+  system mode can use the root daemon.
+- Peer identity is kernel-attested (`SO_PEERCRED`) and user-mode requests must
+  match the daemon owner; request uids are never trusted.
+- Credential values are kept in `ZeroString` buffers that wipe memory on drop;
+  the daemon calls `mlockall` where permitted to keep decrypted bytes off swap.
+- Credential values are never written to the audit log. Only `op`, `name`,
+  `uid`, `user`, and `result` fields appear in the journal.
+- Credential input should use `kepr set NAME --stdin`; `--value` is retained
+  only for compatibility and exposes the value through process arguments.
+- `kepr lock` wraps the random AES master key with Argon2id + AES-256-GCM,
+  removes the unwrapped local key, and clears the daemon's in-memory key.
+  Unlock failures are covered by the daemon's per-peer rate limiter.
 - The systemd unit applies `ProtectSystem=strict`,
-  `MemoryDenyWriteExecute`, `RestrictNamespaces`, `LockPersonality`,
-  and related sandboxing flags.
+  `MemoryDenyWriteExecute`, `RestrictNamespaces`, `LockPersonality`, and
+  related sandboxing flags.
 
 ## Out-of-scope
 

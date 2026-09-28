@@ -36,6 +36,7 @@ zeroize = { version = "1.8", features = ["zeroize_derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 aes-gcm = "0.10"
+argon2 = "0.6"
 # `audit_chain` hashes each event with SHA-256 to form an append-only
 # chain on `/var/lib/kepr/audit.log`. RustCrypto's `sha2` is the
 # standard pure-Rust impl; aes-gcm already pulls related primitives,
@@ -113,16 +114,15 @@ panic = "abort"
 maintainer = "kepr maintainers"
 section = "admin"
 priority = "optional"
-depends = "$auto, systemd, adduser"
+depends = "$auto"
 extended-description = """
-kepr is a per-user credential manager for Linux. An unprivileged
-CLI talks to a root systemd service over a Unix socket; the daemon
-owns all encryption, decryption, and audit logging. Designed for
-hosts where many users need isolated credential storage without
-granting sudo."""
+kepr is a per-user credential manager for Linux. The default user-mode CLI
+starts its own daemon and has no systemd or root-service dependency. Optional
+system deployments can use the shipped systemd unit.
+"""
 assets = [
     ["target/release/kepr",                    "/usr/local/bin/kepr",                   "0755"],
-    ["target/release/kepr-daemon",             "/usr/local/sbin/kepr-daemon",           "0700"],
+    ["target/release/kepr-daemon",             "/usr/local/bin/kepr-daemon",            "0755"],
     ["target/release/docker-credential-kepr",  "/usr/local/bin/docker-credential-kepr", "0755"],
     ["systemd/kepr.service",       "/lib/systemd/system/kepr.service","0644"],
     ["completions/kepr.bash",      "/usr/share/bash-completion/completions/kepr", "0644"],
@@ -142,10 +142,10 @@ maintainer-scripts = "packaging/debian"
 
 [package.metadata.generate-rpm]
 license = "MIT OR Apache-2.0"
-requires = { systemd = "*", shadow-utils = "*" }
+requires = {}
 assets = [
     { source = "target/release/kepr",                   dest = "/usr/local/bin/kepr",                   mode = "0755" },
-    { source = "target/release/kepr-daemon",            dest = "/usr/local/sbin/kepr-daemon",           mode = "0700" },
+    { source = "target/release/kepr-daemon",            dest = "/usr/local/bin/kepr-daemon",            mode = "0755" },
     { source = "target/release/docker-credential-kepr", dest = "/usr/local/bin/docker-credential-kepr", mode = "0755" },
     { source = "systemd/kepr.service",       dest = "/lib/systemd/system/kepr.service",mode = "0644" },
     { source = "completions/kepr.bash",      dest = "/usr/share/bash-completion/completions/kepr", mode = "0644" },
@@ -155,17 +155,19 @@ assets = [
     { source = "LICENSE-APACHE",             dest = "/usr/share/doc/kepr/LICENSE-APACHE",mode = "0644", doc = true },
 ]
 post_install_script = """
-getent group kepr >/dev/null || groupadd --system kepr
-systemctl daemon-reload || true
-systemctl enable --now kepr.service || true
+if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm= 2>/dev/null)" = systemd ]; then
+  getent group kepr >/dev/null || groupadd --system kepr
+  systemctl daemon-reload || true
+  systemctl enable --now kepr.service || true
+fi
 """
 pre_uninstall_script = """
-if [ $1 -eq 0 ]; then
-    systemctl disable --now kepr.service || true
+if [ $1 -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl disable --now kepr.service || true
 fi
 """
 post_uninstall_script = """
-if [ $1 -eq 0 ]; then
-    systemctl daemon-reload || true
+if [ $1 -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload || true
 fi
 """

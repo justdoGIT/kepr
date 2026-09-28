@@ -11,8 +11,20 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub const CREDSTORE: &str = "/etc/credstore.encrypted";
 pub const CRED_PREFIX: &str = "kepr";
+
+pub fn store_dir() -> PathBuf {
+    if std::env::var_os("KEPR_SYSTEM_MODE").is_some() {
+        PathBuf::from("/etc/credstore.encrypted")
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share")
+            })
+            .join("kepr/credentials")
+    }
+}
 
 // ── Naming ────────────────────────────────────────────────────────────────────
 
@@ -61,20 +73,21 @@ pub fn validate_name(name: &str) -> Result<(), String> {
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
 pub fn cred_path(uid: u32, name: &str) -> PathBuf {
-    Path::new(CREDSTORE).join(to_cred_name(uid, name))
+    store_dir().join(to_cred_name(uid, name))
 }
 
-pub fn store_path() -> &'static Path {
-    Path::new(CREDSTORE)
+pub fn store_path() -> PathBuf {
+    store_dir()
 }
 
 // ── List creds for a specific uid ─────────────────────────────────────────────
 
 pub fn list_for_uid(uid: u32) -> Vec<(String, PathBuf)> {
+    let store = store_dir();
     let prefix = format!("{}-{}-", CRED_PREFIX, uid);
     let mut results = vec![];
 
-    if let Ok(entries) = fs::read_dir(CREDSTORE) {
+    if let Ok(entries) = fs::read_dir(&store) {
         let mut files: Vec<_> = entries
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))

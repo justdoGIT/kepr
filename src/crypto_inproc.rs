@@ -47,7 +47,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use aes_gcm::Aes256Gcm;
@@ -83,31 +83,55 @@ const COUNTER_LEN: usize = 8; // u64 LE inside the v2 plaintext
 ///             value means the on-disk file was rolled back and the
 ///             read is refused.
 pub struct InProcBackend {
-    master_key: Zeroizing<[u8; 32]>,
+    master_key: Arc<RwLock<Option<Zeroizing<[u8; 32]>>>>,
     store_dir: PathBuf,
     versions: Arc<VersionState>,
 }
 
 impl InProcBackend {
-    /// Construct with the production credstore at /etc/credstore.encrypted/.
     pub fn new(master_key: [u8; 32], versions: Arc<VersionState>) -> Self {
-        Self::with_store_dir(master_key, PathBuf::from(store::CREDSTORE), versions)
+        Self::with_store_dir(master_key, crate::store::store_dir(), versions)
     }
 
-    /// Construct with an explicit store dir. Tests inject a tempdir
-    /// via this constructor so they never touch the live credstore;
-    /// the daemon will also use it in a future PR that exposes the
-    /// credstore path through a config file.
     pub fn with_store_dir(
         master_key: [u8; 32],
         store_dir: PathBuf,
         versions: Arc<VersionState>,
     ) -> Self {
         Self {
-            master_key: Zeroizing::new(master_key),
+            master_key: Arc::new(RwLock::new(Some(Zeroizing::new(master_key)))),
             store_dir,
             versions,
         }
+    }
+
+    pub fn lock(&self) {
+        *self.master_key.write().expect("master-key lock poisoned") = None;
+    }
+
+    pub fn unlock(&self, master_key: [u8; 32]) -> Result<(), String> {
+        let mut key = self
+            .master_key
+            .write()
+            .map_err(|_| "master-key lock poisoned")?;
+        if key.is_some() {
+            return Err("credential store is already unlocked".to_string());
+        }
+        *key = Some(Zeroizing::new(master_key));
+        Ok(())
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.master_key
+            .read()
+            .map(|key| key.is_none())
+            .unwrap_or(true)
+    }
+    pub fn snapshot_key(&self) -> Option<[u8; 32]> {
+        self.master_key
+            .read()
+            .ok()
+            .and_then(|key| key.as_ref().map(|key| **key))
     }
 
     fn cred_path(&self, uid: u32, name: &str) -> PathBuf {
@@ -115,24 +139,28 @@ impl InProcBackend {
     }
 
     fn aad(uid: u32, name: &str) -> Vec<u8> {
-        // u32 LE || name bytes. Stable wire format for the AEAD additional
-        // data; future schemes can introduce a new MAGIC and alternate AAD
-        // layout side-by-side.
         let mut out = Vec::with_capacity(4 + name.len());
         out.extend_from_slice(&uid.to_le_bytes());
         out.extend_from_slice(name.as_bytes());
         out
     }
 
-    fn cipher(&self) -> Aes256Gcm {
-        Aes256Gcm::new(self.master_key.as_slice().into())
+    fn cipher(&self) -> Result<Aes256Gcm, String> {
+        let key = self
+            .master_key
+            .read()
+            .map_err(|_| "master-key lock poisoned".to_string())?;
+        let key = key
+            .as_ref()
+            .ok_or_else(|| "credential store is locked".to_string())?;
+        Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "invalid master key".to_string())
     }
 }
 
 impl Backend for InProcBackend {
     fn encrypt(&self, uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
         let cred_name = store::to_cred_name(uid, name);
-        let cipher = self.cipher();
+        let cipher = self.cipher()?;
         let aad = Self::aad(uid, name);
         let cred_path = self.cred_path(uid, name);
 
@@ -204,8 +232,8 @@ impl Backend for InProcBackend {
         let ciphertext = &blob[header_len..];
         let aad = Self::aad(uid, name);
 
-        let plaintext = self
-            .cipher()
+        let cipher = self.cipher()?;
+        let plaintext = cipher
             .decrypt(
                 &nonce_bytes.into(),
                 Payload {
@@ -548,7 +576,7 @@ mod tests {
 
         // Manually craft a v1 file: kepr_v1 magic + nonce + AES-GCM
         // ciphertext over the plaintext bytes (no counter prefix).
-        let cipher = b.cipher();
+        let cipher = b.cipher().unwrap();
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let aad = InProcBackend::aad(TEST_UID, "LEGACY");
         let ciphertext = cipher
@@ -585,7 +613,7 @@ mod tests {
         b.encrypt(TEST_UID, "DOWNGRADE", b"v2-secret").unwrap(); // state=1
 
         // Plant a syntactically-valid v1 file under the same cred-name.
-        let cipher = b.cipher();
+        let cipher = b.cipher().unwrap();
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let aad = InProcBackend::aad(TEST_UID, "DOWNGRADE");
         let ciphertext = cipher

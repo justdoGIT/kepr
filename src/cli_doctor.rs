@@ -24,7 +24,7 @@ use std::ffi::CString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use kepr_core::protocol::{Request, Response, SOCKET_PATH};
+use kepr_core::protocol::{socket_path, Request, Response};
 
 use crate::client;
 
@@ -108,9 +108,8 @@ pub fn run<D: Diagnostic + ?Sized>(checks: &[Box<D>]) -> DoctorReport {
 
 // ── Production diagnostics ────────────────────────────────────────────────
 
-/// Verify the daemon's listening socket is present, owned root:kepr,
-/// and at mode 0660. Catches the post-install path where the user
-/// forgot to start the service, or chmod'd the socket by mistake.
+/// Verify the daemon's listening socket is present and has the expected
+/// permissions for the active system or user mode.
 pub struct SocketCheck;
 
 impl Diagnostic for SocketCheck {
@@ -118,16 +117,26 @@ impl Diagnostic for SocketCheck {
         "daemon socket"
     }
     fn evaluate(&self) -> Result<String, String> {
-        let meta = fs::metadata(SOCKET_PATH).map_err(|_| {
-            format!("{SOCKET_PATH} missing — run `sudo systemctl start kepr.service`")
+        let path = socket_path();
+        let meta = fs::metadata(&path).map_err(|_| {
+            format!(
+                "{} missing — run `kepr` to start user mode or start kepr-daemon",
+                path.display()
+            )
         })?;
         let mode = meta.permissions().mode() & 0o777;
-        if mode != 0o660 {
+        let expected = if std::env::var_os("KEPR_SYSTEM_MODE").is_some() {
+            0o660
+        } else {
+            0o600
+        };
+        if mode != expected {
             return Err(format!(
-                "{SOCKET_PATH} is {mode:o}, expected 660 — run `sudo systemctl restart kepr.service`"
+                "{} is {mode:o}, expected {expected:o}",
+                path.display()
             ));
         }
-        Ok(format!("{SOCKET_PATH} (mode {mode:o})"))
+        Ok(format!("{} (mode {mode:o})", path.display()))
     }
 }
 
