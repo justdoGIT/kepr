@@ -26,6 +26,14 @@ pub fn create_sealed_memfd(name: &str, secret: &[u8]) -> Result<RawFd, String> {
     #[cfg(target_os = "linux")]
     {
         // MFD_CLOEXEC = 0x0001, MFD_ALLOW_SEALING = 0x0002
+        // SAFETY: `memfd_create` is a Linux-only syscall with no `libc`
+        // wrapper (added in kernel 3.17, glibc added a wrapper later than
+        // the MSRV floor this crate targets, so we go through
+        // `libc::syscall` directly). `c_name` is a valid, NUL-terminated
+        // `CString` owned by this function and outlives the call; the
+        // flags are the two documented bit constants above. The syscall
+        // returns either a valid new fd (>= 0) or -1 with `errno` set — no
+        // aliasing or lifetime hazards are introduced by making the call.
         let fd = unsafe {
             libc::syscall(
                 libc::SYS_memfd_create,
@@ -42,38 +50,53 @@ pub fn create_sealed_memfd(name: &str, secret: &[u8]) -> Result<RawFd, String> {
         }
 
         if !secret.is_empty() {
-            let written = unsafe {
-                libc::write(
-                    fd,
-                    secret.as_ptr() as *const libc::c_void,
-                    secret.len(),
-                )
-            };
+            // SAFETY: `fd` was just returned by the successful
+            // `memfd_create` call above and is not yet closed or aliased.
+            // `secret.as_ptr()` is valid for `secret.len()` bytes for the
+            // duration of this call (borrowed from the caller's slice).
+            let written =
+                unsafe { libc::write(fd, secret.as_ptr() as *const libc::c_void, secret.len()) };
             if written < 0 || (written as usize) != secret.len() {
                 let err = std::io::Error::last_os_error();
+                // SAFETY: `fd` is the sole owner of this memfd at this
+                // point (never duplicated or handed to another owner);
+                // closing it once here and returning is the error-cleanup
+                // path, so no double-close or use-after-close follows.
                 unsafe { libc::close(fd) };
                 return Err(format!("memfd write failed: {err}"));
             }
         }
 
+        // SAFETY: `fd` is the open memfd from above; `lseek` only repositions
+        // its cursor and cannot invalidate the descriptor.
         let seek_res = unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
         if seek_res < 0 {
             let err = std::io::Error::last_os_error();
+            // SAFETY: see the write-failure cleanup path above — single,
+            // terminal close of an fd we still exclusively own.
             unsafe { libc::close(fd) };
             return Err(format!("memfd lseek failed: {err}"));
         }
 
         // Apply read-only seals
         // F_SEAL_SEAL = 0x0001, F_SEAL_SHRINK = 0x0002, F_SEAL_GROW = 0x0004, F_SEAL_WRITE = 0x0008
-        let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+        let seals =
+            libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+        // SAFETY: `fd` is the open memfd from above; `fcntl(F_ADD_SEALS)`
+        // only mutates kernel-side seal state for this inode, no memory
+        // hazard on our side.
         let seal_res = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) };
         if seal_res < 0 {
             let err = std::io::Error::last_os_error();
+            // SAFETY: see the write-failure cleanup path above.
             unsafe { libc::close(fd) };
             return Err(format!("memfd sealing failed: {err}"));
         }
 
         // Clear FD_CLOEXEC so the descriptor is inherited across process exec
+        // SAFETY: `fd` is the open, sealed memfd from above; `fcntl`
+        // (F_GETFD/F_SETFD) only reads/writes the descriptor's own flag
+        // word and cannot invalidate it.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
         if flags >= 0 {
             unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };

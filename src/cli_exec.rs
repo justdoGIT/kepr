@@ -305,7 +305,10 @@ mod tests {
         let resp = cmd_exec(&[], &[], &["/bin/echo".to_string()]);
         match resp {
             Response::Err { error } => {
-                assert!(error.contains("--env or --memfd"), "error names --env or --memfd: {error}");
+                assert!(
+                    error.contains("--env or --memfd"),
+                    "error names --env or --memfd: {error}"
+                );
             }
             other => panic!("expected Err, got {other:?}"),
         }
@@ -317,10 +320,15 @@ mod tests {
         let f = fetcher_with(&[("OPENAI_KEY", Ok("ram_secret_value_99"))]);
         let vars = vec!["OPENAI_KEY".to_string()];
         let env = build_memfd_env(&vars, &f).expect("build_memfd_env succeeded");
-        let fd_val = env.get("KEPR_FD_OPENAI_KEY").expect("KEPR_FD_OPENAI_KEY present");
+        let fd_val = env
+            .get("KEPR_FD_OPENAI_KEY")
+            .expect("KEPR_FD_OPENAI_KEY present");
         let fd: i32 = fd_val.parse().expect("fd is integer");
         let read_back = std::fs::read_to_string(format!("/proc/self/fd/{fd}")).expect("read fd");
         assert_eq!(read_back, "ram_secret_value_99");
+        // SAFETY: `fd` was parsed from the `KEPR_FD_OPENAI_KEY` value this
+        // test just created via `build_memfd_env`; it is open, owned solely
+        // by this test, and not referenced again after this point.
         unsafe { libc::close(fd) };
     }
 
