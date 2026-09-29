@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./.github/assets/kepr.png" alt="kepr" style="max-width: 1280px; width: 100%; height: auto;">
+  <img src="./.github/assets/kepr.png" alt="kepr" width="220" height="220">
 </p>
 
 # Kepr — The Developer-Native Secret Vault That Kills `.env` Leaks
@@ -9,11 +9,11 @@ Kepr is a per-user secret vault for Linux and macOS, written in Rust (`kepr` CLI
 It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/environ` leaks by delivering secrets directly into process memory via **RAM-sealed memory file descriptors (`memfd`)**.
 
 ```
-┌──────────────────────────┐         /run/kepr/kepr.sock         ┌──────────────────────────┐
-│  kepr  (user process)   │ ◀──── framed JSON IPC / peer creds ─▶ │ kepr-daemon  (user/root) │
-│  unprivileged CLI / SDK  │                                           │ Argon2id + AES-256-GCM   │
-└──────────────────────────┘                                           │ memory-sealed RAM FDs    │
-                                                                       └──────────────────────────┘
+┌──────────────────────────┐         /run/kepr/kepr.sock          ┌──────────────────────────┐
+│  kepr  (user process)    │ ◀──── framed JSON IPC / peer creds ─▶│ kepr-daemon  (user/root) │
+│  unprivileged CLI / SDK  │                                      │ Argon2id + AES-256-GCM   │
+└──────────────────────────┘                                      │ memory-sealed RAM FDs    │
+                                                                  └──────────────────────────┘
                                                                                  │
                                                                                  ▼
                                                                 ~/.local/share/kepr/credentials/
