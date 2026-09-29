@@ -35,7 +35,7 @@
 use hmac::{Hmac, Mac};
 use kepr_core::generate::ZeroString;
 use sha2::{Digest, Sha256};
-
+use zeroize::Zeroizing;
 type HmacSha256 = Hmac<Sha256>;
 
 /// Inputs to a single SigV4-signed request. The signer doesn't
@@ -159,7 +159,7 @@ pub fn sign(input: &SigV4Input<'_>) -> SigV4Headers {
     );
 
     // Derive signing key: kSecret → kDate → kRegion → kService → kSigning.
-    let mut k = Vec::with_capacity(4 + input.secret_key.as_str().len());
+    let mut k = Zeroizing::new(Vec::with_capacity(4 + input.secret_key.as_str().len()));
     k.extend_from_slice(b"AWS4");
     k.extend_from_slice(input.secret_key.as_str().as_bytes());
     let k_date = hmac(&k, date_stamp.as_bytes());
@@ -194,10 +194,10 @@ fn hex_sha256(bytes: &[u8]) -> String {
     hex(&h.finalize())
 }
 
-fn hmac(key: &[u8], msg: &[u8]) -> Vec<u8> {
+fn hmac(key: &[u8], msg: &[u8]) -> Zeroizing<Vec<u8>> {
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(msg);
-    mac.finalize().into_bytes().to_vec()
+    Zeroizing::new(mac.finalize().into_bytes().to_vec())
 }
 
 fn hex(bytes: &[u8]) -> String {
