@@ -121,34 +121,44 @@ kepr set DATABASE_PASSWORD --generate --gen-kind pass
 
 ### Backup Master Key
 
+Pipe straight through encryption — never let the raw key touch disk
+unencrypted, not even briefly:
+
 ```bash
-sudo cp /var/lib/kepr/master.key ~/kepr-master-key.backup
-sudo chmod 0600 ~/kepr-master-key.backup
+sudo cat /var/lib/kepr/master.key | gpg --symmetric --cipher-algo AES256 \
+  --output ~/kepr-master-key.backup.gpg
 ```
 
 <Warning>
-  Never store this file unencrypted on untrusted systems. Use `gpg` or another
-  encryption tool.
+  Store `kepr-master-key.backup.gpg` offline (encrypted external drive,
+  hardware token). Anyone who recovers this file *and* your `gpg`
+  passphrase can decrypt every credential in the store.
 </Warning>
 
 ### Export All Credentials
 
+Same rule: encrypt on the way out, don't write plaintext and rely on
+remembering to shred it afterward.
+
 ```bash
-kepr --json list | jq '.credentials[].name' | while read name; do
+kepr --json list | jq -r '.credentials[].name' | while read -r name; do
   value=$(kepr get "$name" --quiet)
-  echo "$name=$value"
-done > ~/kepr-export.txt
+  printf '%s=%s\n' "$name" "$value"
+done | gpg --symmetric --cipher-algo AES256 --output ~/kepr-export.txt.gpg
 ```
 
 <Warning>
-  This creates a plaintext file. Shred it immediately after use.
+  If a tool in your pipeline truly requires a plaintext file on disk,
+  write it to a `mktemp` file with `0600` permissions, use it
+  immediately, then `shred -u` it in the same shell step — never leave
+  a plaintext export resident, even under a "delete it later" plan.
 </Warning>
 
 ### Restore from Backup
 
 ```bash
 sudo systemctl stop kepr
-sudo cp ~/kepr-master-key.backup /var/lib/kepr/master.key
+gpg --decrypt ~/kepr-master-key.backup.gpg | sudo tee /var/lib/kepr/master.key >/dev/null
 sudo chown root:root /var/lib/kepr/master.key
 sudo chmod 0600 /var/lib/kepr/master.key
 sudo systemctl start kepr
