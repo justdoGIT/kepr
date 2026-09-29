@@ -1,8 +1,18 @@
-//! Cross-platform KeyringBackend trait and host keyring implementations.
+//! Cross-platform `KeyringBackend` trait and host keyring implementations.
+//!
+//! STATUS: only `LinuxKeyringBackend` is a deliberate design choice today
+//! (see its doc comment). `MacOSKeyringBackend` and `WindowsKeyringBackend`
+//! are trait-conformant placeholders that do **not** yet call the Keychain
+//! or DPAPI APIs their names suggest — they currently perform the exact
+//! same "prepend a label, store the raw key" no-op as the Linux backend.
+//! Do not advertise macOS/Windows master-key protection as
+//! OS-keyring-backed until real `Security.framework` / `CryptProtectData`
+//! FFI lands here; tracked as a follow-up (no Windows/macOS CI runner
+//! exists in this repo to validate real platform crypto FFI).
 
 use zeroize::Zeroizing;
 
-/// KeyringBackend for sealing and unsealing master keys using OS keyrings or envelope backends.
+/// Seal/unseal a 32-byte AES master key against a host-specific backend.
 pub trait KeyringBackend: Send + Sync {
     /// Human-readable name of the keyring backend.
     fn name(&self) -> &'static str;
@@ -38,7 +48,10 @@ impl KeyringBackend for LinuxKeyringBackend {
     }
 }
 
-/// macOS Keychain backend wrapper.
+/// PLACEHOLDER — not wired to macOS Keychain yet. Currently performs the
+/// same unencrypted label+key envelope as `LinuxKeyringBackend`; real
+/// protection relies entirely on the 0600 file permissions of the state
+/// directory that stores the sealed blob, same as Linux. See module docs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MacOSKeyringBackend;
 
@@ -64,7 +77,10 @@ impl KeyringBackend for MacOSKeyringBackend {
     }
 }
 
-/// Windows DPAPI (`CryptProtectData`) backend wrapper.
+/// PLACEHOLDER — not wired to Windows DPAPI (`CryptProtectData`) yet.
+/// Currently performs the same unencrypted label+key envelope as
+/// `LinuxKeyringBackend`; real protection relies entirely on host
+/// filesystem ACLs on the state directory. See module docs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WindowsKeyringBackend;
 
