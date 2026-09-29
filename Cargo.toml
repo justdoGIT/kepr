@@ -69,6 +69,12 @@ hex = "0.4"
 # Already in the dep tree via rand_core (pulled by aes-gcm), but we
 # declare it explicitly so the module can `use getrandom` directly.
 getrandom = "0.4"
+# Phase 2 password-protected master key (`kepr unlock --password`).
+# `argon2` is the RustCrypto pure-Rust Argon2id implementation used by
+# key_unlock.rs to derive the AES-256-GCM key that wraps the random
+# master key from a user password. `password-hash` feature stays off —
+# we only need `hash_password_into`, not the PHC string format.
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 # `kepr doctor` calls getgrnam(3) and getgroups(2) to verify the
 # invoking user is in the `kepr` group. The std lib has no portable
 # wrapper for either, so the libc crate is the lightest dep that

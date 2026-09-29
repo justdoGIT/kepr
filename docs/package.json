@@ -13,7 +13,7 @@
   "dependencies": {
     "@mermaid-js/layout-elk": "^0.2.1",
     "fumadocs-core": "^14.7.0",
-    "fumadocs-mdx": "^15.0.12",
+    "fumadocs-mdx": "^11.10.1",
     "fumadocs-ui": "^14.7.0",
     "mermaid": "^11.17.2",
     "next": "^15.5.26",
@@ -28,13 +28,14 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "autoprefixer": "^10.4.20",
-    "postcss": "^8.5.12",
+    "postcss": "^8.5.23",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
     "unist-util-visit": "^5.1.0"
   },
   "overrides": {
-    "postcss": "^8.5.12",
-    "uuid": "^14.0.0"
+    "postcss": "^8.5.23",
+    "uuid": "^14.0.0",
+    "image-size": "^2.0.4"
   }
 }

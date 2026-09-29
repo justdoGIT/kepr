@@ -59,5 +59,12 @@ export const docs = defineDocs({
 export default defineConfig({
   mdxOptions: {
     remarkPlugins: [remarkMermaid],
+    // No local images in content/docs; disabled to avoid depending on
+    // image-size's removed default export (see docs/package.json
+    // overrides — image-size is pinned to >=2.0.4 for CVE fixes, but
+    // fumadocs-core's bundled remark-image plugin still imports the
+    // v1-only default export, which is undefined on v2 and would throw
+    // if this plugin ever ran against a local image).
+    remarkImageOptions: false,
   },
 });

@@ -4,6 +4,14 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Cancel superseded runs on repeated `synchronize` pushes during active PR
+# iteration — each run consumes OpenRouter's shared 50-requests/day free-tier
+# quota (see MODEL_CANDIDATES below), so letting stale runs pile up and
+# finish anyway wastes quota on reviews of code that's already been amended.
+concurrency:
+  group: pr-reviewer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   agent-review:
     runs-on: ubuntu-latest
@@ -27,34 +35,24 @@ jobs:
         run: |
           DIFF_LINES=$(gh pr diff "$PR" 2>/dev/null | wc -l || echo "0")
           echo "lines=$DIFF_LINES" >> "$GITHUB_OUTPUT"
-          if   [ "$DIFF_LINES" -lt 50  ]; then effort="low"
-          elif [ "$DIFF_LINES" -lt 300 ]; then effort="medium"
-          else                                  effort="high"
-          fi
-          echo "effort=$effort" >> "$GITHUB_OUTPUT"
-          echo "Diff lines: $DIFF_LINES → effort: $effort"
+          echo "Diff lines: $DIFF_LINES"
 
-      # ── Step 2: Select model based on effort ────────────────────────────
-      - name: Select model
+      # ── Step 2: Check for OpenRouter access ─────────────────────────────
+      # Free-tier only: every model tried below carries a ":free" OpenRouter
+      # suffix (zero token cost). No paid model is ever selected — if every
+      # free candidate is unavailable (gated, rate-limited, or down) the run
+      # step below exits without commenting rather than falling back to a
+      # paid model.
+      - name: Check OpenRouter key
         id: provider
         env:
-          DEEPSEEK_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          EFFORT: ${{ steps.diff_size.outputs.effort }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          if [ -n "$DEEPSEEK_KEY" ]; then
-            echo "enabled=true"   >> "$GITHUB_OUTPUT"
-            echo "provider=deepseek" >> "$GITHUB_OUTPUT"
-            case "$EFFORT" in
-              low)    main="deepseek-v4-flash" ; sub="deepseek-v4-flash" ;;
-              medium) main="deepseek-v4-flash" ; sub="deepseek-v4-flash" ;;
-              *)      main="deepseek-v4-flash"   ; sub="deepseek-v4-flash" ;;
-            esac
-            echo "model=$main"         >> "$GITHUB_OUTPUT"
-            echo "subagent_model=$sub" >> "$GITHUB_OUTPUT"
-            echo "Using DeepSeek — main: $main  sub: $sub  effort: $EFFORT"
+          if [[ -n "$OPENROUTER_KEY" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "No DEEPSEEK_API_KEY configured — skipping agent review"
+            echo "No OPENROUTER_API_KEY configured — skipping agent review"
           fi
 
       # ── Step 3: Install Pi agent ────────────────────────────────────────
@@ -72,24 +70,34 @@ jobs:
       - name: Run Pi review
         if: steps.provider.outputs.enabled == 'true'
         env:
-          PROVIDER: ${{ steps.provider.outputs.provider }}
-          MAIN_MODEL: ${{ steps.provider.outputs.model }}
-          SUB_MODEL: ${{ steps.provider.outputs.subagent_model }}
-          EFFORT: ${{ steps.diff_size.outputs.effort }}
           DIFF_LINES: ${{ steps.diff_size.outputs.lines }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -eo pipefail
 
-          export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
-          export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
-
           export PATH="$HOME/.npm-global/bin:/usr/local/bin:$PATH"
 
-          echo "=== PR #$PR | provider: $PROVIDER | model: $MAIN_MODEL | effort: $EFFORT ==="
+          # Free-tier-only OpenRouter candidates, tried in order until one
+          # answers. `thinkingmachines/inkling` is the preferred model but
+          # OpenRouter currently gates its ":free" endpoint to apps listed
+          # on openrouter.ai/apps ("Gate Free Endpoints by Agentic Harness",
+          # HTTP 403 for plain API-key callers) — it stays first so this
+          # workflow picks it up automatically the day that gate lifts or
+          # this harness gets listed. Every entry is a $0 ":free" model;
+          # none of them is Claude or DeepSeek.
+          MODEL_CANDIDATES=(
+            "thinkingmachines/inkling:free"
+            "thinkingmachines/inkling-small:free"
+            "cohere/north-mini-code:free"
+            "poolside/laguna-s-2.1:free"
+            "nvidia/nemotron-3-super-120b-a12b:free"
+            "qwen/qwen3.8-27b:free"
+          )
+
+          echo "=== PR #$PR ==="
 
           DIFF_FILE=$(mktemp)
           REVIEW_FILE=$(mktemp)
@@ -101,7 +109,7 @@ jobs:
             echo "ERROR: gh pr diff failed" >&2
             exit 1
           fi
-          if [ ! -s "$DIFF_FILE" ]; then
+          if [[ ! -s "$DIFF_FILE" ]]; then
             echo "ERROR: PR diff is empty" >&2
             exit 1
           fi
@@ -116,7 +124,7 @@ jobs:
 
           # Load review skill from repo
           SKILL_FILE=".claude/skills/pr-reviewer/SKILL.md"
-          if [ -f "$SKILL_FILE" ]; then
+          if [[ -f "$SKILL_FILE" ]]; then
             SKILL_CONTENT=$(cat "$SKILL_FILE")
             echo "Loaded review skill: $SKILL_FILE"
           else
@@ -133,18 +141,32 @@ jobs:
 
           echo "Prompt size: $(wc -l < "$PROMPT_FILE") lines"
 
-          echo "=== Agent review (Pi / $MAIN_MODEL) ==="
-          cat "$PROMPT_FILE" | pi \
-            -p \
-            --no-session \
-            --model "$MAIN_MODEL" \
-            2>&1 | tee "$REVIEW_FILE"
-          echo ""
+          USED_MODEL=""
+          for model in "${MODEL_CANDIDATES[@]}"; do
+            echo "=== Agent review (Pi / openrouter / $model) ==="
+            # Cap each candidate at 90s: a stalled/overloaded free-tier
+            # endpoint must not burn the whole 10-minute job budget on one
+            # candidate and starve the rest of the fallback list.
+            if timeout 90 pi -p --no-session --no-tools --provider openrouter --model "$model" \
+                 < "$PROMPT_FILE" 2>&1 | tee "$REVIEW_FILE"; then
+              USED_MODEL="$model"
+              echo ""
+              echo "=== Succeeded with $model ==="
+              break
+            fi
+            echo ""
+            echo "=== $model unavailable, trying next candidate ==="
+          done
+
+          if [[ -z "$USED_MODEL" ]]; then
+            echo "ERROR: every free OpenRouter candidate failed" >&2
+            exit 1
+          fi
 
           # ── Post review comments ──────────────────────────────────────
           echo "=== Posting review comments ==="
           if ! grep -q '^FINDING|' "$REVIEW_FILE"; then
-            gh pr comment "$PR" --body "## Pi Agent Review ($PROVIDER / $MAIN_MODEL)
+            gh pr comment "$PR" --body "## Pi Agent Review (openrouter / $USED_MODEL)
 
           No issues found in this PR." || true
             exit 0
@@ -152,8 +174,8 @@ jobs:
 
           COMMENT_COUNT=0
           while IFS='|' read -r _ path line severity desc; do
-            [ -n "$path" ] && [ -n "$line" ] || continue
-            [ "$COMMENT_COUNT" -lt 10 ] || break
+            [[ -n "$path" && -n "$line" ]] || continue
+            [[ "$COMMENT_COUNT" -lt 10 ]] || break
 
             case "$severity" in
               P1) BADGE="![P1](https://img.shields.io/badge/P1-critical-red?style=flat-square)" ;;
@@ -178,13 +200,13 @@ jobs:
           P2=$(   grep -c '^FINDING|[^|]*|[^|]*|P2|' "$REVIEW_FILE" || echo 0)
 
           {
-            printf '## Pi Agent Review (%s / %s)\n\n' "$PROVIDER" "$MAIN_MODEL"
-            printf '_Diff: %s lines | Effort: %s | Findings: %s (P1=%s P2=%s)_\n\n' \
-              "$DIFF_LINES" "$EFFORT" "$TOTAL" "$P1" "$P2"
+            printf '## Pi Agent Review (%s / %s)\n\n' "openrouter" "$USED_MODEL"
+            printf '_Diff: %s lines | Findings: %s (P1=%s P2=%s)_\n\n' \
+              "$DIFF_LINES" "$TOTAL" "$P1" "$P2"
             printf '| Severity | File | Line | Description |\n'
             printf '|----------|------|------|-------------|\n'
             while IFS='|' read -r _ path line severity desc; do
-              [ -n "$path" ] || continue
+              [[ -n "$path" ]] || continue
               printf '| %s | `%s` | %s | %s |\n' "$severity" "$path" "$line" "$desc"
             done < <(grep '^FINDING|' "$REVIEW_FILE")
           } | gh pr comment "$PR" --body-file - 2>/dev/null || true

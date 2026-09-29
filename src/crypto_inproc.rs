@@ -17,7 +17,7 @@
 //   bytes  0..8   : per-credential monotonic counter (u64, little-endian)
 //   bytes  8..M   : the secret value
 //
-// Every encrypt generates a fresh nonce via `OsRng`, so re-encrypting the
+// Every encrypt generates a fresh nonce via `getrandom`, so re-encrypting the
 // same value under the same key/AAD yields a different ciphertext —
 // nonce-reuse, the only way to lose AES-GCM's confidentiality, is
 // statistically impossible (CSPRNG, 96-bit nonce, < 2^32 lifetime
@@ -49,7 +49,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::Aes256Gcm;
 use zeroize::Zeroizing;
 
@@ -173,7 +173,8 @@ impl Backend for InProcBackend {
         // flagged both failure modes on the prior shape.
         self.versions
             .with_next(&cred_name, |counter| {
-                let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+                let mut nonce_bytes = [0u8; NONCE_LEN];
+                getrandom::fill(&mut nonce_bytes).map_err(|e| format!("CSPRNG failure: {e}"))?;
 
                 // v2 plaintext = [8B counter LE u64][secret bytes].
                 // The counter is inside the AEAD plaintext so the GCM
@@ -185,7 +186,7 @@ impl Backend for InProcBackend {
 
                 let ciphertext = cipher
                     .encrypt(
-                        &nonce,
+                        &nonce_bytes.into(),
                         Payload {
                             msg: &plaintext,
                             aad: &aad,
@@ -195,7 +196,7 @@ impl Backend for InProcBackend {
 
                 let mut out = Vec::with_capacity(MAGIC_LEN + NONCE_LEN + ciphertext.len());
                 out.extend_from_slice(MAGIC_V2);
-                out.extend_from_slice(nonce.as_slice());
+                out.extend_from_slice(&nonce_bytes);
                 out.extend_from_slice(&ciphertext);
 
                 write_atomic(&cred_path, &out)
@@ -404,8 +405,8 @@ mod tests {
     fn fresh_backend() -> (InProcBackend, TempDir) {
         // Deterministic 32-byte test key. GCM's security comes from the
         // (key, nonce) pair being unique, not the key being secret from
-        // the test runner; nonces are still drawn from OsRng inside the
-        // backend so per-encrypt freshness is preserved.
+        // the test runner; nonces are still drawn fresh from `getrandom`
+        // inside the backend so per-encrypt freshness is preserved.
         let dir = tempfile::tempdir().expect("create tempdir");
         let state_path = dir.path().join("cred-versions.json");
         let versions = Arc::new(VersionState::load(state_path).expect("load fresh state"));
@@ -577,11 +578,12 @@ mod tests {
         // Manually craft a v1 file: kepr_v1 magic + nonce + AES-GCM
         // ciphertext over the plaintext bytes (no counter prefix).
         let cipher = b.cipher().unwrap();
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        getrandom::fill(&mut nonce_bytes).unwrap();
         let aad = InProcBackend::aad(TEST_UID, "LEGACY");
         let ciphertext = cipher
             .encrypt(
-                &nonce,
+                &nonce_bytes.into(),
                 Payload {
                     msg: b"legacy-value",
                     aad: &aad,
@@ -590,7 +592,7 @@ mod tests {
             .unwrap();
         let mut blob = Vec::new();
         blob.extend_from_slice(MAGIC_V1);
-        blob.extend_from_slice(nonce.as_slice());
+        blob.extend_from_slice(&nonce_bytes);
         blob.extend_from_slice(&ciphertext);
 
         let path = dir.path().join(store::to_cred_name(TEST_UID, "LEGACY"));
@@ -614,11 +616,12 @@ mod tests {
 
         // Plant a syntactically-valid v1 file under the same cred-name.
         let cipher = b.cipher().unwrap();
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        getrandom::fill(&mut nonce_bytes).unwrap();
         let aad = InProcBackend::aad(TEST_UID, "DOWNGRADE");
         let ciphertext = cipher
             .encrypt(
-                &nonce,
+                &nonce_bytes.into(),
                 Payload {
                     msg: b"old-secret",
                     aad: &aad,
@@ -627,7 +630,7 @@ mod tests {
             .unwrap();
         let mut blob = Vec::new();
         blob.extend_from_slice(MAGIC_V1);
-        blob.extend_from_slice(nonce.as_slice());
+        blob.extend_from_slice(&nonce_bytes);
         blob.extend_from_slice(&ciphertext);
         let path = dir.path().join(store::to_cred_name(TEST_UID, "DOWNGRADE"));
         fs::write(&path, &blob).unwrap();
@@ -669,7 +672,7 @@ mod tests {
     fn fresh_nonce_per_encrypt() {
         // Same key, same uid, same name, same value — but the on-disk
         // ciphertext must differ because nonces are drawn fresh from
-        // OsRng. This is GCM's only confidentiality requirement; pin it.
+        // `getrandom`. This is GCM's only confidentiality requirement; pin it.
         let (b, _dir) = fresh_backend();
         b.encrypt(TEST_UID, "NONCE", b"same").unwrap();
         let first = fs::read(b.cred_path(TEST_UID, "NONCE")).unwrap();

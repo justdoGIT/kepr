@@ -6,8 +6,8 @@
 //! password entropy is only used to wrap that key.
 
 use aes_gcm::{
-    aead::{rand_core::RngCore, Aead, KeyInit, OsRng},
-    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
+    Aes256Gcm,
 };
 use argon2::{Algorithm, Argon2, Params, Version};
 use zeroize::Zeroizing;
@@ -38,13 +38,13 @@ pub fn wrap(master_key: &[u8; KEY_LEN], password: &[u8]) -> Result<Vec<u8>, Stri
         return Err("password cannot be empty".to_string());
     }
     let mut salt = [0u8; SALT_LEN];
-    OsRng.fill_bytes(&mut salt);
+    getrandom::fill(&mut salt).map_err(|e| format!("CSPRNG failure: {e}"))?;
     let key = derive_key(password, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "invalid key".to_string())?;
     let mut nonce = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce);
+    getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG failure: {e}"))?;
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), master_key.as_ref())
+        .encrypt(&nonce.into(), master_key.as_ref())
         .map_err(|_| "master-key wrapping failed".to_string())?;
 
     let mut out = Vec::with_capacity(MAGIC.len() + SALT_LEN + NONCE_LEN + KEY_LEN + TAG_LEN);
@@ -74,7 +74,7 @@ pub fn unwrap(envelope: &[u8], password: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN
     let key = derive_key(password, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "invalid key".to_string())?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(&nonce), ciphertext)
+        .decrypt(&nonce.into(), ciphertext)
         .map_err(|_| "invalid password or protected master-key envelope".to_string())?;
     let array: [u8; KEY_LEN] = plaintext
         .try_into()
