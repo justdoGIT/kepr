@@ -137,6 +137,7 @@ jobs:
           cat "$PROMPT_FILE" | pi \
             -p \
             --no-session \
+            --provider anthropic \
             --model "$MAIN_MODEL" \
             2>&1 | tee "$REVIEW_FILE"
           echo ""
