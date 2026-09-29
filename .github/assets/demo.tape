@@ -12,8 +12,13 @@ Set Height 600
 Set Padding 20
 Set Theme "Charm"
 
-# Scene 1: Store credential interactively
-Type "kepr set OPENAI_API_KEY --value sk-proj-1234567890abcdef" Sleep 500ms Enter
+# Scene 1: Store a credential interactively — masked entry, never on
+# argv/`--value` (kepr itself warns against `--value`: it lands in
+# `/proc/<pid>/cmdline` and shell history, exactly what this tool exists
+# to prevent). The GIF shows nothing echoed while typing.
+Type "kepr set OPENAI_API_KEY" Sleep 500ms Enter
+Sleep 500ms
+Type "demo-only-not-a-real-secret" Sleep 500ms Enter
 Sleep 1.5s
 
 # Scene 2: RAM delivery via memfd
