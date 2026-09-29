@@ -5,6 +5,7 @@
 // membership is the only access control — see DOCS.md.
 
 mod cli_activity;
+mod cli_agent;
 mod cli_args;
 mod cli_cmds;
 mod cli_doctor;
