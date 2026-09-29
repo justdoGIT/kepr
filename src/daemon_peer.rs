@@ -1,8 +1,8 @@
 // daemon_peer.rs — peer uid extraction via PeerAuthenticator.
 
+use kepr_core::auth::{PeerAuthenticator, PlatformPeerAuthenticator};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
-use kepr_core::auth::{PeerAuthenticator, PlatformPeerAuthenticator};
 
 /// Peer credentials captured at connect-time via PeerAuthenticator.
 #[derive(Debug, Clone, Copy)]

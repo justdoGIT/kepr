@@ -27,7 +27,13 @@ pub struct GitCred {
 pub fn host_to_kepr_name(host: &str) -> String {
     let clean: String = host
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("GIT_{clean}")
 }
@@ -62,7 +68,10 @@ pub fn cmd_get() -> ExitCode {
                 println!("username={}", cred.username);
                 println!("password={}", cred.password.as_str());
             } else {
-                let username = input.get("username").cloned().unwrap_or_else(|| "git".to_string());
+                let username = input
+                    .get("username")
+                    .cloned()
+                    .unwrap_or_else(|| "git".to_string());
                 println!("username={username}");
                 println!("password={}", value.as_str());
             }
@@ -78,7 +87,10 @@ pub fn cmd_store() -> ExitCode {
         Some(h) if !h.is_empty() => h,
         _ => return ExitCode::SUCCESS,
     };
-    let username = input.get("username").cloned().unwrap_or_else(|| "git".to_string());
+    let username = input
+        .get("username")
+        .cloned()
+        .unwrap_or_else(|| "git".to_string());
     let password = match input.get("password") {
         Some(p) if !p.is_empty() => p.clone(),
         _ => return ExitCode::SUCCESS,
@@ -138,7 +150,10 @@ mod tests {
     #[test]
     fn test_host_to_kepr_name() {
         assert_eq!(host_to_kepr_name("github.com"), "GIT_GITHUB_COM");
-        assert_eq!(host_to_kepr_name("gitlab.internal.net:8443"), "GIT_GITLAB_INTERNAL_NET_8443");
+        assert_eq!(
+            host_to_kepr_name("gitlab.internal.net:8443"),
+            "GIT_GITLAB_INTERNAL_NET_8443"
+        );
     }
 
     #[test]

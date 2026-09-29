@@ -105,7 +105,9 @@ impl CliActivity {
             },
             "fido2-register" => cli_cmds::cmd_fido2_register(args),
             "fido2-list" => cli_cmds::cmd_fido2_list(args),
-            "protect-agent" => crate::cli_agent::cmd_protect_agent(args.name.as_deref(), &args.exec_argv),
+            "protect-agent" => {
+                crate::cli_agent::cmd_protect_agent(args.name.as_deref(), &args.exec_argv)
+            }
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }

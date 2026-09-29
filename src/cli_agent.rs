@@ -65,7 +65,11 @@ mod tests {
 
     #[test]
     fn test_agent_default_keys() {
-        assert!(AgentKind::Claude.default_keys().contains(&"ANTHROPIC_API_KEY"));
-        assert!(AgentKind::Aider.default_keys().contains(&"DEEPSEEK_API_KEY"));
+        assert!(AgentKind::Claude
+            .default_keys()
+            .contains(&"ANTHROPIC_API_KEY"));
+        assert!(AgentKind::Aider
+            .default_keys()
+            .contains(&"DEEPSEEK_API_KEY"));
     }
 }
