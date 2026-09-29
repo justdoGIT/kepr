@@ -15,3 +15,6 @@ mempalace.yaml
 
 # Rust build
 target/
+
+# Un-tracked design assets
+docs/public/Gemini_Generated_Image_*.png
