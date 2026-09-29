@@ -16,6 +16,8 @@ pub struct Args {
     pub export: bool,
     pub json: bool,
     pub force: bool,
+    /// `kepr set` only: read the secret from stdin instead of argv.
+    pub stdin: bool,
     /// `kepr exec` only: env-var names from `--env CSV`. Parser does CSV-split + uppercasing.
     pub env_vars: Vec<String>,
     /// `kepr exec` only: argv after `--`. First element is the binary.
@@ -61,6 +63,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut env_vars: Vec<String> = Vec::new();
     let mut exec_argv: Vec<String> = Vec::new();
     let mut manifest_path: Option<std::path::PathBuf> = None;
+    let mut stdin = false;
     let mut ttl_secs: Option<u64> = None;
     let mut hook_path: Option<std::path::PathBuf> = None;
     let mut url: Option<String> = None;
@@ -130,6 +133,10 @@ pub fn parse_args() -> Result<Args, String> {
                 i += 1;
             }
             "--no-color" => {
+                i += 1;
+            }
+            "--stdin" => {
+                stdin = true;
                 i += 1;
             }
             "--value" | "-v" => {
@@ -245,6 +252,7 @@ pub fn parse_args() -> Result<Args, String> {
         quiet,
         export,
         json,
+        stdin,
         force,
         env_vars,
         exec_argv,
@@ -266,11 +274,11 @@ pub fn print_help() {
     println!("  kepr [--json] [--color] COMMAND [args]");
     println!();
     println!("COMMANDS:");
-    println!("  set KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid] [--ttl SECS] [--requires-consent] [--requires-fido2]");
+    println!("  set KEY [--stdin|--value V|--generate] [--gen-kind hex|base62|pass|uuid] [--ttl SECS] [--requires-consent] [--requires-fido2]");
     println!("  get KEY [--quiet] [--export]");
     println!("  list                                 (alias: ls)");
     println!("  delete KEY [--force]                 (alias: rm)");
-    println!("  check");
+    println!("  lock | unlock | status               password-protect or inspect the store");
     println!("  exec [--env CSV|--manifest PATH] -- CMD ARGS  run CMD with creds in env");
     println!("  doctor                               diagnose common setup issues");
     println!("  env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval");
@@ -295,9 +303,11 @@ pub fn print_help() {
     println!("EXAMPLES:");
     println!("  kepr set OPENAI_API_KEY              # interactive, masked input");
     println!("  kepr set BOB_TOKEN --generate        # auto-generate");
-    println!("  kepr set MY_KEY --value abc123       # non-interactive");
+    println!("  printf '%s\\n' secret | kepr set MY_KEY --stdin  # no argv exposure");
     println!("  kepr set TMP_TOKEN --generate --ttl 3600   # expires in 1h");
-    println!("  kepr set DB_PASS --value secret --requires-consent  # polkit prompts on every get");
+    println!("  kepr lock                             # Argon2id-protect the master key");
+    println!("  kepr unlock                           # unlock with the masked password prompt");
+    println!("  kepr status                           # show locked/protection state");
     println!(
         "  kepr set API_KEY --value secret --requires-fido2   # FIDO2 touch required on every get"
     );
@@ -335,7 +345,6 @@ pub fn print_help() {
     println!("  Then `kepr exec -- python train.py` and `kepr env` need no flags.");
     println!("  --env CSV overrides the manifest; --manifest path pins a different file.");
     println!();
-    println!("  View audit log:");
-    println!("    journalctl -t kepr-daemon");
+    println!("  View audit log: journalctl -t kepr-daemon");
     println!("    journalctl -t kepr-daemon KEPR_OP=get");
 }

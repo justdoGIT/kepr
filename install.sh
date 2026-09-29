@@ -26,35 +26,27 @@ echo -e "\n${CYN}━━━ Building kepr ━━━${RST}"
 cargo build --release
 ok "Build complete"
 
-echo -e "\n${CYN}━━━ Creating system group ━━━${RST}"
-if ! getent group kepr > /dev/null 2>&1; then
-    sudo groupadd --system kepr
-    ok "Group 'kepr' created"
+SYSTEM_MODE=false
+if [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ] && command -v systemctl >/dev/null 2>&1; then
+    SYSTEM_MODE=true
+    echo -e "\n${CYN}━━━ Configuring optional system service ━━━${RST}"
+    if ! getent group kepr > /dev/null 2>&1; then
+        sudo groupadd --system kepr
+        ok "Group 'kepr' created"
+    fi
+    sudo usermod -aG kepr "$INSTALL_USER"
+    warn "Log out/in or run newgrp kepr for group membership"
 else
-    ok "Group 'kepr' already exists"
+    info "No systemd PID 1 detected; using self-contained user mode"
 fi
-
-info "Adding ${INSTALL_USER} to 'kepr' group"
-sudo usermod -aG kepr "$INSTALL_USER"
-ok "${INSTALL_USER} added to kepr group"
-warn "Log out and back in for group membership to take effect"
-warn "Or run: newgrp kepr"
-
 echo -e "\n${CYN}━━━ Installing binaries ━━━${RST}"
-sudo cp target/release/kepr                    /usr/local/bin/kepr
-sudo cp target/release/kepr-daemon             /usr/local/sbin/kepr-daemon
-sudo cp target/release/docker-credential-kepr  /usr/local/bin/docker-credential-kepr
+sudo install -o root -g root -m 0755 target/release/kepr /usr/local/bin/kepr
+sudo install -o root -g root -m 0755 target/release/kepr-daemon /usr/local/bin/kepr-daemon
+sudo install -o root -g root -m 0755 target/release/docker-credential-kepr /usr/local/bin/docker-credential-kepr
+ok "kepr                    → /usr/local/bin/kepr"
+ok "kepr-daemon             → /usr/local/bin/kepr-daemon"
+ok "docker-credential-kepr  → /usr/local/bin/docker-credential-kepr"
 
-sudo chown root:root /usr/local/bin/kepr
-sudo chown root:root /usr/local/sbin/kepr-daemon
-sudo chown root:root /usr/local/bin/docker-credential-kepr
-sudo chmod 755 /usr/local/bin/kepr
-sudo chmod 700 /usr/local/sbin/kepr-daemon   # root-only execution
-sudo chmod 755 /usr/local/bin/docker-credential-kepr
-
-ok "kepr                      → /usr/local/bin/kepr"
-ok "kepr-daemon               → /usr/local/sbin/kepr-daemon"
-ok "docker-credential-kepr    → /usr/local/bin/docker-credential-kepr"
 
 # Phase 2 ε: install the polkit action so creds set with
 # `--requires-consent` can prompt the user via the desktop's
@@ -89,19 +81,22 @@ else
     warn "bash-completion not detected — skipping completion install"
 fi
 
-echo -e "\n${CYN}━━━ Installing systemd service ━━━${RST}"
-sudo cp systemd/kepr.service /etc/systemd/system/kepr.service
-sudo systemctl daemon-reload
-sudo systemctl enable kepr.service
-sudo systemctl restart kepr.service
-sleep 1
-
-if sudo systemctl is-active --quiet kepr.service; then
-    ok "kepr.service is running"
+if $SYSTEM_MODE; then
+    echo -e "\n${CYN}━━━ Installing systemd service ━━━${RST}"
+    sudo cp systemd/kepr.service /etc/systemd/system/kepr.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable kepr.service
+    sudo systemctl restart kepr.service
+    sleep 1
+    if sudo systemctl is-active --quiet kepr.service; then
+        ok "kepr.service is running"
+    else
+        echo "kepr.service failed to start:" >&2
+        sudo journalctl -u kepr.service -n 20 --no-pager >&2
+        exit 1
+    fi
 else
-    echo "kepr.service failed to start:"
-    sudo journalctl -u kepr.service -n 20 --no-pager
-    exit 1
+    info "User mode is ready; the CLI auto-starts kepr-daemon on first use"
 fi
 
 echo -e "\n${CYN}━━━ Setup complete ━━━${RST}"

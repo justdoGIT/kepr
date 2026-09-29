@@ -1,7 +1,7 @@
 // cli_cmds.rs — user-facing commands. Build Request, call client::send_request,
 // render Response via cli_ui. No socket / crypto logic lives here.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 use crate::cli_args::Args;
 use crate::cli_envdump::shell_escape;
@@ -48,89 +48,108 @@ pub fn cmd_set(a: &Args) -> Response {
         return Response::fail("empty name");
     }
 
-    let (value_opt, gen_opt): (Option<kepr_core::generate::ZeroString>, Option<String>) =
-        if let Some(v) = &a.value {
-            (Some(v.clone().into()), None)
-        } else if a.generate {
-            let s = match generate_secret(a.gen_kind) {
+    let (value_opt, gen_opt): (Option<kepr_core::generate::ZeroString>, Option<String>) = if a.stdin
+    {
+        if a.value.is_some() || a.generate {
+            return Response::fail("--stdin cannot be combined with --value or --generate");
+        }
+        let mut input = Vec::new();
+        if let Err(e) = io::stdin().read_to_end(&mut input) {
+            return Response::fail(format!("cannot read secret from stdin: {e}"));
+        }
+        if input.last() == Some(&b'\n') {
+            input.pop();
+            if input.last() == Some(&b'\r') {
+                input.pop();
+            }
+        }
+        let value = match String::from_utf8(input) {
+            Ok(v) if !v.is_empty() => v,
+            Ok(_) => return Response::fail("stdin secret cannot be empty"),
+            Err(_) => return Response::fail("stdin secret must be valid UTF-8"),
+        };
+        (Some(value.into()), None)
+    } else if let Some(v) = &a.value {
+        if !a.json {
+            warn("Warning: --value exposes the secret in process arguments; prefer --stdin.");
+        }
+        (Some(v.clone().into()), None)
+    } else if a.generate {
+        let s = match generate_secret(a.gen_kind) {
+            Ok(s) => s,
+            Err(e) => return Response::fail(e),
+        };
+        if !a.json {
+            ok(&format!(
+                "Generated {} secret ({} chars)",
+                a.gen_kind.as_str(),
+                s.len()
+            ));
+        }
+        (Some(s), None)
+    } else {
+        if a.json {
+            return Response::fail("provide --stdin, --value, or --generate in json mode");
+        }
+
+        println!();
+        bold(&format!("  Setting: {}", color("1;33", &name)));
+
+        if let Response::GetOk { .. } = dispatch(
+            a,
+            &Request::Get {
+                name: name.clone(),
+                fido2_assertion: None,
+            },
+        ) {
+            warn(&format!("'{}' already exists.", name));
+            eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
+            io::stderr().flush().ok();
+            let mut ans = String::new();
+            io::stdin().lock().read_line(&mut ans).ok();
+            if ans.trim().to_lowercase() != "y" {
+                info("Aborted.");
+                return Response::fail("aborted");
+            }
+        }
+
+        dim("  Leave blank to auto-generate. Input is hidden.\n");
+        let val = read_masked(&format!(
+            "  {} ",
+            color(
+                "0;36",
+                &format!("Value for {name} (blank = auto-generate):")
+            )
+        ));
+
+        if val.is_empty() {
+            println!();
+            info("Generating automatically.");
+            info("  [1] hex    [2] base62   [3] pass   [4] uuid  (default: 1)");
+            eprint!("  {}", color("0;36", "Choice [1-4, default=1]: "));
+            io::stderr().flush().ok();
+            let mut c = String::new();
+            io::stdin().lock().read_line(&mut c).ok();
+            let kind = match c.trim() {
+                "2" => GenKind::Base62,
+                "3" => GenKind::Pass,
+                "4" => GenKind::Uuid,
+                _ => GenKind::Hex,
+            };
+            let s = match generate_secret(kind) {
                 Ok(s) => s,
                 Err(e) => return Response::fail(e),
             };
-            if !a.json {
-                ok(&format!(
-                    "Generated {} secret ({} chars)",
-                    a.gen_kind.as_str(),
-                    s.len()
-                ));
-            }
+            ok(&format!(
+                "Generated {} secret ({} chars)",
+                kind.as_str(),
+                s.len()
+            ));
             (Some(s), None)
         } else {
-            if a.json {
-                return Response::fail("provide --value or --generate in json mode");
-            }
-
-            println!();
-            bold(&format!("  Setting: {}", color("1;33", &name)));
-
-            // Peek: does cred exist? Ignore errors — set call surfaces them.
-            if let Response::GetOk { .. } = dispatch(
-                a,
-                &Request::Get {
-                    name: name.clone(),
-                    fido2_assertion: None,
-                },
-            ) {
-                warn(&format!("'{}' already exists.", name));
-                eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
-                io::stderr().flush().ok();
-                let mut ans = String::new();
-                io::stdin().lock().read_line(&mut ans).ok();
-                if ans.trim().to_lowercase() != "y" {
-                    info("Aborted.");
-                    return Response::fail("aborted");
-                }
-            }
-
-            dim("  Leave blank to auto-generate. Input is hidden.\n");
-            let val = read_masked(&format!(
-                "  {} ",
-                color(
-                    "0;36",
-                    &format!("Value for {name} (blank = auto-generate):")
-                )
-            ));
-
-            if val.is_empty() {
-                println!();
-                info("Generating automatically.");
-                info("  [1] hex    [2] base62   [3] pass   [4] uuid  (default: 1)");
-                eprint!("  {}", color("0;36", "Choice [1-4, default=1]: "));
-                io::stderr().flush().ok();
-                let mut c = String::new();
-                io::stdin().lock().read_line(&mut c).ok();
-                let kind = match c.trim() {
-                    "2" => GenKind::Base62,
-                    "3" => GenKind::Pass,
-                    "4" => GenKind::Uuid,
-                    _ => GenKind::Hex,
-                };
-                let s = match generate_secret(kind) {
-                    Ok(s) => s,
-                    Err(e) => return Response::fail(e),
-                };
-                // Intentionally do not preview the value — even a 12-char
-                // slice of a 36-char UUID leaks a third of the secret into
-                // stdout (and shell history). Confirm only kind + length.
-                ok(&format!(
-                    "Generated {} secret ({} chars)",
-                    kind.as_str(),
-                    s.len()
-                ));
-                (Some(s), None)
-            } else {
-                (Some(val), None)
-            }
-        };
+            (Some(val), None)
+        }
+    };
 
     let req = Request::Set {
         name: name.clone(),
@@ -378,6 +397,65 @@ pub fn cmd_audit_verify(a: &Args) -> Response {
         }
         Response::Err { error } => err(error),
         _ => err("unexpected response"),
+    }
+    resp
+}
+
+pub fn cmd_lock(a: &Args) -> Response {
+    let first = read_masked("  Lock password: ");
+    if first.is_empty() {
+        return Response::fail("password cannot be empty");
+    }
+    let second = read_masked("  Confirm password: ");
+    if first.as_str() != second.as_str() {
+        return Response::fail("passwords do not match");
+    }
+    let resp = dispatch(a, &Request::Lock { password: first });
+    if !a.json {
+        match &resp {
+            Response::LockedOk => ok("Credential store locked."),
+            Response::Err { error } => err(error),
+            _ => err("unexpected response"),
+        }
+    }
+    resp
+}
+
+pub fn cmd_unlock(a: &Args) -> Response {
+    let password = read_masked("  Unlock password: ");
+    if password.is_empty() {
+        return Response::fail("password cannot be empty");
+    }
+    let resp = dispatch(a, &Request::Unlock { password });
+    if !a.json {
+        match &resp {
+            Response::UnlockedOk => ok("Credential store unlocked."),
+            Response::Err { error } => err(error),
+            _ => err("unexpected response"),
+        }
+    }
+    resp
+}
+
+pub fn cmd_status(a: &Args) -> Response {
+    let resp = dispatch(a, &Request::Status);
+    if !a.json {
+        match &resp {
+            Response::StatusOk {
+                locked,
+                password_protected,
+            } => info(&format!(
+                "Store: {} ({})",
+                if *locked { "locked" } else { "unlocked" },
+                if *password_protected {
+                    "password protected"
+                } else {
+                    "local key protection"
+                }
+            )),
+            Response::Err { error } => err(error),
+            _ => err("unexpected response"),
+        }
     }
     resp
 }

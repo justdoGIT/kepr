@@ -1,25 +1,14 @@
-// master_key.rs — load-or-generate the 32-byte AES-256-GCM master key
-// for the InProc backend (Phase 0 plan α2b, daemon-only, gated by
-// the `inproc-aead` feature flag).
+// master_key.rs — load-or-generate the 32-byte AES-256-GCM master key.
 //
-// At first daemon startup the key file does not exist. We:
-//   1. Read 32 random bytes from /dev/urandom (Linux CSPRNG).
-//   2. Seal them via /usr/bin/systemd-creds encrypt --with-key=host.
-//   3. Write the resulting blob to /var/lib/kepr/master.key (0600).
+// System mode seals the random key with systemd-creds. User mode uses a
+// local owner-only file by default. `kepr lock` can remove that unwrapped
+// file and replace it with the Argon2id + AES-GCM envelope implemented in
+// key_unlock.rs; the daemon then starts locked until `kepr unlock`.
 //
-// On every subsequent startup:
-//   1. Read the blob from /var/lib/kepr/master.key.
-//   2. Unseal it via /usr/bin/systemd-creds decrypt.
-//   3. Cache the unsealed key in `Zeroizing<[u8; 32]>` for the daemon
-//      lifetime (caller's responsibility; this module just returns it).
-//
-// The systemd-creds fork+exec happens at most once per daemon process
-// — α2a's per-credential fork+exec is what this whole migration removes.
-//
-// The Sealer trait makes the systemd-creds dependency injectable so
-// `load_or_generate` can be unit-tested with a mock sealer that just
-// round-trips bytes. End-to-end coverage of the systemd-creds path
-// lives in tests/e2e.sh.
+// The Sealer trait keeps system and local startup protection injectable and
+// testable. Password protection is deliberately a separate envelope: the
+// credential-encryption key remains random 256-bit material and is never
+// derived directly from a human password.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -124,6 +113,30 @@ impl Sealer for SystemdCredsSealer {
         }
         let mut key = [0u8; MASTER_KEY_LEN];
         key.copy_from_slice(&out.stdout);
+        Ok(Zeroizing::new(key))
+    }
+}
+
+/// User-mode sealer. The master key is already protected by the owner-only
+/// data directory and 0600 file permissions; no systemd, root daemon, or
+/// external credential helper is required. System-mode deployments should
+/// continue using `SystemdCredsSealer`.
+pub struct LocalFileSealer;
+
+impl Sealer for LocalFileSealer {
+    fn seal(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<Vec<u8>, String> {
+        let mut blob = b"kepr-local-v1\n".to_vec();
+        blob.extend_from_slice(key);
+        Ok(blob)
+    }
+
+    fn unseal(&self, blob: &[u8]) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
+        const PREFIX: &[u8] = b"kepr-local-v1\n";
+        if blob.len() != PREFIX.len() + MASTER_KEY_LEN || !blob.starts_with(PREFIX) {
+            return Err("local master key has an invalid format".to_string());
+        }
+        let mut key = [0u8; MASTER_KEY_LEN];
+        key.copy_from_slice(&blob[PREFIX.len()..]);
         Ok(Zeroizing::new(key))
     }
 }
