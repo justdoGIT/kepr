@@ -3,6 +3,8 @@
   "defaultOpen": true,
   "pages": [
     "overview",
+    "ram-delivery",
+    "crypto-spec",
     "design-patterns",
     "sequence-diagrams"
   ]

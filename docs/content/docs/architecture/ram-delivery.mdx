@@ -1,0 +1,40 @@
+---
+title: "RAM Secret Delivery (memfd)"
+description: "How Kepr uses Linux memfd_create and F_ADD_SEALS to deliver secrets in RAM without environment variable leaks."
+---
+
+## Problem: Environment Variable Leaks
+
+Passing secrets as environment variables (`export API_KEY=...` or standard `--env` execution) creates critical attack surfaces:
+
+1. **Process Inspection**: `/proc/<pid>/environ` is world-readable by any process sharing the same UID.
+2. **Shell History**: `export KEY=...` writes plaintext into `~/.bash_history` or `~/.zsh_history`.
+3. **Child Process Inheritance**: Subprocesses inherit full environment tables by default.
+4. **LLM Context Exposure**: AI coding agents (Claude Code, Cursor) capture process environment tables in prompt context.
+
+---
+
+## Solution: `kepr exec --memfd`
+
+Kepr's `memfd` strategy delivers secrets directly into read-only, sealed anonymous memory descriptors.
+
+```bash
+kepr exec --memfd OPENAI_API_KEY,ANTHROPIC_API_KEY -- ./my-app
+```
+
+### Protocol & Lifecycle (Per Secret)
+
+1. **Creation**: `memfd_create("kepr_OPENAI_API_KEY", MFD_CLOEXEC | MFD_ALLOW_SEALING)` creates an in-memory anonymous file.
+2. **Write & Rewind**: Secret bytes write to the descriptor, and `lseek` rewinds the offset to 0.
+3. **Read-Only Sealing**: `fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL)` locks the descriptor. No process can modify, shrink, grow, or unseal the memory block.
+4. **Descriptor Inheritance**: `FD_CLOEXEC` is cleared on the specific memory descriptor prior to `exec`.
+5. **Environment Mapping**: Pass `KEPR_FD_OPENAI_API_KEY=3` as the environment variable (`3` is the raw FD number, **not** the secret value).
+6. **Child Reading**: The application reads secret bytes directly from `/proc/self/fd/3` or `/dev/fd/3`.
+
+---
+
+## Security Guarantees
+
+- **`/proc/<pid>/environ` Cleanliness**: Environment tables contain only integer file descriptor numbers (`KEPR_FD_KEY=3`). Plaintext secrets never appear in `/proc`.
+- **Read-Only Invariant**: `F_SEAL_WRITE` prevents child processes or injected libraries from overwriting memory contents.
+- **Kernel-Managed Reclamation**: On process exit, the Linux kernel reclaims anonymous memory pages automatically.
