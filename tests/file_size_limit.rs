@@ -72,7 +72,11 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // (`daemon_dispatch.rs`) so daemon.rs stays focused on the
     // accept loop and setup.
     ("src/daemon.rs", 489),
-    ("src/crypto_inproc.rs", 382),
+    // crypto_inproc.rs grew 382 → 383: aes-gcm 0.11 removed
+    // `Aes256Gcm::generate_nonce`/`aead::OsRng`; the replacement
+    // `getrandom::fill` call needs one extra line over the old
+    // single-line RNG call.
+    ("src/crypto_inproc.rs", 383),
     ("src/cli_cmds.rs", 463),
 ];
 
