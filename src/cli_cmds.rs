@@ -32,10 +32,7 @@ pub fn cmd_set(a: &Args) -> Response {
                 return Response::fail("NAME required");
             }
             bold("\n  kepr — set credential\n");
-            eprint!(
-                "  {}",
-                color("0;36", "Credential name (e.g. OPENAI_API_KEY): ")
-            );
+            eprint!("  {}", color("0;36", "Credential name (e.g. OPENAI_API_KEY): "));
             io::stderr().flush().ok();
             let mut n = String::new();
             io::stdin().lock().read_line(&mut n).ok();
@@ -57,12 +54,7 @@ pub fn cmd_set(a: &Args) -> Response {
         if let Err(e) = io::stdin().read_to_end(&mut input) {
             return Response::fail(format!("cannot read secret from stdin: {e}"));
         }
-        if input.last() == Some(&b'\n') {
-            input.pop();
-            if input.last() == Some(&b'\r') {
-                input.pop();
-            }
-        }
+        if input.last() == Some(&b'\n') { input.pop(); if input.last() == Some(&b'\r') { input.pop(); } }
         let value = match String::from_utf8(input) {
             Ok(v) if !v.is_empty() => v,
             Ok(_) => return Response::fail("stdin secret cannot be empty"),
@@ -156,8 +148,8 @@ pub fn cmd_set(a: &Args) -> Response {
         value: value_opt,
         generate: gen_opt,
         ttl_secs: a.ttl_secs,
-        requires_consent: if a.requires_consent { Some(true) } else { None },
-        requires_fido2: if a.requires_fido2 { Some(true) } else { None },
+        requires_consent: a.requires_consent.then_some(true),
+        requires_fido2: a.requires_fido2.then_some(true),
     };
     let resp = dispatch(a, &req);
 
@@ -166,6 +158,9 @@ pub fn cmd_set(a: &Args) -> Response {
             println!();
             ok(&format!("Stored: {}", color("1", name)));
             dim(&format!("  Retrieve: kepr get {name}"));
+            if let Response::StatusOk { password_protected: false, .. } = dispatch(a, &Request::Status) {
+                warn("  Notice: Master key is un-wrapped at rest. Run `kepr lock` to set an Argon2id passphrase.");
+            }
             println!();
         }
         Response::Err { error } if !a.json => err(error),
