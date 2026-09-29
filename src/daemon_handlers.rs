@@ -127,6 +127,7 @@ pub fn handle_set(
             Response::SetOk {
                 name: upper,
                 cred_name,
+                password_protected: crate::protected_master_key_path().exists(),
             }
         }
         Err(e) => {

@@ -77,7 +77,11 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // `getrandom::fill` call needs one extra line over the old
     // single-line RNG call.
     ("src/crypto_inproc.rs", 383),
-    ("src/cli_cmds.rs", 463),
+    // cli_cmds.rs grew 463 → 470: `cmd_set` now destructures
+    // `password_protected` off the real `Response::SetOk` instead of
+    // firing a second `Request::Status` round-trip to the daemon just
+    // to render the same un-wrapped-master-key warning.
+    ("src/cli_cmds.rs", 470),
 ];
 
 fn count_production_loc(path: &Path) -> usize {
