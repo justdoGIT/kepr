@@ -27,6 +27,10 @@ path = "src/daemon.rs"
 name = "docker-credential-kepr"
 path = "src/docker_helper.rs"
 
+[[bin]]
+name = "git-credential-kepr"
+path = "src/git_helper.rs"
+
 [workspace]
 members = ["crates/kepr-core", "crates/kepr-eso-provider"]
 
