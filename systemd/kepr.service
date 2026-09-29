@@ -26,7 +26,7 @@ RuntimeDirectoryMode=0755
 StateDirectory=kepr
 StateDirectoryMode=0700
 
-ExecStart=/usr/local/sbin/kepr-daemon
+ExecStart=/usr/local/bin/kepr-daemon
 
 # Neutral identifier — never expose internal tool names in the
 # service description or the journal tag.

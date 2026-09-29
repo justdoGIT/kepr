@@ -12,9 +12,9 @@ Kepr protects against:
 | **Plaintext on disk** | ✅ Yes | AES-256-GCM encryption at rest |
 | **Environment variable snooping** | ✅ Yes | RAM-sealed `memfd` delivery (no `/proc/environ` leaks) |
 | **Shell history exposure** | ✅ Yes | Secrets never appear in bash/zsh history |
-| **Same-UID process inspection** | ✅ Yes | `F_SEAL_WRITE` read-only sealing prevents memory tampering |
-| **Child process inheritance** | ✅ Yes | RAM FDs auto-close on child exit (`FD_CLOEXEC`) |
-| **LLM context logging** | ✅ Yes | AI agents see only FD numbers, not raw secrets |
+| **Same-UID process inspection** | ⚠️ Partial | `F_SEAL_WRITE` blocks tampering with the sealed memfd's contents, but a same-uid process can still read it via `/proc/<pid>/fd` where ptrace policy allows |
+| **Child process inheritance** | ⚠️ By design | `FD_CLOEXEC` is deliberately *cleared* (not set) so the exec'd agent can read the fd at all; any further descendant the agent spawns also inherits it — this is a consequence of Unix fd inheritance, not an auto-close guarantee |
+| **LLM context logging** | ⚠️ Partial | memfd delivery stops *accidental* leakage via `/proc/<pid>/environ`, shell history, and env-dump logging. It does not stop an agent that intentionally reads the fd and echoes the value back into its own output/context |
 | **Unattended workstation** | ✅ Yes | Master key locked with Argon2id passphrase (`kepr lock`) |
 | **Cross-user isolation** | ✅ Yes | Credentials namespaced by UID; daemon reads peer ID from kernel |
 

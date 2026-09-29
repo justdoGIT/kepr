@@ -135,15 +135,6 @@ impl Sealer for LocalFileSealer {
     }
 }
 
-/// Returns true if `path` exists and contains an un-wrapped local master key.
-pub fn is_unwrapped_local_key(path: &Path) -> bool {
-    if let Ok(bytes) = fs::read(path) {
-        bytes.starts_with(b"kepr-local-v1\n")
-    } else {
-        false
-    }
-}
-
 /// Load the master key from `path`, or generate + seal + write it on
 /// first run. The file is owned `root:root 0600`; the parent directory
 /// is created with `0700` if it does not exist.
@@ -331,15 +322,5 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.contains("bad blob"), "got: {err}");
-    }
-
-    #[test]
-    fn test_is_unwrapped_local_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("master.key");
-        assert!(!is_unwrapped_local_key(&path));
-        let sealer = LocalFileSealer;
-        load_or_generate(&path, &sealer).unwrap();
-        assert!(is_unwrapped_local_key(&path));
     }
 }
