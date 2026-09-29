@@ -94,6 +94,11 @@ pub fn cmd_sync_push(name: &str, url: &str) -> kepr_core::protocol::Response {
     Response::SetOk {
         name: upper,
         cred_name: format!("{}:{url}", syncer.backend()),
+        // This response describes a push to a remote sync target, not a
+        // local credential write — the local master key's wrap state is
+        // not touched by this operation, so the field is not meaningful
+        // here and stays false rather than querying unrelated local state.
+        password_protected: false,
     }
 }
 

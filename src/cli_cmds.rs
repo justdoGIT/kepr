@@ -156,16 +156,23 @@ pub fn cmd_set(a: &Args) -> Response {
         value: value_opt,
         generate: gen_opt,
         ttl_secs: a.ttl_secs,
-        requires_consent: if a.requires_consent { Some(true) } else { None },
-        requires_fido2: if a.requires_fido2 { Some(true) } else { None },
+        requires_consent: a.requires_consent.then_some(true),
+        requires_fido2: a.requires_fido2.then_some(true),
     };
     let resp = dispatch(a, &req);
 
     match &resp {
-        Response::SetOk { name, .. } if !a.json => {
+        Response::SetOk {
+            name,
+            password_protected,
+            ..
+        } if !a.json => {
             println!();
             ok(&format!("Stored: {}", color("1", name)));
             dim(&format!("  Retrieve: kepr get {name}"));
+            if !password_protected {
+                warn("  Notice: Master key is un-wrapped at rest. Run `kepr lock` to set an Argon2id passphrase.");
+            }
             println!();
         }
         Response::Err { error } if !a.json => err(error),

@@ -1,0 +1,94 @@
+---
+title: "Getting Started"
+description: "Installation, group setup, first credential, and basic operations guide."
+---
+
+## Installing Kepr
+
+### Linux (Recommended)
+
+**Prerequisites**: `systemd`, Rust toolchain (`cargo`), `sudo` access.
+
+```bash
+git clone https://github.com/aikepeer/kepr.git kepr
+cd kepr
+chmod +x install.sh
+sudo ./install.sh
+```
+
+The installer:
+1. Builds release binaries via `cargo build --release`.
+2. Creates the `kepr` system group.
+3. Installs binaries to `/usr/local/bin/kepr` and `/usr/local/sbin/kepr-daemon`.
+4. Installs `kepr.service` and starts the daemon.
+
+### macOS (Standalone User Daemon)
+
+```bash
+git clone https://github.com/aikepeer/kepr.git kepr
+cd kepr
+cargo build --release --bins
+mkdir -p ~/.local/bin
+cp target/release/kepr target/release/kepr-daemon ~/.local/bin/
+mkdir -p ~/Library/LaunchAgents
+cp systemd/io.kepr.daemon.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/io.kepr.daemon.plist
+```
+
+---
+
+## Activating Group Membership (Linux)
+
+```bash
+newgrp kepr    # Activate in current shell
+# OR
+exit           # Log out and back in to activate globally
+groups | grep kepr  # Verify
+```
+
+<Warning>
+Without `kepr` group membership, the CLI cannot connect to `/run/kepr/kepr.sock` (`0660` permissions).
+</Warning>
+
+---
+
+## First Credential
+
+```bash
+# Interactive masked input
+kepr set OPENAI_API_KEY
+
+# Auto-generate (hex, base62, password, uuid)
+kepr set SLACK_BOT_TOKEN --generate --gen-kind pass
+
+# Non-interactive from command line
+kepr set DATABASE_URL --value "postgresql://user:pass@localhost/db"
+```
+
+---
+
+## Routine Operations
+
+```bash
+kepr get OPENAI_API_KEY              # Pretty output
+kepr get OPENAI_API_KEY --quiet      # Raw value for shell capture
+kepr get OPENAI_API_KEY --export     # Shell export syntax
+
+kepr list                             # Show all credentials
+kepr check                            # Verify all credentials decrypt
+kepr delete OPENAI_API_KEY            # Confirm before delete
+kepr rm OPENAI_API_KEY --force        # No confirmation
+```
+
+---
+
+## JSON Mode for Scripting
+
+```bash
+kepr --json list | jq '.credentials[].name'
+kepr --json get OPENAI_API_KEY | jq '.value'
+
+# Errors also return JSON
+kepr --json get DOES_NOT_EXIST 
+# { "kind": "err", "error": "credential not found" }
+```

@@ -54,6 +54,7 @@ impl CliActivity {
             "sync-pull" => "sync-pull",
             "fido2-register" => "fido2-register",
             "fido2-list" => "fido2-list",
+            "protect-agent" => "protect-agent",
             other => return Err(format!("unknown command: {other}")),
         };
         Ok(Self(canonical.to_string()))
@@ -78,7 +79,7 @@ impl CliActivity {
             "unlock" => cli_cmds::cmd_unlock(args),
             "status" => cli_cmds::cmd_status(args),
             "exec" => match resolve_env_for(args) {
-                Ok(vars) => cli_exec::cmd_exec(&vars, &args.exec_argv),
+                Ok(vars) => cli_exec::cmd_exec(&vars, &args.memfd_vars, &args.exec_argv),
                 Err(e) => Response::fail(e),
             },
             "doctor" => cli_doctor::cmd_doctor(args.json),
@@ -104,6 +105,9 @@ impl CliActivity {
             },
             "fido2-register" => cli_cmds::cmd_fido2_register(args),
             "fido2-list" => cli_cmds::cmd_fido2_list(args),
+            "protect-agent" => {
+                crate::cli_agent::cmd_protect_agent(args.name.as_deref(), &args.exec_argv)
+            }
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }

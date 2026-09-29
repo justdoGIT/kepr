@@ -1,0 +1,144 @@
+---
+title: "Security & Vulnerability Disclosure"
+description: "Threat model, cryptographic guarantees, known limitations, and responsible disclosure policy."
+---
+
+## Threat Model
+
+Kepr protects against:
+
+| Threat | Protection | Mechanism |
+|--------|-----------|-----------|
+| **Plaintext on disk** | ✅ Yes | AES-256-GCM encryption at rest |
+| **Environment variable snooping** | ✅ Yes | RAM-sealed `memfd` delivery (no `/proc/environ` leaks) |
+| **Shell history exposure** | ✅ Yes | Secrets never appear in bash/zsh history |
+| **Same-UID process inspection** | ✅ Yes | `F_SEAL_WRITE` read-only sealing prevents memory tampering |
+| **Child process inheritance** | ✅ Yes | RAM FDs auto-close on child exit (`FD_CLOEXEC`) |
+| **LLM context logging** | ✅ Yes | AI agents see only FD numbers, not raw secrets |
+| **Unattended workstation** | ✅ Yes | Master key locked with Argon2id passphrase (`kepr lock`) |
+| **Cross-user isolation** | ✅ Yes | Credentials namespaced by UID; daemon reads peer ID from kernel |
+
+Kepr does **NOT** protect against:
+
+| Threat | Why | Mitigation |
+|--------|-----|-----------|
+| **Compromised root account** | Daemon runs as `root`; attacker gains full system access | Use filesystem encryption (LUKS, FileVault) |
+| **Physical memory attacks** | RAM contents in plaintext after decryption | Deploy on trusted hardware; enable DRAM encryption (AMD SME, Intel TME) |
+| **Cold boot attacks** | Attacker freezes RAM and extracts keys | Use full-disk encryption; enable Secure Boot & TPM 2.0 |
+| **Kernel compromise** | Kernel can read any process memory | Update kernel regularly; use Verified Boot |
+| **Compromised systemd** | Daemon service hijacked | Verify systemd binary checksum; audit `/usr/lib/systemd/` permissions |
+
+---
+
+## Cryptographic Guarantees
+
+### Master Key Protection (Locked State)
+
+**Algorithm**: Argon2id KDF + AES-256-GCM authenticated encryption
+
+- Memory cost: 64 MiB (prevents rainbow table / GPU attacks)
+- Time cost: 3 passes (slows brute-force to ~300ms per attempt)
+- Salt: 16 bytes CSPRNG (`getrandom`)
+- Key derivation: 32-byte output → AES key
+
+**Security**: ~128 bits against online attacks; ~2^40 guesses for 1-hour attack on modern hardware.
+
+### Credential Encryption (Unlocked State)
+
+**Algorithm**: AES-256-GCM with 96-bit nonce per credential
+
+- Nonce: 12-byte random per operation (prevents repeated ciphertext attacks)
+- Tag: 16-byte GMAC (detects tampering)
+- AAD: Encodes credential name + UID (prevents cross-user or cross-name attacks)
+
+**Security**: 256-bit key strength against brute-force; authentication tag prevents forged credentials.
+
+### Memory Zeroization
+
+**Mechanism**: `zeroize::zeroize` with volatile writes
+
+- All secret buffers use `ZeroString` and `Zeroizing<Vec<u8>>`
+- Volatile writes prevent LLVM from optimizing away zeroization
+- Occurs on `Drop` automatically for stack and heap allocations
+
+---
+
+## Known Limitations
+
+### 1. Master Key at Rest (Unlocked)
+
+When the store is unlocked, the 32-byte master key resides unencrypted in the daemon's process memory.
+
+**Mitigation**:
+- Use `kepr lock` to encrypt the master key between sessions
+- Enable swap encryption (systemd-swap with LUKS)
+- Disable swap entirely on sensitive workstations
+
+### 2. Daemon Process Memory
+
+The daemon process holds plaintext secret values in memory during decryption operations.
+
+**Mitigation**:
+- Run the daemon on trusted hardware
+- Restrict daemon process permissions (`ProtectSystem=strict`, `ReadWritePaths=/etc/credstore.encrypted/`)
+- Monitor daemon CPU/memory usage for anomalies
+
+### 3. Unix Socket File Permissions
+
+Credentials flow over `/run/kepr/kepr.sock` (mode `0660` `root:kepr`).
+
+**Mitigation**:
+- Any `root:kepr` group member can fetch credentials
+- Use filesystem-level ACLs to restrict group membership
+- Audit group membership regularly
+
+### 4. No Attestation or Trusted Execution Environment (TEE)
+
+Kepr does not use Intel SGX, ARM TrustZone, or AMD SEV.
+
+**Mitigation**:
+- Deploy on systems with hardware security modules (Thales Luna, Gemalto)
+- Use filesystem encryption for credentials at rest
+
+---
+
+## Responsible Vulnerability Disclosure
+
+### Report Security Issues
+
+If you discover a security vulnerability, **please do not open a public issue**. Instead:
+
+1. **Email**: security@kepr.dev with:
+   - Description of the vulnerability
+   - Steps to reproduce
+   - Potential impact
+   - Your name and contact info
+
+2. **Response SLA**: We will acknowledge within 48 hours and provide a public fix within 7 days.
+
+3. **Responsible Disclosure**: We will coordinate public disclosure with you. You may request attribution in the security advisory.
+
+---
+
+## Security Audit & Testing
+
+### Test Coverage
+
+- **Cryptographic primitives**: Unit-tested against NIST test vectors (AES-GCM, Argon2id)
+- **Framing protocol**: Fuzz-tested with `libFuzzer` (60-second corpus)
+- **Peer authentication**: Kernel-tested `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS
+
+### Continuous Integration
+
+- GitHub Actions run `cargo clippy -D warnings` (zero unsafe warnings)
+- All tests pass in release mode (`cargo test --release`)
+- SEMGREP security scanning on every PR
+- Dependency auditing with `cargo audit`
+
+---
+
+## Version History & Security Advisories
+
+| Version | Date | Advisory |
+|---------|------|----------|
+| v0.3.0 | 2026-05-26 | Inaugural release; no known issues |

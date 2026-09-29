@@ -1,0 +1,51 @@
+---
+title: "Cryptographic Specification"
+description: "Argon2id master key wrapping, AES-256-GCM authenticated encryption, and ZeroString memory protection."
+---
+
+## Overview
+
+Kepr enforces high cryptographic standards for local secret storage and transit across socket boundaries.
+
+---
+
+## 1. Master Key Protection (Argon2id)
+
+When `kepr lock` is executed, Kepr wraps the random 32-byte AES credential master key using **Argon2id** key derivation.
+
+### Argon2id Parameters
+- **Algorithm**: Argon2id (v0x13)
+- **Memory Cost (`m_cost`)**: 64 MiB (65,536 KiB)
+- **Time Cost (`t_cost`)**: 3 passes
+- **Parallelism (`p_cost`)**: 1 thread
+- **Salt**: 16 bytes CSPRNG (`getrandom`)
+- **Key Length**: 32 bytes (256 bits)
+
+### Envelope Format (`master.key.argon2id`)
+```
+┌─────────────────┬──────────────────┬──────────────────┬─────────────────────────────┐
+│ Header (9 bytes)│ Salt (16 bytes)  │ Nonce (12 bytes) │ AES-256-GCM Ciphertext      │
+│ "kepr_pw1\n"    │ CSPRNG Salt      │ CSPRNG Nonce     │ Key + 16-byte Tag           │
+└─────────────────┴──────────────────┴──────────────────┴─────────────────────────────┘
+```
+
+---
+
+## 2. Authenticated Encryption (AES-256-GCM)
+
+Individual credential values are encrypted using **AES-256-GCM** with 96-bit nonces.
+
+### Encryption Protocol
+- **Cipher**: AES-256-GCM
+- **Nonce**: 12 bytes generated per-credential operation via `/dev/urandom` / `getrandom`.
+- **Authentication Tag**: 16 bytes (128 bits).
+- **Associated Authenticated Data (AAD)**: Encodes `kepr-<uid>-<name>` to prevent credential renaming or cross-user transplantation attacks.
+
+---
+
+## 3. In-Memory Zeroization (`ZeroString`)
+
+Secret buffers use `ZeroString` and `zeroize::Zeroizing` wrappers.
+
+- **Automatic Wiping**: Heap memory allocated for secrets is explicitly zero-overwritten on `Drop`.
+- **Compiler Optimization Barriers**: `zeroize::zeroize_volatile` prevents rustc / LLVM from optimizing away zeroization writes.

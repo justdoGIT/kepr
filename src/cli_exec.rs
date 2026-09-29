@@ -85,6 +85,25 @@ pub fn build_env<F: CredFetcher>(
     Ok(out)
 }
 
+/// Resolve every name in `memfd_vars` via `fetcher`, create a sealed memfd
+/// for each secret, and return a map of `KEPR_FD_<UPPER_NAME>` -> `fd_string`.
+pub fn build_memfd_env<F: CredFetcher>(
+    vars: &[String],
+    fetcher: &F,
+) -> Result<HashMap<String, String>, String> {
+    let mut out = HashMap::with_capacity(vars.len());
+    for v in vars {
+        let upper = v.to_uppercase();
+        let value = fetcher
+            .fetch(&upper)
+            .map_err(|e| format!("cannot resolve {upper}: {e}"))?;
+        let fd = kepr_core::memfd::create_sealed_memfd(&upper, value.as_str().as_bytes())
+            .map_err(|e| format!("cannot create sealed memfd for {upper}: {e}"))?;
+        out.insert(format!("KEPR_FD_{upper}"), fd.to_string());
+    }
+    Ok(out)
+}
+
 /// Parse the `--env CSV` argument into a list of variable names.
 /// Empty entries (from a trailing comma or `,,`) are rejected so
 /// the user gets a clear error rather than a silent no-op fetch
@@ -131,15 +150,24 @@ pub fn run_exec(env: HashMap<String, String>, argv: &[String]) -> Response {
 /// Top-level handler. Returns `Response::Err` for any pre-exec
 /// failure; on success this function does not return because the
 /// process image has been replaced.
-pub fn cmd_exec(env_vars: &[String], argv: &[String]) -> Response {
-    if env_vars.is_empty() {
-        return Response::fail("`kepr exec` requires --env VAR[,VAR…]");
+pub fn cmd_exec(env_vars: &[String], memfd_vars: &[String], argv: &[String]) -> Response {
+    if env_vars.is_empty() && memfd_vars.is_empty() {
+        return Response::fail("`kepr exec` requires --env or --memfd VAR[,VAR…]");
     }
     let fetcher = DaemonFetcher;
-    let env = match build_env(env_vars, &fetcher) {
-        Ok(e) => e,
-        Err(e) => return Response::fail(e),
-    };
+    let mut env = HashMap::new();
+    if !env_vars.is_empty() {
+        match build_env(env_vars, &fetcher) {
+            Ok(e) => env.extend(e),
+            Err(e) => return Response::fail(e),
+        }
+    }
+    if !memfd_vars.is_empty() {
+        match build_memfd_env(memfd_vars, &fetcher) {
+            Ok(e) => env.extend(e),
+            Err(e) => return Response::fail(e),
+        }
+    }
     run_exec(env, argv)
 }
 
@@ -273,18 +301,35 @@ mod tests {
     }
 
     #[test]
-    fn cmd_exec_rejects_empty_env_vars() {
-        // Even if --env was specified with a value that parsed to
-        // zero entries (shouldn't happen given parse_env_csv rejects
-        // empty), cmd_exec must refuse rather than exec the child
-        // with no provisioned secrets.
-        let resp = cmd_exec(&[], &["/bin/echo".to_string()]);
+    fn cmd_exec_rejects_empty_env_and_memfd_vars() {
+        let resp = cmd_exec(&[], &[], &["/bin/echo".to_string()]);
         match resp {
             Response::Err { error } => {
-                assert!(error.contains("--env"), "error names --env: {error}");
+                assert!(
+                    error.contains("--env or --memfd"),
+                    "error names --env or --memfd: {error}"
+                );
             }
             other => panic!("expected Err, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn build_memfd_env_creates_sealed_fds_and_env_keys() {
+        let f = fetcher_with(&[("OPENAI_KEY", Ok("ram_secret_value_99"))]);
+        let vars = vec!["OPENAI_KEY".to_string()];
+        let env = build_memfd_env(&vars, &f).expect("build_memfd_env succeeded");
+        let fd_val = env
+            .get("KEPR_FD_OPENAI_KEY")
+            .expect("KEPR_FD_OPENAI_KEY present");
+        let fd: i32 = fd_val.parse().expect("fd is integer");
+        let read_back = std::fs::read_to_string(format!("/proc/self/fd/{fd}")).expect("read fd");
+        assert_eq!(read_back, "ram_secret_value_99");
+        // SAFETY: `fd` was parsed from the `KEPR_FD_OPENAI_KEY` value this
+        // test just created via `build_memfd_env`; it is open, owned solely
+        // by this test, and not referenced again after this point.
+        unsafe { libc::close(fd) };
     }
 
     #[test]

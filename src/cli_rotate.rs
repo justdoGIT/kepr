@@ -110,30 +110,31 @@ impl HookRunner for ProcessHookRunner {
 }
 
 /// Outcome of a successful set: the daemon-supplied `cred_name`
-/// (e.g. `kepr-1000-stripe-key`). Surfaced through the Setter
-/// trait so `cmd_rotate` can return a real cred_name in its
-/// `Response::SetOk` instead of a synthetic placeholder. Wire
-/// shape consumers (`--json` mode) get the same field they'd see
-/// from a regular `kepr set`.
-pub type SetOutcome = Result<String, String>;
+/// (e.g. `kepr-1000-stripe-key`) plus whether the master key is
+/// Argon2id-wrapped at commit time. Surfaced through the Setter
+/// trait so `cmd_rotate` can return a real `Response::SetOk`
+/// instead of a synthetic placeholder. Wire shape consumers
+/// (`--json` mode) get the same fields they'd see from a regular
+/// `kepr set`.
+pub type SetOutcome = Result<(String, bool), String>;
 
 /// Function alias for the cred-set step. Production wires this
 /// to `client::send_request(Request::Set { … })`; tests substitute
 /// a closure that records what it was asked to commit. Returns
-/// the cred_name on success so `cmd_rotate` can faithfully
-/// propagate the daemon's view of the canonical on-disk name.
+/// the cred_name and password_protected flag on success so
+/// `cmd_rotate` can faithfully propagate the daemon's view.
 pub type Setter = Box<dyn FnOnce(&str, ZeroString) -> SetOutcome>;
 
 /// Generate a fresh value of `kind`, run the hook with it, and
 /// commit it via `set` only if the hook exits 0. Returns the
-/// daemon-supplied cred_name on success. Public for tests;
-/// production wraps it as `cmd_rotate`.
+/// daemon-supplied cred_name and password_protected flag on
+/// success. Public for tests; production wraps it as `cmd_rotate`.
 pub fn rotate_with_hook<H: HookRunner>(
     name: &str,
     kind: GenKind,
     hook: &H,
     set: Setter,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, bool), String> {
     if name.is_empty() {
         return Err("rotate requires a credential name".to_string());
     }
@@ -149,8 +150,8 @@ pub fn rotate_with_hook<H: HookRunner>(
     // regular `set` op (a future PR may add `Request::Rotate`
     // for distinct audit semantics; for now we lean on `set`).
     let upper = name.to_uppercase();
-    let cred_name = set(&upper, new_value)?;
-    Ok((upper, cred_name))
+    let (cred_name, password_protected) = set(&upper, new_value)?;
+    Ok((upper, cred_name, password_protected))
 }
 
 /// Top-level handler. Returns `Response::SetOk` on success
@@ -176,16 +177,21 @@ pub fn cmd_rotate(name: &str, kind: GenKind, hook_path: &Path) -> Response {
             requires_consent: None,
             requires_fido2: None,
         }) {
-            Ok(Response::SetOk { cred_name, .. }) => Ok(cred_name),
+            Ok(Response::SetOk {
+                cred_name,
+                password_protected,
+                ..
+            }) => Ok((cred_name, password_protected)),
             Ok(Response::Err { error }) => Err(error),
             Ok(other) => Err(format!("unexpected daemon response: {other:?}")),
             Err(e) => Err(format!("daemon unreachable: {e}")),
         }
     });
     match rotate_with_hook(name, kind, &runner, setter) {
-        Ok((committed, cred_name)) => Response::SetOk {
+        Ok((committed, cred_name, password_protected)) => Response::SetOk {
             name: committed,
             cred_name,
+            password_protected,
         },
         Err(e) => Response::fail(e),
     }
@@ -216,7 +222,7 @@ mod tests {
         // through the `committed` cell and ignore the cred_name.
         Box::new(move |name: &str, v: ZeroString| {
             *committed.borrow_mut() = Some(v.as_str().to_string());
-            Ok(format!("kepr-1000-{}", name.to_lowercase()))
+            Ok((format!("kepr-1000-{}", name.to_lowercase()), false))
         })
     }
 
@@ -229,7 +235,8 @@ mod tests {
             captured: captured.clone(),
         };
         let setter = make_setter(committed.clone());
-        let (name, cred_name) = rotate_with_hook("FOO", GenKind::Hex, &hook, setter).unwrap();
+        let (name, cred_name, _password_protected) =
+            rotate_with_hook("FOO", GenKind::Hex, &hook, setter).unwrap();
         assert_eq!(name, "FOO");
         assert!(
             cred_name.starts_with("kepr-"),
@@ -306,7 +313,7 @@ mod tests {
         let setter: Setter = Box::new(move |name: &str, _v: ZeroString| {
             *name_seen_clone.borrow_mut() = Some(name.to_string());
             *committed.borrow_mut() = Some(_v.as_str().to_string());
-            Ok(format!("kepr-1000-{}", name.to_lowercase()))
+            Ok((format!("kepr-1000-{}", name.to_lowercase()), false))
         });
         rotate_with_hook("foo", GenKind::Hex, &hook, setter).unwrap();
         assert_eq!(name_seen.borrow().clone(), Some("FOO".to_string()));
