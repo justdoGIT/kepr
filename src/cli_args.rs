@@ -20,6 +20,8 @@ pub struct Args {
     pub stdin: bool,
     /// `kepr exec` only: env-var names from `--env CSV`. Parser does CSV-split + uppercasing.
     pub env_vars: Vec<String>,
+    /// `kepr exec` only: memfd names from `--memfd CSV`. Delivered via sealed RAM descriptors.
+    pub memfd_vars: Vec<String>,
     /// `kepr exec` only: argv after `--`. First element is the binary.
     pub exec_argv: Vec<String>,
     /// Explicit `.kepr.toml` path. Falls back to walk-up then no-manifest.
@@ -61,6 +63,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut json = false;
     let mut force = false;
     let mut env_vars: Vec<String> = Vec::new();
+    let mut memfd_vars: Vec<String> = Vec::new();
     let mut exec_argv: Vec<String> = Vec::new();
     let mut manifest_path: Option<std::path::PathBuf> = None;
     let mut stdin = false;
@@ -152,42 +155,34 @@ pub fn parse_args() -> Result<Args, String> {
                 i += 1;
             }
             "--env" => {
-                // `kepr exec --env VAR1,VAR2` — defer the CSV split
-                // and validation to cli_exec::parse_env_csv so the
-                // error path is uniform whether the entries arrive
-                // here or from a `.kepr.toml` manifest.
                 i += 1;
                 let csv = raw.get(i).ok_or("--env needs a CSV of variable names")?;
                 env_vars = crate::cli_exec::parse_env_csv(csv)?;
                 i += 1;
             }
+            "--memfd" => {
+                i += 1;
+                let csv = raw.get(i).ok_or("--memfd needs a CSV of variable names")?;
+                memfd_vars = crate::cli_exec::parse_env_csv(csv)?;
+                i += 1;
+            }
             "--manifest" => {
-                // Explicit pin to a `.kepr.toml`; it loses only to an
-                // explicit `--env CSV`. Ancestor auto-discovery is opt-in
-                // through `KEPR_AUTO_MANIFEST=1`.
                 i += 1;
                 let p = raw.get(i).ok_or("--manifest needs a path")?;
                 manifest_path = Some(std::path::PathBuf::from(p));
                 i += 1;
             }
             "--url" => {
-                // Phase 2 ζ. Scheme-prefixed remote URL for
-                // `kepr sync-push|pull`. Validated downstream
-                // by `sync::pick_syncer`.
                 i += 1;
                 let v = raw.get(i).ok_or("--url needs a value")?;
                 url = Some(v.clone());
                 i += 1;
             }
             "--requires-consent" => {
-                // Phase 2 ε. No value: presence flips the flag.
-                // The daemon translates this into a sidecar
-                // `requires_consent: true` field.
                 requires_consent = true;
                 i += 1;
             }
             "--requires-fido2" => {
-                // Phase 2 η. No value: presence flips the flag.
                 requires_fido2 = true;
                 i += 1;
             }
@@ -255,6 +250,7 @@ pub fn parse_args() -> Result<Args, String> {
         stdin,
         force,
         env_vars,
+        memfd_vars,
         exec_argv,
         manifest_path,
         ttl_secs,
@@ -268,83 +264,76 @@ pub fn parse_args() -> Result<Args, String> {
 }
 
 pub fn print_help() {
-    println!("kepr {VERSION} — credential manager");
-    println!();
-    println!("USAGE:");
-    println!("  kepr [--json] [--color] COMMAND [args]");
-    println!();
-    println!("COMMANDS:");
-    println!("  set KEY [--stdin|--value V|--generate] [--gen-kind hex|base62|pass|uuid] [--ttl SECS] [--requires-consent] [--requires-fido2]");
-    println!("  get KEY [--quiet] [--export]");
-    println!("  list                                 (alias: ls)");
-    println!("  delete KEY [--force]                 (alias: rm)");
-    println!("  lock | unlock | status               password-protect or inspect the store");
-    println!("  exec [--env CSV|--manifest PATH] -- CMD ARGS  run CMD with creds in env");
-    println!("  doctor                               diagnose common setup issues");
-    println!("  env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval");
-    println!("  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid]   atomic rotation");
-    println!("  audit-verify                         verify the hash-chained audit log");
-    println!(
-        "  sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:|gcp-sm:)"
+    print!(
+        r#"kepr {VERSION} — credential manager
+
+USAGE:
+  kepr [--json] [--color] COMMAND [args]
+
+COMMANDS:
+  set KEY [--stdin|--value V|--generate] [--gen-kind hex|base62|pass|uuid] [--ttl SECS] [--requires-consent] [--requires-fido2]
+  get KEY [--quiet] [--export]
+  list                                 (alias: ls)
+  delete KEY [--force]                 (alias: rm)
+  lock | unlock | status               password-protect or inspect the store
+  exec [--env CSV|--memfd CSV|--manifest PATH] -- CMD ARGS  run CMD with creds in env/memfd
+  doctor                               diagnose common setup issues
+  env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval
+  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid]   atomic rotation
+  audit-verify                         verify the hash-chained audit log
+  sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:|gcp-sm:)
+  sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally
+  fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions
+  fido2-list                             list registered FIDO2 keys
+
+GLOBAL FLAGS:
+  --json       machine-readable output; no stderr on clean errors
+  --color      enable ANSI colours (default is plain text)
+  --no-color   force plain text (overrides CLICOLOR_FORCE=1)
+
+ENVIRONMENT:
+  NO_COLOR           any value disables colours (overrides --color)
+  CLICOLOR_FORCE=1   enables colours without --color
+
+EXAMPLES:
+  kepr set OPENAI_API_KEY              # interactive, masked input
+  kepr set BOB_TOKEN --generate        # auto-generate
+  printf '%s\n' secret | kepr set MY_KEY --stdin  # no argv exposure
+  kepr set TMP_TOKEN --generate --ttl 3600   # expires in 1h
+  kepr lock                             # Argon2id-protect the master key
+  kepr unlock                           # unlock with the masked password prompt
+  kepr status                           # show locked/protection state
+  kepr set API_KEY --value secret --requires-fido2   # FIDO2 touch required on every get
+  kepr get OPENAI_API_KEY              # decrypt and print
+  kepr get OPENAI_API_KEY --export     # print as: export VAR=value
+  kepr get OPENAI_API_KEY --quiet      # raw value only
+  kepr --json get OPENAI_API_KEY       # json output for scripts
+  kepr ls                              # alias for list
+  kepr rm BOB_TOKEN --force            # delete without prompt
+  kepr check                           # verify all decrypt ok
+  kepr exec --memfd OPENAI_API_KEY -- python train.py # RAM-sealed memfd delivery
+  kepr exec --env OPENAI_API_KEY -- python train.py  # provision creds in env
+  kepr doctor                          # ✓/✗ list of setup checks
+  kepr rotate STRIPE_KEY --hook ./bin/refresh-stripe.sh
+                                       # generate, validate via hook, commit on hook exit 0
+  kepr sync-push DB_PASS --url vault:secret/team/db_pass
+                                       # VAULT_ADDR + VAULT_TOKEN env vars supply auth
+  kepr sync-push DB_PASS --url aws-sm:prod/db/password
+                                       # AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION
+  kepr sync-push DB_PASS --url gcp-sm:projects/myproj/secrets/db_pass
+                                       # GCP_ACCESS_TOKEN env var (gcloud auth print-access-token)
+  eval "$(kepr env --env DB_PASS,DB_USER)"  # source creds into the current shell
+  kepr exec -- python train.py         # uses .kepr.toml in/above PWD
+
+MANIFEST:
+  Place a `.kepr.toml` in the project root:
+    [env]
+    required = ["DB_PASS", "DB_USER", "OPENAI_API_KEY"]
+  Then `kepr exec -- python train.py` and `kepr env` need no flags.
+  --env CSV overrides the manifest; --manifest path pins a different file.
+
+  View audit log: journalctl -t kepr-daemon
+    journalctl -t kepr-daemon KEPR_OP=get
+"#
     );
-    println!("  sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally");
-    println!("  fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions");
-    println!("  fido2-list                             list registered FIDO2 keys");
-    println!();
-    println!("GLOBAL FLAGS:");
-    println!("  --json       machine-readable output; no stderr on clean errors");
-    println!("  --color      enable ANSI colours (default is plain text)");
-    println!("  --no-color   force plain text (overrides CLICOLOR_FORCE=1)");
-    println!();
-    println!("ENVIRONMENT:");
-    println!("  NO_COLOR           any value disables colours (overrides --color)");
-    println!("  CLICOLOR_FORCE=1   enables colours without --color");
-    println!();
-    println!("EXAMPLES:");
-    println!("  kepr set OPENAI_API_KEY              # interactive, masked input");
-    println!("  kepr set BOB_TOKEN --generate        # auto-generate");
-    println!("  printf '%s\\n' secret | kepr set MY_KEY --stdin  # no argv exposure");
-    println!("  kepr set TMP_TOKEN --generate --ttl 3600   # expires in 1h");
-    println!("  kepr lock                             # Argon2id-protect the master key");
-    println!("  kepr unlock                           # unlock with the masked password prompt");
-    println!("  kepr status                           # show locked/protection state");
-    println!(
-        "  kepr set API_KEY --value secret --requires-fido2   # FIDO2 touch required on every get"
-    );
-    println!("  kepr get OPENAI_API_KEY              # decrypt and print");
-    println!("  kepr get OPENAI_API_KEY --export     # print as: export VAR=value");
-    println!("  kepr get OPENAI_API_KEY --quiet      # raw value only");
-    println!("  kepr --json get OPENAI_API_KEY       # json output for scripts");
-    println!("  kepr ls                              # alias for list");
-    println!("  kepr rm BOB_TOKEN --force            # delete without prompt");
-    println!("  kepr check                           # verify all decrypt ok");
-    println!("  kepr exec --env OPENAI_API_KEY -- python train.py");
-    println!("                                       # provision creds in env, replace process");
-    println!("  kepr doctor                          # ✓/✗ list of setup checks");
-    println!("  kepr rotate STRIPE_KEY --hook ./bin/refresh-stripe.sh");
-    println!("                                       # generate, validate via hook, commit on hook exit 0");
-    println!("  kepr sync-push DB_PASS --url vault:secret/team/db_pass");
-    println!(
-        "                                       # VAULT_ADDR + VAULT_TOKEN env vars supply auth"
-    );
-    println!("  kepr sync-push DB_PASS --url aws-sm:prod/db/password");
-    println!(
-        "                                       # AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION"
-    );
-    println!("  kepr sync-push DB_PASS --url gcp-sm:projects/myproj/secrets/db_pass");
-    println!(
-        "                                       # GCP_ACCESS_TOKEN env var (gcloud auth print-access-token)"
-    );
-    println!("  eval \"$(kepr env --env DB_PASS,DB_USER)\"  # source creds into the current shell");
-    println!("  kepr exec -- python train.py         # uses .kepr.toml in/above PWD");
-    println!();
-    println!("MANIFEST:");
-    println!("  Place a `.kepr.toml` in the project root:");
-    println!("    [env]");
-    println!("    required = [\"DB_PASS\", \"DB_USER\", \"OPENAI_API_KEY\"]");
-    println!("  Then `kepr exec -- python train.py` and `kepr env` need no flags.");
-    println!("  --env CSV overrides the manifest; --manifest path pins a different file.");
-    println!();
-    println!("  View audit log: journalctl -t kepr-daemon");
-    println!("    journalctl -t kepr-daemon KEPR_OP=get");
 }

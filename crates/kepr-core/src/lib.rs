@@ -13,4 +13,5 @@
 
 pub mod framing;
 pub mod generate;
+pub mod memfd;
 pub mod protocol;

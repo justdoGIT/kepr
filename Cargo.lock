@@ -641,6 +641,7 @@ dependencies = [
 name = "kepr-core"
 version = "0.3.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "zeroize",
