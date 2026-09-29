@@ -25,29 +25,33 @@ contact preference you'd like follow-up on. We aim to:
 - Ship a fix or a mitigation within **90 days** of acknowledgement.
 - Credit reporters in the release notes (opt-out available).
 
-If GitHub Advisories is unreachable for any reason, email the
-maintainer listed in `Cargo.toml`'s `authors` field.
+If GitHub private reporting is unavailable, contact the repository
+maintainers through the verified contact method listed in the repository
+profile; do not disclose vulnerability details in a public issue.
 
 ## Repository controls
 
-The following controls are asserted to be enabled on this repo.
-Audit via Settings → Code security.
+The following controls are asserted to be enabled on this repo. Their
+availability depends on repository visibility and GitHub plan; audit via
+Settings → Code security.
 
 - **Secret scanning** and **Push protection**.
-- **CodeQL** (Rust + JavaScript/TypeScript) via
-  `.github/workflows/security.yml`.
-- **Dependabot alerts** and **Dependabot security updates** for
-  `cargo`, `npm`, and `github-actions`.
+- **CodeQL** is configured in `.github/workflows/security.yml` but remains
+  disabled while this repository is private without GitHub Advanced Security.
+- **Dependabot alerts** and **Dependabot security updates** for `cargo`,
+  `npm`, and `github-actions`.
 - **`cargo audit`** on every push/PR and on a weekly cron.
 - **`npm audit`** (`--audit-level=high`) against the committed
   `docs/package-lock.json`.
-- **SBOM** (SPDX-JSON) generated per push to `main` and attached
-  to every release via `anchore/sbom-action`.
+- **SBOM** (SPDX-JSON) generated on pushes to `main` and attached to
+  releases by `anchore/sbom-action`.
 - **Private vulnerability reporting** via GitHub Advisories.
 - **Release artefact signing** via keyless `cosign sign-blob`
   (GitHub OIDC identity, Sigstore transparency log).
 - **Build provenance attestations** via
-  `actions/attest-build-provenance` on every release artefact.
+  `actions/attest-build-provenance` when GitHub's attestation API is
+  available; private repositories without that capability use cosign
+  provenance instead.
 - **Branch protection** on `main`: required CI + security checks,
   linear history.
 

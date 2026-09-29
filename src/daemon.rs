@@ -390,7 +390,7 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
 }
 
 fn send_response(stream: &mut UnixStream, resp: &Response) {
-    if let Ok(json) = serde_json::to_vec(resp) {
+    if let Ok(json) = serde_json::to_vec(resp).map(zeroize::Zeroizing::new) {
         let _ = write_frame(stream, &json);
     }
 }

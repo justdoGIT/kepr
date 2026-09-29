@@ -5,11 +5,23 @@ service via its webhook provider; the service translates each request
 into a kepr daemon Get call over the Unix socket and returns the secret
 as JSON.
 
-## Quick start
+### 1. Create the provider authentication secret
 
-### 1. Deploy the provider
+The provider refuses non-loopback listeners without a bearer token. Create the
+token in the same namespace as the deployment before applying the manifests:
+
+```bash
+kubectl create secret generic kepr-eso-provider-auth \
+  --from-literal=token="$(openssl rand -hex 32)"
+```
+
+### 2. Deploy the provider
 kubectl apply -f deploy/deployment.yaml
 
+The deployment listens on the pod network and requires
+`Authorization: Bearer <token>` for all secret endpoints. The
+`cluster-secret-store.yaml` configures ESO to read the same Kubernetes Secret
+and send that header. `/health` remains unauthenticated for probes.
 The deployment mounts /run/kepr/kepr.sock from the host via hostPath.
 
 ### 2. Configure the SecretStore

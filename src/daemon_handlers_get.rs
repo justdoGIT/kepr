@@ -121,36 +121,35 @@ pub fn handle_get(
         }
         // Phase 2 η: if an assertion WAS sent, verify it. On
         // failure, "credential unavailable" (the precise reason
-        // goes to the audit log).
+        // goes to the audit log). A successful verification must
+        // fall through to the decrypt path below.
         if reason.starts_with("fido2:") {
             if let Some(assertion) = fido2_assertion {
-                match crate::fido2::verify_assertion(uid, assertion) {
-                    Ok(()) => {
-                        // Assertion verified — proceed to decrypt.
-                    }
-                    Err(e) => {
-                        audit::log(&AuditEvent {
-                            op: "get",
-                            name: Some(&upper),
-                            uid,
-                            username,
-                            result: AuditResult::Fail(format!("fido2 verify fail: {e}")),
-                        });
-                        return Response::fail("credential unavailable");
-                    }
+                if let Err(e) = crate::fido2::verify_assertion(uid, assertion) {
+                    audit::log(&AuditEvent {
+                        op: "get",
+                        name: Some(&upper),
+                        uid,
+                        username,
+                        result: AuditResult::Fail(format!("fido2 verify fail: {e}")),
+                    });
+                    return Response::fail("credential unavailable");
                 }
+            } else {
+                return Response::fail("credential unavailable");
             }
+        } else {
+            // Non-FIDO2 meta failures: "credential unavailable" for
+            // all remaining reasons (expired, consent denied, etc.).
+            audit::log(&AuditEvent {
+                op: "get",
+                name: Some(&upper),
+                uid,
+                username,
+                result: AuditResult::Fail(reason.to_string()),
+            });
+            return Response::fail("credential unavailable");
         }
-        // Non-FIDO2 meta failures: "credential unavailable" for
-        // all remaining reasons (expired, consent denied, etc.).
-        audit::log(&AuditEvent {
-            op: "get",
-            name: Some(&upper),
-            uid,
-            username,
-            result: AuditResult::Fail(reason.to_string()),
-        });
-        return Response::fail("credential unavailable");
     }
 
     match crypto::default_backend().decrypt(uid, &upper) {

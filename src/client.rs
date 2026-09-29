@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use kepr_core::framing::{read_frame, write_frame};
 use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
+use zeroize::Zeroizing;
 
 pub fn send_request(req: &Request) -> Result<Response, String> {
     let mut stream = UnixStream::connect(SOCKET_PATH).map_err(|e| {
@@ -22,11 +23,15 @@ pub fn send_request(req: &Request) -> Result<Response, String> {
         eprintln!("kepr: warning: failed to set write timeout: {e}");
     }
 
-    let json = serde_json::to_vec(req).map_err(|e| format!("request encoding error: {e}"))?;
+    let json = Zeroizing::new(
+        serde_json::to_vec(req).map_err(|e| format!("request encoding error: {e}"))?,
+    );
 
     write_frame(&mut stream, &json).map_err(|e| format!("send error: {e}"))?;
 
-    let buf = read_frame(&mut stream, MAX_MSG_BYTES).map_err(|e| format!("receive error: {e}"))?;
+    let buf = Zeroizing::new(
+        read_frame(&mut stream, MAX_MSG_BYTES).map_err(|e| format!("receive error: {e}"))?,
+    );
 
     serde_json::from_slice(&buf).map_err(|e| format!("response decode error: {e}"))
 }
