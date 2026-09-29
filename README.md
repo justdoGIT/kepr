@@ -7,6 +7,10 @@
 Kepr is a per-user secret vault for Linux and macOS, written in Rust (`kepr` CLI, `kepr-daemon` over Unix/IPC socket, `git-credential-kepr`, `docker-credential-kepr`, `kepr-core` library, and `kepr-eso-provider`).
 
 It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/environ` leaks by delivering secrets directly into process memory via **RAM-sealed memory file descriptors (`memfd`)**.
+<p align="center">
+  <img src="./.github/assets/kepr.png" alt="kepr hero banner" width="100%" style="max-width: 1440px; height: auto; display: block;">
+</p>
+
 
 ```
 ┌──────────────────────────┐         /run/kepr/kepr.sock          ┌──────────────────────────┐
