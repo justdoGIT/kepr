@@ -11,6 +11,7 @@
 //! Operator provider, language bindings) can depend on this crate
 //! without pulling in root-only privileges.
 
+pub mod auth;
 pub mod framing;
 pub mod generate;
 pub mod memfd;
