@@ -56,6 +56,12 @@ most of the Phase 1 and Phase 2 Linux work:
   a report of the current tree; use the shipped/missing lists above when
   prioritising the next release.
 
+The dependency-free security extension backlog is tracked separately in
+[Security Extension Roadmap](/docs/security-roadmap). It covers opt-in TPM2,
+FIDO2 master-key wrapping, Secret Service/KWallet integration, and
+dependency-maintenance requirements. The current FIDO2 implementation gates
+selected credential reads; it does not yet protect the master key.
+
 ### Architecture
 
 - **Fork+exec per operation, plaintext via `Command::output()`** —

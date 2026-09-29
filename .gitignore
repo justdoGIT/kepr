@@ -14,7 +14,6 @@ mempalace.yaml
 .remember/
 .serena/
 .grepai
-graphify-out
 
 # Rust build
 target/

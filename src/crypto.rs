@@ -36,8 +36,8 @@ pub fn encrypt(uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
     // Ensure credstore exists with correct permissions
     let store = store::store_path();
     if !store.exists() {
-        fs::create_dir_all(store).map_err(|e| format!("cannot create credstore: {e}"))?;
-        fs::set_permissions(store, fs::Permissions::from_mode(0o755))
+        fs::create_dir_all(&store).map_err(|e| format!("cannot create credstore: {e}"))?;
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("cannot chmod credstore: {e}"))?;
     }
 
@@ -268,6 +268,36 @@ pub fn initialize_inproc_backend(
     INPROC_BACKEND
         .set(InProcBackend::new(master_key, versions))
         .map_err(|_| "InProc backend already initialised".to_string())
+}
+pub fn lock_backend() -> Result<(), String> {
+    INPROC_BACKEND
+        .get()
+        .ok_or_else(|| "credential backend is not initialized".to_string())?
+        .lock();
+    Ok(())
+}
+
+pub fn unlock_backend(master_key: [u8; 32]) -> Result<(), String> {
+    INPROC_BACKEND
+        .get()
+        .ok_or_else(|| "credential backend is not initialized".to_string())?
+        .unlock(master_key)
+}
+
+pub fn backend_is_locked() -> bool {
+    INPROC_BACKEND
+        .get()
+        .map(InProcBackend::is_locked)
+        .unwrap_or(true)
+}
+pub fn snapshot_key() -> Result<zeroize::Zeroizing<[u8; 32]>, String> {
+    let backend = INPROC_BACKEND
+        .get()
+        .ok_or_else(|| "credential backend is not initialized".to_string())?;
+    backend
+        .snapshot_key()
+        .map(zeroize::Zeroizing::new)
+        .ok_or_else(|| "credential store is locked".to_string())
 }
 
 /// The current default credential backend. Returns the in-process AEAD

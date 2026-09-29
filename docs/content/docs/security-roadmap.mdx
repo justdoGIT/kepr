@@ -1,0 +1,156 @@
+---
+title: "Security Extension Roadmap"
+description: "Deferred hardware-backed key protection, desktop keyrings, and dependency-maintenance work."
+---
+
+# Security Extension Roadmap
+
+This page tracks security work intentionally left optional after the
+2026 dependency-free user-mode upgrade. The current implementation uses
+AES-256-GCM for credential files and Argon2id + AES-256-GCM to protect the
+master key when `kepr lock` is enabled.
+
+These items must remain opt-in. The default kepr binary must continue to work
+without systemd, a D-Bus session, TPM software, FIDO2 transport libraries, or a
+desktop keyring daemon.
+
+## 1. Hardware-backed master-key wrapping
+
+### Goal
+
+Prevent an attacker who steals the credential directory and the protected
+master-key envelope from recovering the master key without possession of the
+machine's hardware or an enrolled authenticator.
+
+### TPM2 backend
+
+Add a feature-gated `Tpm2Sealer` implementation behind a `tpm2` Cargo feature.
+The backend should:
+
+- Generate a TPM-sealed wrapping key or use a TPM-protected sealing object.
+- Bind unsealing to an explicit PCR policy, documented per distribution.
+- Keep the random 256-bit kepr master key as the payload; never derive it
+  directly from PCR values.
+- Fail closed when the TPM is unavailable, reset, or the PCR policy changes.
+- Provide an explicit recovery/export procedure before enrollment.
+- Keep the default user-mode local-file sealer unchanged when the feature is
+  disabled.
+- Update the systemd unit's `PrivateDevices`, device allow-list, and
+  capability policy only for TPM-enabled deployments.
+
+Candidate implementation choices:
+
+- Prefer a maintained Rust TSS binding such as `tss-esapi`.
+- Avoid invoking `tpm2_*` command-line tools from the daemon.
+- Pin the TSS dependency and document supported TPM/TSS versions.
+
+Required tests:
+
+- Mock sealer round trips.
+- PCR-policy mismatch fails closed.
+- TPM absence does not silently fall back to plaintext key storage.
+- Restart and recovery behavior after TPM lockout.
+
+### FIDO2 wrapping or unlock
+
+The existing FIDO2 feature verifies assertions for credentials marked
+`--requires-fido2`; it does **not** wrap the master key. A future FIDO2 master
+key mode should:
+
+- Use a standard WebAuthn/CTAP2 resident or discoverable credential flow.
+- Derive only a key-encryption key from a verified assertion response.
+- Include the RP ID, credential ID, user handle, and version in authenticated
+  metadata.
+- Require user presence and, where configured, user verification.
+- Never treat a public-key signature alone as a password-equivalent secret.
+- Support multiple enrolled authenticators and an explicit recovery policy.
+- Rate-limit failed ceremonies and invalidate challenges after one use.
+
+Direct authenticator transport should use a maintained library. The current
+`KEPR_FIDO2_HELPER` process boundary is suitable for per-credential gating,
+not for silently wrapping the daemon's long-lived master key.
+
+## 2. Desktop keyring backends
+
+### Goal
+
+Use an already-authenticated desktop session to protect the kepr master key,
+without making desktop services a requirement for servers or headless hosts.
+
+### Secret Service / GNOME Keyring
+
+Add a feature-gated `SecretServiceSealer`:
+
+- Use a maintained D-Bus client rather than the `secret-tool` executable.
+- Store one random master-key blob under a stable application/service label.
+- Authenticate the item as non-exportable where the service supports it.
+- Bind the item to the kepr user and deployment mode.
+- Return a clear locked-session error when no Secret Service is available.
+- Never fall back from an unavailable keyring to an unprotected file silently.
+
+### KWallet
+
+Add a feature-gated `KWalletSealer` with equivalent semantics:
+
+- Use the KWallet D-Bus API.
+- Store only the wrapped random master key, not individual plaintext
+  credentials.
+- Handle closed wallets and wallet reauthentication explicitly.
+- Preserve the same lock/unlock protocol used by the Argon2id backend.
+
+### Backend selection
+
+Define an explicit configuration order, for example:
+
+```text
+KEPR_MASTER_KEY_BACKEND=local       # dependency-free default
+KEPR_MASTER_KEY_BACKEND=argon2      # password envelope
+KEPR_MASTER_KEY_BACKEND=secret-service
+KEPR_MASTER_KEY_BACKEND=kwallet
+KEPR_MASTER_KEY_BACKEND=tpm2
+```
+
+Selection must be visible through `kepr status`, recorded without secrets in
+the audit log, and rejected when the requested backend is unavailable.
+There must be no silent downgrade from TPM2, FIDO2, Secret Service, or KWallet
+to local plaintext key storage.
+
+## 3. Dependency and supply-chain maintenance
+
+- Run `cargo audit` and `cargo deny` in CI and before every release.
+- Review cryptography and D-Bus/TSS dependencies separately from ordinary
+  application dependencies.
+- Keep `Cargo.lock` committed and review lockfile changes for transitive crypto
+  updates.
+- Generate and publish an SBOM for release binaries.
+- Prefer signed, reproducible release artifacts.
+- Record the Rust toolchain, target triple, and enabled security features in
+  release metadata.
+- Add a scheduled dependency update job that opens reviewable pull requests;
+  do not auto-merge cryptography updates.
+- Re-run the threat model whenever the key-sealing backend or daemon privilege
+  boundary changes.
+
+## Acceptance criteria for future work
+
+A backend is ready only when it has:
+
+1. An explicit opt-in feature and configuration path.
+2. No plaintext master-key fallback on backend failure.
+3. Recovery and re-enrollment documentation.
+4. Locked, unlocked, restart, wrong-secret, and unavailable-backend tests.
+5. Permission and process-boundary review for Linux distributions that package
+   it.
+6. A documented threat model describing what root and same-user malware can
+   still do.
+
+Until those criteria are met, the supported hardened baseline is:
+
+```text
+Argon2id password unlock
++ AES-256-GCM master-key envelope
++ AES-256-GCM credential encryption
++ SO_PEERCRED validation
++ owner-only filesystem permissions
++ daemon rate limiting
+```

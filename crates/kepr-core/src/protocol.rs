@@ -12,8 +12,31 @@ use crate::generate::ZeroString;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-// ── Socket path / limits ──────────────────────────────────────────────────────
+// Runtime paths are user-scoped by default. Set `KEPR_SYSTEM_MODE=1` for the
+// optional root-managed deployment that uses the historical /run/kepr path.
+pub fn socket_path() -> std::path::PathBuf {
+    if std::env::var_os("KEPR_SYSTEM_MODE").is_some() {
+        return std::path::PathBuf::from("/run/kepr/kepr.sock");
+    }
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join(".local/state/kepr/runtime")
+        });
+    runtime.join("kepr").join("kepr.sock")
+}
 
+pub fn socket_dir() -> std::path::PathBuf {
+    socket_path()
+        .parent()
+        .expect("kepr socket always has a parent")
+        .to_path_buf()
+}
+
+#[allow(dead_code)]
 pub const SOCKET_PATH: &str = "/run/kepr/kepr.sock";
 #[allow(dead_code)]
 pub const SOCKET_DIR: &str = "/run/kepr";
@@ -98,6 +121,13 @@ pub enum Request {
     },
     /// Phase 2 η: list registered FIDO2 credentials.
     Fido2List,
+    Lock {
+        password: ZeroString,
+    },
+    Unlock {
+        password: ZeroString,
+    },
+    Status,
     Ping,
 }
 
@@ -165,6 +195,12 @@ pub enum Response {
         credentials: Vec<Fido2CredInfo>,
     },
     Pong,
+    LockedOk,
+    UnlockedOk,
+    StatusOk {
+        locked: bool,
+        password_protected: bool,
+    },
     Err {
         error: String,
     },

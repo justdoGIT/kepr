@@ -257,8 +257,8 @@ fn spawn_sweeper_with_interval(versions: Arc<VersionState>, interval: Duration) 
             // not startup + 0.
             thread::sleep(interval);
             let now = expiry::now_unix();
-            let dir = Path::new(store::CREDSTORE);
-            let _ = sweep_once(dir, now, Some(&versions));
+            let dir = store::store_dir();
+            let _ = sweep_once(&dir, now, Some(&versions));
         })
         .expect("spawn kepr-expiry thread");
 }

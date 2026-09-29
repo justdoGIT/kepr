@@ -24,11 +24,14 @@ mod daemon_ratelimit;
 mod daemon_socket;
 mod expiry;
 mod fido2;
+mod key_unlock;
 mod master_key;
 mod store;
 mod version_state;
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::OnceLock;
 
@@ -42,7 +45,7 @@ use daemon_socket::{
     effective_uid, set_socket_permissions, setup_socket_dir, tighten_umask_for_socket,
 };
 use kepr_core::framing::{read_frame, write_frame};
-use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
+use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES, TIMEOUT_SECS};
 
 // Worker pool sizing. Connections are short-lived (1 req / 1 resp) but each
 // may fork+exec the credential backend, so we want some slack over CPU count.
@@ -79,22 +82,39 @@ fn lock_memory() {
     }
 }
 
-/// Path to the daemon's sealed master key file. The systemd unit's
-/// `StateDirectory=kepr` ensures `/var/lib/kepr/` exists at 0700
-/// before the daemon starts, so the file lands at 0600 inside it.
-const MASTER_KEY_PATH: &str = "/var/lib/kepr/master.key";
+fn user_mode() -> bool {
+    std::env::var_os("KEPR_USER_MODE").is_some() || effective_uid() != 0
+}
 
-/// Path to the per-credential version-counter state. Tracks the
-/// highest counter the daemon has ever stamped into a kepr_v2
-/// ciphertext, so a wholesale `/etc/credstore.encrypted/` rollback
-/// is detected at decrypt time.
-const VERSION_STATE_PATH: &str = "/var/lib/kepr/cred-versions.json";
+fn state_dir() -> std::path::PathBuf {
+    if user_mode() {
+        std::env::var_os("XDG_STATE_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                    .join(".local/state")
+            })
+            .join("kepr")
+    } else {
+        std::path::PathBuf::from("/var/lib/kepr")
+    }
+}
 
-/// Path to the append-only hash-chained audit log. Phase 2 δ
-/// (PR #74 added the primitives). This is the secondary, tamper-
-/// evident audit channel; journald remains primary. See
-/// `audit_chain::AuditChain` for the wire format and verifier.
-const AUDIT_CHAIN_PATH: &str = "/var/lib/kepr/audit.log";
+fn master_key_path() -> std::path::PathBuf {
+    state_dir().join("master.key")
+}
+
+fn protected_master_key_path() -> std::path::PathBuf {
+    state_dir().join("master.key.argon2id")
+}
+
+fn version_state_path() -> std::path::PathBuf {
+    state_dir().join("cred-versions.json")
+}
+
+fn audit_chain_path() -> std::path::PathBuf {
+    state_dir().join("audit.log")
+}
 
 /// Magic prefixes written by the InProc AEAD backend. Files in
 /// `/etc/credstore.encrypted/` that match the `kepr-*` prefix but do
@@ -120,8 +140,8 @@ const INPROC_MAGICS: &[&[u8]] = &[b"kepr_v1\n", b"kepr_v2\n"];
 /// because of one stuck file.
 fn sweep_legacy_credstore() {
     use store::CRED_PREFIX;
-    let dir = std::path::Path::new(store::CREDSTORE);
-    let entries = match fs::read_dir(dir) {
+    let dir = store::store_dir();
+    let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
         Err(_) => return, // dir absent on a fresh install — nothing to do
     };
@@ -158,101 +178,94 @@ fn sweep_legacy_credstore() {
 }
 
 fn main() {
-    if effective_uid() != 0 {
-        eprintln!("[kepr-daemon] must run as root");
-        std::process::exit(1);
+    let user = std::env::args().any(|arg| arg == "--user") || effective_uid() != 0;
+    if user {
+        std::env::set_var("KEPR_USER_MODE", "1");
+    } else {
+        std::env::set_var("KEPR_SYSTEM_MODE", "1");
     }
 
-    lock_memory();
-
-    // Bootstrap the in-process AEAD backend before serving any request.
-    // This is a one-shot at startup: load (or generate + seal + persist)
-    // the 32-byte master key, hand it to InProcBackend, and install
-    // that as `crypto::default_backend()`. The systemd-creds fork+exec
-    // happens at most once here for the master key; per-credential
-    // ops are pure in-process AES-256-GCM afterwards.
-    let key = master_key::load_or_generate(
-        std::path::Path::new(MASTER_KEY_PATH),
-        &master_key::SystemdCredsSealer,
+    fs::create_dir_all(state_dir()).unwrap_or_else(|e| {
+        eprintln!("[kepr-daemon] cannot create state directory: {e}");
+        std::process::exit(1);
+    });
+    fs::set_permissions(state_dir(), std::fs::Permissions::from_mode(0o700)).unwrap_or_else(|e| {
+        eprintln!("[kepr-daemon] cannot secure state directory: {e}");
+        std::process::exit(1);
+    });
+    fs::create_dir_all(crate::store::store_dir()).unwrap_or_else(|e| {
+        eprintln!("[kepr-daemon] cannot create credential directory: {e}");
+        std::process::exit(1);
+    });
+    fs::set_permissions(
+        crate::store::store_dir(),
+        std::fs::Permissions::from_mode(if user { 0o700 } else { 0o755 }),
     )
     .unwrap_or_else(|e| {
-        eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
+        eprintln!("[kepr-daemon] cannot secure credential directory: {e}");
         std::process::exit(1);
     });
-    // Load the per-cred counter state for rollback protection. A
-    // missing file is the legitimate fresh-install case; a malformed
-    // file is a hard failure — we refuse to start rather than silently
-    // regress to no rollback protection.
-    let versions = std::sync::Arc::new(
-        version_state::VersionState::load(std::path::PathBuf::from(VERSION_STATE_PATH))
-            .unwrap_or_else(|e| {
-                eprintln!("[kepr-daemon] cannot load version state: {e}");
+    let sealer: Box<dyn master_key::Sealer> = if user {
+        Box::new(master_key::LocalFileSealer)
+    } else {
+        Box::new(master_key::SystemdCredsSealer)
+    };
+    let password_protected = protected_master_key_path().exists();
+    let key = if password_protected {
+        None
+    } else {
+        Some(
+            master_key::load_or_generate(&master_key_path(), sealer.as_ref()).unwrap_or_else(|e| {
+                eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
                 std::process::exit(1);
             }),
+        )
+    };
+    let versions = std::sync::Arc::new(
+        version_state::VersionState::load(version_state_path()).unwrap_or_else(|e| {
+            eprintln!("[kepr-daemon] cannot load version state: {e}");
+            std::process::exit(1);
+        }),
     );
-    // Clone before initialize_* takes ownership — the sweeper
-    // needs the same VersionState handle so its tombstones share
-    // the rollback floor with the encrypt/decrypt path. `Arc`
-    // makes the share explicit; both call sites hold a reference,
-    // both write through the inner `Mutex`.
     let versions_for_sweeper = std::sync::Arc::clone(&versions);
-    crypto::initialize_inproc_backend(*key, versions).unwrap_or_else(|e| {
-        eprintln!("[kepr-daemon] cannot install backend: {e}");
-        std::process::exit(1);
-    });
-    // Drop the bootstrap copy ASAP. Without this, the `Zeroizing` wrapper
-    // would only run its destructor at the end of main() — which is the
-    // end of the process lifetime, since the accept loop below never
-    // returns under normal operation. An explicit drop zeroizes the
-    // 32-byte key immediately after the backend has its own copy, which
-    // shrinks the window where a coredump or memory snapshot could
-    // surface plaintext key material.
-    drop(key);
-
-    // One-time sweep of any legacy systemd-creds-format credentials left
-    // over from before the AEAD migration. The user explicitly opted to
-    // delete these on cutover (no in-place re-encryption), so log the
-    // names and remove the files. Idempotent: on second start the sweep
-    // finds nothing because every file the daemon writes now starts with
-    // the kepr_v1 magic.
-    sweep_legacy_credstore();
-
-    // Phase 2 β — periodic TTL sweeper. Spawned once at startup;
-    // dies with the daemon when systemd SIGTERMs the unit. See
-    // `daemon_expiry::spawn_sweeper` for the per-tick contract.
-    daemon_expiry::spawn_sweeper(versions_for_sweeper);
-
-    // Phase 2 δ.2 — install the hash-chained audit handle so
-    // every `audit::log` call also extends the tamper-evident
-    // chain at /var/lib/kepr/audit.log. Failure to open is a
-    // hard-error: the daemon refuses to start rather than
-    // silently regress to journald-only audit (which would be
-    // indistinguishable from a tampered chain by post-mortem).
-    let chain = audit_chain::AuditChain::open(std::path::PathBuf::from(AUDIT_CHAIN_PATH))
+    crypto::initialize_inproc_backend(key.as_ref().map(|key| **key).unwrap_or([0u8; 32]), versions)
         .unwrap_or_else(|e| {
-            eprintln!("[kepr-daemon] cannot open audit chain: {e}");
+            eprintln!("[kepr-daemon] cannot install backend: {e}");
             std::process::exit(1);
         });
+    if password_protected {
+        crypto::lock_backend().unwrap_or_else(|e| {
+            eprintln!("[kepr-daemon] cannot lock protected backend: {e}");
+            std::process::exit(1);
+        });
+        eprintln!("[kepr-daemon] credential store is locked; run `kepr unlock`");
+    }
+    drop(key);
+
+    sweep_legacy_credstore();
+    daemon_expiry::spawn_sweeper(versions_for_sweeper);
+
+    let chain = audit_chain::AuditChain::open(audit_chain_path()).unwrap_or_else(|e| {
+        eprintln!("[kepr-daemon] cannot open audit chain: {e}");
+        std::process::exit(1);
+    });
     audit::install_chain(std::sync::Arc::new(chain)).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot install audit chain: {e}");
         std::process::exit(1);
     });
 
+    let socket = kepr_core::protocol::socket_path();
     setup_socket_dir();
-    let _ = fs::remove_file(SOCKET_PATH);
-
-    // Must precede `bind`: socket inode mode is `0666 & ~umask` at creation
-    // time, so without this the post-bind `chmod` is racy on any host that
-    // overrides the systemd default umask.
+    let _ = fs::remove_file(&socket);
     tighten_umask_for_socket();
-
-    let listener = UnixListener::bind(SOCKET_PATH).expect("cannot bind socket");
+    let listener = UnixListener::bind(&socket).expect("cannot bind socket");
     set_socket_permissions();
 
     let pool = Pool::new(POOL_WORKERS, POOL_QUEUE, handle_client);
-
-    eprintln!("[kepr-daemon] listening on {SOCKET_PATH} (workers={POOL_WORKERS})");
-
+    eprintln!(
+        "[kepr-daemon] listening on {} (workers={POOL_WORKERS})",
+        socket.display()
+    );
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => pool.dispatch(stream),
@@ -273,7 +286,10 @@ fn handle_client(mut stream: UnixStream) {
             return;
         }
     };
-
+    if user_mode() && peer_uid != effective_uid() {
+        send_error(&mut stream, "caller is not the daemon owner");
+        return;
+    }
     if !rate_limiter().check(peer_uid) {
         // Reply immediately and return the worker to the pool. An earlier
         // version slept here for a small jitter to deter timing-based
@@ -304,9 +320,79 @@ fn handle_client(mut stream: UnixStream) {
     let response = dispatch(peer_uid, peer_pid, &username, request);
     send_response(&mut stream, &response);
 }
+fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
+    let path = protected_master_key_path();
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .map_err(|e| format!("cannot create protected master-key file: {e}"))?;
+    file.write_all(envelope)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("cannot write protected master-key file: {e}"))?;
+    drop(file);
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("cannot commit protected master-key file: {e}")
+    })
+}
+
+fn handle_lock(password: &[u8]) -> Response {
+    if password.is_empty() {
+        return Response::fail("password cannot be empty");
+    }
+    if protected_master_key_path().exists() {
+        return Response::fail("credential store is already password protected");
+    }
+    let key = match crypto::snapshot_key() {
+        Ok(key) => key,
+        Err(e) => return Response::fail(e),
+    };
+    let envelope = match key_unlock::wrap(&key, password) {
+        Ok(envelope) => envelope,
+        Err(e) => return Response::fail(e),
+    };
+    if let Err(e) = write_protected_master_key(&envelope) {
+        return Response::fail(e);
+    }
+    if let Err(e) = fs::remove_file(master_key_path()) {
+        let _ = fs::remove_file(protected_master_key_path());
+        return Response::fail(format!("cannot remove old master key: {e}"));
+    }
+    if let Err(e) = crypto::lock_backend() {
+        return Response::fail(e);
+    }
+    Response::LockedOk
+}
+
+fn handle_unlock(password: &[u8]) -> Response {
+    if password.is_empty() {
+        return Response::fail("password cannot be empty");
+    }
+    let envelope = match fs::read(protected_master_key_path()) {
+        Ok(envelope) => envelope,
+        Err(_) => return Response::fail("credential store is not password protected"),
+    };
+    let key = match key_unlock::unwrap(&envelope, password) {
+        Ok(key) => key,
+        Err(e) => return Response::fail(e),
+    };
+    match crypto::unlock_backend(*key) {
+        Ok(()) => Response::UnlockedOk,
+        Err(e) => Response::fail(e),
+    }
+}
 
 fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
     match request {
+        Request::Lock { password } => handle_lock(password.as_bytes()),
+        Request::Unlock { password } => handle_unlock(password.as_bytes()),
+        Request::Status => Response::StatusOk {
+            locked: crypto::backend_is_locked(),
+            password_protected: protected_master_key_path().exists(),
+        },
         Request::Ping => {
             audit::log(&AuditEvent {
                 op: "ping",
@@ -347,7 +433,10 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::List => handle_list(uid, username),
         Request::Delete { name } => handle_delete(uid, username, &name),
         Request::Check => handle_check(uid, username),
-        Request::AuditVerify => handle_audit_verify(uid, username, AUDIT_CHAIN_PATH),
+        Request::AuditVerify => {
+            let path = audit_chain_path();
+            handle_audit_verify(uid, username, path.to_str().unwrap_or_default())
+        }
         Request::Fido2Register {
             label,
             credential_id,

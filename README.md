@@ -80,27 +80,27 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer:
+The installer builds and installs the three binaries. On systems without a
+systemd kepr service, the client uses the self-contained user mode:
 
-1. `cargo build --release`
-2. Creates the `kepr` system group and adds the invoking user.
-3. Installs `/usr/local/bin/kepr` (0755) and
-   `/usr/local/sbin/kepr-daemon` (0700, root-only).
-4. Installs bash completion if `bash-completion` is present.
-5. Installs and starts `kepr.service`.
+1. Credentials are stored under `${XDG_DATA_HOME:-$HOME/.local/share}/kepr/credentials`.
+2. State and the local AES-256-GCM master key are stored under
+   `${XDG_STATE_HOME:-$HOME/.local/state}/kepr`, owner-only.
+3. The CLI starts `kepr-daemon --user` on first use and connects over a
+   user-owned Unix socket under `$XDG_RUNTIME_DIR/kepr`.
+4. User mode has no systemd, root daemon, `systemd-creds`, group, or external
+   service dependency. A compromised user account can access that user's
+   credentials; this is the explicit user-mode threat boundary.
 
-After install, **activate group membership** in your current shell:
+The optional system deployment retains the root daemon and systemd-creds
+sealer. It is not required for normal user-mode operation.
+
+Verify user mode:
 
 ```bash
-newgrp kepr          # or log out / in
-groups | grep kepr   # verify
-```
-
-Verify the daemon is reachable:
-
-```bash
-systemctl status kepr
-kepr list            # empty list, no error
+kepr set KEPR_SMOKE --generate
+kepr get KEPR_SMOKE --quiet
+kepr delete KEPR_SMOKE --force
 ```
 
 ---
@@ -117,6 +117,23 @@ COMMANDS
   delete KEY [--force]                 (alias: rm)
   check
 ```
+### Password-protected store
+
+User mode can wrap the random AES master key with an Argon2id-derived key:
+
+```bash
+kepr lock
+kepr status
+kepr unlock
+```
+
+`kepr lock` writes only an Argon2id + AES-256-GCM envelope (`0600`) and removes
+the unwrapped local master-key file. After a daemon restart, the store remains
+locked until `kepr unlock` succeeds. Failed unlock attempts are subject to the
+daemon's per-peer rate limiter. This protects against offline theft of the
+credential files and local key material; it does not protect against root or a
+same-user process that can observe an unlocked daemon.
+
 
 ### Store a credential
 

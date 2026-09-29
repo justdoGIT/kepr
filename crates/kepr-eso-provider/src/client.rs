@@ -7,13 +7,15 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use kepr_core::framing::{read_frame, write_frame};
-use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES, SOCKET_PATH, TIMEOUT_SECS};
+use kepr_core::protocol::{socket_path, Request, Response, MAX_MSG_BYTES, TIMEOUT_SECS};
 
 pub fn send_request(req: &Request) -> Result<Response, String> {
-    let mut stream = UnixStream::connect(SOCKET_PATH).map_err(|e| {
+    let path = socket_path();
+    let mut stream = UnixStream::connect(&path).map_err(|e| {
         format!(
-            "cannot connect to kepr daemon at {SOCKET_PATH}: {e}\n\
-             Is kepr-daemon running? Check: systemctl status kepr"
+            "cannot connect to kepr daemon at {}: {e}\n\
+             Is kepr-daemon running? Run `kepr` once to start user mode.",
+            path.display()
         )
     })?;
 

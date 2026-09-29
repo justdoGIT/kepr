@@ -7,7 +7,7 @@ use std::ffi::CString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use kepr_core::protocol::{SOCKET_DIR, SOCKET_PATH};
+use kepr_core::protocol::{socket_dir, socket_path};
 
 extern "C" {
     fn geteuid() -> u32;
@@ -38,25 +38,32 @@ pub fn tighten_umask_for_socket() {
 }
 
 pub fn setup_socket_dir() {
-    fs::create_dir_all(SOCKET_DIR).expect("cannot create socket dir");
-    fs::set_permissions(SOCKET_DIR, fs::Permissions::from_mode(0o755))
-        .expect("cannot chmod socket dir");
+    let dir = socket_dir();
+    fs::create_dir_all(&dir).expect("cannot create socket dir");
+    let mode = if std::env::var_os("KEPR_USER_MODE").is_some() {
+        0o700
+    } else {
+        0o755
+    };
+    fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).expect("cannot chmod socket dir");
 }
 
 pub fn set_socket_permissions() {
-    // Get gid of 'kepr' group; fall back to root if missing.
-    let gid = group_gid("kepr").unwrap_or(0);
-
-    if let Ok(path) = CString::new(SOCKET_PATH) {
-        unsafe {
-            chown(path.as_ptr(), 0, gid);
+    let socket = socket_path();
+    let user = std::env::var_os("KEPR_USER_MODE").is_some();
+    if !user {
+        if let Ok(path) = CString::new(socket.as_os_str().as_encoded_bytes()) {
+            unsafe {
+                chown(path.as_ptr(), 0, group_gid("kepr").unwrap_or(0));
+            }
         }
     }
-
-    fs::set_permissions(SOCKET_PATH, fs::Permissions::from_mode(0o660))
-        .expect("cannot chmod socket");
+    fs::set_permissions(
+        &socket,
+        fs::Permissions::from_mode(if user { 0o600 } else { 0o660 }),
+    )
+    .expect("cannot chmod socket");
 }
-
 fn group_gid(name: &str) -> Option<u32> {
     let content = fs::read_to_string("/etc/group").ok()?;
     for line in content.lines() {
