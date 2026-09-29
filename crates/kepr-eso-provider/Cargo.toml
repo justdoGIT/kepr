@@ -2,9 +2,10 @@
 name = "kepr-eso-provider"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.87"
 description = "External Secrets Operator webhook provider bridge for kepr"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/justdoGIT/kepr"
+repository = "https://github.com/aikepeer/kepr.git"
 keywords = ["kubernetes", "external-secrets", "credentials", "webhook"]
 categories = ["command-line-utilities"]
 

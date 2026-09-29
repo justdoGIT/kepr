@@ -50,7 +50,7 @@ valuable to catch early.
 
 ## Development Setup
 
-Requirements: Rust stable toolchain (1.75+), Cargo.
+Requirements: Rust 1.87 or newer, Cargo.
 
 ```bash
 # Clone the repository
@@ -177,9 +177,10 @@ Signed-off-by: Your Name <you@example.com>
 
 **Do not open a public issue for security bugs.**
 
-Email the maintainers directly at the address listed in `Cargo.toml`. Include
-a description of the vulnerability, reproduction steps, and your assessment
-of impact. You will receive a response within 72 hours.
+Use GitHub's private vulnerability reporting channel (Repository →
+Security → Report a vulnerability). Include a description, reproduction
+steps, affected commit, and impact assessment. Do not disclose details in
+a public issue.
 
 We follow responsible disclosure: we will work with you to understand and fix
 the issue before any public announcement.

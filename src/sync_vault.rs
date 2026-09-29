@@ -77,6 +77,14 @@ impl VaultSyncer {
             "VAULT_ADDR not set — point at your Vault instance, e.g. https://vault.example:8200"
                 .to_string()
         })?;
+        if !addr.starts_with("https://")
+            && std::env::var("KEPR_ALLOW_INSECURE_VAULT").as_deref() != Ok("1")
+        {
+            return Err(
+                "VAULT_ADDR must use https://; set KEPR_ALLOW_INSECURE_VAULT=1 only for local testing"
+                    .into(),
+            );
+        }
         let token = std::env::var("VAULT_TOKEN").map_err(|_| {
             "VAULT_TOKEN not set — pass a token with kv-v2 read/write \
              on the target path"
