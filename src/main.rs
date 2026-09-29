@@ -5,12 +5,14 @@
 // membership is the only access control — see DOCS.md.
 
 mod cli_activity;
+mod cli_agent;
 mod cli_args;
 mod cli_cmds;
 mod cli_doctor;
 mod cli_envdump;
 mod cli_exec;
 mod cli_fido2;
+mod cli_help;
 mod cli_input;
 mod cli_manifest;
 mod cli_mode;

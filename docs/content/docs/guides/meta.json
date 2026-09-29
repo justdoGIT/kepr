@@ -1,0 +1,11 @@
+{
+  "title": "Guides",
+  "defaultOpen": true,
+  "pages": [
+    "getting-started",
+    "ai-agents",
+    "git-integration",
+    "cloud-sync",
+    "operational-security"
+  ]
+}

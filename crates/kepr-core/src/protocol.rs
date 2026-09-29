@@ -139,6 +139,10 @@ pub enum Response {
     SetOk {
         name: String,
         cred_name: String,
+        /// Whether the master key is Argon2id-wrapped at the time of this
+        /// write. Carried on the response so the CLI can warn about an
+        /// un-wrapped key without a second `Request::Status` round-trip.
+        password_protected: bool,
     },
     GetOk {
         name: String,
@@ -459,7 +463,8 @@ mod tests {
         assert_eq!(
             as_value(&Response::SetOk {
                 name: "X".into(),
-                cred_name: "y".into()
+                cred_name: "y".into(),
+                password_protected: false,
             })["kind"],
             json!("set_ok"),
         );

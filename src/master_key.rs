@@ -125,19 +125,22 @@ pub struct LocalFileSealer;
 
 impl Sealer for LocalFileSealer {
     fn seal(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<Vec<u8>, String> {
-        let mut blob = b"kepr-local-v1\n".to_vec();
-        blob.extend_from_slice(key);
-        Ok(blob)
+        let backend = kepr_core::keyring::platform_keyring_backend();
+        backend.seal_key(key)
     }
 
     fn unseal(&self, blob: &[u8]) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
-        const PREFIX: &[u8] = b"kepr-local-v1\n";
-        if blob.len() != PREFIX.len() + MASTER_KEY_LEN || !blob.starts_with(PREFIX) {
-            return Err("local master key has an invalid format".to_string());
-        }
-        let mut key = [0u8; MASTER_KEY_LEN];
-        key.copy_from_slice(&blob[PREFIX.len()..]);
-        Ok(Zeroizing::new(key))
+        let backend = kepr_core::keyring::platform_keyring_backend();
+        backend.unseal_key(blob)
+    }
+}
+
+/// Returns true if `path` exists and contains an un-wrapped local master key.
+pub fn is_unwrapped_local_key(path: &Path) -> bool {
+    if let Ok(bytes) = fs::read(path) {
+        bytes.starts_with(b"kepr-local-v1\n")
+    } else {
+        false
     }
 }
 
@@ -328,5 +331,15 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.contains("bad blob"), "got: {err}");
+    }
+
+    #[test]
+    fn test_is_unwrapped_local_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("master.key");
+        assert!(!is_unwrapped_local_key(&path));
+        let sealer = LocalFileSealer;
+        load_or_generate(&path, &sealer).unwrap();
+        assert!(is_unwrapped_local_key(&path));
     }
 }

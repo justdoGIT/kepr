@@ -1,0 +1,87 @@
+---
+title: "AI Agent & IDE Protection"
+description: "Use Kepr to protect Claude Code, Cursor, Windsurf, and Aider from exposing API keys in context logs."
+---
+
+## Problem: AI Agents Leak Secrets in Context Windows
+
+Modern AI coding agents (Claude Code, Cursor, Windsurf, Aider) capture environment variables and process state in their context logs. This exposes API keys and credentials to the model (and LLM provider logs).
+
+---
+
+## Solution: `kepr protect-agent`
+
+Kepr intercepts agent invocations and injects credentials via sealed RAM memory descriptors instead of environment variables.
+
+```bash
+kepr protect-agent claude -- claude
+```
+
+This command:
+1. Inspects `~/.config/claude/AGENTS.md` for declared credential requirements.
+2. Fetches each credential from the daemon.
+3. Mounts secrets in sealed `memfd` blocks with `KEPR_FD_*` environment variables.
+4. Executes Claude Code with a clean environment (no plaintext API keys).
+
+---
+
+## Configuration: Declare Agent Requirements
+
+In your agent config file (e.g., `~/.config/claude/AGENTS.md`):
+
+```yaml
+# Credentials this agent requires (Kepr will inject via memfd)
+credentials:
+  - OPENAI_API_KEY
+  - ANTHROPIC_API_KEY
+  - GITHUB_TOKEN
+```
+
+On agent startup, Kepr ensures all declared credentials exist and are available via sealed FDs.
+
+---
+
+## Usage Examples
+
+### Claude Code
+```bash
+kepr protect-agent claude -- claude
+```
+
+### Cursor
+```bash
+kepr protect-agent cursor -- cursor
+```
+
+### Windsurf
+```bash
+kepr protect-agent windsurf -- windsurf
+```
+
+### Aider
+```bash
+kepr protect-agent aider -- aider
+```
+
+---
+
+## What Gets Protected?
+
+- ✅ API key environment variables no longer appear in `/proc/<pid>/environ`
+- ✅ Process inspection (`ps`, `/proc/self/cmdline`) reveals no plaintext secrets
+- ✅ LLM context logs capture only file descriptor numbers (`KEPR_FD_KEY=3`), not raw tokens
+- ✅ Agent stdout/stderr remains completely unmodified
+
+---
+
+## Auditing Agent Access
+
+```bash
+journalctl -t kepr-daemon KEPR_OP=get
+```
+
+Each credential fetch by an agent is logged with:
+- Operation type (`get`)
+- Credential name
+- Peer UID (agent process owner)
+- Success/failure result

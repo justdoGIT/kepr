@@ -1,8 +1,6 @@
-# Claude Code
-.claude/settings.local.json
-.claude/.session*
-.claude/todos*
-.claude/agents/deep*
+# Claude Code & Agent state
+.claude/
+docs/superpowers/
 
 # Claude Plugins
 entities.json

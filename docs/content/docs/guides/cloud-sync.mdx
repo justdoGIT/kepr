@@ -1,0 +1,103 @@
+---
+title: "Cloud Secret Synchronization"
+description: "Sync credentials with AWS Secrets Manager, Google Secret Manager, or HashiCorp Vault."
+---
+
+## Overview
+
+Kepr supports zero-knowledge cloud synchronization: the daemon never sends the master key to the cloud, and the cloud never sees plaintext credentials.
+
+---
+
+## AWS Secrets Manager
+
+### Authentication
+
+Set environment variables before syncing:
+
+```bash
+export AWS_ACCESS_KEY_ID="AKIA..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_REGION="us-east-1"
+```
+
+### Push Credentials to AWS
+
+```bash
+kepr sync push --url aws-sm://my-secret-vault
+```
+
+This:
+1. Fetches all local credentials.
+2. Signs requests using AWS Signature V4 (computed client-side).
+3. Pushes each credential as a separate secret in AWS Secrets Manager.
+4. Uses `CreateSecret` on first sync; `PutSecretValue` on updates.
+
+### Pull Credentials from AWS
+
+```bash
+kepr sync pull --url aws-sm://my-secret-vault
+```
+
+---
+
+## Google Secret Manager
+
+### Authentication
+
+Obtain an access token:
+
+```bash
+export GCP_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+```
+
+Or on Google Compute Engine / Google Kubernetes Engine:
+
+```bash
+# Metadata server bearer token (auto-detected)
+kepr sync pull --url gcp-sm://projects/my-project/secrets
+```
+
+### Push to GCP
+
+```bash
+kepr sync push --url gcp-sm://projects/my-project/secrets
+```
+
+### Pull from GCP
+
+```bash
+kepr sync pull --url gcp-sm://projects/my-project/secrets
+```
+
+---
+
+## HashiCorp Vault (KV v2)
+
+### Authentication
+
+```bash
+export VAULT_ADDR="https://vault.example.com"
+export VAULT_TOKEN="s.abc123..."
+```
+
+### Push to Vault
+
+```bash
+kepr sync push --url vault://secret/kepr
+```
+
+### Pull from Vault
+
+```bash
+kepr sync pull --url vault://secret/kepr
+```
+
+---
+
+## Security Properties
+
+- **Client-Side Encryption**: Credentials remain encrypted until they reach the cloud provider.
+- **No Master Key Exposure**: The encryption master key is **never** sent to the cloud.
+- **Signature V4 (AWS) & Bearer Tokens (GCP/Vault)**: Credentials are signed/authenticated at the request boundary.
+- **Audit Trail**: Cloud provider audit logs show which secrets were accessed and when.

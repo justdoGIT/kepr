@@ -2,331 +2,125 @@
   <img src="./.github/assets/kepr.png" alt="kepr" style="max-width: 1280px; width: 100%; height: auto;">
 </p>
 
-# kepr
+# Kepr — The Developer-Native Secret Vault That Kills `.env` Leaks
 
-Per-user credential manager for Linux. An unprivileged CLI talks to a
-root systemd service over a Unix socket; the daemon owns all
-encryption, decryption, and audit logging. No `sudo` for day-to-day use,
-no plaintext on disk, no secret values in the journal.
+Kepr is a per-user secret vault for Linux and macOS, written in Rust (`kepr` CLI, `kepr-daemon` over Unix/IPC socket, `git-credential-kepr`, `docker-credential-kepr`, `kepr-core` library, and `kepr-eso-provider`).
+
+It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/environ` leaks by delivering secrets directly into process memory via **RAM-sealed memory file descriptors (`memfd`)**.
 
 ```
 ┌──────────────────────────┐         /run/kepr/kepr.sock         ┌──────────────────────────┐
-│  kepr  (your uid)     │ ◀──── framed JSON, 0660 root:kepr ───▶ │ kepr-daemon  (root)   │
-│  unprivileged CLI        │                                           │ encrypts / decrypts      │
-└──────────────────────────┘                                           │ audits to journald       │
+│  kepr  (user process)   │ ◀──── framed JSON IPC / peer creds ─▶ │ kepr-daemon  (user/root) │
+│  unprivileged CLI / SDK  │                                           │ Argon2id + AES-256-GCM   │
+└──────────────────────────┘                                           │ memory-sealed RAM FDs    │
                                                                        └──────────────────────────┘
                                                                                  │
                                                                                  ▼
-                                                                /etc/credstore.encrypted/
-                                                                  kepr-<uid>-<name>
+                                                                ~/.local/share/kepr/credentials/
+                                                                (or /etc/credstore.encrypted/)
 ```
+
+---
+
+## Key Differentiators
+
+| Feature | Kepr | `.env` / `export` | `pass` / `gopass` | 1Password CLI / Vault |
+|---|---|---|---|---|
+| **No `/proc` Env Leaks** | **Yes (`memfd` RAM delivery)** | No (visible in `/proc`) | No (visible in `/proc`) | No (environment variables) |
+| **AI Agent Protection** | **Yes (`kepr protect-agent`)** | No | No | No |
+| **Zero `sudo` Required** | **Yes (Standalone User Daemon)** | Yes | Yes | Yes |
+| **OS Peer Isolation** | **Yes (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS)** | No | No | No |
+| **Git / Docker Helpers** | **Yes (`git-credential-kepr`)** | No | Optional | Optional |
+| **Zero-Knowledge Cloud Sync** | **Yes (Vault, AWS SM, GCP SM)** | No | No | Cloud lock-in |
+
+---
+
+## Features
+
+- **RAM-Based Execution (`kepr exec --memfd`)**: Pass secrets to child processes using sealed, read-only memory descriptors (`KEPR_FD_<KEY>=3`). Secrets never touch `/proc/<pid>/environ` or shell history.
+- **AI Agent Protection (`kepr protect-agent`)**: Native wrapper for Claude Code, Cursor, Windsurf, and Aider to prevent LLMs from leaking API keys.
+- **Cross-Platform (in progress)**: Linux is fully supported and CI-tested today (`SO_PEERCRED`, systemd). macOS has a user-mode daemon (`LOCAL_PEERCRED`, `launchd`) with master-key protection currently resting on filesystem permissions, not yet real Keychain integration — the macOS path compiles but has no macOS CI runner exercising it yet. Windows has trait scaffolding only — the daemon does not yet build or run on Windows; tracked as a follow-up.
+- **Master Key Security**: Argon2id passphrase protection (`kepr lock` / `kepr unlock`) with in-process AES-256-GCM encryption and zeroized buffers.
+- **Universal Integrations**: `git-credential-kepr` (Git HTTP auth), `docker-credential-kepr` (Docker login), `.envrc` (`direnv`), and `kepr-eso-provider` (Kubernetes External Secrets Operator).
+- **FIDO2 Hardware Auth**: Require hardware key touch for high-value credentials.
+
+---
+
+## Quickstart
+
+### Installation
+
+```bash
+# Clone and run hermetic installer
+git clone https://github.com/aikepeer/kepr.git && cd kepr
+./install.sh
+```
+
+### Basic Usage
+
+```bash
+# 1. Store a credential interactively (masked entry)
+kepr set OPENAI_API_KEY
+
+# 2. Run your app with zero secrets in /proc (RAM delivery via memfd)
+kepr exec --memfd OPENAI_API_KEY -- python train.py
+
+# 3. Protect an AI Agent session
+kepr protect-agent claude -- claude
+
+# 4. Lock your store with Argon2id passphrase
+kepr lock
+
+# 5. Unlock your store
+kepr unlock
+```
+
+---
+
+## Integrations
+
+### Git Credential Helper
+```bash
+git config --global credential.helper kepr
+```
+
+### Docker Credential Helper
+In `~/.docker/config.json`:
+```json
+{
+  "credsStore": "kepr"
+}
+```
+
+### Direnv Integration (`.envrc`)
+In your project `.envrc`:
+```bash
+source_env completions/kepr.envrc
+use_kepr OPENAI_API_KEY ANTHROPIC_API_KEY
+```
+
+---
+
+## Security Architecture & Invariants
+
+1. **Zero Plaintext at Rest**: Master key wrapped with Argon2id; credential values encrypted with AES-256-GCM.
+2. **Zero Plaintext in Environment**: `kepr exec --memfd` passes sealed `memfd` file descriptors (`MFD_CLOEXEC` cleared post-seal), preventing `/proc` environment snooping.
+3. **Kernel-Attested Peer Isolation**: The daemon verifies peer identity using kernel-level peer credentials (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS), ignoring user-supplied request headers. Windows named-pipe SID verification is not yet implemented.
+4. **Memory Wiping**: All secret strings wrap in `ZeroString` and `zeroize::Zeroizing` to ensure memory clearing on drop.
 
 ---
 
 ## Documentation
 
-Full docs are published at **https://justdogit.github.io/kepr/** —
-quickstart, architecture, sequence diagrams, reference. The source
-lives in `docs/` (Fumadocs on Next.js 15).
-
-The phased plan and competitor matrix live at
-[`docs/roadmap`](https://justdogit.github.io/kepr/docs/roadmap)
-(source: `docs/content/docs/roadmap.mdx`).
-
-### Running docs locally
-
-```bash
-cd docs
-npm ci
-npm run dev          # http://localhost:3000
-```
-
-### Building docs locally
-
-```bash
-cd docs
-npm run build        # static export to docs/out/
-npx serve out -l 3000  # open http://localhost:3000/kepr/
-```
-
-### Updating the live site
-
-The live site is rebuilt on every push to `main` that touches
-`docs/**` or `.github/workflows/docs-deploy.yml`. To add a page,
-drop an MDX file under `docs/content/docs/<section>/<slug>.mdx`
-with the Fumadocs frontmatter template; navigation is inferred
-from `docs/content/docs/meta.json`.
-
-To deploy manually (e.g. after a settings change), trigger
-`Docs Deploy` from the Actions tab via `workflow_dispatch`.
-
----
-
-## Requirements
-
-- Linux with **systemd** (the daemon is a systemd unit; the encryption
-  backend ships with systemd).
-- **Rust** stable toolchain (`rustc`, `cargo`) — only at build time.
-- `bash`, `sudo` access for installation.
-- Optional: `jq` to run `tests/e2e.sh`.
-
----
-
-## Install
-
-```bash
-git clone <repo> kepr && cd kepr
-chmod +x install.sh
-./install.sh
-```
-
-The installer builds and installs the three binaries. On systems without a
-systemd kepr service, the client uses the self-contained user mode:
-
-1. Credentials are stored under `${XDG_DATA_HOME:-$HOME/.local/share}/kepr/credentials`.
-2. State and the local AES-256-GCM master key are stored under
-   `${XDG_STATE_HOME:-$HOME/.local/state}/kepr`, owner-only.
-3. The CLI starts `kepr-daemon --user` on first use and connects over a
-   user-owned Unix socket under `$XDG_RUNTIME_DIR/kepr`.
-4. User mode has no systemd, root daemon, `systemd-creds`, group, or external
-   service dependency. A compromised user account can access that user's
-   credentials; this is the explicit user-mode threat boundary.
-
-The optional system deployment retains the root daemon and systemd-creds
-sealer. It is not required for normal user-mode operation.
-
-Verify user mode:
-
-```bash
-kepr set KEPR_SMOKE --generate
-kepr get KEPR_SMOKE --quiet
-kepr delete KEPR_SMOKE --force
-```
-
----
-
-## Usage
-
-```text
-kepr [--json] [--color] COMMAND [args]
-
-COMMANDS
-  set    KEY [--generate] [--value V] [--gen-kind hex|base62|pass|uuid]
-  get    KEY [--quiet] [--export]
-  list                                 (alias: ls)
-  delete KEY [--force]                 (alias: rm)
-  check
-```
-### Password-protected store
-
-User mode can wrap the random AES master key with an Argon2id-derived key:
-
-```bash
-kepr lock
-kepr status
-kepr unlock
-```
-
-`kepr lock` writes only an Argon2id + AES-256-GCM envelope (`0600`) and removes
-the unwrapped local master-key file. After a daemon restart, the store remains
-locked until `kepr unlock` succeeds. Failed unlock attempts are subject to the
-daemon's per-peer rate limiter. This protects against offline theft of the
-credential files and local key material; it does not protect against root or a
-same-user process that can observe an unlocked daemon.
-
-
-### Store a credential
-
-```bash
-kepr set OPENAI_API_KEY                       # interactive, masked input
-kepr set OPENAI_API_KEY --generate            # auto-generate (default: hex)
-kepr set OPENAI_API_KEY --generate --gen-kind pass
-kepr set OPENAI_API_KEY --value sk-abc123     # non-interactive
-```
-
-Names are uppercase, `[A-Z0-9_]` only, ≤128 chars. The daemon rejects
-anything else (path-traversal defence) — see
-`store::validate_name`.
-
-### Retrieve a credential
-
-```bash
-kepr get OPENAI_API_KEY                       # pretty
-kepr get OPENAI_API_KEY --quiet               # raw value (for $(...) capture)
-kepr get OPENAI_API_KEY --export              # 'export OPENAI_API_KEY=...'
-
-eval "$(kepr get OPENAI_API_KEY --export)"    # load into the current shell
-export OPENAI_API_KEY="$(kepr get OPENAI_API_KEY --quiet)"
-```
-
-### List, verify, delete
-
-```bash
-kepr list                                     # alias: ls
-kepr check                                    # decrypts every cred, exits 1 if any fail
-kepr delete OPENAI_API_KEY                    # interactive confirm
-kepr rm OPENAI_API_KEY --force                # no prompt
-```
-
-### Machine-readable output
-
-`--json` emits a single JSON object on stdout. On clean errors (missing
-arg, unknown verb), nothing goes to stderr — scripts can rely on a
-single object or empty stdout + non-zero exit.
-
-```bash
-kepr --json list | jq '.credentials[].name'
-kepr --json get DOES_NOT_EXIST                # {"kind":"err","error":"..."} ; exit 1
-```
-
-### Generators
-
-| `--gen-kind` | Length | Format                                         |
-| ------------ | ------ | ---------------------------------------------- |
-| `hex`        | 64     | `[0-9a-f]` from 32 random bytes (default)      |
-| `base62`     | 48     | `[A-Za-z0-9]`, rejection-sampled (no bias)     |
-| `pass`       | 32     | upper + lower + digit + symbol                 |
-| `uuid`       | 36     | RFC 4122 v4                                    |
-
-All entropy from `/dev/urandom`.
-
----
-
-## Per-user isolation
-
-Credentials live in the shared `/etc/credstore.encrypted/` directory but
-are namespaced by uid:
-
-```
-kepr-1000-openai-api-key      # uid 1000
-kepr-1001-openai-api-key      # uid 1001 (same name, different file)
-```
-
-The daemon takes the uid from `SO_PEERCRED` on the socket, **not** from
-the request payload, so users can only see and operate on their own
-credentials. Group membership in `kepr` is the only client-side
-permission needed.
-
----
-
-## Audit log
-
-Every operation is logged to journald with structured fields. The
-**value is never logged.**
-
-```bash
-journalctl -t kepr-daemon                          # tail it
-journalctl -t kepr-daemon KEPR_UID=1000         # one user
-journalctl -t kepr-daemon KEPR_OP=get           # one op
-journalctl -t kepr-daemon KEPR_RESULT=fail      # only failures
-```
-
-Each entry carries `KEPR_OP`, `KEPR_NAME`, `KEPR_UID`,
-`KEPR_USER`, `KEPR_RESULT`.
-
----
-
-## Environment
-
-| Variable           | Effect                                                |
-| ------------------ | ----------------------------------------------------- |
-| `NO_COLOR`         | Any value disables ANSI (overrides `--color`).        |
-| `CLICOLOR_FORCE=1` | Enables ANSI without `--color`.                       |
-
-Precedence: `NO_COLOR` > `--no-color` > `CLICOLOR_FORCE` > `--color` > off.
-
-Exit codes: `0` on success, `1` on any error (including `check` with at
-least one failed credential).
-
----
-
-## Development
-
-```bash
-cargo build --release       # both binaries → target/release/
-cargo test                  # hermetic unit tests; no daemon needed
-./tests/e2e.sh              # end-to-end against the running daemon
-sudo systemctl restart kepr.service   # reload after a rebuild
-```
-
-`cargo test` covers `protocol`, `store`, `generate`, `framing`,
-`cli_mode`, and `cli_activity`. The crypto / audit / handler layers are
-covered by the e2e suite, which requires the installed daemon and
-`kepr` group membership.
-
-See [DOCS.md](./DOCS.md) for architecture, design patterns, sequence
-diagrams, and the full test matrix.
-
-## File layout
-
-```
-src/
-├── main.rs                 kepr CLI entry
-├── client.rs               CLI-side socket transport (framed JSON)
-├── cli_activity.rs         CliActivity newtype, verb -> handler dispatch
-├── cli_args.rs             argv parser, --help renderer
-├── cli_cmds.rs             cmd_set/get/list/delete/check
-├── cli_input.rs            masked terminal input
-├── cli_mode.rs             process-wide JSON/color mode (OnceLock)
-├── cli_ui.rs               ANSI helpers, print_json
-├── daemon.rs               kepr-daemon entry, accept loop, dispatch
-├── daemon_cache.rs         per-uid credstore listing cache
-├── daemon_handlers.rs      handle_{set,get,list,delete,check}
-├── daemon_peer.rs          SO_PEERCRED -> peer uid
-├── daemon_pool.rs          bounded worker thread pool (backpressure)
-├── daemon_socket.rs        socket dir setup, 0660 root:kepr
-├── protocol.rs             shared Request/Response enums, wire limits
-├── framing.rs              <u32 BE len><payload> codec
-├── store.rs                naming, validate_name, path helpers
-├── generate.rs             ZeroString, CSPRNG, UUIDv4, base62/hex/pass
-├── crypto.rs               encryption-backend wrapper (daemon only)
-└── audit.rs                structured journal logger (daemon only)
-
-systemd/kepr.service      hardened unit (mlockall, ProtectSystem=strict)
-completions/kepr.bash     bash completion with live cred-name lookup
-tests/e2e.sh                 13 end-to-end cases against the installed daemon
-```
-
-Shared modules (`protocol`, `framing`, `generate`, `store`) compile into
-both binaries. `crypto`, `audit`, and everything prefixed `daemon_` are
-daemon-only and are not declared in `main.rs`'s module tree — the
-module split is enforced by the compiler.
-
----
-
-## Troubleshooting
-
-| Symptom                                             | Fix                                                                   |
-| --------------------------------------------------- | --------------------------------------------------------------------- |
-| `cannot connect to credential service`              | `systemctl status kepr`; ensure the unit is `active (running)`.    |
-| `Permission denied` on the socket                   | Not in the `kepr` group — `newgrp kepr` or log out / in.        |
-| `set` fails with `Read-only file system`            | First-run key seeding needs `/var/lib/systemd` writable; the unit's `ReadWritePaths` already allows this — check for a custom override. |
-| `kepr get` returns `credential not found`        | `kepr list` to verify the name; remember names are uppercased.     |
-| Audit entries missing                               | Your user lacks journal-read access — join `systemd-journal` or `adm`.|
-
----
-
-## Uninstall
-
-```bash
-sudo systemctl disable --now kepr.service
-sudo rm /etc/systemd/system/kepr.service
-sudo systemctl daemon-reload
-sudo rm -f /usr/local/bin/kepr /usr/local/sbin/kepr-daemon
-sudo rm -f /usr/share/bash-completion/completions/kepr
-# Credentials are NOT removed automatically:
-sudo rm -rf /etc/credstore.encrypted/kepr-*
-sudo groupdel kepr
-```
+Comprehensive documentation lives at **[https://kepr.dev](https://kepr.dev)** (source in `docs/` built with Fumadocs / Next.js 15):
+
+- [Architecture & Threat Model](docs/content/docs/architecture/overview.mdx)
+- [RAM Delivery Strategy (`memfd`)](docs/content/docs/architecture/ram-delivery.mdx)
+- [AI Agent Protection Guide](docs/content/docs/guides/ai-agents.mdx)
+- [Kubernetes ESO Integration](docs/content/docs/guides/kubernetes-eso.mdx)
 
 ---
 
 ## License
 
-Dual-licensed under either of:
-
-- [MIT License](./LICENSE-MIT)
-- [Apache License, Version 2.0](./LICENSE-APACHE)
-
-at your option. Contributions are accepted under the same dual licence
-(`Apache-2.0 OR MIT`) per Apache 2.0 §5.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
