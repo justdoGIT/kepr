@@ -4,6 +4,14 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Cancel superseded runs on repeated `synchronize` pushes during active PR
+# iteration — each run consumes OpenRouter's shared 50-requests/day free-tier
+# quota (see MODEL_CANDIDATES below), so letting stale runs pile up and
+# finish anyway wastes quota on reviews of code that's already been amended.
+concurrency:
+  group: pr-reviewer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   agent-review:
     runs-on: ubuntu-latest
@@ -40,7 +48,7 @@ jobs:
         env:
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          if [ -n "$OPENROUTER_KEY" ]; then
+          if [[ -n "$OPENROUTER_KEY" ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -101,7 +109,7 @@ jobs:
             echo "ERROR: gh pr diff failed" >&2
             exit 1
           fi
-          if [ ! -s "$DIFF_FILE" ]; then
+          if [[ ! -s "$DIFF_FILE" ]]; then
             echo "ERROR: PR diff is empty" >&2
             exit 1
           fi
@@ -116,7 +124,7 @@ jobs:
 
           # Load review skill from repo
           SKILL_FILE=".claude/skills/pr-reviewer/SKILL.md"
-          if [ -f "$SKILL_FILE" ]; then
+          if [[ -f "$SKILL_FILE" ]]; then
             SKILL_CONTENT=$(cat "$SKILL_FILE")
             echo "Loaded review skill: $SKILL_FILE"
           else
@@ -150,7 +158,7 @@ jobs:
             echo "=== $model unavailable, trying next candidate ==="
           done
 
-          if [ -z "$USED_MODEL" ]; then
+          if [[ -z "$USED_MODEL" ]]; then
             echo "ERROR: every free OpenRouter candidate failed" >&2
             exit 1
           fi
@@ -166,8 +174,8 @@ jobs:
 
           COMMENT_COUNT=0
           while IFS='|' read -r _ path line severity desc; do
-            [ -n "$path" ] && [ -n "$line" ] || continue
-            [ "$COMMENT_COUNT" -lt 10 ] || break
+            [[ -n "$path" && -n "$line" ]] || continue
+            [[ "$COMMENT_COUNT" -lt 10 ]] || break
 
             case "$severity" in
               P1) BADGE="![P1](https://img.shields.io/badge/P1-critical-red?style=flat-square)" ;;
@@ -198,7 +206,7 @@ jobs:
             printf '| Severity | File | Line | Description |\n'
             printf '|----------|------|------|-------------|\n'
             while IFS='|' read -r _ path line severity desc; do
-              [ -n "$path" ] || continue
+              [[ -n "$path" ]] || continue
               printf '| %s | `%s` | %s | %s |\n' "$severity" "$path" "$line" "$desc"
             done < <(grep '^FINDING|' "$REVIEW_FILE")
           } | gh pr comment "$PR" --body-file - 2>/dev/null || true
