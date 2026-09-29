@@ -21,9 +21,7 @@ jobs:
       tag:     ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v7
 
       - id: resolve
         env:
@@ -67,7 +65,7 @@ jobs:
     env:
       VERSION: ${{ needs.tag-check.outputs.version }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@v7
         with:
           # workflow_dispatch may target an older tag — pin to the
           # resolved tag, not whatever main currently points at.
@@ -164,13 +162,13 @@ jobs:
     outputs:
       body: ${{ steps.cliff.outputs.content }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@v7
         with:
           # Same reason as the build job — re-runs may target an older tag.
           ref: ${{ needs.tag-check.outputs.tag }}
           fetch-depth: 0
 
-      - uses: taiki-e/install-action@920ab1831fbf4fb3ef75c8ead83556c918bb7290 # v2
+      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2
         with:
           # Pin to a known git-cliff version so re-running the release
           # workflow against the same tag produces an identical changelog.
@@ -203,7 +201,7 @@ jobs:
           path: dist/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           tag_name: ${{ needs.tag-check.outputs.tag }}
           name:     kepr ${{ needs.tag-check.outputs.tag }}
