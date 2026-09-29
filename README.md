@@ -4,7 +4,7 @@
 
 # Kepr — The Developer-Native Secret Vault That Kills `.env` Leaks
 
-Kepr is a per-user, cross-platform secret vault written in Rust (`kepr` CLI, `kepr-daemon` over Unix/IPC socket, `git-credential-kepr`, `docker-credential-kepr`, `kepr-core` library, and `kepr-eso-provider`).
+Kepr is a per-user secret vault for Linux and macOS, written in Rust (`kepr` CLI, `kepr-daemon` over Unix/IPC socket, `git-credential-kepr`, `docker-credential-kepr`, `kepr-core` library, and `kepr-eso-provider`).
 
 It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/environ` leaks by delivering secrets directly into process memory via **RAM-sealed memory file descriptors (`memfd`)**.
 
@@ -29,7 +29,7 @@ It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/
 | **No `/proc` Env Leaks** | **Yes (`memfd` RAM delivery)** | No (visible in `/proc`) | No (visible in `/proc`) | No (environment variables) |
 | **AI Agent Protection** | **Yes (`kepr protect-agent`)** | No | No | No |
 | **Zero `sudo` Required** | **Yes (Standalone User Daemon)** | Yes | Yes | Yes |
-| **OS Peer Isolation** | **Yes (`SO_PEERCRED` / SID)** | No | No | No |
+| **OS Peer Isolation** | **Yes (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS)** | No | No | No |
 | **Git / Docker Helpers** | **Yes (`git-credential-kepr`)** | No | Optional | Optional |
 | **Zero-Knowledge Cloud Sync** | **Yes (Vault, AWS SM, GCP SM)** | No | No | Cloud lock-in |
 
@@ -39,7 +39,7 @@ It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/
 
 - **RAM-Based Execution (`kepr exec --memfd`)**: Pass secrets to child processes using sealed, read-only memory descriptors (`KEPR_FD_<KEY>=3`). Secrets never touch `/proc/<pid>/environ` or shell history.
 - **AI Agent Protection (`kepr protect-agent`)**: Native wrapper for Claude Code, Cursor, Windsurf, and Aider to prevent LLMs from leaking API keys.
-- **Cross-Platform**: Support for Linux (`SO_PEERCRED`, systemd), macOS (`LOCAL_PEERCRED`, Keychain, `launchd`), and Windows (DPAPI, SIDs).
+- **Cross-Platform (in progress)**: Linux is fully supported today (`SO_PEERCRED`, systemd). macOS has a user-mode daemon (`LOCAL_PEERCRED`, `launchd`) with master-key protection currently resting on filesystem permissions, not yet real Keychain integration. Windows has trait scaffolding only — the daemon does not yet build or run on Windows; tracked as a follow-up.
 - **Master Key Security**: Argon2id passphrase protection (`kepr lock` / `kepr unlock`) with in-process AES-256-GCM encryption and zeroized buffers.
 - **Universal Integrations**: `git-credential-kepr` (Git HTTP auth), `docker-credential-kepr` (Docker login), `.envrc` (`direnv`), and `kepr-eso-provider` (Kubernetes External Secrets Operator).
 - **FIDO2 Hardware Auth**: Require hardware key touch for high-value credentials.
@@ -105,7 +105,7 @@ use_kepr OPENAI_API_KEY ANTHROPIC_API_KEY
 
 1. **Zero Plaintext at Rest**: Master key wrapped with Argon2id; credential values encrypted with AES-256-GCM.
 2. **Zero Plaintext in Environment**: `kepr exec --memfd` passes sealed `memfd` file descriptors (`MFD_CLOEXEC` cleared post-seal), preventing `/proc` environment snooping.
-3. **Kernel-Attested Peer Isolation**: The daemon verifies peer identity using kernel-level peer credentials (`SO_PEERCRED` / `LOCAL_PEERCRED` / SID), ignoring user-supplied request headers.
+3. **Kernel-Attested Peer Isolation**: The daemon verifies peer identity using kernel-level peer credentials (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS), ignoring user-supplied request headers. Windows named-pipe SID verification is not yet implemented.
 4. **Memory Wiping**: All secret strings wrap in `ZeroString` and `zeroize::Zeroizing` to ensure memory clearing on drop.
 
 ---

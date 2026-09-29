@@ -1,9 +1,9 @@
 ---
 title: "Introduction"
-description: "Cross-platform secret vault for Linux, macOS, and Windows. Eliminates .env leaks via memfd RAM delivery."
+description: "Per-user secret vault for Linux and macOS. Eliminates .env leaks via memfd RAM delivery."
 ---
 
-`kepr` is a per-user, multi-platform secret vault written in Rust. It eliminates plaintext `.env` file leaks, `/proc/<pid>/environ` snooping, and shell history exposures by delivering secrets directly into memory via **RAM-sealed memory descriptors (`memfd`)**.
+`kepr` is a per-user secret vault for Linux and macOS, written in Rust. It eliminates plaintext `.env` file leaks, `/proc/<pid>/environ` snooping, and shell history exposures by delivering secrets directly into memory via **RAM-sealed memory descriptors (`memfd`)**.
 
 <CardGroup cols={2}>
   <Card title="Quickstart" href="/docs/quickstart">
@@ -27,7 +27,7 @@ description: "Cross-platform secret vault for Linux, macOS, and Windows. Elimina
 | **No `/proc` Env Leaks** | **Yes (`memfd` RAM delivery)** | No | No | No | No |
 | **AI Agent Protection** | **Yes (`kepr protect-agent`)** | No | No | No | No |
 | **Zero `sudo` Required** | **Yes (Standalone User Mode)** | Yes | Yes | Yes | Yes |
-| **OS Peer Credential Auth** | **Yes (`SO_PEERCRED` / SID)** | No | No | No | No |
+| **OS Peer Credential Auth** | **Yes (`SO_PEERCRED` / `LOCAL_PEERCRED`)** | No | No | No | No |
 | **Git / Docker Helpers** | **Yes (`git-credential-kepr`)** | Optional | No | Optional | Optional |
 | **Zero-Knowledge Cloud Sync** | **Yes (Vault, AWS, GCP)** | No | Yes | Cloud Lock-in | N/A |
 
