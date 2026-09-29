@@ -21,9 +21,3 @@ pub fn get_peer_creds(stream: &UnixStream) -> Option<PeerCreds> {
         Err(_) => None,
     }
 }
-
-/// Backwards-compatible thin wrapper. Prefer `get_peer_creds`
-/// for new code that needs the PID for polkit subjects.
-pub fn get_peer_uid(stream: &UnixStream) -> Option<u32> {
-    get_peer_creds(stream).map(|c| c.uid)
-}
