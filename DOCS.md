@@ -241,8 +241,12 @@ The credential **value is never logged.**
 `ProtectControlGroups=yes`, `RestrictNamespaces=yes`,
 `LockPersonality=yes`, `MemoryDenyWriteExecute=yes`,
 `RestrictRealtime=yes`, `RestrictSUIDSGID=yes`. `mlockall(MCL_CURRENT |
-MCL_FUTURE)` keeps decrypted bytes off swap. `NoNewPrivileges=no` is
-deliberate — the backend needs the privilege to derive a host-bound key.
+MCL_FUTURE)` keeps decrypted bytes off swap; the daemon also disables core
+dumps and ptrace attachment (`prctl(PR_SET_DUMPABLE, 0)`) before touching
+any secret material. `NoNewPrivileges=yes` — the in-process AEAD backend
+means the daemon never needs to gain new privileges at runtime; the one
+`systemd-creds` invocation at startup runs as root already, the same as
+the daemon itself.
 
 ---
 
