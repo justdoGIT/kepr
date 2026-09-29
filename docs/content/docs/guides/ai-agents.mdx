@@ -69,8 +69,16 @@ kepr protect-agent aider -- aider
 
 - ✅ API key environment variables no longer appear in `/proc/<pid>/environ`
 - ✅ Process inspection (`ps`, `/proc/self/cmdline`) reveals no plaintext secrets
-- ✅ LLM context logs capture only file descriptor numbers (`KEPR_FD_KEY=3`), not raw tokens
+- ✅ Environment-variable-based context capture sees only a file descriptor number (`KEPR_FD_KEY=3`), not the raw token
 - ✅ Agent stdout/stderr remains completely unmodified
+
+**What this does *not* protect against:** once the agent process opens the
+sealed `memfd` and reads the key (it has to, to call the API), the raw
+value is in that process's memory like any other secret it handles. If the
+agent's own logging, telemetry, or a downstream tool call echoes the value
+it just read, `protect-agent` does not intercept or redact that — it only
+removes the *accidental* exposure paths (environment tables, `/proc`,
+shell history, crash dumps of the parent).
 
 ---
 

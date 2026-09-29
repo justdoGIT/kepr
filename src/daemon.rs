@@ -1,5 +1,4 @@
 #![allow(unused_unsafe)]
-#![allow(dead_code)]
 
 // daemon.rs — kepr-daemon entry, accept loop, and request dispatcher.
 //
@@ -17,6 +16,7 @@ mod daemon_cache;
 mod daemon_expiry;
 mod daemon_handlers;
 mod daemon_handlers_get;
+mod daemon_lock;
 mod daemon_peer;
 mod daemon_polkit;
 mod daemon_pool;
@@ -29,9 +29,8 @@ mod master_key;
 mod store;
 mod version_state;
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::OnceLock;
 
@@ -79,6 +78,23 @@ fn lock_memory() {
     let ret = unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) };
     if ret != 0 {
         eprintln!("[kepr-daemon] warning: mlockall failed — secrets may be swappable");
+    }
+}
+
+/// Disable core dumps and ptrace attachment for this process.
+///
+/// SAFETY: `PR_SET_DUMPABLE` takes a single integer argument (0 = not
+/// dumpable); the remaining `prctl(2)` varargs are ignored for this
+/// option. No pointer or lifetime hazard — this only flips a per-process
+/// kernel flag. Without this, decrypted secrets, the master key, and
+/// Argon2id working memory can land in a systemd-coredump or be read via
+/// ptrace by a process that gains the right capability.
+fn disable_core_dumps() {
+    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    if ret != 0 {
+        eprintln!(
+            "[kepr-daemon] warning: prctl(PR_SET_DUMPABLE) failed — core dumps may leak secrets"
+        );
     }
 }
 
@@ -151,6 +167,16 @@ fn sweep_legacy_credstore() {
         if !name_str.starts_with(&format!("{CRED_PREFIX}-")) {
             continue;
         }
+        // Sidecar metadata (`*.meta`) and in-flight temp files (`*.tmp*`)
+        // are not credential ciphertext and never carry the InProc magic
+        // header. Sweeping them on every restart silently strips TTL,
+        // consent, and FIDO2 policy gates — `precheck_meta` allows a read
+        // when the sidecar is missing (fail-open), so this used to turn
+        // every daemon restart into a policy bypass. Skip them so the
+        // legacy-format sweep only ever touches actual credential files.
+        if name_str.ends_with(".meta") || name_str.contains(".tmp") {
+            continue;
+        }
         let path = entry.path();
         // All currently-supported magics are 8 bytes (`kepr_vN\n`),
         // so a single fixed-size head buffer covers them all.
@@ -178,6 +204,9 @@ fn sweep_legacy_credstore() {
 }
 
 fn main() {
+    lock_memory();
+    disable_core_dumps();
+
     let user = std::env::args().any(|arg| arg == "--user") || effective_uid() != 0;
     if user {
         std::env::set_var("KEPR_USER_MODE", "1");
@@ -197,9 +226,16 @@ fn main() {
         eprintln!("[kepr-daemon] cannot create credential directory: {e}");
         std::process::exit(1);
     });
+    // 0700 in both modes: the daemon is the sole reader/writer of
+    // ciphertext files (system mode runs as root; user mode runs as the
+    // owning uid). Other kepr-group members reach their own credentials
+    // only through the socket, never by listing this directory, so the
+    // previous group-readable 0755 in system mode only ever leaked
+    // credential names, per-uid policy flags, and value lengths (file
+    // size) to every local user.
     fs::set_permissions(
         crate::store::store_dir(),
-        std::fs::Permissions::from_mode(if user { 0o700 } else { 0o755 }),
+        std::fs::Permissions::from_mode(0o700),
     )
     .unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot secure credential directory: {e}");
@@ -320,75 +356,15 @@ fn handle_client(mut stream: UnixStream) {
     let response = dispatch(peer_uid, peer_pid, &username, request);
     send_response(&mut stream, &response);
 }
-fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
-    let path = protected_master_key_path();
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|e| format!("cannot create protected master-key file: {e}"))?;
-    file.write_all(envelope)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| format!("cannot write protected master-key file: {e}"))?;
-    drop(file);
-    fs::rename(&tmp, &path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("cannot commit protected master-key file: {e}")
-    })
-}
-
-fn handle_lock(password: &[u8]) -> Response {
-    if password.is_empty() {
-        return Response::fail("password cannot be empty");
-    }
-    if protected_master_key_path().exists() {
-        return Response::fail("credential store is already password protected");
-    }
-    let key = match crypto::snapshot_key() {
-        Ok(key) => key,
-        Err(e) => return Response::fail(e),
-    };
-    let envelope = match key_unlock::wrap(&key, password) {
-        Ok(envelope) => envelope,
-        Err(e) => return Response::fail(e),
-    };
-    if let Err(e) = write_protected_master_key(&envelope) {
-        return Response::fail(e);
-    }
-    if let Err(e) = fs::remove_file(master_key_path()) {
-        let _ = fs::remove_file(protected_master_key_path());
-        return Response::fail(format!("cannot remove old master key: {e}"));
-    }
-    if let Err(e) = crypto::lock_backend() {
-        return Response::fail(e);
-    }
-    Response::LockedOk
-}
-
-fn handle_unlock(password: &[u8]) -> Response {
-    if password.is_empty() {
-        return Response::fail("password cannot be empty");
-    }
-    let envelope = match fs::read(protected_master_key_path()) {
-        Ok(envelope) => envelope,
-        Err(_) => return Response::fail("credential store is not password protected"),
-    };
-    let key = match key_unlock::unwrap(&envelope, password) {
-        Ok(key) => key,
-        Err(e) => return Response::fail(e),
-    };
-    match crypto::unlock_backend(*key) {
-        Ok(()) => Response::UnlockedOk,
-        Err(e) => Response::fail(e),
-    }
-}
 
 fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
     match request {
-        Request::Lock { password } => handle_lock(password.as_bytes()),
-        Request::Unlock { password } => handle_unlock(password.as_bytes()),
+        Request::Lock { password } => {
+            daemon_lock::handle_lock_gated(uid, username, password.as_bytes())
+        }
+        Request::Unlock { password } => {
+            daemon_lock::handle_unlock_gated(uid, username, password.as_bytes())
+        }
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),

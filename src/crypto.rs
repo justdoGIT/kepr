@@ -163,11 +163,12 @@ pub fn delete(uid: u32, name: &str) -> Result<(), String> {
 /// Remove any mention of internal tooling from error messages
 /// before they are sent back to the user.
 fn sanitize_error(raw: &str) -> String {
-    // Replace the full binary path first (most specific), then the
-    // basename. Use word-boundary-aware replaces to avoid mangling
-    // unrelated words that happen to contain the same bytes.
-    raw.replace(BACKEND_BIN, "credential backend")
-        .replace("systemd-creds", "credential backend")
+    // Replace the full path first (most specific), then the bare tool
+    // name — case-insensitively, since a shell `FATAL:` banner can render
+    // it in a different case (see `scrubs_tool_name_case_insensitively`).
+    let scrubbed = replace_ci(raw, BACKEND_BIN, "credential backend");
+    let scrubbed = replace_ci(&scrubbed, "systemd-creds", "credential backend");
+    scrubbed
         .replace("--with-key=host", "")
         .replace("--with-key", "")
         .replace("host:", "credential backend:")
@@ -176,6 +177,30 @@ fn sanitize_error(raw: &str) -> String {
         .map(|l| l.trim())
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// Case-insensitive substring replace. Uses `to_ascii_lowercase` (not
+/// `to_lowercase`) specifically because ASCII lowercasing never changes a
+/// string's byte length or UTF-8 character boundaries, so byte offsets
+/// computed against the lowercased haystack stay valid against the
+/// original. `needle` is always one of our own ASCII tool-name constants,
+/// so this never needs full Unicode case folding.
+fn replace_ci(haystack: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let lower_hay = haystack.to_ascii_lowercase();
+    let lower_needle = needle.to_ascii_lowercase();
+    let mut result = String::with_capacity(haystack.len());
+    let mut start = 0;
+    while let Some(rel_idx) = lower_hay[start..].find(&lower_needle) {
+        let idx = start + rel_idx;
+        result.push_str(&haystack[start..idx]);
+        result.push_str(replacement);
+        start = idx + needle.len();
+    }
+    result.push_str(&haystack[start..]);
+    result
 }
 
 // ── Wire-error sanitiser ──────────────────────────────────────────────────────
@@ -194,13 +219,6 @@ pub fn sanitize_lookup_error(precise: &str) -> String {
     } else {
         precise.to_string()
     }
-}
-
-// ── Check ─────────────────────────────────────────────────────────────────────
-
-/// Verify a credential can be decrypted. Returns true/false.
-pub fn verify(uid: u32, name: &str) -> bool {
-    decrypt(uid, name).is_ok()
 }
 
 // ── Backend trait ────────────────────────────────────────────────────────────
@@ -313,12 +331,6 @@ pub fn default_backend() -> &'static dyn Backend {
     }
 }
 
-// ── Credential exists ─────────────────────────────────────────────────────────
-
-pub fn exists(uid: u32, name: &str) -> bool {
-    store::cred_path(uid, name).exists()
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 // These tests lock in the contract of `sanitize_error`: the client-visible
 // error must not leak the name of the underlying credential backend, its
@@ -418,8 +430,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "replacements are case-sensitive; an upper-case tool name in a raw error leaks through"]
-    fn case_insensitive_scrubbing_not_implemented() {
+    fn scrubs_tool_name_case_insensitively() {
         let loud_leaf = backend_leaf().to_uppercase();
         let raw = format!("FATAL: {loud_leaf} exited abnormally");
         let out = sanitize_error(&raw);

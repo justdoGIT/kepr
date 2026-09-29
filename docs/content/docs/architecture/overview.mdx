@@ -84,9 +84,13 @@ The systemd unit applies `ProtectSystem=strict`, `ProtectHome=yes`,
 `ProtectControlGroups=yes`, `RestrictNamespaces=yes`,
 `LockPersonality=yes`, `MemoryDenyWriteExecute=yes`,
 `RestrictRealtime=yes`, `RestrictSUIDSGID=yes`. The daemon also calls
-`mlockall(MCL_CURRENT | MCL_FUTURE)` to keep decrypted bytes off swap.
+`mlockall(MCL_CURRENT | MCL_FUTURE)` to keep decrypted bytes off swap, and
+disables core dumps and ptrace attachment (`prctl(PR_SET_DUMPABLE, 0)`)
+before touching any secret material.
 
 <Note>
-  `NoNewPrivileges=no` is intentional: the encryption backend needs the
-  privilege to derive a host-bound key.
+  `NoNewPrivileges=yes`: the in-process AEAD backend means the daemon never
+  needs to gain new privileges at runtime. The one `systemd-creds`
+  invocation at startup (to seal/unseal the master key) already runs as
+  root, the same as the daemon itself.
 </Note>
