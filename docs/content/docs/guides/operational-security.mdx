@@ -1,0 +1,155 @@
+---
+title: "Operational Security & Best Practices"
+description: "Securing Kepr deployments, auditing access, and detecting breaches."
+---
+
+## Master Key Management
+
+### Locking the Store (Argon2id Passphrase Protection)
+
+```bash
+kepr lock
+# Enter passphrase: ****
+# Store locked with Argon2id + AES-256-GCM
+```
+
+This wraps the master key with a user-provided passphrase using Argon2id (64 MiB memory, 3 passes).
+
+### Unlocking
+
+```bash
+kepr unlock
+# Enter passphrase: ****
+```
+
+---
+
+## Auditing Credential Access
+
+### View All Operations
+
+```bash
+journalctl -t kepr-daemon
+```
+
+### Filter by Operation Type
+
+```bash
+journalctl -t kepr-daemon KEPR_OP=get          # Only fetches
+journalctl -t kepr-daemon KEPR_OP=set          # Only stores
+journalctl -t kepr-daemon KEPR_RESULT=fail     # Only failures
+```
+
+### Filter by User
+
+```bash
+journalctl -t kepr-daemon KEPR_UID=1000        # Specific UID
+```
+
+### Real-Time Monitoring
+
+```bash
+journalctl -t kepr-daemon -f
+```
+
+---
+
+## Detecting Unauthorized Access
+
+Watch for:
+
+1. **Failed attempts**: `KEPR_RESULT=fail` with mismatched UIDs.
+2. **Unusual credential access patterns**: Unexpected operations on sensitive secrets.
+3. **After-hours access**: Compare audit timestamps to expected maintenance windows.
+
+```bash
+# Suspicious failed attempts
+journalctl -t kepr-daemon KEPR_RESULT=fail --since "2 hours ago"
+```
+
+---
+
+## File System Hardening
+
+### Credential Store Permissions
+
+```bash
+ls -la /etc/credstore.encrypted/
+```
+
+**Expected**: `drwx------` (0700), owner `root:root`.
+
+### Master Key File Permissions
+
+```bash
+ls -la /var/lib/kepr/
+```
+
+**Expected**: `drwx------` (0700), owner `root:root`.
+
+---
+
+## Network Isolation
+
+The daemon listens on a **Unix domain socket**, not TCP. This prevents:
+
+- Remote compromise via network attacks.
+- Credential leakage over untrusted networks.
+
+```bash
+ls -la /run/kepr/kepr.sock
+```
+
+**Expected**: `srw-rw----` (0660), owner `root:kepr`.
+
+---
+
+## Periodic Credential Rotation
+
+```bash
+# List all credentials
+kepr list --json | jq '.credentials[].name'
+
+# For each critical secret, regenerate
+kepr set OPENAI_API_KEY --generate
+kepr set DATABASE_PASSWORD --generate --gen-kind pass
+```
+
+---
+
+## Disaster Recovery
+
+### Backup Master Key
+
+```bash
+sudo cp /var/lib/kepr/master.key ~/kepr-master-key.backup
+sudo chmod 0600 ~/kepr-master-key.backup
+```
+
+<Warning>
+  Never store this file unencrypted on untrusted systems. Use `gpg` or another
+  encryption tool.
+</Warning>
+
+### Export All Credentials
+
+```bash
+kepr --json list | jq '.credentials[].name' | while read name; do
+  value=$(kepr get "$name" --quiet)
+  echo "$name=$value"
+done > ~/kepr-export.txt
+```
+
+<Warning>
+  This creates a plaintext file. Shred it immediately after use.
+</Warning>
+
+### Restore from Backup
+
+```bash
+sudo systemctl stop kepr
+sudo cp ~/kepr-master-key.backup /var/lib/kepr/master.key
+sudo chown root:root /var/lib/kepr/master.key
+sudo chmod 0600 /var/lib/kepr/master.key
+sudo systemctl start kepr
+```

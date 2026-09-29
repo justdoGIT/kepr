@@ -1,0 +1,101 @@
+---
+title: "Git Credential Helper Integration"
+description: "Store GitHub / GitLab tokens in Kepr and use git-credential-kepr for seamless Git operations."
+---
+
+## Setup: Enable git-credential-kepr
+
+```bash
+git config --global credential.helper kepr
+```
+
+This registers `git-credential-kepr` as the default credential provider for all Git operations.
+
+---
+
+## First GitHub Token
+
+```bash
+# Store your GitHub PAT
+kepr set GITHUB_TOKEN --value ghp_abc123...
+
+# Or interactive input
+kepr set GITHUB_TOKEN
+# Value for GITHUB_TOKEN (blank = auto-generate): ***
+```
+
+---
+
+## Git Operations
+
+Once configured, Git automatically uses Kepr to retrieve credentials:
+
+```bash
+# Clone a private repo
+git clone https://github.com/youruser/private-repo.git
+
+# Push to a private repo
+git push origin main
+
+# Pull from a private repo
+git pull origin main
+```
+
+Git's credential helper protocol calls `git-credential-kepr get` with the target host, and Kepr returns the stored token transparently.
+
+---
+
+## Multi-Service Setup
+
+Store tokens for multiple Git hosting providers:
+
+```bash
+# GitHub
+kepr set GITHUB_TOKEN --value ghp_abc123...
+
+# GitLab
+kepr set GITLAB_TOKEN --value glpat_abc123...
+
+# Gitea (self-hosted)
+kepr set GITEA_TOKEN --value abcdef123456...
+```
+
+Kepr automatically maps the target host (`github.com`, `gitlab.com`, etc.) to the correct token.
+
+---
+
+## Verification
+
+```bash
+# List all stored Git credentials
+kepr list | grep -i git
+
+# Audit Git credential access
+journalctl -t kepr-daemon KEPR_OP=get
+```
+
+---
+
+## Troubleshooting
+
+**Git says "Authentication failed"**
+
+```bash
+# Verify the token is stored
+kepr get GITHUB_TOKEN --quiet
+
+# Check if the token has the right scopes
+# (GitHub: https://github.com/settings/tokens)
+```
+
+**Credential not found for this host**
+
+Map the host to the correct token:
+
+```bash
+# Check what token name Git is requesting
+GIT_TRACE=1 git clone https://github.com/user/repo.git
+
+# Ensure the token credential is stored under the host name
+kepr set GITHUB_COM_TOKEN --value ghp_abc123...
+```
