@@ -85,7 +85,7 @@ jobs:
           set -eo pipefail
 
           export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
-          export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
+          export ANTHROPIC_API_KEY="$DEEPSEEK_API_KEY"
 
           export PATH="$HOME/.npm-global/bin:/usr/local/bin:$PATH"
 
