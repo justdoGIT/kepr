@@ -1,56 +1,52 @@
 ---
 title: "Introduction"
-description: "Per-user credential manager for Linux. Unprivileged CLI, root daemon, framed JSON over a Unix socket."
+description: "Cross-platform secret vault for Linux, macOS, and Windows. Eliminates .env leaks via memfd RAM delivery."
 ---
 
-`kepr` is a per-user credential manager for Linux hosts. An
-unprivileged CLI talks to a `root` systemd service over a Unix socket;
-the daemon owns all encryption, decryption, audit logging, and on-disk
-state.
+`kepr` is a per-user, multi-platform secret vault written in Rust. It eliminates plaintext `.env` file leaks, `/proc/<pid>/environ` snooping, and shell history exposures by delivering secrets directly into memory via **RAM-sealed memory descriptors (`memfd`)**.
 
 <CardGroup cols={2}>
   <Card title="Quickstart" href="/docs/quickstart">
-    Install, group setup, first credential.
+    Install in 1 minute on Linux, macOS, or Docker.
   </Card>
   <Card title="Architecture" href="/docs/architecture/overview">
     Process model, trust boundary, on-disk layout.
   </Card>
-  <Card title="Design patterns" href="/docs/architecture/design-patterns">
-    Tagged enums on the wire, peer-credential auth, atomic writes.
+  <Card title="RAM Delivery (`memfd`)" href="/docs/architecture/ram-delivery">
+    How `kepr exec --memfd` prevents `/proc` secret leaks.
   </Card>
-  <Card title="Sequence diagrams" href="/docs/architecture/sequence-diagrams">
-    Mermaid traces of every operation.
+  <Card title="AI Agent Protection" href="/docs/guides/ai-agents">
+    Protecting Claude Code, Cursor, Windsurf, and Aider.
   </Card>
 </CardGroup>
 
-## Why kepr
+## Competitor Comparison Matrix
 
-- **No `sudo` for day-to-day use.** Membership in the `kepr` group
-  is the only client-side requirement.
-- **No plaintext on disk.** The encryption backend uses a host-bound
-  key; ciphertext lives in `/etc/credstore.encrypted/`.
-- **No secrets in the audit log.** Every operation is journald-logged
-  with structured fields; the value is never recorded.
-- **Per-user isolation by uid.** Credential names are namespaced
-  `kepr-<uid>-<name>`; the daemon takes the uid from `SO_PEERCRED`,
-  not the request body.
+| Feature | Kepr | `pass` / `gopass` | `sops` | 1Password CLI | HashiCorp Vault |
+|---|---|---|---|---|---|
+| **No `/proc` Env Leaks** | **Yes (`memfd` RAM delivery)** | No | No | No | No |
+| **AI Agent Protection** | **Yes (`kepr protect-agent`)** | No | No | No | No |
+| **Zero `sudo` Required** | **Yes (Standalone User Mode)** | Yes | Yes | Yes | Yes |
+| **OS Peer Credential Auth** | **Yes (`SO_PEERCRED` / SID)** | No | No | No | No |
+| **Git / Docker Helpers** | **Yes (`git-credential-kepr`)** | Optional | No | Optional | Optional |
+| **Zero-Knowledge Cloud Sync** | **Yes (Vault, AWS, GCP)** | No | Yes | Cloud Lock-in | N/A |
 
-## Topology
+## Key Security Properties
+
+- **RAM-Based Execution (`kepr exec --memfd`)**: Secrets pass via sealed, read-only memory file descriptors (`KEPR_FD_<KEY>=3`).
+- **Zero Plaintext on Disk**: Master key protected by Argon2id + AES-256-GCM; credentials stored in AES-256-GCM authenticated envelopes.
+- **Kernel-Attested Peer Isolation**: The daemon reads peer identity (`SO_PEERCRED` / `LOCAL_PEERCRED`), preventing header-forgery attacks.
+- **Structured Audit Logging**: Operations log to system journal with op/uid/result; secret values are never logged.
+
+## System Topology
 
 ```
 ┌──────────────────────────┐         /run/kepr/kepr.sock         ┌──────────────────────────┐
-│  kepr  (your uid)     │ ◀──── framed JSON, 0660 root:kepr ───▶ │ kepr-daemon  (root)   │
-│  unprivileged CLI        │                                           │ encrypts / decrypts      │
-└──────────────────────────┘                                           │ audits to journald       │
+│  kepr  (user process)   │ ◀──── framed JSON IPC / peer creds ─▶ │ kepr-daemon  (user/root) │
+│  unprivileged CLI / SDK  │                                           │ Argon2id + AES-256-GCM   │
+└──────────────────────────┘                                           │ memory-sealed RAM FDs    │
                                                                        └──────────────────────────┘
                                                                                  │
                                                                                  ▼
-                                                                /etc/credstore.encrypted/
-                                                                  kepr-<uid>-<name>
+                                                                ~/.local/share/kepr/credentials/
 ```
-
-<Info>
-  The CLI never invokes the encryption backend, never touches the
-  credstore, and never needs `sudo`. The daemon is the only privileged
-  component.
-</Info>
