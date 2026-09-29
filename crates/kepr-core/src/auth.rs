@@ -26,27 +26,25 @@ impl PeerAuthenticator for LinuxPeerAuthenticator {
                 uid: u32,
                 gid: u32,
             }
-            extern "C" {
-                fn getsockopt(
-                    fd: i32,
-                    level: i32,
-                    optname: i32,
-                    optval: *mut libc::c_void,
-                    optlen: *mut u32,
-                ) -> i32;
-            }
             let mut cred = UCred {
                 pid: 0,
                 uid: 0,
                 gid: 0,
             };
-            let mut len = std::mem::size_of::<UCred>() as u32;
+            let mut len = std::mem::size_of::<UCred>() as libc::socklen_t;
+            // SAFETY: `fd` is a caller-owned, open socket file descriptor
+            // (the accepted end of a `UnixStream`) valid for the duration of
+            // this call. `cred` is a stack-local `UCred` sized exactly to
+            // the kernel's `struct ucred` layout, and `len` starts at that
+            // exact size, so the kernel writes at most `size_of::<UCred>()`
+            // bytes into `cred` — no buffer overrun regardless of which
+            // architecture's `SO_PEERCRED` numeric value is in effect.
             let ret = unsafe {
-                getsockopt(
+                libc::getsockopt(
                     fd,
-                    1,
-                    17,
-                    &mut cred as *mut _ as *mut _,
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    &mut cred as *mut UCred as *mut libc::c_void,
                     &mut len,
                 )
             };
@@ -107,25 +105,21 @@ impl PeerAuthenticator for MacOSPeerAuthenticator {
 }
 
 /// Windows Named Pipe SID authenticator.
+///
+/// NOT YET IMPLEMENTED: real SID extraction requires
+/// `GetNamedPipeClientProcessId` + `OpenProcessToken` +
+/// `GetTokenInformation(TokenUser)` FFI against the Win32 API, which is
+/// unverified in this codebase (no Windows CI runner). Fails closed
+/// rather than fabricating a `PeerIdentity` — returning a made-up uid/SID
+/// here would silently defeat the peer-isolation guarantee this trait
+/// exists to provide.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WindowsPeerAuthenticator;
 
 impl PeerAuthenticator for WindowsPeerAuthenticator {
     fn authenticate(&self, fd: i32) -> Result<PeerIdentity, String> {
-        #[cfg(target_os = "windows")]
-        {
-            let _ = fd;
-            Ok(PeerIdentity {
-                pid: std::process::id() as i32,
-                uid: 1000,
-                domain_sid: Some("S-1-5-21-local-user-sid".to_string()),
-            })
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = fd;
-            Err("Windows SID authentication is only available on Windows".to_string())
-        }
+        let _ = fd;
+        Err("Windows named-pipe SID authentication is not yet implemented".to_string())
     }
 }
 
@@ -166,7 +160,9 @@ mod tests {
         use std::os::unix::io::AsRawFd;
         let (s1, _s2) = UnixStream::pair().expect("unix stream pair");
         let auth = PlatformPeerAuthenticator;
-        let identity = auth.authenticate(s1.as_raw_fd()).expect("authenticate socket");
+        let identity = auth
+            .authenticate(s1.as_raw_fd())
+            .expect("authenticate socket");
         assert_eq!(identity.uid, unsafe { libc::getuid() });
         assert_eq!(identity.pid, std::process::id() as i32);
     }
