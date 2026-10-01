@@ -71,6 +71,7 @@ fn try_acquire(state_dir: &Path) -> Result<File, LockError> {
     let file = OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .mode(0o600)
         .open(&path)
         .map_err(LockError::Open)?;
