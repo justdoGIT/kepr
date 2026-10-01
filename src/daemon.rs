@@ -21,6 +21,7 @@ mod daemon_peer;
 mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
+mod daemon_singleton;
 mod daemon_socket;
 mod expiry;
 mod fido2;
@@ -222,6 +223,11 @@ fn main() {
         eprintln!("[kepr-daemon] cannot secure state directory: {e}");
         std::process::exit(1);
     });
+    // Refuse to start a second instance against the same state
+    // directory. See `daemon_singleton::acquire_singleton_lock` —
+    // concurrent daemons corrupted the audit chain by racing on the
+    // same `next_seq`.
+    let _daemon_lock_guard = daemon_singleton::acquire_singleton_lock(&state_dir());
     fs::create_dir_all(crate::store::store_dir()).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot create credential directory: {e}");
         std::process::exit(1);
