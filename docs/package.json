@@ -11,7 +11,7 @@
     "gen:api": "node scripts/gen-rust-api.mjs"
   },
   "dependencies": {
-    "@mermaid-js/layout-elk": "^0.2.1",
+    "@mermaid-js/layout-elk": "^1.0.0",
     "fumadocs-core": "^14.7.0",
     "fumadocs-mdx": "^11.10.1",
     "fumadocs-ui": "^14.7.0",
