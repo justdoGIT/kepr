@@ -64,14 +64,6 @@ const PROD_LOC_LIMIT: usize = 350;
 /// hop. Both are within ~1.5% of the ceiling — refactor pressure
 /// kicks in the moment they grow.
 const ALLOWLIST: &[(&str, usize)] = &[
-    // daemon.rs grew from 349 → 391 in PR #?? (Phase 2 η FIDO2
-    // unlock). The additions: FIDO2 dispatch arms (Fido2Register,
-    // Fido2List), the new `daemon_handlers_get` module declaration,
-    // and the `fido2` module declaration. Refactor candidate: move
-    // the per-request handler dispatch into its own module
-    // (`daemon_dispatch.rs`) so daemon.rs stays focused on the
-    // accept loop and setup.
-    ("src/daemon.rs", 489),
     // crypto_inproc.rs grew 382 → 383: aes-gcm 0.11 removed
     // `Aes256Gcm::generate_nonce`/`aead::OsRng`; the replacement
     // `getrandom::fill` call needs one extra line over the old
