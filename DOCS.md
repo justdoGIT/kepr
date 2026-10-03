@@ -234,6 +234,13 @@ journalctl -t kepr-daemon KEPR_OP=get KEPR_RESULT=fail
 
 The credential **value is never logged.**
 
+The daemon also maintains a hash-chained append-only record at
+`/var/lib/kepr/audit.log`. Startup verifies the complete chain. If a
+process dies while appending, only a malformed final record without its
+terminating newline is discarded; newline-terminated malformed records
+remain hard startup failures so edits, deletions, and reordering are not
+silently accepted.
+
 ### 3.4 Hardening (`systemd/kepr.service`)
 
 `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`,

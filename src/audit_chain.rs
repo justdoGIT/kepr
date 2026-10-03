@@ -119,9 +119,10 @@ impl AuditChain {
     /// Open the chain at `path`. If the file exists, walks it to
     /// recover the in-memory head + next-seq state. If the file
     /// is absent, starts with the genesis state. A malformed or
-    /// tampered existing file is a hard error — the daemon
-    /// should refuse to start rather than silently begin a fresh
-    /// chain on top of corruption.
+    /// tampered existing file is a hard error, except for a
+    /// non-newline-terminated final record: that is the signature
+    /// of a process dying during its append, and only that tail is
+    /// discarded after the valid prefix is re-verified.
     ///
     /// NOTE: full-chain verification on every daemon start is O(N)
     /// in the number of audit entries. A chain with millions of
@@ -131,8 +132,17 @@ impl AuditChain {
     pub fn open(path: PathBuf) -> Result<Self, String> {
         let state = match fs::metadata(&path) {
             Ok(_) => {
-                // Existing file — verify and recover state from it.
-                let report = Self::verify(&path)?;
+                let report = match Self::verify(&path) {
+                    Ok(report) => report,
+                    Err(original_error) => {
+                        if !crate::audit_chain_recovery::repair_incomplete_tail(&path)? {
+                            return Err(original_error);
+                        }
+                        eprintln!("[kepr-daemon] discarded an incomplete trailing audit record");
+                        Self::verify(&path)
+                            .map_err(|error| format!("audit chain recovery failed: {error}"))?
+                    }
+                };
                 ChainState {
                     last_hash: report.last_hash,
                     next_seq: report.entries as u64 + 1,
@@ -505,6 +515,24 @@ mod tests {
         }
         let report = AuditChain::verify(&path).unwrap();
         assert_eq!(report.entries, 3);
+    }
+
+    #[test]
+    fn open_repairs_incomplete_final_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        {
+            let chain = AuditChain::open(path.clone()).unwrap();
+            chain.append("set", None, 1000, "alice", "ok").unwrap();
+        }
+        let mut body = fs::read(&path).unwrap();
+        body.extend_from_slice(b"{\"seq\":2,\"op\":");
+        fs::write(&path, body).unwrap();
+
+        let chain = AuditChain::open(path.clone()).expect("partial tail is recoverable");
+        assert_eq!(chain.state.lock().unwrap().next_seq, 2);
+        chain.append("get", None, 1000, "alice", "ok").unwrap();
+        assert_eq!(AuditChain::verify(&path).unwrap().entries, 2);
     }
 
     #[test]

@@ -9,6 +9,7 @@
 
 mod audit;
 mod audit_chain;
+mod audit_chain_recovery;
 mod crypto;
 mod crypto_inproc;
 mod daemon_audit;
@@ -312,4 +313,3 @@ fn main() {
         }
     }
 }
-
