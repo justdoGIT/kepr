@@ -1,0 +1,9 @@
+# Cluster-wide release-build baseline: four workers expose 15-16 logical CPUs.
+# Six Cargo jobs leave headroom for Cargo, linking, and the operating system.
+[build]
+jobs = 6
+
+[target.x86_64-unknown-linux-gnu]
+# Two frontend threads per rustc request avoids 8 jobs x 6 threads
+# oversubscribing the 8 physical / 16 logical CPU cluster.
+rustflags = ["-Z", "threads=2"]
