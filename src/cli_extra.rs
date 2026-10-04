@@ -11,6 +11,7 @@
 //   kepr usage [--days N]
 //   kepr health [--max-age DAYS] [--breach]
 //   kepr leaked NAME [--yes]
+//   kepr recovery-kit create|restore      see cli_recovery.rs
 //   kepr discover [--seal] [--overwrite] [--yes]
 //   kepr import FILE [--format F] [--prefix P] [--seal] [--overwrite] [--yes]
 
@@ -31,6 +32,7 @@ pub const VERBS: &[&str] = &[
     "import",
     "discover",
     "leaked",
+    "recovery-kit",
     "__clipboard-clear",
 ];
 
@@ -151,6 +153,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 &one_name(args, verb, &[])?,
                 args.iter().any(|a| a == "--yes" || a == "-y"),
             ),
+            "recovery-kit" => crate::cli_recovery::cmd_recovery_kit(args),
             "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
             "ssh" => crate::cli_ssh::cmd_ssh(args),
             "ssh-agent" => crate::cli_ssh_agent::cmd_ssh_agent(args),

@@ -124,6 +124,14 @@ pub enum Response {
         name: String,
         breached: bool,
     },
+    RecoveryKitOk {
+        fingerprint: String,
+        shares: Vec<ZeroString>,
+    },
+    RecoveryRestoreOk {
+        fingerprint: String,
+        credentials_opened: usize,
+    },
     LeakedOk {
         name: String,
         gates_stopped: usize,

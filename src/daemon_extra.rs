@@ -25,6 +25,23 @@ pub fn dispatch(uid: u32, username: &str, request: Request) -> Response {
         Request::Leaked { name } => {
             crate::daemon_gate_registry::handle_leaked(uid, username, &name)
         }
+        Request::RecoveryKitCreate {
+            password,
+            threshold,
+            shares,
+        } => crate::daemon_recovery::handle_create(
+            uid,
+            username,
+            password.as_bytes(),
+            threshold,
+            shares,
+        ),
+        Request::RecoveryRestore {
+            shares,
+            new_password,
+        } => {
+            crate::daemon_recovery::handle_restore(uid, username, &shares, new_password.as_bytes())
+        }
         _ => Response::fail("unsupported request"),
     }
 }

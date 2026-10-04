@@ -178,6 +178,16 @@ echo "── health"
 "$KEPR" set E2E_WEAK --value password1 -q >/dev/null 2>&1
 check "$("$KEPR" health 2>/dev/null | grep -q '^E2E_WEAK: common password' && echo ok)" "health flags a common password"
 
+echo "── recovery kit"
+out=$(printf 'nope\n' | "$KEPR" recovery-kit create 2>&1) || true
+check "$(echo "$out" | grep -q 'passphrase' && echo ok)" "recovery kit refused without a passphrase-protected store"
+if printf 'kepr1-2-1-0000000000000000-00\nkepr1-2-2-0000000000000000-00\n\nx\nx\n' \
+    | "$KEPR" recovery-kit restore >/dev/null 2>&1; then
+    fail "recovery restore accepted bogus shares"
+else
+    pass "recovery restore refuses bogus shares"
+fi
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

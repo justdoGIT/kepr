@@ -35,6 +35,7 @@ mod cli_manifest;
 mod cli_mask;
 mod cli_mcp;
 mod cli_mode;
+mod cli_recovery;
 mod cli_rotate;
 mod cli_sandbox_seccomp;
 mod cli_sandbox_sys;

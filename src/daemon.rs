@@ -27,6 +27,7 @@ mod daemon_peer;
 mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
+mod daemon_recovery;
 mod daemon_singleton;
 mod daemon_sleepwatch;
 mod daemon_socket;
@@ -384,12 +385,6 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         | Request::SshImport { .. }
         | Request::SshList
         | Request::SshSign { .. } => daemon_ssh::dispatch(uid, peer_pid, username, request),
-        Request::History { .. }
-        | Request::Restore { .. }
-        | Request::Usage { .. }
-        | Request::Health { .. }
-        | Request::BreachCheck { .. }
-        | Request::Leaked { .. } => daemon_extra::dispatch(uid, username, request),
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),
@@ -474,6 +469,9 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
                 credentials: fido2::list_for_uid(uid),
             }
         }
+        // History, restore, usage, health, leak response, recovery kit:
+        // routed (and unknown variants refused) in daemon_extra.rs.
+        other => daemon_extra::dispatch(uid, username, other),
     }
 }
 

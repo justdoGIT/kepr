@@ -203,6 +203,18 @@ pub enum Request {
     Leaked {
         name: String,
     },
+    /// P6.3: split the master key into k-of-n recovery shares. Needs the
+    /// store passphrase; owner / root only.
+    RecoveryKitCreate {
+        password: ZeroString,
+        threshold: u8,
+        shares: u8,
+    },
+    /// P6.3: rebuild a lost master key from shares, under a new passphrase.
+    RecoveryRestore {
+        shares: Vec<ZeroString>,
+        new_password: ZeroString,
+    },
 }
 
 pub use crate::protocol_response::Response;
