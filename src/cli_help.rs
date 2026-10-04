@@ -43,6 +43,12 @@ COMMANDS:
   inject -i TEMPLATE [-o OUT]          fill kepr://NAME references (OUT created 0600)
   scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
   copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
+  history KEY                          previous values kept (last 5), no values shown
+  restore KEY --version N              make version N current again (undoable)
+  usage [--days N]                     uses / refusals / last use per key; flags never-used keys
+  ssh generate KEY [--comment C] | ssh import KEY FILE | ssh list
+                                       SSH keys that stay in the daemon (sign-only)
+  ssh-agent [--foreground] [--socket PATH]  ssh-agent for those keys: eval "$(kepr ssh-agent)"
 
 GLOBAL FLAGS:
   --json       machine-readable output; no stderr on clean errors

@@ -25,10 +25,49 @@ description: "Command surface, generators, audit log, environment variables, exi
 | `inject` |         | `-i TEMPLATE [-o OUT]`                              | rendered template     |
 | `scan`   |         | `[PATH...] [--staged]`                              | findings; exit 1 if any |
 | `copy`   |         | `KEY [--clear SECS]`                                | clipboard             |
+| `history` |        | `KEY`                                               | `HistoryOk { versions }` (no values) |
+| `restore` |        | `KEY --version N`                                   | `RestoreOk`           |
+| `usage`  |         | `[--days N]`                                        | `UsageOk { keys }`    |
+| `ssh generate` / `import` / `list` | | `KEY [--comment C]` / `KEY FILE` / — | `SshKeyOk` / `SshListOk` |
+| `ssh-agent` |      | `[--foreground] [--socket PATH]`                    | prints `SSH_AUTH_SOCK` exports |
 | `doctor` |         | —                                                   | setup + hardening checks |
 
 Global flags: `--json` (machine output, suppress stderr on clean
 errors), `--color` / `--no-color` (opt-in ANSI), `--version`, `--help`.
+
+## Credential history
+
+Every `set`, `rotate` or `restore` first saves the value being replaced.
+The last **5** are kept, each encrypted like a credential and bound to
+its slot name (`<cred>~N` on disk; never listed, never nameable in a
+request). `kepr history KEY` shows version numbers, times and sizes, but
+never values. `kepr restore KEY --version N` makes one current again under the
+credential's current policy, and saves the value it replaces, so a restore
+can itself be undone.
+
+- A value saved while the credential was sealed is only restored into a
+  sealed credential.
+- SSH keys keep no history.
+- `delete` and TTL expiry remove the history with the credential.
+
+## Usage report
+
+`kepr usage [--days N]` reads the caller's own entries from the
+hash-chained audit log. For each current credential it shows:
+
+- successful uses (`get`, gate `resolve`, `ssh-sign`) and refusals in the
+  window;
+- the last use ever;
+- the number of agent gate sessions.
+
+Never-used keys are listed so they can be removed. If the audit chain
+fails verification, the report says so.
+
+## Python SDK
+
+`sdk/python/kepr_client` is a stdlib-only client over the same socket and
+wire format (`Client().get(...)`, `set`, `list`, `history`, `restore`,
+`usage`, `ssh_sign`, …). The daemon applies the same rules as for the CLI.
 
 ## Generators (`--gen-kind`)
 

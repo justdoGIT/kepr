@@ -141,6 +141,24 @@ kepr panic
 Stops every running gate for your user (their cached keys die with them)
 and, if the store is passphrase-protected, locks it until `kepr unlock`.
 
+The user-mode daemon also does this by itself when the machine suspends or
+the screen locks. That keeps keys out of RAM while a laptop sleeps. It
+follows logind through `gdbus`; `kepr doctor` reports whether it can. Turn
+it off with `KEPR_LOCK_ON_SLEEP=0`.
+
+## SSH keys the agent can use but never read
+
+```bash
+kepr ssh generate DEPLOY_KEY            # or: kepr ssh import DEPLOY_KEY ~/.ssh/id_ed25519
+kepr ssh list                           # authorized_keys lines to install on servers
+eval "$(kepr ssh-agent)"                # sets SSH_AUTH_SOCK for ssh and git
+```
+
+The Ed25519 private key stays in the daemon. `kepr get` refuses it, and the
+agent socket only lists keys and signs. Requests to add, export or remove
+keys fail. Add `--requires-consent` to get a prompt before each signature.
+Encrypted key files must be decrypted (on a copy) before import.
+
 ## What the gate enforces
 
 - **Placeholder check:** a request without this session's placeholder gets
@@ -165,6 +183,9 @@ and, if the store is passphrase-protected, locks it until `kepr unlock`.
 ```bash
 kepr agent ls                        # sealed keys and their bound hosts
 kepr agent revoke ANTHROPIC_API_KEY  # delete (asks for confirmation)
+kepr history ANTHROPIC_API_KEY       # previous values kept (no values shown)
+kepr restore ANTHROPIC_API_KEY --version 1   # undo the last change
+kepr usage --days 30                 # uses, refusals, last use; never-used keys
 ```
 
 A sealed key can't be unsealed. To change its value or provider, run
@@ -203,4 +224,13 @@ journalctl -t kepr-daemon KEPR_OP=resolve
 ```
 
 Every release of a sealed key to the gate is logged as `op=resolve`; every
-refused `get` of a sealed key as `result=fail: sealed`.
+refused `get` of a sealed key as `result=fail: sealed`. `kepr usage` sums
+these per key from the hash-chained audit log.
+
+## Binding the store to this machine
+
+Set `KEPR_MASTER_KEY_SEAL=tpm2` (or `host+tpm2`) in the service
+environment, optionally with `KEPR_TPM2_PCRS=7`. The master key is then
+sealed to this machine's TPM, so a copied disk can't be decrypted
+elsewhere, and with PCRs, not after the boot chain changes either. The
+commented lines in `systemd/kepr.service` show the setting.

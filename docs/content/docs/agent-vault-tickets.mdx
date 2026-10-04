@@ -17,12 +17,17 @@ the exact commands that prove it's done.
 | --- | --- |
 | P0 | shipped |
 | T1.01–T1.17 (P1 Stage A) | shipped |
-| T1.18 agent sandbox (+ AppArmor profile) | shipped; `tests/agent_e2e.sh` 29/29 unprivileged |
+| T1.18 agent sandbox (+ AppArmor profile) | shipped; `tests/agent_e2e.sh` 31/31 |
 | T1.20 `kepr agent adopt`, T1.21 `kepr mcp` | shipped |
 | T9.01 approvals (`--requires-consent`, polkit), T9.02 DLP, T9.03 `exec --mask` | shipped |
-| T3.01–T3.04 secret memory, doctor hardening; T3.05 `kepr panic` | shipped (suspend/lid hooks still open) |
+| T3.01–T3.04 secret memory, doctor hardening; T3.05 `kepr panic` + lock on suspend / screen lock | shipped |
+| P2.4 `kepr ssh` + `kepr ssh-agent` (sign-only Ed25519) | shipped |
+| P4.3 TPM2 sealing of the master key (`KEPR_MASTER_KEY_SEAL`, `KEPR_TPM2_PCRS`) | shipped |
+| P5.3 `kepr history` / `kepr restore` (5 encrypted versions) | shipped |
+| P8 Python SDK (`sdk/python`) | shipped (Node/Go clients open) |
+| P9.6 `kepr usage` (uses, refusals, last use, never-used keys) | shipped |
 | P5.5 `kepr totp`, P5.7 `kepr inject`, P6.4 `kepr scan`, P10.9 `kepr copy` | shipped |
-| T1.19 gate as a system service; P2 egress proxy, SigV4 re-sign, ssh-agent; P4 vault image + TPM2; rest of P5–P10 | open (L: split before starting) |
+| T1.19 gate as a system service; P2.1 egress proxy, P2.2 SigV4 re-sign; P4 vault image; rest of P5–P10 | open (L: split before starting) |
 
 **Where the code differs from the ticket text** (the code is authoritative):
 
@@ -37,6 +42,9 @@ the exact commands that prove it's done.
   them in `GateStarted` and never holds the session key.
 - The proxy buffers request bodies (up to 8 MiB) so the DLP check can run;
   responses are still streamed.
+- History slots are ordinary credentials named `NAME~N` rather than a
+  separate history store: they reuse the AEAD, the AAD binding and the
+  rollback counter, and `~` keeps them out of every request and listing.
 - `kepr agent …` (and `totp`, `inject`, `scan`, `copy`) are parsed by
   `cli_extra.rs` / `cli_agent_cmd.rs`, not `cli_args.rs`.
 - `ReadyLine` / `GateStarted` placeholders are keyed by **provider**, not
@@ -820,13 +828,12 @@ item.
 | P2.1 egress `CONNECT` proxy with per-session CA | L | needs `rcgen`; decide CA lifetime and trust-store env vars |
 | P2.2 SigV4 verify-and-re-sign | M | reuse `src/sync_aws_sigv4.rs` functions; move shared parts to a crate |
 | P2.3 placeholder presets (gh, git, aws, gcloud, stripe, npm, docker) | M | one adapter row per tool |
-| P2.4 `kepr ssh-agent` | L | ssh-agent wire protocol; sign-only |
 | P3.3 pull-on-demand fd delivery | M | replaces inherited memfds |
-| P4.x vault image, TPM2, BYOK | L | each sub-item is its own ticket set |
-| P5.x typed records, history, attachments, TOTP, references, `inject` | M each | protocol changes in every one |
+| P4.x vault image, BYOK | L | each sub-item is its own ticket set (TPM2 sealing shipped) |
+| P5.x typed records, attachments | M each | protocol changes in every one (history, TOTP, `inject` shipped) |
 | P6.x sharing, one-time share, emergency access, health, sync, policy | L | team mode design first |
 | P7.x DB proxies, rotators, journal, JIT, anomaly rules, SIEM, FIPS | L | |
-| P8 ecosystem | M each | |
+| P8 ecosystem: Node / Go clients, `kepr shell`, TUI, Terraform | M each | follow `sdk/python` |
 | P9.4–P9.8 | M–L | |
 | P10.x | S–L | P10.2 importers and P10.9 clipboard are S/M and good first tickets |
 
