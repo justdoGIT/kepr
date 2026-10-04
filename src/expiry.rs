@@ -66,6 +66,17 @@ pub struct CredMeta {
     /// Destinations a sealed value may be sent to.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub bindings: Option<Vec<kepr_core::binding::Binding>>,
+    /// P2.4: the value is an Ed25519 SSH key seed. Like `sealed`, `Get`
+    /// refuses it; the daemon only signs with it (`SshSign`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ssh: Option<SshMeta>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct SshMeta {
+    /// Public key blob, base64 (not secret).
+    pub public_b64: String,
+    pub comment: String,
 }
 
 impl CredMeta {
@@ -78,6 +89,7 @@ impl CredMeta {
             && self.requires_fido2.is_none()
             && self.sealed.is_none()
             && self.bindings.is_none()
+            && self.ssh.is_none()
     }
 
     /// Build a `CredMeta` from per-flag CLI inputs. Returns `Err`
@@ -364,6 +376,7 @@ mod tests {
                 requires_fido2: None,
                 sealed: None,
                 bindings: None,
+                ssh: None,
             },
         )
         .unwrap();
@@ -411,6 +424,7 @@ mod tests {
                 requires_fido2: None,
                 sealed: None,
                 bindings: None,
+                ssh: None,
             },
         )
         .unwrap();
@@ -431,6 +445,7 @@ mod tests {
                 requires_fido2: None,
                 sealed: None,
                 bindings: None,
+                ssh: None,
             },
         )
         .unwrap();

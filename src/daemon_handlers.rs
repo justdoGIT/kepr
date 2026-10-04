@@ -24,6 +24,8 @@ pub struct SetFlags {
     pub requires_fido2: Option<bool>,
     pub sealed: Option<bool>,
     pub bindings: Option<Vec<kepr_core::binding::Binding>>,
+    /// P2.4: the value is an SSH key seed (sign-only).
+    pub ssh: Option<expiry::SshMeta>,
 }
 
 pub fn handle_set(
@@ -56,7 +58,10 @@ pub fn handle_set(
         flags.requires_fido2,
     )
     .and_then(|m| m.with_seal(flags.sealed, flags.bindings))
-    {
+    .map(|mut m| {
+        m.ssh = flags.ssh;
+        m
+    }) {
         Ok(m) => m,
         Err(e) => {
             audit::log(&AuditEvent {
@@ -93,7 +98,7 @@ pub fn handle_set(
     // its sidecar *before* the value, so a concurrent Get already sees
     // `sealed`. (Other flags keep the write-after order with rollback.)
     let meta_path = expiry::meta_path_for(&cred_path(uid, &upper));
-    let meta_first = meta.sealed == Some(true);
+    let meta_first = meta.sealed == Some(true) || meta.ssh.is_some();
     let cred_existed = cred_path(uid, &upper).exists();
     if meta_first {
         if let Err(e) = expiry::write_meta(&meta_path, &meta) {

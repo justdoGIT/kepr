@@ -147,6 +147,27 @@ pub enum Request {
     Ping,
     /// `kepr panic`: stop the caller's gates; lock if passphrase-protected.
     Panic,
+    /// P2.4 SSH agent: create a new sign-only Ed25519 key in the vault.
+    SshGenerate {
+        name: String,
+        comment: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        requires_consent: Option<bool>,
+    },
+    /// Import an unencrypted OpenSSH Ed25519 private key (sign-only after).
+    SshImport {
+        name: String,
+        private_key: ZeroString,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        requires_consent: Option<bool>,
+    },
+    SshList,
+    /// Sign `data_b64` with the named key; the private key never leaves
+    /// the daemon.
+    SshSign {
+        name: String,
+        data_b64: String,
+    },
 }
 
 // ── Response ──────────────────────────────────────────────────────────────────
@@ -228,6 +249,18 @@ pub enum Response {
         gates_stopped: usize,
         locked: bool,
     },
+    SshKeyOk {
+        name: String,
+        /// `ssh-ed25519 AAAA… comment`
+        public_line: String,
+    },
+    SshListOk {
+        keys: Vec<SshKeyInfo>,
+    },
+    /// OpenSSH signature blob (`string "ssh-ed25519" || string sig`), base64.
+    SshSignOk {
+        signature_b64: String,
+    },
     LockedOk,
     UnlockedOk,
     StatusOk {
@@ -272,71 +305,7 @@ impl Response {
     }
 }
 
-// ── Credential info (for ListOk) ──────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CredInfo {
-    pub name: String,      // ENV_VAR_NAME
-    pub cred_name: String, // kepr-<uid>-env-var-name
-    pub size: u64,
-    pub modified: String, // YYYY-MM-DD HH:MM
-    /// Phase 2 α: human-readable absolute expiry timestamp
-    /// (`YYYY-MM-DD HH:MM`) for creds that were set with `--ttl`.
-    /// `None` for credentials with no TTL — same wire shape as the
-    /// pre-Phase-2 daemon (the field is `skip_serializing_if =
-    /// "Option::is_none"`, so old clients never see the field and
-    /// new clients tolerate the missing-field path).
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub expires_at: Option<String>,
-    /// Phase 2 ε: true iff `kepr get` for this credential requires
-    /// a polkit consent prompt before the daemon decrypts. Surfaces
-    /// in `kepr list` so the user can spot consent-flagged creds at
-    /// a glance. Same backward-compat shape as `expires_at`.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub requires_consent: Option<bool>,
-    /// Phase 2 η: true iff `kepr get` for this credential requires a
-    /// FIDO2 hardware-key assertion before the daemon decrypts.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub requires_fido2: Option<bool>,
-    /// Agent vault P1: true iff the credential is write-only.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub sealed: Option<bool>,
-    /// Hosts a sealed credential is bound to (no secret material).
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub bound_hosts: Option<Vec<String>>,
-}
-
-// ── FIDO2 types (Phase 2 η) ─────────────────────────────────────────────────
-
-/// A FIDO2 assertion produced by the client's authenticator. Sent as
-/// the second round-trip payload on `Request::Get` when the daemon
-/// returned `Fido2Needed`. All byte fields are hex-encoded.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Fido2Assertion {
-    /// The credential ID (from the authenticator). Hex-encoded.
-    pub credential_id: String,
-    /// The clientDataJSON that was hashed and signed. Hex-encoded
-    /// raw bytes — the daemon reconstructs the SHA-256 hash and
-    /// verifies it against the authenticator data.
-    pub client_data_json: String, // hex
-    /// The authenticatorData bytes returned by the authenticator.
-    /// Contains the RP ID hash, flags, and signature counter.
-    pub authenticator_data: String, // hex
-    /// The assertion signature over (authenticator_data ||
-    /// sha256(client_data_json)). Hex-encoded raw bytes.
-    pub signature: String, // hex
-}
-
-/// A registered FIDO2 credential, returned by `Fido2ListOk`.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Fido2CredInfo {
-    /// Human-readable label assigned at registration time.
-    pub label: String,
-    /// The FIDO2 credential ID, hex-encoded.
-    pub credential_id: String,
-    /// The user ID (kepr uid) this credential is registered for.
-    pub uid: u32,
-}
+pub use crate::protocol_types::{CredInfo, Fido2Assertion, Fido2CredInfo, SshKeyInfo};
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

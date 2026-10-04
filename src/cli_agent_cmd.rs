@@ -155,8 +155,14 @@ pub fn get_failure_hint(name: &str) -> String {
         Ok(Response::ListOk { credentials, .. })
             if credentials.iter().any(|c| c.name == name && c.sealed == Some(true))
     );
+    let ssh = matches!(
+        client::send_request(&Request::SshList),
+        Ok(Response::SshListOk { keys }) if keys.iter().any(|k| k.name == name)
+    );
     if sealed {
         format!("{name} is sealed (write-only): agents use it through `kepr agent run`")
+    } else if ssh {
+        format!("{name} is an SSH key (sign-only): use it through `kepr ssh-agent`")
     } else {
         format!("Set it with: kepr set {name}")
     }

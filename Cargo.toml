@@ -48,6 +48,9 @@ sha2 = "0.10"
 # `kepr totp`: RFC 6238 codes use HMAC-SHA1 (the authenticator-app
 # default). RustCrypto, same family as sha2/hmac.
 sha1 = "0.10"
+# `kepr ssh-agent` (P2.4): Ed25519 signing inside the daemon; private keys
+# never leave it. RustCrypto/dalek, uses the sha2 0.10 already in the tree.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 # AWS SigV4 signing for `kepr sync-{push,pull} --url aws-sm:…`.
 # `hmac` composes with sha2 to produce HMAC-SHA256, the primitive
 # that drives SigV4's signing-key derivation chain. RustCrypto, no

@@ -27,6 +27,7 @@ mod daemon_ratelimit;
 mod daemon_singleton;
 mod daemon_sleepwatch;
 mod daemon_socket;
+mod daemon_ssh;
 mod expiry;
 mod fido2;
 mod key_unlock;
@@ -373,6 +374,10 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
             daemon_gate::handle_start_gate(uid, peer_pid, username, &routes, port)
         }
         Request::Panic => daemon_gate_registry::handle_panic(uid, username),
+        Request::SshGenerate { .. }
+        | Request::SshImport { .. }
+        | Request::SshList
+        | Request::SshSign { .. } => daemon_ssh::dispatch(uid, peer_pid, username, request),
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),
@@ -408,6 +413,7 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
                 requires_fido2,
                 sealed,
                 bindings,
+                ssh: None,
             },
         ),
         Request::Get {

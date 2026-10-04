@@ -15,6 +15,8 @@ pub const VERBS: &[&str] = &[
     "inject",
     "scan",
     "copy",
+    "ssh",
+    "ssh-agent",
     "__clipboard-clear",
 ];
 
@@ -78,6 +80,8 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 crate::cli_copy::cmd_copy(&name, secs)
             }
             "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
+            "ssh" => crate::cli_ssh::cmd_ssh(args),
+            "ssh-agent" => crate::cli_ssh_agent::cmd_ssh_agent(args),
             other => Response::fail(format!("unknown command: {other}")),
         })
     };

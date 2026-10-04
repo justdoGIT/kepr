@@ -52,6 +52,9 @@ fn meta_gate(
     if meta.sealed == Some(true) {
         return Err("sealed".to_string());
     }
+    if meta.ssh.is_some() {
+        return Err("ssh key (sign-only)".to_string());
+    }
     if let Some(exp) = meta.expires_at_unix {
         if now_unix >= exp {
             return Err("expired".to_string());

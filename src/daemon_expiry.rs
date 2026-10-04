@@ -290,6 +290,7 @@ mod tests {
                 requires_fido2: None,
                 sealed: None,
                 bindings: None,
+                ssh: None,
             },
         )
         .unwrap();
@@ -308,6 +309,7 @@ mod tests {
                 requires_fido2: None,
                 sealed: None,
                 bindings: None,
+                ssh: None,
             },
         )
         .unwrap();
