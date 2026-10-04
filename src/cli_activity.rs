@@ -56,6 +56,7 @@ impl CliActivity {
             "fido2-list" => "fido2-list",
             "protect-agent" => "protect-agent",
             "panic" => "panic",
+            "mcp" => "mcp",
             other => return Err(format!("unknown command: {other}")),
         };
         Ok(Self(canonical.to_string()))
@@ -110,6 +111,7 @@ impl CliActivity {
                 crate::cli_agent::cmd_protect_agent(args.name.as_deref(), &args.exec_argv)
             }
             "panic" => crate::cli_agent_cmd::cmd_panic(),
+            "mcp" => crate::cli_mcp::cmd_mcp(),
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),
         }
     }

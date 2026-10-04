@@ -5,6 +5,7 @@
 //   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin] [--requires-consent]
 //   kepr agent run HARNESS [--port N] [--no-sandbox|--strict-sandbox] [--isolate-net] [-- ARGV...]
 //   kepr agent install omp|grok [--port N]
+//   kepr agent adopt [FILE...] [--yes] [--remove]
 //   kepr agent ls
 //   kepr agent revoke NAME [--force]
 
@@ -26,6 +27,9 @@ pub struct AgentArgs {
     pub stdin: bool,
     pub force: bool,
     pub requires_consent: bool,
+    pub yes: bool,
+    pub remove: bool,
+    pub files: Vec<String>,
     pub no_sandbox: bool,
     pub strict_sandbox: bool,
     pub isolate_net: bool,
@@ -61,6 +65,8 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
             "--stdin" => a.stdin = true,
             "--force" | "-f" => a.force = true,
             "--requires-consent" => a.requires_consent = true,
+            "--yes" | "-y" => a.yes = true,
+            "--remove" => a.remove = true,
             "--no-sandbox" => a.no_sandbox = true,
             "--strict-sandbox" => a.strict_sandbox = true,
             "--isolate-net" => a.isolate_net = true,
@@ -68,6 +74,7 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
                 a.argv = raw[i + 1..].to_vec();
                 break;
             }
+            s if !s.starts_with('-') && a.verb == "adopt" => a.files.push(s.to_string()),
             s if !s.starts_with('-') && a.target.is_none() => a.target = Some(s.to_string()),
             other => return Err(format!("unexpected argument: {other}\n{USAGE}")),
         }
@@ -245,6 +252,7 @@ pub fn main(raw: &[String]) -> Response {
             None => Response::fail("kepr agent install needs omp or grok"),
         },
         "ls" | "list" => cmd_ls(),
+        "adopt" => crate::cli_agent_adopt::cmd_adopt(&a.files, a.yes, a.remove),
         "revoke" => cmd_revoke(&a),
         other => Response::fail(format!("unknown agent command '{other}'\n{USAGE}")),
     }

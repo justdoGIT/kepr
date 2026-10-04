@@ -7,6 +7,7 @@
 mod cli_activity;
 mod cli_agent;
 mod cli_agent_adapters;
+mod cli_agent_adopt;
 mod cli_agent_cmd;
 mod cli_agent_detect;
 mod cli_agent_install;
@@ -23,6 +24,7 @@ mod cli_help;
 mod cli_input;
 mod cli_manifest;
 mod cli_mask;
+mod cli_mcp;
 mod cli_mode;
 mod cli_rotate;
 mod cli_sandbox_seccomp;
