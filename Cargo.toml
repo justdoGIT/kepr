@@ -49,7 +49,7 @@ sha2 = "0.10"
 # `hmac` composes with sha2 to produce HMAC-SHA256, the primitive
 # that drives SigV4's signing-key derivation chain. RustCrypto, no
 # system deps, shares sha2's compiled code.
-hmac = "0.12"
+hmac = "0.13"
 # `kepr sync-{push,pull} --url gcp-sm:…` — GCP Secret Manager
 # wraps payload bytes in base64. RustCrypto-adjacent crate, ~30 KB,
 # pure Rust, no system deps.
