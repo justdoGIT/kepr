@@ -14,6 +14,7 @@
 pub mod auth;
 pub mod binding;
 pub mod framing;
+pub mod gate_protocol;
 pub mod generate;
 pub mod keyring;
 pub mod memfd;

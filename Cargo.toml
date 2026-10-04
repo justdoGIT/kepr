@@ -32,7 +32,7 @@ name = "git-credential-kepr"
 path = "src/git_helper.rs"
 
 [workspace]
-members = ["crates/kepr-core", "crates/kepr-eso-provider"]
+members = ["crates/kepr-core", "crates/kepr-eso-provider", "crates/kepr-gate"]
 
 [dependencies]
 kepr-core = { path = "crates/kepr-core", version = "0.4.0" }
