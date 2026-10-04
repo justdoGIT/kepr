@@ -2,7 +2,7 @@
 // P1). Parsed separately from the main argv parser because the verbs
 // take their own flags.
 //
-//   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin]
+//   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin] [--requires-consent]
 //   kepr agent run HARNESS [--port N] [--no-sandbox|--strict-sandbox] [--isolate-net] [-- ARGV...]
 //   kepr agent install omp|grok [--port N]
 //   kepr agent ls
@@ -25,6 +25,7 @@ pub struct AgentArgs {
     pub port: Option<u16>,
     pub stdin: bool,
     pub force: bool,
+    pub requires_consent: bool,
     pub no_sandbox: bool,
     pub strict_sandbox: bool,
     pub isolate_net: bool,
@@ -59,6 +60,7 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
             }
             "--stdin" => a.stdin = true,
             "--force" | "-f" => a.force = true,
+            "--requires-consent" => a.requires_consent = true,
             "--no-sandbox" => a.no_sandbox = true,
             "--strict-sandbox" => a.strict_sandbox = true,
             "--isolate-net" => a.isolate_net = true,
@@ -119,7 +121,7 @@ fn cmd_add(a: &AgentArgs) -> Response {
         value: Some(value),
         generate: None,
         ttl_secs: None,
-        requires_consent: None,
+        requires_consent: a.requires_consent.then_some(true),
         requires_fido2: None,
         sealed: Some(true),
         bindings: Some(bindings),
@@ -131,6 +133,31 @@ fn cmd_add(a: &AgentArgs) -> Response {
                 hosts.join(", ")
             ));
             cli_ui::info("it can no longer be read back; agents use it through `kepr agent run`");
+            r
+        }
+        Ok(r) => r,
+        Err(e) => Response::fail(e),
+    }
+}
+
+/// `kepr panic`: stop every running gate for this user and, if the store
+/// is passphrase-protected, lock it.
+pub fn cmd_panic() -> Response {
+    match client::send_request(&Request::Panic) {
+        Ok(
+            r @ Response::PanicOk {
+                gates_stopped,
+                locked,
+            },
+        ) => {
+            cli_ui::ok(&format!("stopped {gates_stopped} agent gate(s)"));
+            if locked {
+                cli_ui::ok("credential store locked; run `kepr unlock` to resume");
+            } else {
+                cli_ui::info(
+                    "store not passphrase-protected, so it stays unlocked (see `kepr lock`)",
+                );
+            }
             r
         }
         Ok(r) => r,

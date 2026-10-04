@@ -358,6 +358,7 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::StartGate { routes, port } => {
             daemon_gate::handle_start_gate(uid, peer_pid, username, &routes, port)
         }
+        Request::Panic => daemon_gate::handle_panic(uid, username),
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),

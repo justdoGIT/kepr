@@ -77,13 +77,40 @@ pub fn check_resolvable(
         .ok_or_else(|| "resolve: host not bound".to_string())
 }
 
-pub fn resolve_for_gate(
-    uid: u32,
-    username: &str,
-    name: &str,
-    host: &str,
-    port: u16,
-) -> GateResponse {
+/// Who a gate serves: the uid whose credentials it may resolve, and the
+/// agent process (its --owner-pid) that polkit consent is asked for.
+pub struct GateOwner {
+    pub uid: u32,
+    pub username: String,
+    pub pid: i32,
+}
+
+/// Gates this daemon started: (gate pid, uid). Used by `kepr panic`.
+static GATES: std::sync::Mutex<Vec<(i32, u32)>> = std::sync::Mutex::new(Vec::new());
+
+fn track_gate(pid: i32, uid: u32, add: bool) {
+    if let Ok(mut g) = GATES.lock() {
+        if add {
+            g.push((pid, uid));
+        } else {
+            g.retain(|(p, _)| *p != pid);
+        }
+    }
+}
+
+/// SIGKILL every gate serving `uid`. Returns how many were signalled.
+pub fn stop_gates_for(uid: u32) -> usize {
+    let Ok(g) = GATES.lock() else { return 0 };
+    g.iter()
+        .filter(|(_, u)| *u == uid)
+        // SAFETY: kill(2) on a pid this daemon spawned and still tracks
+        // (removed from the list when its channel thread reaps it).
+        .filter(|(p, _)| unsafe { libc::kill(*p, libc::SIGKILL) } == 0)
+        .count()
+}
+
+pub fn resolve_for_gate(owner: &GateOwner, name: &str, host: &str, port: u16) -> GateResponse {
+    let (uid, username) = (owner.uid, owner.username.as_str());
     if validate_name(name).is_err() {
         return GateResponse::Err {
             error: UNAVAILABLE.into(),
@@ -111,6 +138,12 @@ pub fn resolve_for_gate(
         Ok(i) => i,
         Err(reason) => return fail(reason),
     };
+    // T9.01: a sealed credential flagged --requires-consent is released
+    // only after polkit approves the agent process (fail-closed).
+    let needs_consent = meta.as_ref().and_then(|m| m.requires_consent) == Some(true);
+    if needs_consent && !crate::daemon_polkit::consent_granted(owner.pid) {
+        return fail("resolve: consent denied".to_string());
+    }
     match crypto::default_backend().decrypt(uid, &upper) {
         Ok(value) => {
             audit::log(&AuditEvent {
@@ -175,11 +208,12 @@ fn read_ready(child: &mut Child) -> Result<ReadyLine, String> {
     Ok(ready)
 }
 
-fn serve_gate_channel(mut chan: UnixStream, mut child: Child, uid: u32, username: String) {
+fn serve_gate_channel(mut chan: UnixStream, mut child: Child, owner: GateOwner) {
+    let gate_pid = child.id() as i32;
     while let Ok(raw) = read_frame(&mut chan, MAX_MSG_BYTES) {
         let resp = match serde_json::from_slice::<GateRequest>(&raw) {
             Ok(GateRequest::Resolve { name, host, port }) => {
-                resolve_for_gate(uid, &username, &name, &host, port)
+                resolve_for_gate(&owner, &name, &host, port)
             }
             Err(_) => GateResponse::Err {
                 error: "malformed request".into(),
@@ -192,8 +226,32 @@ fn serve_gate_channel(mut chan: UnixStream, mut child: Child, uid: u32, username
             break;
         }
     }
+    // Untrack before reaping so `stop_gates_for` can never signal a
+    // pid that has been reaped and reused.
     let _ = child.kill();
+    track_gate(gate_pid, owner.uid, false);
     let _ = child.wait();
+}
+
+/// `kepr panic` (T3.05): stop the caller's gates (their key caches die
+/// with them) and, if the store is passphrase-protected, lock it so the
+/// master key leaves memory until `kepr unlock`.
+pub fn handle_panic(uid: u32, username: &str) -> Response {
+    let gates_stopped = stop_gates_for(uid);
+    let may_lock = crate::user_mode() || uid == 0;
+    let locked =
+        may_lock && crate::protected_master_key_path().exists() && crypto::lock_backend().is_ok();
+    audit::log(&AuditEvent {
+        op: "panic",
+        name: None,
+        uid,
+        username,
+        result: AuditResult::Ok,
+    });
+    Response::PanicOk {
+        gates_stopped,
+        locked,
+    }
 }
 
 fn start(
@@ -237,8 +295,13 @@ fn start(
         }
     };
     let gate_pid = child.id() as i32;
-    let user = username.to_string();
-    std::thread::spawn(move || serve_gate_channel(daemon_end, child, uid, user));
+    let owner = GateOwner {
+        uid,
+        username: username.to_string(),
+        pid: peer_pid,
+    };
+    track_gate(gate_pid, uid, true);
+    std::thread::spawn(move || serve_gate_channel(daemon_end, child, owner));
     Ok(Response::GateStarted {
         port: ready.port,
         placeholders: ready.placeholders,

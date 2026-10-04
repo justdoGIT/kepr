@@ -145,6 +145,8 @@ pub enum Request {
     },
     Status,
     Ping,
+    /// `kepr panic`: stop the caller's gates; lock if passphrase-protected.
+    Panic,
 }
 
 // ── Response ──────────────────────────────────────────────────────────────────
@@ -222,6 +224,10 @@ pub enum Response {
         credentials: Vec<Fido2CredInfo>,
     },
     Pong,
+    PanicOk {
+        gates_stopped: usize,
+        locked: bool,
+    },
     LockedOk,
     UnlockedOk,
     StatusOk {
