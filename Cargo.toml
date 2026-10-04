@@ -44,7 +44,7 @@ aes-gcm = "0.11"
 # chain on `/var/lib/kepr/audit.log`. RustCrypto's `sha2` is the
 # standard pure-Rust impl; aes-gcm already pulls related primitives,
 # so the marginal binary size is small.
-sha2 = "0.10"
+sha2 = "0.11"
 # AWS SigV4 signing for `kepr sync-{push,pull} --url aws-sm:…`.
 # `hmac` composes with sha2 to produce HMAC-SHA256, the primitive
 # that drives SigV4's signing-key derivation chain. RustCrypto, no
