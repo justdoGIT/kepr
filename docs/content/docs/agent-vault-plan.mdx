@@ -216,7 +216,7 @@ nice to have.
 
 | # | Feature | Why it matters | Pri | Plan |
 | --- | --- | --- | --- | --- |
-| A1 | **Prompt DLP in the gate**: scan every outbound LLM request for real secret values (and known key formats) and block or redact | Stops an agent pasting a secret it found in a file or log into a provider's prompt and logs | H | P9.2 |
+| A1 | **Prompt DLP in the gate**: scan every outbound LLM request for real secret values (and known key formats) and block the request, telling the agent why | Stops an agent pasting a secret it found in a file or log into a provider's prompt and logs | H | P9.2 |
 | A2 | **Output masking**: `kepr exec --mask` / gate rewrites any secret value in a child's stdout/stderr to `****` | If a real secret ever reaches a tool, it can't echo back into the agent's context (GitHub Actions does this) | H | P9.3 |
 | A3 | **Per-agent approvals**: first use of (agent, secret, host) prompts "once / always / deny" via terminal, desktop notification or phone | Keeper has this for its MCP; kepr needs it for gate sessions | H | P9.1 |
 | A4 | **Spend and rate guard**: gate reads token usage from provider responses and enforces per-session budget caps | A runaway or hijacked agent can't burn the API budget | H | P9.5 |
@@ -307,7 +307,7 @@ New binaries and modules (each under the 350-line production limit):
 | Unit | Kind | Responsibility |
 | --- | --- | --- |
 | `kepr-gate` (`src/gate.rs`) | new bin, own system user | accept loop, session table, privilege drop |
-| `src/gate_http.rs` | gate | minimal HTTP/1.1 parser + streaming forwarder (SSE-safe, no tokio) |
+| `src/gate_http.rs` | gate | `hyper` server + client: HTTP/1.1 and HTTP/2, streaming forwarder (SSE-safe) on a tokio runtime |
 | `src/gate_tls.rs` | gate | rustls client to upstream; per-session ephemeral CA for egress mode |
 | `src/gate_policy.rs` | gate | destination binding, placeholder → credential mapping, rate limits |
 | `src/gate_rewrite.rs` | gate | header/body substitution, AWS SigV4 re-signing (reuses `sync_aws_sigv4.rs`) |
@@ -321,7 +321,9 @@ Why a separate gate binary: the daemon's unit has
 `RestrictAddressFamilies=AF_UNIX AF_NETLINK` and should keep it. The gate
 needs outbound TCP. Splitting them keeps the vault process network-free and
 puts the only network-facing code under a different uid that holds no master
-key.
+key. It also keeps `hyper` and tokio out of the daemon: they are
+dependencies of `kepr-gate` only, so the daemon's dependency tree and attack
+surface don't grow.
 
 ### 4.3 Sealed credentials (daemon side)
 
@@ -630,7 +632,8 @@ variants touching `protocol.rs` + `cli_cmds.rs`/client + `daemon_handlers.rs`
   with gate peer check; audit `sealed-denied` / `resolved`.
 - P1.2 `kepr-gate` bin: accept loop, session table, API-mode routing for
   Anthropic, OpenAI, xAI, Google, Mistral, DeepSeek, Groq, OpenRouter;
-  SSE-safe streaming; rustls upstream with pinned webpki roots.
+  SSE-safe streaming over `hyper` (HTTP/1.1 and HTTP/2, connection pooling
+  to upstreams) with `hyper-rustls` and pinned webpki roots.
 - P1.3 `src/sandbox.rs`: user + net + pid + mount namespaces, fd passing,
   Landlock (hide `~/.local/share/kepr`, `/etc/credstore.encrypted`, `/run/kepr`),
   seccomp denying `ptrace`, `process_vm_readv`, `bpf`.
@@ -750,8 +753,11 @@ can't misuse it quietly either". P9.1–P9.3 should ship right after P1.
   harness, and can be revoked in `kepr agent ls`.
 - P9.2 Prompt DLP (A1): before forwarding an LLM request, the gate scans the
   body for any stored secret value (constant-time compare over a rolling
-  hash index kept in secure memory) and for known key formats. Matches are
-  redacted or the request is blocked, and the event is audited.
+  hash index kept in secure memory) and for known key formats. A match
+  **blocks** the request: the gate never forwards it, returns an error the
+  harness shows to the agent (HTTP 403 with a provider-shaped JSON error body:
+  "kepr blocked this request: it contains the stored secret NAME; remove it
+  and retry"), and audits the event. It never redacts silently.
 - P9.3 Output masking (A2): `kepr exec --mask` and gate egress responses
   replace any stored secret value in stdout/stderr or response bodies with
   `****`.
@@ -790,22 +796,22 @@ can't misuse it quietly either". P9.1–P9.3 should ship right after P1.
 
 ---
 
-## 10. Decisions needed before P1
+## 10. Decisions (resolved 2026-10-04)
 
-1. **Gate dependencies.** A hand-rolled HTTP/1.1 forwarder plus `rustls`
-   (lean, matches the SigV4 precedent) or `hyper` (more robust, pulls in
-   tokio). Recommendation: hand-rolled HTTP/1.1 plus rustls. LLM APIs work
-   over HTTP/1.1 with SSE.
-2. **Sealed by default?** Recommendation: `kepr agent add` seals by default;
-   plain `kepr set` stays readable for backwards compatibility, with
-   `--sealed` available.
-3. **Unprivileged user namespaces** are restricted on some distros (Ubuntu
-   24.04+ AppArmor). Ship an AppArmor profile for `kepr`, or fall back to a
-   root-helper that creates the namespace? Recommendation: ship the profile;
-   no setuid helper.
-4. **Vault image default size** and whether the per-file store remains the
-   default on hosts without a TPM. Recommendation: 64 MiB; per-file store
-   stays default until P4 has a release behind it.
-5. **Prompt DLP default.** Block or redact when a request to an LLM provider
-   contains a stored secret? Recommendation: block and tell the harness why.
-   Silent redaction can change what the model sees without anyone noticing.
+1. **Gate dependencies: `hyper`.** It is the more robust choice: a
+   battle-tested HTTP/1.1 and HTTP/2 implementation with streaming bodies,
+   upstream connection pooling and well-handled edge cases (chunked encoding,
+   keep-alive, backpressure) that a hand-rolled parser would have to re-earn.
+   Raw speed is not the deciding factor (the gate's latency is dominated by
+   the upstream LLM API), but HTTP/2 multiplexing and pooled TLS connections
+   do cut per-request overhead for agents that fire many parallel calls.
+   Cost: tokio and hyper join the dependency tree, of `kepr-gate` only.
+2. **Sealed by default: yes.** `kepr agent add` seals by default. Plain
+   `kepr set` stays readable for backwards compatibility, with `--sealed`
+   available.
+3. **Unprivileged user namespaces: ship an AppArmor profile** for `kepr`
+   (needed on Ubuntu 24.04+). No setuid helper. `kepr doctor` reports when the
+   profile is missing or namespaces are disabled.
+4. **Vault image: 64 MiB default; the per-file store stays the default** on
+   hosts without a TPM until P4 has a release behind it.
+5. **Prompt DLP: block and tell the agent.** No silent redaction (P9.2).
