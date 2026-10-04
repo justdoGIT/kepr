@@ -75,6 +75,40 @@ pub struct SessionConfig {
     /// Fixed loopback port; `None` = any free port.
     #[serde(default)]
     pub port: Option<u16>,
+    /// P9.5 spend and rate guard for this session.
+    #[serde(default)]
+    pub limits: GateLimits,
+}
+
+/// Per-session caps the gate enforces (P9.5). `None` = no cap.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateLimits {
+    /// Total forwarded requests.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_requests: Option<u64>,
+    /// Total tokens, as reported in the providers' `usage` fields.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_tokens: Option<u64>,
+    /// Requests per rolling minute.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub per_minute: Option<u32>,
+}
+
+impl GateLimits {
+    pub fn is_none(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Caps must be positive; the per-minute rate at most 10 000.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_requests == Some(0) || self.max_tokens == Some(0) {
+            return Err("request and token limits must be at least 1".into());
+        }
+        if self.per_minute.is_some_and(|r| r == 0 || r > 10_000) {
+            return Err("the per-minute rate must be 1-10000".into());
+        }
+        Ok(())
+    }
 }
 
 /// The single line a gate prints to stdout once it is listening.
@@ -146,6 +180,26 @@ mod tests {
         assert!(validate_routes(&[r("xai", 0), r("xai", 1)]).is_err());
         assert!(validate_routes(&[r("xai", 0), r("openai", 0)]).is_err());
         assert!(validate_routes(&(0..17).map(|i| r("xai", i)).collect::<Vec<_>>()).is_err());
+    }
+
+    #[test]
+    fn limits_validate_and_default_to_none() {
+        assert!(GateLimits::default().is_none());
+        assert!(GateLimits::default().validate().is_ok());
+        let l = |r, t, m| GateLimits {
+            max_requests: r,
+            max_tokens: t,
+            per_minute: m,
+        };
+        assert!(l(Some(10), Some(1000), Some(60)).validate().is_ok());
+        assert!(l(Some(0), None, None).validate().is_err());
+        assert!(l(None, Some(0), None).validate().is_err());
+        assert!(l(None, None, Some(0)).validate().is_err());
+        assert!(l(None, None, Some(20_000)).validate().is_err());
+        let cfg: SessionConfig =
+            serde_json::from_str(r#"{"session_id":"a","session_key_hex":"b","routes":[]}"#)
+                .unwrap();
+        assert!(cfg.limits.is_none());
     }
 
     #[test]

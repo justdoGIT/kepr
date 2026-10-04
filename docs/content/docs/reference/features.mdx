@@ -15,7 +15,7 @@ description: "Command surface, generators, audit log, environment variables, exi
 | `exec`   |         | `[--env CSV\|--memfd CSV\|--manifest P] [--mask] -- CMD` | runs CMD     |
 | `env`    |         | `[--env CSV\|--manifest P]`                         | `export` lines        |
 | `agent add` |      | `KEY [--for PROVIDER\|host[:port]:inject]... [--requires-consent] [--stdin]` | sealed `SetOk` |
-| `agent run` |      | `HARNESS [--port N] [--isolate-net\|--no-sandbox\|--strict-sandbox] [-- ARGV]` | execs the harness |
+| `agent run` |      | `HARNESS [--port N] [--isolate-net\|--no-sandbox\|--strict-sandbox] [--max-requests N] [--max-tokens N] [--rate N] [-- ARGV]` | execs the harness |
 | `agent install` |  | `omp\|grok [--port N]`                              | edits harness config  |
 | `agent adopt` |    | `[FILE...] [--yes] [--remove]`                      | imports found keys    |
 | `agent ls` / `revoke` | | `[KEY] [--force]`                              | sealed keys / delete  |

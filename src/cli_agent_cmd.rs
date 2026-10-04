@@ -11,12 +11,13 @@
 
 use std::io::{BufRead, IsTerminal};
 
+use kepr_core::gate_protocol::GateLimits;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... | run HARNESS [--port N] [-- ARGV] | install omp|grok | ls | revoke NAME";
+const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [-- ARGV] | install omp|grok | ls | revoke NAME";
 
 #[derive(Debug, Default, PartialEq)]
 pub struct AgentArgs {
@@ -33,7 +34,14 @@ pub struct AgentArgs {
     pub no_sandbox: bool,
     pub strict_sandbox: bool,
     pub isolate_net: bool,
+    pub limits: GateLimits,
     pub argv: Vec<String>,
+}
+
+fn number<T: std::str::FromStr>(raw: &[String], i: usize, flag: &str) -> Result<T, String> {
+    raw.get(i)
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| format!("{flag} needs a positive number"))
 }
 
 pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
@@ -61,6 +69,18 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
                         .filter(|p| *p > 0)
                         .ok_or("--port must be 1-65535")?,
                 );
+            }
+            "--max-requests" => {
+                i += 1;
+                a.limits.max_requests = Some(number(raw, i, "--max-requests")?);
+            }
+            "--max-tokens" => {
+                i += 1;
+                a.limits.max_tokens = Some(number(raw, i, "--max-tokens")?);
+            }
+            "--rate" => {
+                i += 1;
+                a.limits.per_minute = Some(number(raw, i, "--rate")?);
             }
             "--stdin" => a.stdin = true,
             "--force" | "-f" => a.force = true,
@@ -264,7 +284,7 @@ pub fn main(raw: &[String]) -> Response {
                     (false, true) => cli_agent_run::SandboxMode::Required,
                     (false, false) => cli_agent_run::SandboxMode::Auto,
                 };
-                cli_agent_run::cmd_run(h, a.port, &a.argv, mode, a.isolate_net)
+                cli_agent_run::cmd_run(h, a.port, &a.argv, mode, a.isolate_net, a.limits)
             }
             None => Response::fail("kepr agent run needs a HARNESS, e.g. kepr agent run claude"),
         },

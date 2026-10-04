@@ -8,6 +8,7 @@
 
 mod dlp;
 mod journal;
+mod limits;
 mod placeholder;
 mod proxy;
 mod rewrite;

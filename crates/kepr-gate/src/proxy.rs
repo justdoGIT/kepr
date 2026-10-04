@@ -17,6 +17,7 @@ use kepr_core::secmem::SplitKey;
 
 use crate::dlp::{self, Verdict};
 use crate::journal;
+use crate::limits::{Limiter, Refusal, UsageMeter};
 use crate::placeholder;
 use crate::rewrite::{placeholders_in, strip_hop_by_hop, upstream_headers, upstream_query};
 use crate::routes;
@@ -35,6 +36,7 @@ pub struct State {
     pub session_key: SplitKey<32>,
     pub routes: HashMap<String, Route>,
     pub cache: Arc<Cache>,
+    pub limiter: Arc<Limiter>,
     pub(crate) client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     pub(crate) base_override: Option<String>,
 }
@@ -68,9 +70,21 @@ impl State {
             session_key,
             routes,
             cache,
+            limiter: Arc::new(Limiter::new(Default::default())),
             client: build_client(false),
             base_override: None,
         }
+    }
+
+    pub fn with_limits(mut self, limits: kepr_core::gate_protocol::GateLimits) -> Self {
+        self.limiter = Arc::new(Limiter::new(limits));
+        self
+    }
+
+    /// The gate re-checks what the daemon already validated.
+    pub fn validated(self) -> Result<Self, String> {
+        self.limiter.config().validate()?;
+        Ok(self)
     }
 
     fn valid_placeholder(&self, s: &str, slot: u16) -> bool {
@@ -96,6 +110,28 @@ fn json(status: StatusCode, body: String) -> Response<Body> {
 pub fn kepr_error(status: StatusCode, kind: &str, message: &str) -> Response<Body> {
     let body = serde_json::json!({"type": "error", "error": {"type": kind, "message": message}});
     json(status, body.to_string())
+}
+
+/// A session cap is final (403, so harnesses don't retry); the rate
+/// limit is a 429 with `Retry-After`.
+fn limit_response(refusal: Refusal) -> Response<Body> {
+    match refusal {
+        Refusal::Cap(why) => kepr_error(
+            StatusCode::FORBIDDEN,
+            "kepr_limit",
+            &format!("kepr stopped this request: {why}."),
+        ),
+        Refusal::Rate(secs) => {
+            let mut r = kepr_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "kepr_limit",
+                &format!("kepr rate limit for this session; retry in {secs}s."),
+            );
+            r.headers_mut()
+                .insert("retry-after", HeaderValue::from(secs));
+            r
+        }
+    }
 }
 
 struct Log<'a> {
@@ -159,6 +195,10 @@ pub async fn handle(
             "invalid or missing kepr placeholder",
         );
         return Ok(log.reply(r, 0, None));
+    }
+
+    if let Err(refusal) = state.limiter.admit(Instant::now()) {
+        return Ok(log.reply(limit_response(refusal), 0, Some("limit")));
     }
 
     let (cache, cred, host) = (state.cache.clone(), route.cred.clone(), provider.host);
@@ -239,6 +279,16 @@ pub async fn handle(
             let (mut p, b) = resp.into_parts();
             strip_hop_by_hop(&mut p.headers);
             log.emit(p.status, bytes.len(), None);
+            if !state.limiter.meters_tokens() {
+                return Ok(Response::from_parts(p, b.boxed()));
+            }
+            let mut meter = UsageMeter::new(state.limiter.clone());
+            let b = b.map_frame(move |f| {
+                if let Some(d) = f.data_ref() {
+                    meter.observe(d);
+                }
+                f
+            });
             Ok(Response::from_parts(p, b.boxed()))
         }
         Err(_) => {
@@ -309,6 +359,13 @@ mod tests {
     /// Raw HTTP/1.1 upstream: reports each request it receives and
     /// answers with two chunks 500 ms apart.
     async fn fake_upstream() -> (String, mpsc::UnboundedReceiver<String>) {
+        fake_upstream_with(None).await
+    }
+
+    /// `reply`: a fixed full response instead of the slow chunked one.
+    async fn fake_upstream_with(
+        reply: Option<&'static [u8]>,
+    ) -> (String, mpsc::UnboundedReceiver<String>) {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", l.local_addr().unwrap());
         let (tx, rx) = mpsc::unbounded_channel();
@@ -340,6 +397,10 @@ mod tests {
                         }
                     }
                     let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
+                    if let Some(r) = reply {
+                        let _ = s.write_all(r).await;
+                        return;
+                    }
                     let _ = s.write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nkeep-alive: timeout=5\r\n\r\n5\r\nfirst\r\n").await;
                     let _ = s.flush().await;
                     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -351,6 +412,13 @@ mod tests {
     }
 
     async fn start_gate(upstream: String) -> String {
+        start_gate_with(upstream, Default::default()).await
+    }
+
+    async fn start_gate_with(
+        upstream: String,
+        limits: kepr_core::gate_protocol::GateLimits,
+    ) -> String {
         let cache = Arc::new(Cache::new(Box::new(Fixed), DEFAULT_TTL));
         let mut routes = HashMap::new();
         routes.insert(
@@ -361,7 +429,8 @@ mod tests {
             },
         );
         let state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
-            .with_test_upstream(upstream);
+            .with_test_upstream(upstream)
+            .with_limits(limits);
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://{}", l.local_addr().unwrap());
         tokio::spawn(serve(l, Arc::new(state)));
@@ -405,6 +474,49 @@ mod tests {
         );
         let rest = body.collect().await.unwrap().to_bytes();
         assert_eq!(&rest[..], b"second");
+    }
+
+    #[tokio::test]
+    async fn request_cap_stops_the_session_without_contacting_upstream() {
+        let (up, mut rx) =
+            fake_upstream_with(Some(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")).await;
+        let limits = kepr_core::gate_protocol::GateLimits {
+            max_requests: Some(1),
+            ..Default::default()
+        };
+        let gate = start_gate_with(up, limits).await;
+        let ph = placeholder::make(&KEY, SID, 0);
+        assert_eq!(send(&gate, &ph, "{}").await.status(), StatusCode::OK);
+        rx.recv().await.unwrap();
+        let r = send(&gate, &ph, "{}").await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let body =
+            String::from_utf8(r.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(
+            body.contains("kepr_limit") && body.contains("limit of 1 requests"),
+            "{body}"
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn token_cap_counts_usage_from_responses() {
+        let (up, _rx) = fake_upstream_with(Some(
+            b"HTTP/1.1 200 OK\r\ncontent-length: 48\r\n\r\n{\"usage\":{\"input_tokens\":30,\"output_tokens\":20}}",
+        ))
+        .await;
+        let limits = kepr_core::gate_protocol::GateLimits {
+            max_tokens: Some(50),
+            ..Default::default()
+        };
+        let gate = start_gate_with(up, limits).await;
+        let ph = placeholder::make(&KEY, SID, 0);
+        let r = send(&gate, &ph, "{}").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        r.into_body().collect().await.unwrap(); // the meter sees the body
+        assert_eq!(send(&gate, &ph, "{}").await.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-use kepr_core::gate_protocol::GateRoute;
+use kepr_core::gate_protocol::{GateLimits, GateRoute};
 use kepr_core::protocol::{Request, Response};
 
 use crate::cli_agent_adapters::{self, Adapter, Value};
@@ -129,6 +129,7 @@ pub fn cmd_run(
     argv: &[String],
     mode: SandboxMode,
     isolate_net: bool,
+    limits: GateLimits,
 ) -> Response {
     let adapter = match cli_agent_adapters::lookup(harness) {
         Ok(a) => a,
@@ -145,6 +146,7 @@ pub fn cmd_run(
     let req = Request::StartGate {
         routes,
         port: port.or(adapter.port),
+        limits,
     };
     let (gate_port, placeholders) = match client::send_request(&req) {
         Ok(Response::GateStarted {

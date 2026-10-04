@@ -97,6 +97,19 @@ done <<<"$OUT"
 sleep 2.5
 if pgrep -x kepr-gate >/dev/null; then fail "gate outlived the agent"; else pass "gate exited with the agent"; fi
 
+echo "── request cap"
+# The first request passes the cap (and may fail upstream); the second must
+# be refused by the gate itself.
+codes=$("$KEPR" agent run claude --max-requests 1 -- sh -c '
+    for _ in 1 2; do
+        curl -s -o /dev/null -w "%{http_code} " -X POST -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -d "{}" "$ANTHROPIC_BASE_URL/v1/messages"
+    done' 2>/dev/null) || true
+case "$codes" in
+    *" 403 ") pass "gate enforces --max-requests ($codes)" ;;
+    *) fail "request cap not enforced (codes: $codes)" ;;
+esac
+
 echo "── sandbox"
 cat >"$WORK/sbprobe.sh" <<'PROBE'
 #!/usr/bin/env bash

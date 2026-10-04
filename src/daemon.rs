@@ -374,9 +374,11 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::Unlock { password } => {
             daemon_lock::handle_unlock_gated(uid, username, password.as_bytes())
         }
-        Request::StartGate { routes, port } => {
-            daemon_gate::handle_start_gate(uid, peer_pid, username, &routes, port)
-        }
+        Request::StartGate {
+            routes,
+            port,
+            limits,
+        } => daemon_gate::handle_start_gate(uid, peer_pid, username, &routes, (port, limits)),
         Request::Panic => daemon_gate_registry::handle_panic(uid, username),
         Request::SshGenerate { .. }
         | Request::SshImport { .. }

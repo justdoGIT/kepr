@@ -132,6 +132,25 @@ No tool returns a secret value. Example client entry:
 { "mcpServers": { "kepr": { "command": "kepr", "args": ["mcp"] } } }
 ```
 
+## Spending and rate limits
+
+```bash
+kepr agent run claude --max-requests 500 --max-tokens 2000000 --rate 30
+```
+
+The gate enforces these per session:
+
+- `--max-requests`: total forwarded requests.
+- `--max-tokens`: total tokens, counted from the provider's own `usage`
+  fields as responses stream back. A response that crosses the limit
+  completes; the next request is refused.
+- `--rate`: requests per rolling minute.
+
+When a cap is reached, the agent gets `403` with error type `kepr_limit` and
+a message naming the limit. That stops it rather than leaving it to retry.
+The rate limit answers `429` with `Retry-After`. Refusals appear in the gate
+journal as `"blocked":"limit"`.
+
 ## Emergency stop
 
 ```bash

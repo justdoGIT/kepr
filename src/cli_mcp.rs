@@ -228,7 +228,11 @@ impl Live {
         if routes.is_empty() {
             return Err("no sealed provider keys; add one with `kepr agent add`".into());
         }
-        match client::send_request(&Request::StartGate { routes, port: None })? {
+        match client::send_request(&Request::StartGate {
+            routes,
+            port: None,
+            limits: Default::default(),
+        })? {
             Response::GateStarted {
                 port, placeholders, ..
             } => {

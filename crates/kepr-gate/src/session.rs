@@ -112,12 +112,16 @@ pub fn run() -> Result<(), String> {
         );
     }
     let bind_port = cfg.port.unwrap_or(0);
-    let state = Arc::new(State::new(
-        cfg.session_id.clone(),
-        SplitKey::new(&key)?,
-        table,
-        cache.clone(),
-    ));
+    let state = Arc::new(
+        State::new(
+            cfg.session_id.clone(),
+            SplitKey::new(&key)?,
+            table,
+            cache.clone(),
+        )
+        .with_limits(cfg.limits)
+        .validated()?,
+    );
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -169,6 +173,7 @@ mod tests {
             session_key_hex: ZeroString::from_string("00".repeat(32)),
             routes,
             port: None,
+            limits: Default::default(),
         }
     }
 

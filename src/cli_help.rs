@@ -31,7 +31,8 @@ COMMANDS:
   fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions
   fido2-list                             list registered FIDO2 keys
   agent add KEY [--for PROVIDER] [--requires-consent]  store a write-only key (paste once)
-  agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox] [-- ARGV]
+  agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox]
+            [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
                                        run claude|codex|grok-cli|aider|omp|grok sandboxed, with
                                        placeholders; a local gate injects the real key on the wire
   agent install omp|grok               point the harness's config file at the gate (once)

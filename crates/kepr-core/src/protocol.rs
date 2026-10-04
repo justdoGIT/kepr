@@ -99,6 +99,12 @@ pub enum Request {
         /// a fixed base URL). `None` = any free port.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         port: Option<u16>,
+        /// P9.5 per-session request / token / rate caps.
+        #[serde(
+            skip_serializing_if = "crate::gate_protocol::GateLimits::is_none",
+            default
+        )]
+        limits: crate::gate_protocol::GateLimits,
     },
     Get {
         name: String,

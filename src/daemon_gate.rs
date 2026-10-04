@@ -22,7 +22,9 @@ use crate::store::{cred_path, validate_name};
 use crate::{crypto, expiry};
 use kepr_core::binding::Inject;
 use kepr_core::framing::{read_frame, write_frame};
-use kepr_core::gate_protocol::{GateRequest, GateResponse, GateRoute, ReadyLine, SessionConfig};
+use kepr_core::gate_protocol::{
+    GateLimits, GateRequest, GateResponse, GateRoute, ReadyLine, SessionConfig,
+};
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Response, MAX_MSG_BYTES};
 
@@ -228,12 +230,13 @@ fn start(
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
-    port: Option<u16>,
+    (port, limits): (Option<u16>, GateLimits),
 ) -> Result<Response, String> {
     if !crate::user_mode() {
         return Err("agent sessions need the user-mode daemon for now".into());
     }
     validate_routes(routes)?;
+    limits.validate()?;
     if gates_for(uid) >= MAX_GATES_PER_UID {
         return Err(format!(
             "{MAX_GATES_PER_UID} agent sessions already running; end one or run `kepr panic`"
@@ -244,6 +247,7 @@ fn start(
         session_key_hex: random_hex(32)?,
         routes: routes.to_vec(),
         port,
+        limits,
     };
     let (daemon_end, gate_end) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
     let mut child = spawn_gate(peer_pid, &gate_end)?;
@@ -288,9 +292,9 @@ pub fn handle_start_gate(
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
-    port: Option<u16>,
+    port_limits: (Option<u16>, GateLimits),
 ) -> Response {
-    let result = start(uid, peer_pid, username, routes, port);
+    let result = start(uid, peer_pid, username, routes, port_limits);
     audit::log(&AuditEvent {
         op: "start-gate",
         name: None,
