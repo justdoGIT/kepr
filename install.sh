@@ -66,6 +66,18 @@ else
     warn "install policykit-1 (or your distro's equivalent) and re-run install.sh"
 fi
 
+# Agent sandbox: Ubuntu 24.04+ restricts unprivileged user namespaces
+# via AppArmor. The kepr profile grants `userns` to /usr/local/bin/kepr
+# only, so `kepr agent run` can build its sandbox.
+if [ -d /etc/apparmor.d ] && command -v apparmor_parser >/dev/null 2>&1; then
+    sudo install -o root -g root -m 0644 packaging/apparmor/kepr /etc/apparmor.d/kepr
+    if sudo apparmor_parser -r /etc/apparmor.d/kepr 2>/dev/null; then
+        ok "AppArmor profile (agent sandbox) → /etc/apparmor.d/kepr"
+    else
+        warn "AppArmor profile installed but not loaded; run: sudo apparmor_parser -r /etc/apparmor.d/kepr"
+    fi
+fi
+
 echo -e "\n${CYN}━━━ Installing shell completion ━━━${RST}"
 # Prefer the directory bash-completion itself advertises via pkg-config;
 # fall back to the Debian/Ubuntu default. Skip with a warning if the

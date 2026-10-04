@@ -87,9 +87,53 @@ pub fn build_env(
     env
 }
 
-pub fn cmd_run(harness: &str, port: Option<u16>, argv: &[String]) -> Response {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxMode {
+    /// `--no-sandbox`
+    Off,
+    /// default: sandbox when the kernel allows it, warn otherwise
+    Auto,
+    /// `--strict-sandbox`: refuse to run without it
+    Required,
+}
+
+/// Decide whether to sandbox, probing the kernel first.
+fn decide_sandbox(mode: SandboxMode, isolate_net: bool) -> Result<bool, String> {
+    if mode == SandboxMode::Off {
+        return if isolate_net {
+            Err("--isolate-net needs the sandbox; drop --no-sandbox".into())
+        } else {
+            Ok(false)
+        };
+    }
+    match crate::cli_agent_sandbox::probe(isolate_net) {
+        Ok(()) => Ok(true),
+        Err(e) if mode == SandboxMode::Auto && !isolate_net => {
+            crate::cli_ui::warn(&format!(
+                "agent sandbox unavailable ({e}); running without it. \
+                 `kepr doctor` shows why; --strict-sandbox refuses instead"
+            ));
+            Ok(false)
+        }
+        Err(e) => Err(format!(
+            "agent sandbox unavailable: {e} (see `kepr doctor`)"
+        )),
+    }
+}
+
+pub fn cmd_run(
+    harness: &str,
+    port: Option<u16>,
+    argv: &[String],
+    mode: SandboxMode,
+    isolate_net: bool,
+) -> Response {
     let adapter = match cli_agent_adapters::lookup(harness) {
         Ok(a) => a,
+        Err(e) => return Response::fail(e),
+    };
+    let sandbox = match decide_sandbox(mode, isolate_net) {
+        Ok(s) => s,
         Err(e) => return Response::fail(e),
     };
     let routes = match sealed_names().and_then(|n| routes_for(adapter, &n)) {
@@ -115,6 +159,12 @@ pub fn cmd_run(harness: &str, port: Option<u16>, argv: &[String]) -> Response {
     } else {
         argv
     };
+    if sandbox {
+        match crate::cli_agent_sandbox::Plan::new(argv, env, gate_port, isolate_net) {
+            Ok(plan) => crate::cli_agent_sandbox::run(plan),
+            Err(e) => return Response::fail(e),
+        }
+    }
     let err = Command::new(&argv[0])
         .args(&argv[1..])
         .env_clear()

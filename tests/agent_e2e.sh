@@ -97,6 +97,33 @@ done <<<"$OUT"
 sleep 2.5
 if pgrep -x kepr-gate >/dev/null; then fail "gate outlived the agent"; else pass "gate exited with the agent"; fi
 
+echo "── sandbox"
+cat >"$WORK/sbprobe.sh" <<'PROBE'
+#!/usr/bin/env bash
+r() { echo "$1 $2"; }
+n=$(ls -d /proc/[0-9]* | wc -l)
+[ "$n" -lt 10 ] && r ok "only sandbox processes visible ($n)" || r bad "$n processes visible"
+[ -z "$(ls -A "$HOME/.local/share/kepr" 2>/dev/null)" ] && r ok "credential store hidden" || r bad "credential store visible"
+[ -z "$(ls -A "$HOME/.local/state/kepr" 2>/dev/null)" ] && r ok "daemon state hidden" || r bad "daemon state visible"
+[ -z "$(ls -A "$XDG_RUNTIME_DIR/kepr" 2>/dev/null)" ] && r ok "daemon socket hidden" || r bad "daemon socket visible"
+if command -v python3 >/dev/null; then
+    e=$(python3 -c "import ctypes;l=ctypes.CDLL(None,use_errno=True);l.ptrace(0,0,0,0);print(ctypes.get_errno())")
+    [ "$e" = 1 ] && r ok "ptrace denied (seccomp)" || r bad "ptrace errno $e"
+fi
+grep -q "CapEff:	0000000000000000" /proc/self/status && r ok "no capabilities" || r bad "capabilities present"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: wrong' "$ANTHROPIC_BASE_URL/v1/messages" -d '{}')
+[ "$code" = 401 ] && r ok "gate reachable from the sandbox" || r bad "gate unreachable ($code)"
+PROBE
+chmod +x "$WORK/sbprobe.sh"
+for mode in "" "--isolate-net"; do
+    if ! SB=$("$KEPR" agent run claude --strict-sandbox $mode -- "$WORK/sbprobe.sh" 2>&1); then
+        case "$SB" in *"sandbox unavailable"*) printf '  –  SKIP: sandbox unavailable here %s\n' "$mode"; continue;; esac
+    fi
+    while read -r status msg; do
+        case "$status" in ok) pass "$msg ${mode}";; bad) fail "$msg ${mode}";; esac
+    done <<<"$SB"
+done
+
 echo "── public socket"
 if command -v python3 >/dev/null; then
     resp=$(python3 - "$XDG_RUNTIME_DIR/kepr/kepr.sock" <<'PY'

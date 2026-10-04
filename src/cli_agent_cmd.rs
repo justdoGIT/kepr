@@ -3,7 +3,7 @@
 // take their own flags.
 //
 //   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin]
-//   kepr agent run HARNESS [--port N] [-- ARGV...]
+//   kepr agent run HARNESS [--port N] [--no-sandbox|--strict-sandbox] [--isolate-net] [-- ARGV...]
 //   kepr agent install omp|grok [--port N]
 //   kepr agent ls
 //   kepr agent revoke NAME [--force]
@@ -25,6 +25,9 @@ pub struct AgentArgs {
     pub port: Option<u16>,
     pub stdin: bool,
     pub force: bool,
+    pub no_sandbox: bool,
+    pub strict_sandbox: bool,
+    pub isolate_net: bool,
     pub argv: Vec<String>,
 }
 
@@ -56,6 +59,9 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
             }
             "--stdin" => a.stdin = true,
             "--force" | "-f" => a.force = true,
+            "--no-sandbox" => a.no_sandbox = true,
+            "--strict-sandbox" => a.strict_sandbox = true,
+            "--isolate-net" => a.isolate_net = true,
             "--" => {
                 a.argv = raw[i + 1..].to_vec();
                 break;
@@ -194,7 +200,17 @@ pub fn main(raw: &[String]) -> Response {
     match a.verb.as_str() {
         "add" => cmd_add(&a),
         "run" => match a.target.as_deref() {
-            Some(h) => cli_agent_run::cmd_run(h, a.port, &a.argv),
+            Some(h) => {
+                let mode = match (a.no_sandbox, a.strict_sandbox) {
+                    (true, true) => {
+                        return Response::fail("--no-sandbox and --strict-sandbox conflict")
+                    }
+                    (true, false) => cli_agent_run::SandboxMode::Off,
+                    (false, true) => cli_agent_run::SandboxMode::Required,
+                    (false, false) => cli_agent_run::SandboxMode::Auto,
+                };
+                cli_agent_run::cmd_run(h, a.port, &a.argv, mode, a.isolate_net)
+            }
             None => Response::fail("kepr agent run needs a HARNESS, e.g. kepr agent run claude"),
         },
         "install" => match a.target.as_deref() {
