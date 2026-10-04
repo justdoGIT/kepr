@@ -54,6 +54,27 @@ jobs:
       - name: unittest
         run: python3 -m unittest discover -s sdk/python/tests -v
 
+  node-sdk:
+    name: Node SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: node --test
+        working-directory: sdk/node
+        run: node --test test/*.test.js
+
+  go-sdk:
+    name: Go SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: go vet + test
+        working-directory: sdk/go
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
   docs:
     name: Docs (Fumadocs)
     runs-on: ubuntu-latest

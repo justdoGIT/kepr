@@ -133,7 +133,16 @@ read. Pointing those tools at the kepr helper therefore works at once.
 Source files are never changed. For each file, the report says how to stop
 keeping the secret there.
 
-## Python SDK
+## Client SDKs
+
+Thin clients over the same socket and wire format, so the daemon applies the
+same rules as for the CLI. None of them has dependencies:
+
+- **Python:** `sdk/python` (`kepr_client.Client`)
+- **Node.js:** `sdk/node` (`kepr-client`, `new Client().get(...)`)
+- **Go:** `sdk/go` (`kepr.New().Get(...)`)
+
+### Python SDK
 
 `sdk/python/kepr_client` is a stdlib-only client over the same socket and
 wire format (`Client().get(...)`, `set`, `list`, `history`, `restore`,
