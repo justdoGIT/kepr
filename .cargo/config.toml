@@ -4,6 +4,7 @@
 jobs = 6
 
 [target.x86_64-unknown-linux-gnu]
-# Two frontend threads per rustc request avoids 8 jobs x 6 threads
-# oversubscribing the 8 physical / 16 logical CPU cluster.
-rustflags = ["-Z", "threads=2"]
+# Three frontend threads per rustc request: 6 jobs x 3 threads = 18 slots,
+# which fits the cluster's 16-20 logical CPUs without 8 jobs x 6 threads
+# oversubscription.
+rustflags = ["-Z", "threads=3"]
