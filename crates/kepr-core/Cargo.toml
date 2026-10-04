@@ -13,6 +13,7 @@ categories = ["command-line-utilities", "authentication"]
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 serde = { version = "1.0", features = ["derive"] }
 libc = "0.2"
+getrandom = "0.4"
 
 [dev-dependencies]
 serde_json = "1.0"

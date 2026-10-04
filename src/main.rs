@@ -14,6 +14,7 @@ mod cli_agent_run;
 mod cli_args;
 mod cli_cmds;
 mod cli_doctor;
+mod cli_doctor_hardening;
 mod cli_envdump;
 mod cli_exec;
 mod cli_fido2;

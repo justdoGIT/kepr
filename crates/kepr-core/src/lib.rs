@@ -19,3 +19,4 @@ pub mod generate;
 pub mod keyring;
 pub mod memfd;
 pub mod protocol;
+pub mod secmem;
