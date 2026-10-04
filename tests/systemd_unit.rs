@@ -135,5 +135,8 @@ fn gate_service_unit_keeps_its_isolation() {
     ] {
         assert!(unit.contains(d), "kepr-gate.service lost `{}`", d.trim());
     }
-    assert!(!unit.contains("User=root"), "the gate service must not run as root");
+    assert!(
+        !unit.contains("User=root"),
+        "the gate service must not run as root"
+    );
 }
