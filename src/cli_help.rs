@@ -30,11 +30,19 @@ COMMANDS:
   sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally
   fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions
   fido2-list                             list registered FIDO2 keys
-  agent add KEY [--for PROVIDER]       store a write-only key bound to its provider (paste once)
-  agent run HARNESS [-- ARGV]          run claude|codex|grok-cli|aider|omp|grok with placeholders;
-                                       a local gate injects the real key on the wire
+  agent add KEY [--for PROVIDER] [--requires-consent]  store a write-only key (paste once)
+  agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox] [-- ARGV]
+                                       run claude|codex|grok-cli|aider|omp|grok sandboxed, with
+                                       placeholders; a local gate injects the real key on the wire
   agent install omp|grok               point the harness's config file at the gate (once)
+  agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
   agent ls | agent revoke KEY          list / delete sealed keys
+  mcp                                  MCP server (stdio): list keys, call provider APIs, no values
+  panic                                stop all agent gates; lock the store if passphrase-protected
+  totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
+  inject -i TEMPLATE [-o OUT]          fill kepr://NAME references (OUT created 0600)
+  scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
+  copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
 
 GLOBAL FLAGS:
   --json       machine-readable output; no stderr on clean errors

@@ -37,6 +37,18 @@ kepr agent add DEEPSEEK_API_KEY --for deepseek
 Supported providers: anthropic, openai, xai, google, mistral, deepseek,
 groq, openrouter.
 
+## Already have keys in `.env` or your shell profile?
+
+```bash
+kepr agent adopt                 # lists keys found in .env, .envrc, ~/.bashrc, ~/.zshrc …
+kepr agent adopt --yes           # imports them as sealed keys
+kepr agent adopt --yes --remove  # …and deletes the plaintext lines
+```
+
+Values are never printed. A name found with different values in two
+places, or already stored in kepr, is skipped rather than overwritten.
+`--remove` keeps no plaintext backup, on purpose.
+
 ## Harnesses
 
 | Harness | Command | Key it uses |
@@ -62,6 +74,73 @@ kepr agent run claude -- claude --model claude-sonnet-5-5
 Any real key already exported in your shell (for example
 `ANTHROPIC_API_KEY=sk-ant-…`) is removed from the agent's environment.
 
+## The sandbox
+
+`kepr agent run` starts the harness in its own user, mount and PID
+namespaces (when the kernel allows it):
+
+- the credential store, the daemon's state (master key, audit log) and the
+  daemon socket are covered by empty read-only directories;
+- only the session's own processes are visible, so other processes'
+  `/proc/PID/root` can't be used to reach the host filesystem;
+- the harness has no capabilities, `no_new_privs`, and a seccomp filter
+  that denies `ptrace`, `process_vm_readv/writev`, `bpf`,
+  `perf_event_open`, kexec and module loading (debuggers don't work inside
+  a session).
+
+Networking stays as normal, so package installs work. Add `--isolate-net`
+to give the session nothing but loopback: the gate is still reachable
+(connections are relayed to it), but nothing else is.
+
+```bash
+kepr agent run claude                 # sandboxed (default when available)
+kepr agent run claude --isolate-net   # sandboxed, gate-only network
+kepr agent run claude --strict-sandbox  # refuse to run unsandboxed
+kepr agent run claude --no-sandbox    # opt out
+```
+
+If the kernel refuses unprivileged user namespaces (Ubuntu 24.04+ restricts
+them through AppArmor), kepr warns and runs unsandboxed; `install.sh`
+installs an AppArmor profile that allows it for `/usr/local/bin/kepr`.
+`kepr doctor` shows what your kernel supports.
+
+## Asking before a key is used
+
+```bash
+kepr agent add ANTHROPIC_API_KEY --requires-consent
+```
+
+Before the daemon hands such a key to a gate, polkit asks you to approve
+the agent process (the desktop's authentication dialog). No answer within
+60 seconds, or no polkit agent, means no. One approval covers the gate's
+cache window (5 minutes, or until the key changes).
+
+## MCP: `kepr mcp`
+
+For agent platforms that talk to tools over MCP, `kepr mcp` is a stdio MCP
+server with two tools:
+
+- `list_secrets`: names of your sealed keys and the hosts they're bound to;
+- `call_api`: an HTTP call to a provider API (`provider`, `method`, `path`,
+  optional `body` and `headers`). The call goes through a gate session, so
+  the key is injected by kepr, prompt DLP applies, and the model never sees
+  the key.
+
+No tool returns a secret value. Example client entry:
+
+```json
+{ "mcpServers": { "kepr": { "command": "kepr", "args": ["mcp"] } } }
+```
+
+## Emergency stop
+
+```bash
+kepr panic
+```
+
+Stops every running gate for your user (their cached keys die with them)
+and, if the store is passphrase-protected, locks it until `kepr unlock`.
+
 ## What the gate enforces
 
 - **Placeholder check:** a request without this session's placeholder gets
@@ -75,6 +154,8 @@ Any real key already exported in your shell (for example
   why, e.g. `kepr blocked this request: it contains the stored secret
   ANTHROPIC_API_KEY. Remove it and retry.` Nothing is redacted silently.
 - **Lifetime:** the gate exits, and wipes its cache, when the agent exits.
+  Any `set`, `delete` or expiry in the store invalidates cached keys at
+  once, so `kepr agent revoke` takes effect immediately.
 - **Journal:** one metadata-only line per request on the daemon's stderr
   (provider, method, path without query, status, sizes, time). Never
   headers or bodies.
@@ -103,9 +184,6 @@ kepr exec --env DEPLOY_TOKEN --mask -- ./deploy.sh
 
 - **User-mode daemon only.** The system-mode service forbids network
   sockets; a separate gate service is planned.
-- **No network sandbox yet.** The agent can still open other network
-  connections. It has no key to use on them, but the sandbox (network, PID
-  and mount namespaces plus Landlock) is planned.
 - **TLS-inspecting networks:** if your network intercepts TLS with its own
   certificate authority, the gate refuses the connection, because it trusts
   only public roots. A root-owned CA setting is planned.
@@ -113,6 +191,8 @@ kepr exec --env DEPLOY_TOKEN --mask -- ./deploy.sh
   process's memory. Run agents as your normal user.
 - **Use, not read:** an agent can still make calls with the key toward its
   bound provider. It cannot copy it or send it anywhere else.
+- **FIDO2:** sealed keys can't require a FIDO2 touch yet (use
+  `--requires-consent`).
 
 `kepr protect-agent` is retired: it now explains why and exits.
 

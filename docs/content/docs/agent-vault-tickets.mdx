@@ -16,10 +16,13 @@ the exact commands that prove it's done.
 | Tickets | State |
 | --- | --- |
 | P0 | shipped |
-| T1.01–T1.17 (P1 Stage A) | shipped; `tests/agent_e2e.sh` passes 15/15 as an unprivileged user |
-| T9.02 prompt DLP, T9.03 output masking | shipped |
-| T3.01–T3.04 secret memory, doctor hardening | shipped; the gate's session key uses `SplitKey` |
-| T1.18–T1.21, T9.01, T3.05, later phases | open (L: split before starting) |
+| T1.01–T1.17 (P1 Stage A) | shipped |
+| T1.18 agent sandbox (+ AppArmor profile) | shipped; `tests/agent_e2e.sh` 29/29 unprivileged |
+| T1.20 `kepr agent adopt`, T1.21 `kepr mcp` | shipped |
+| T9.01 approvals (`--requires-consent`, polkit), T9.02 DLP, T9.03 `exec --mask` | shipped |
+| T3.01–T3.04 secret memory, doctor hardening; T3.05 `kepr panic` | shipped (suspend/lid hooks still open) |
+| P5.5 `kepr totp`, P5.7 `kepr inject`, P6.4 `kepr scan`, P10.9 `kepr copy` | shipped |
+| T1.19 gate as a system service; P2 egress proxy, SigV4 re-sign, ssh-agent; P4 vault image + TPM2; rest of P5–P10 | open (L: split before starting) |
 
 **Where the code differs from the ticket text** (the code is authoritative):
 
@@ -34,7 +37,13 @@ the exact commands that prove it's done.
   them in `GateStarted` and never holds the session key.
 - The proxy buffers request bodies (up to 8 MiB) so the DLP check can run;
   responses are still streamed.
-- `kepr agent …` is parsed by `cli_agent_cmd.rs`, not `cli_args.rs`.
+- `kepr agent …` (and `totp`, `inject`, `scan`, `copy`) are parsed by
+  `cli_extra.rs` / `cli_agent_cmd.rs`, not `cli_args.rs`.
+- `ReadyLine` / `GateStarted` placeholders are keyed by **provider**, not
+  credential name, and the provider table lives in `kepr_core::providers`.
+- The gate↔daemon channel carries request ids and a `Generation` query
+  (cache invalidation); T9.01 is polkit consent at resolve time rather than
+  per-request terminal prompts.
 - Found and fixed on the way: the user-mode daemon could not start for
   non-root users (`mlockall(MCL_FUTURE)` under an 8 MiB `RLIMIT_MEMLOCK`),
   see `src/daemon_memlock.rs`.

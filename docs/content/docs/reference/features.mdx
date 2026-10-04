@@ -12,6 +12,20 @@ description: "Command surface, generators, audit log, environment variables, exi
 | `list`   | `ls`    | —                                                   | `ListOk { credentials }` |
 | `delete` | `rm`    | `KEY [--force]`                                     | `DeleteOk`            |
 | `check`  |         | —                                                   | `CheckOk { all_ok }`  |
+| `exec`   |         | `[--env CSV\|--memfd CSV\|--manifest P] [--mask] -- CMD` | runs CMD     |
+| `env`    |         | `[--env CSV\|--manifest P]`                         | `export` lines        |
+| `agent add` |      | `KEY [--for PROVIDER\|host[:port]:inject]... [--requires-consent] [--stdin]` | sealed `SetOk` |
+| `agent run` |      | `HARNESS [--port N] [--isolate-net\|--no-sandbox\|--strict-sandbox] [-- ARGV]` | execs the harness |
+| `agent install` |  | `omp\|grok [--port N]`                              | edits harness config  |
+| `agent adopt` |    | `[FILE...] [--yes] [--remove]`                      | imports found keys    |
+| `agent ls` / `revoke` | | `[KEY] [--force]`                              | sealed keys / delete  |
+| `mcp`    |         | — (stdio JSON-RPC)                                   | MCP server            |
+| `panic`  |         | —                                                   | `PanicOk`             |
+| `totp`   |         | `KEY`                                               | 6-8 digit code        |
+| `inject` |         | `-i TEMPLATE [-o OUT]`                              | rendered template     |
+| `scan`   |         | `[PATH...] [--staged]`                              | findings; exit 1 if any |
+| `copy`   |         | `KEY [--clear SECS]`                                | clipboard             |
+| `doctor` |         | —                                                   | setup + hardening checks |
 
 Global flags: `--json` (machine output, suppress stderr on clean
 errors), `--color` / `--no-color` (opt-in ANSI), `--version`, `--help`.
