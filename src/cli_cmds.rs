@@ -269,7 +269,7 @@ pub fn cmd_get(a: &Args) -> Response {
         Response::Err { error } => {
             if !a.json {
                 err(error);
-                einfo(&format!("Set it with: kepr set {name}"));
+                einfo(&crate::cli_agent_cmd::get_failure_hint(&name));
             }
             resp
         }

@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 mod client;
+mod http;
 mod server;
 
 const READ_TIMEOUT_SECS: u64 = 30;
@@ -24,6 +25,15 @@ fn main() {
         eprintln!(
             "kepr-eso-provider: KEPR_ESO_AUTH_TOKEN is required when \
              listening outside loopback"
+        );
+        std::process::exit(1);
+    }
+    // A loopback TCP port is reachable by every local user, so serving
+    // without a token hands this user's secrets to anyone logged in.
+    if auth_token.is_none() && env::var("KEPR_ESO_INSECURE_NO_AUTH").as_deref() != Ok("1") {
+        eprintln!(
+            "kepr-eso-provider: set KEPR_ESO_AUTH_TOKEN (any local user can reach \
+             a loopback port); KEPR_ESO_INSECURE_NO_AUTH=1 overrides on single-user hosts"
         );
         std::process::exit(1);
     }

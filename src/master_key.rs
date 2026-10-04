@@ -28,11 +28,11 @@ const SEALED_NAME: &str = "kepr-master-key";
 /// source for long-term key material; getrandom(2) would be equivalent
 /// but adds an extra dependency.
 pub fn random_master_key() -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
-    let mut key = [0u8; MASTER_KEY_LEN];
+    let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
     let mut f = fs::File::open(URANDOM_PATH).map_err(|e| format!("open {URANDOM_PATH}: {e}"))?;
-    f.read_exact(&mut key)
+    f.read_exact(key.as_mut())
         .map_err(|e| format!("read {URANDOM_PATH}: {e}"))?;
-    Ok(Zeroizing::new(key))
+    Ok(key)
 }
 
 /// Pluggable seal/unseal layer. Production uses `SystemdCredsSealer`;
@@ -102,18 +102,19 @@ impl Sealer for SystemdCredsSealer {
         let out = child
             .wait_with_output()
             .map_err(|e| format!("backend wait: {e}"))?;
+        let stdout = Zeroizing::new(out.stdout);
         if !out.status.success() {
             return Err("master-key unseal failed".to_string());
         }
-        if out.stdout.len() != MASTER_KEY_LEN {
+        if stdout.len() != MASTER_KEY_LEN {
             return Err(format!(
                 "unseal returned {} bytes, expected {MASTER_KEY_LEN}",
-                out.stdout.len()
+                stdout.len()
             ));
         }
-        let mut key = [0u8; MASTER_KEY_LEN];
-        key.copy_from_slice(&out.stdout);
-        Ok(Zeroizing::new(key))
+        let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
+        key.copy_from_slice(&stdout);
+        Ok(key)
     }
 }
 
@@ -148,12 +149,13 @@ pub fn load_or_generate(
     sealer: &dyn Sealer,
 ) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
     if path.exists() {
-        let blob = fs::read(path).map_err(|e| format!("read master key: {e}"))?;
+        // The local sealer's blob contains the key itself.
+        let blob = Zeroizing::new(fs::read(path).map_err(|e| format!("read master key: {e}"))?);
         return sealer.unseal(&blob);
     }
 
     let key = random_master_key()?;
-    let blob = sealer.seal(&key)?;
+    let blob = Zeroizing::new(sealer.seal(&key)?);
 
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -177,15 +179,22 @@ pub fn load_or_generate(
     // returned false above; re-entering it with the file present
     // would be a TOCTOU race we explicitly want to fail on rather
     // than reopen at a stale mode.
-    let mut f = fs::OpenOptions::new()
+    // Write to a temp file, fsync, then rename: a crash mid-write must
+    // never leave a torn master.key (every credential would become
+    // unreadable and the daemon would refuse to start).
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let written = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)
-        .map_err(|e| format!("open master key: {e}"))?;
-    f.write_all(&blob)
-        .map_err(|e| format!("write master key: {e}"))?;
-    drop(f);
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(&blob).and_then(|_| f.sync_all()))
+        .and_then(|_| fs::hard_link(&tmp, path));
+    let _ = fs::remove_file(&tmp);
+    written.map_err(|e| format!("write master key: {e}"))?;
+    if let Some(dir) = path.parent().and_then(|d| fs::File::open(d).ok()) {
+        let _ = dir.sync_all();
+    }
     Ok(key)
 }
 

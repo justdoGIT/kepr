@@ -15,6 +15,7 @@ mod daemon_audit;
 mod daemon_cache;
 mod daemon_expiry;
 mod daemon_gate;
+mod daemon_gate_registry;
 mod daemon_handlers;
 mod daemon_handlers_get;
 mod daemon_lock;
@@ -44,7 +45,8 @@ use daemon_peer::get_peer_creds;
 use daemon_pool::Pool;
 use daemon_ratelimit::RateLimiter;
 use daemon_socket::{
-    effective_uid, set_socket_permissions, setup_socket_dir, tighten_umask_for_socket,
+    effective_uid, private_umask_after_bind, set_socket_permissions, setup_socket_dir,
+    tighten_umask_for_socket,
 };
 use kepr_core::framing::{read_frame, write_frame};
 use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES, TIMEOUT_SECS};
@@ -286,6 +288,7 @@ fn main() {
     tighten_umask_for_socket();
     let listener = UnixListener::bind(&socket).expect("cannot bind socket");
     set_socket_permissions();
+    private_umask_after_bind();
 
     let pool = Pool::new(POOL_WORKERS, POOL_QUEUE, handle_client);
     eprintln!(
@@ -329,15 +332,22 @@ fn handle_client(mut stream: UnixStream) {
         return;
     }
 
+    // The raw frame can hold a secret (Set value, Unlock password):
+    // wipe it once parsed.
     let buf = match read_frame(&mut stream, MAX_MSG_BYTES) {
-        Ok(b) => b,
+        Ok(b) => zeroize::Zeroizing::new(b),
         Err(_) => return,
     };
 
     let request: Request = match serde_json::from_slice(&buf) {
         Ok(r) => r,
         Err(e) => {
-            send_error(&mut stream, &format!("invalid request: {e}"));
+            // serde's message can quote the offending value (possibly a
+            // secret); report only where parsing failed.
+            send_error(
+                &mut stream,
+                &format!("invalid request (line {}, column {})", e.line(), e.column()),
+            );
             return;
         }
     };
@@ -358,7 +368,7 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::StartGate { routes, port } => {
             daemon_gate::handle_start_gate(uid, peer_pid, username, &routes, port)
         }
-        Request::Panic => daemon_gate::handle_panic(uid, username),
+        Request::Panic => daemon_gate_registry::handle_panic(uid, username),
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),

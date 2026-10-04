@@ -10,13 +10,20 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 
 use kepr_core::protocol::{Fido2Assertion, Fido2CredInfo};
 
 /// Root directory for the FIDO2 credential registry.
-const FIDO2_DIR: &str = "/var/lib/kepr/fido2";
+/// Registry root: `<state dir>/fido2` — /var/lib/kepr/fido2 in system
+/// mode, ~/.local/state/kepr/fido2 in user mode (a non-root user-mode
+/// daemon cannot write under /var/lib).
+fn fido2_dir() -> PathBuf {
+    crate::state_dir().join("fido2")
+}
+const MAX_LABEL: usize = 128;
+const MAX_HEX: usize = 2048;
 
 /// RP ID for SHA-256 hashing in authenticator data.
 pub const RP_ID: &str = "kepr";
@@ -93,6 +100,9 @@ fn validate_hex(s: &str, field: &str) -> Result<(), String> {
     if s.is_empty() {
         return Err(format!("fido2: {field} must not be empty"));
     }
+    if s.len() > MAX_HEX {
+        return Err(format!("fido2: {field} is too long"));
+    }
     if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!(
             "fido2: {field} must be hex-encoded, got non-hex bytes"
@@ -110,8 +120,15 @@ pub fn register(
 ) -> Result<(), String> {
     validate_hex(credential_id, "credential_id")?;
     validate_hex(public_key_cose_hex, "public_key_cose")?;
+    if label.is_empty() || label.chars().count() > MAX_LABEL || label.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "fido2: label must be 1-{MAX_LABEL} printable characters"
+        ));
+    }
     let dir = fido2_uid_dir(uid);
     fs::create_dir_all(&dir).map_err(|e| format!("create fido2 dir: {e}"))?;
+    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     let path = fido2_cred_path(uid, credential_id);
     let stored = StoredCredential {
         label: label.to_string(),
@@ -241,7 +258,7 @@ struct StoredCredential {
 }
 
 fn fido2_uid_dir(uid: u32) -> PathBuf {
-    PathBuf::from(format!("{FIDO2_DIR}/{uid}"))
+    fido2_dir().join(uid.to_string())
 }
 
 fn fido2_cred_path(uid: u32, credential_id: &str) -> PathBuf {
@@ -378,7 +395,7 @@ mod tests {
 
     #[test]
     fn register_and_list_round_trip() {
-        // This test writes to the real FIDO2_DIR (/var/lib/kepr/fido2/)
+        // This test writes to the real registry dir (<state dir>/fido2/)
         // and is only runnable as root (or when the dir is user-writable).
         // Skip gracefully when we can't create the directory.
         let uid = 9999u32;

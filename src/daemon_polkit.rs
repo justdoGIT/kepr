@@ -81,16 +81,38 @@ pub fn consent_granted(peer_pid: i32) -> bool {
         None => return false, // peer gone or /proc unreadable
     };
     let subject = format!("{peer_pid},{start_time}");
-    let status = Command::new(PKCHECK_BIN)
+    let child = Command::new(PKCHECK_BIN)
         .arg("--action-id")
         .arg(ACTION_ID)
         .arg("--allow-user-interaction")
         .arg("--process")
         .arg(&subject)
-        .status();
-    match status {
-        Ok(s) => s.success(),
+        .spawn();
+    match child {
+        Ok(c) => wait_with_deadline(c, PROMPT_DEADLINE),
         Err(_) => false,
+    }
+}
+
+/// How long a consent prompt may stay unanswered. pkcheck waits for the
+/// user indefinitely, and each wait holds one daemon worker; without a
+/// deadline a few ignored prompts would exhaust the pool. Timeout = deny.
+const PROMPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn wait_with_deadline(mut child: std::process::Child, deadline: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if start.elapsed() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
     }
 }
 
@@ -118,6 +140,25 @@ fn read_proc_starttime(pid: i32) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deadline_denies_and_reaps() {
+        let c = Command::new("sleep").arg("5").spawn().unwrap();
+        let t = std::time::Instant::now();
+        assert!(!wait_with_deadline(
+            c,
+            std::time::Duration::from_millis(300)
+        ));
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        assert!(wait_with_deadline(
+            Command::new("true").spawn().unwrap(),
+            PROMPT_DEADLINE
+        ));
+        assert!(!wait_with_deadline(
+            Command::new("false").spawn().unwrap(),
+            PROMPT_DEADLINE
+        ));
+    }
 
     /// Pin the fail-closed contract: in any environment where the
     /// kepr action ID isn't registered (every CI runner + this

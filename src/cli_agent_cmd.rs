@@ -147,6 +147,21 @@ fn cmd_add(a: &AgentArgs) -> Response {
     }
 }
 
+/// Hint after a failed `kepr get`: a sealed key is write-only by design,
+/// so pointing the user at `kepr set` would be misleading.
+pub fn get_failure_hint(name: &str) -> String {
+    let sealed = matches!(
+        client::send_request(&Request::List),
+        Ok(Response::ListOk { credentials, .. })
+            if credentials.iter().any(|c| c.name == name && c.sealed == Some(true))
+    );
+    if sealed {
+        format!("{name} is sealed (write-only): agents use it through `kepr agent run`")
+    } else {
+        format!("Set it with: kepr set {name}")
+    }
+}
+
 /// `kepr panic`: stop every running gate for this user and, if the store
 /// is passphrase-protected, lock it.
 pub fn cmd_panic() -> Response {

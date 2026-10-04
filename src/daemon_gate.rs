@@ -17,6 +17,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::audit::{self, AuditEvent, AuditResult};
+use crate::daemon_gate_registry::{gates_for, track_gate, MAX_GATES_PER_UID};
 use crate::store::{cred_path, validate_name};
 use crate::{crypto, expiry};
 use kepr_core::binding::Inject;
@@ -73,30 +74,6 @@ pub struct GateOwner {
     pub uid: u32,
     pub username: String,
     pub pid: i32,
-}
-
-/// Gates this daemon started: (gate pid, uid). Used by `kepr panic`.
-static GATES: std::sync::Mutex<Vec<(i32, u32)>> = std::sync::Mutex::new(Vec::new());
-
-fn track_gate(pid: i32, uid: u32, add: bool) {
-    if let Ok(mut g) = GATES.lock() {
-        if add {
-            g.push((pid, uid));
-        } else {
-            g.retain(|(p, _)| *p != pid);
-        }
-    }
-}
-
-/// SIGKILL every gate serving `uid`. Returns how many were signalled.
-pub fn stop_gates_for(uid: u32) -> usize {
-    let Ok(g) = GATES.lock() else { return 0 };
-    g.iter()
-        .filter(|(_, u)| *u == uid)
-        // SAFETY: kill(2) on a pid this daemon spawned and still tracks
-        // (removed from the list when its channel thread reaps it).
-        .filter(|(p, _)| unsafe { libc::kill(*p, libc::SIGKILL) } == 0)
-        .count()
 }
 
 /// Bumped on every set, delete and expiry sweep; gates compare it
@@ -246,27 +223,6 @@ fn serve_gate_channel(mut chan: UnixStream, mut child: Child, owner: GateOwner) 
     let _ = child.wait();
 }
 
-/// `kepr panic` (T3.05): stop the caller's gates (their key caches die
-/// with them) and, if the store is passphrase-protected, lock it so the
-/// master key leaves memory until `kepr unlock`.
-pub fn handle_panic(uid: u32, username: &str) -> Response {
-    let gates_stopped = stop_gates_for(uid);
-    let may_lock = crate::user_mode() || uid == 0;
-    let locked =
-        may_lock && crate::protected_master_key_path().exists() && crypto::lock_backend().is_ok();
-    audit::log(&AuditEvent {
-        op: "panic",
-        name: None,
-        uid,
-        username,
-        result: AuditResult::Ok,
-    });
-    Response::PanicOk {
-        gates_stopped,
-        locked,
-    }
-}
-
 fn start(
     uid: u32,
     peer_pid: i32,
@@ -278,6 +234,11 @@ fn start(
         return Err("agent sessions need the user-mode daemon for now".into());
     }
     validate_routes(routes)?;
+    if gates_for(uid) >= MAX_GATES_PER_UID {
+        return Err(format!(
+            "{MAX_GATES_PER_UID} agent sessions already running; end one or run `kepr panic`"
+        ));
+    }
     let config = SessionConfig {
         session_id: random_hex(8)?.as_str().to_string(),
         session_key_hex: random_hex(32)?,
