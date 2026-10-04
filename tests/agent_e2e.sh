@@ -157,6 +157,21 @@ echo "── output masking"
 masked=$("$KEPR" exec --env E2E_MASK --mask -- sh -c 'echo "v=$E2E_MASK"')
 check "$([ "$masked" = "v=****" ] && echo ok)" "exec --mask hides the value"
 
+echo "── egress proxy"
+printf 'ghp_%s\n' E2EGITHUBTOKEN0123456789abcdefghij | "$KEPR" agent add E2E_GH --stdin >/dev/null 2>&1
+cat >"$WORK/egress.sh" <<'PROBE'
+case "$GH_TOKEN" in kepr-ph-*) echo "ok placeholder in GH_TOKEN";; *) echo "bad GH_TOKEN is not a placeholder";; esac
+c=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer ghp_guess' https://api.github.com/user)
+[ "$c" = 401 ] && echo "ok egress proxy refuses a guessed token ($c)" || echo "bad egress proxy answered $c to a guessed token"
+c=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user)
+case "$c" in 000) echo "bad TLS to the gate failed (session CA not trusted)";; *) echo "ok TLS via the session CA ($c)";; esac
+PROBE
+OUT=$(GH_TOKEN=ghp_real_in_shell "$KEPR" agent run claude --no-sandbox -- sh "$WORK/egress.sh" 2>&1) || true
+while read -r status msg; do
+    case "$status" in ok) pass "$msg" ;; bad) fail "$msg" ;; esac
+done <<<"$OUT"
+"$KEPR" delete E2E_GH --force >/dev/null 2>&1 || true
+
 echo "── history and restore"
 "$KEPR" set E2E_HIST --value one -q >/dev/null 2>&1
 "$KEPR" set E2E_HIST --value two -q >/dev/null 2>&1
@@ -177,6 +192,22 @@ check "$([ "${uses:-0}" -ge 1 ] && echo ok)" "usage counts the masked exec read"
 echo "── health"
 "$KEPR" set E2E_WEAK --value password1 -q >/dev/null 2>&1
 check "$("$KEPR" health 2>/dev/null | grep -q '^E2E_WEAK: common password' && echo ok)" "health flags a common password"
+
+echo "── typed records"
+"$KEPR" record add E2E_REC --type login --field username=me --field password=pw-123 >/dev/null 2>&1
+check "$([ "$("$KEPR" record get E2E_REC password 2>/dev/null)" = pw-123 ] && echo ok)" "record field readable"
+printf 'u=kepr://E2E_REC/username\n' >"$WORK/rec.tpl"
+check "$([ "$("$KEPR" inject -i "$WORK/rec.tpl" 2>/dev/null)" = "u=me" ] && echo ok)" "kepr://NAME/field renders"
+
+echo "── recovery kit"
+out=$(printf 'nope\n' | "$KEPR" recovery-kit create 2>&1) || true
+check "$(echo "$out" | grep -q 'passphrase' && echo ok)" "recovery kit refused without a passphrase-protected store"
+if printf 'kepr1-2-1-0000000000000000-00\nkepr1-2-2-0000000000000000-00\n\nx\nx\n' \
+    | "$KEPR" recovery-kit restore >/dev/null 2>&1; then
+    fail "recovery restore accepted bogus shares"
+else
+    pass "recovery restore refuses bogus shares"
+fi
 
 echo
 echo "passed: $PASS  failed: $FAIL"

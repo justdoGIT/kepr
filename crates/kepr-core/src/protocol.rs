@@ -105,6 +105,9 @@ pub enum Request {
             default
         )]
         limits: crate::gate_protocol::GateLimits,
+        /// P2.1: let the egress proxy tunnel hosts no route is bound to.
+        #[serde(default)]
+        tunnel: bool,
     },
     Get {
         name: String,
@@ -202,6 +205,54 @@ pub enum Request {
     /// credential and its history, record an incident.
     Leaked {
         name: String,
+    },
+    /// P6.3: split the master key into k-of-n recovery shares. Needs the
+    /// store passphrase; owner / root only.
+    RecoveryKitCreate {
+        password: ZeroString,
+        threshold: u8,
+        shares: u8,
+    },
+    /// P6.3: rebuild a lost master key from shares, under a new passphrase.
+    RecoveryRestore {
+        shares: Vec<ZeroString>,
+        new_password: ZeroString,
+    },
+    /// P6.1: this user's share public key (`create`: make one if missing).
+    ShareKey {
+        #[serde(default)]
+        create: bool,
+    },
+    /// P6.2: encrypt `name` to the public key `to` (expires after ttl).
+    ShareSend {
+        name: String,
+        to: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        ttl_secs: Option<u64>,
+    },
+    /// P6.2: decrypt and store a share (single use), optionally renamed.
+    ShareReceive {
+        envelope: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        name: Option<String>,
+    },
+    /// P7.2: rotate a sealed database login: `begin` adds a random
+    /// pending password, `commit` makes it current, `abort` drops it.
+    DbRotate {
+        name: String,
+        phase: String,
+    },
+    /// P5.1: store a typed record; `fields` is a JSON object of strings.
+    RecordSet {
+        name: String,
+        record_type: String,
+        fields: ZeroString,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        requires_consent: Option<bool>,
+        /// P7.1: seal a `database` record for the gate's database proxy;
+        /// the daemon binds it to the record's own host:port.
+        #[serde(default)]
+        seal: bool,
     },
 }
 
@@ -418,6 +469,7 @@ mod tests {
                 requires_fido2: None,
                 sealed: None,
                 bound_hosts: None,
+                record_type: None,
             }],
             count: 1,
         };

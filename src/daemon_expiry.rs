@@ -287,11 +287,7 @@ mod tests {
             &mp,
             &expiry::CredMeta {
                 expires_at_unix: Some(expires_at_unix),
-                requires_consent: None,
-                requires_fido2: None,
-                sealed: None,
-                bindings: None,
-                ssh: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -306,11 +302,7 @@ mod tests {
             &mp,
             &expiry::CredMeta {
                 expires_at_unix: Some(expires_at_unix),
-                requires_consent: None,
-                requires_fido2: None,
-                sealed: None,
-                bindings: None,
-                ssh: None,
+                ..Default::default()
             },
         )
         .unwrap();

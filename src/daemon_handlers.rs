@@ -13,11 +13,12 @@ use crate::audit::{self, AuditEvent, AuditResult};
 use crate::crypto;
 use crate::daemon_cache;
 use crate::expiry;
-use crate::store::{self, cred_path, file_mtime_str, file_size, validate_name};
+use crate::store::{self, cred_path, validate_name};
 use kepr_core::generate::{self, generate_secret, GenKind};
-use kepr_core::protocol::{CredInfo, Response};
+use kepr_core::protocol::Response;
 
 /// Optional per-credential policy carried by `Request::Set`.
+#[derive(Default)]
 pub struct SetFlags {
     pub ttl_secs: Option<u64>,
     pub requires_consent: Option<bool>,
@@ -26,6 +27,10 @@ pub struct SetFlags {
     pub bindings: Option<Vec<kepr_core::binding::Binding>>,
     /// P2.4: the value is an SSH key seed (sign-only).
     pub ssh: Option<expiry::SshMeta>,
+    /// P5.1: the value is a typed record (JSON object of fields).
+    pub record_type: Option<String>,
+    /// P6.1: the value is the user's share key (never readable).
+    pub share_key: Option<bool>,
 }
 
 pub fn handle_set(
@@ -59,7 +64,7 @@ pub fn handle_set(
     )
     .and_then(|m| m.with_seal(flags.sealed, flags.bindings))
     .map(|mut m| {
-        m.ssh = flags.ssh;
+        (m.ssh, m.record_type, m.share_key) = (flags.ssh, flags.record_type, flags.share_key);
         m
     }) {
         Ok(m) => m,
@@ -98,7 +103,7 @@ pub fn handle_set(
     // its sidecar *before* the value, so a concurrent Get already sees
     // `sealed`. (Other flags keep the write-after order with rollback.)
     let meta_path = expiry::meta_path_for(&cred_path(uid, &upper));
-    let meta_first = meta.sealed == Some(true) || meta.ssh.is_some();
+    let meta_first = meta.sealed == Some(true) || meta.ssh.is_some() || meta.share_key.is_some();
     let cred_existed = cred_path(uid, &upper).exists();
     // P5.3: keep the value being replaced (before any meta rewrite).
     crate::daemon_history::save_current(uid, &upper);
@@ -181,63 +186,6 @@ pub fn handle_set(
             });
             Response::fail(e)
         }
-    }
-}
-
-pub fn handle_list(uid: u32, username: &str) -> Response {
-    let entries = daemon_cache::list_for_uid(uid);
-    let creds: Vec<CredInfo> = entries
-        .iter()
-        .map(|(name, path)| {
-            let meta_opt = expiry::read_meta(&expiry::meta_path_for(path)).and_then(|r| r.ok());
-            let expires_at = meta_opt
-                .as_ref()
-                .and_then(|m| m.expires_at_unix.map(expiry::format_expires_at));
-            let requires_consent = meta_opt
-                .as_ref()
-                .and_then(|m| m.requires_consent)
-                .filter(|v| *v)
-                .map(|_| true);
-            let requires_fido2 = meta_opt
-                .as_ref()
-                .and_then(|m| m.requires_fido2)
-                .filter(|v| *v)
-                .map(|_| true);
-            let sealed = meta_opt.as_ref().and_then(|m| m.sealed).filter(|v| *v);
-            let bound_hosts = meta_opt
-                .as_ref()
-                .and_then(|m| m.bindings.as_ref())
-                .map(|bs| {
-                    bs.iter()
-                        .map(|b| format!("{}:{}", b.host, b.port))
-                        .collect()
-                });
-            CredInfo {
-                name: name.clone(),
-                cred_name: store::to_cred_name(uid, name),
-                size: file_size(path),
-                modified: file_mtime_str(path),
-                expires_at,
-                requires_consent,
-                requires_fido2,
-                sealed,
-                bound_hosts,
-            }
-        })
-        .collect();
-
-    audit::log(&AuditEvent {
-        op: "list",
-        name: None,
-        uid,
-        username,
-        result: AuditResult::Ok,
-    });
-
-    let count = creds.len();
-    Response::ListOk {
-        credentials: creds,
-        count,
     }
 }
 

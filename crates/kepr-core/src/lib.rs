@@ -13,6 +13,7 @@
 
 pub mod auth;
 pub mod binding;
+pub mod fdpass;
 pub mod framing;
 pub mod gate_protocol;
 pub mod generate;
@@ -24,4 +25,5 @@ pub mod protocol_response;
 pub mod protocol_types;
 pub mod providers;
 pub mod secmem;
+pub mod shamir;
 pub mod ssh_wire;

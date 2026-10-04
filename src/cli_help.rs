@@ -35,17 +35,29 @@ COMMANDS:
             [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
                                        run claude|codex|grok-cli|aider|omp|grok sandboxed, with
                                        placeholders; a local gate injects the real key on the wire
-  agent install omp|grok               point the harness's config file at the gate (once)
+  agent add-db KEY --url postgres://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
+                                       sealed database login; agents get DATABASE_URL to a local gate port
+  agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new
+  agent install omp|grok               point the harness's config file at the gate and install
+                                       kepr's plugin for it (once)
+  hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
   agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
   agent ls | agent revoke KEY          list / delete sealed keys
   mcp                                  MCP server (stdio): list keys, call provider APIs, no values
   panic                                stop all agent gates; lock the store if passphrase-protected
+  recovery-kit create [--threshold K] [--shares N] [--out-dir DIR]
+                                       split the master key into K-of-N shares (needs the passphrase)
+  recovery-kit restore                 rebuild a lost master key from K shares, under a new passphrase
   leaked KEY [--yes]                   key exposed: stop agent sessions, delete it + history, log an
                                        incident, show where to revoke it at the provider
   totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
-  inject -i TEMPLATE [-o OUT]          fill kepr://NAME references (OUT created 0600)
+  inject -i TEMPLATE [-o OUT]          fill kepr://NAME and kepr://NAME/field references (OUT 0600)
   scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
   copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
+  record add KEY --type T [--field k=v|k=-]...  typed record (login, card, database, server, api, note, custom)
+  record show KEY [--reveal] | record get KEY FIELD | record types
+  share key | share send KEY --to PUBKEY [--ttl SECS] [-o FILE] | share receive [FILE] [--as KEY]
+                                       give one credential to another kepr user (encrypted, single-use)
   history KEY                          previous values kept (last 5), no values shown
   restore KEY --version N              make version N current again (undoable)
   usage [--days N]                     uses / refusals / last use per key; flags never-used keys

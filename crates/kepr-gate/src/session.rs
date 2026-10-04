@@ -98,7 +98,21 @@ pub fn run() -> Result<(), String> {
 
     let mut placeholders = HashMap::new();
     let mut table = HashMap::new();
+    let mut db_routes = Vec::new();
     for r in &cfg.routes {
+        if let Some(target) = &r.target {
+            placeholders.insert(
+                r.provider.clone(),
+                placeholder::make(&key, &cfg.session_id, r.slot),
+            );
+            db_routes.push(Arc::new(crate::pg::DbRoute {
+                key: r.provider.clone(),
+                cred: r.cred.clone(),
+                slot: r.slot,
+                target: target.clone(),
+            }));
+            continue;
+        }
         placeholders.insert(
             r.provider.clone(),
             placeholder::make(&key, &cfg.session_id, r.slot),
@@ -112,6 +126,19 @@ pub fn run() -> Result<(), String> {
         );
     }
     let bind_port = cfg.port.unwrap_or(0);
+    // P2.1: a CA for exactly the hosts this session's keys are bound to.
+    let hosts: Vec<String> = cfg
+        .routes
+        .iter()
+        .filter_map(|r| kepr_core::providers::lookup(&r.provider))
+        .map(|p| p.host.to_string())
+        .collect();
+    // A database-only session has no HTTPS host, hence no CA.
+    let ca = match hosts.is_empty() {
+        true => None,
+        false => Some(Arc::new(crate::ca::SessionCa::new(&hosts)?)),
+    };
+    let ca_pem = ca.as_ref().map(|c| c.pem().to_string());
     let state = Arc::new(
         State::new(
             cfg.session_id.clone(),
@@ -120,6 +147,7 @@ pub fn run() -> Result<(), String> {
             cache.clone(),
         )
         .with_limits(cfg.limits)
+        .with_egress(ca, cfg.tunnel)
         .validated()?,
     );
 
@@ -135,10 +163,27 @@ pub fn run() -> Result<(), String> {
             .local_addr()
             .map_err(|e| format!("bind: {e}"))?
             .port();
+        // P7.1: one loopback listener per database route.
+        let mut db_ports = HashMap::new();
+        for route in db_routes {
+            let l = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .map_err(|e| format!("database listener: {e}"))?;
+            let p = l.local_addr().map_err(|e| e.to_string())?.port();
+            db_ports.insert(route.key.clone(), p);
+            let st = state.clone();
+            tokio::spawn(async move {
+                while let Ok((c, _)) = l.accept().await {
+                    tokio::spawn(crate::pg::serve_conn(st.clone(), route.clone(), c));
+                }
+            });
+        }
         let ready = ReadyLine {
             ready: true,
             port,
             placeholders,
+            ca_pem,
+            db_ports,
         };
         let mut out = std::io::stdout();
         writeln!(
@@ -174,6 +219,7 @@ mod tests {
             routes,
             port: None,
             limits: Default::default(),
+            tunnel: false,
         }
     }
 
@@ -182,6 +228,7 @@ mod tests {
             provider: p.into(),
             cred: "K".into(),
             slot,
+            target: None,
         }
     }
 

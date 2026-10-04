@@ -100,7 +100,7 @@ pub fn handle_health(uid: u32, username: &str, max_age_days: Option<u32>) -> Res
         let meta = expiry::read_meta(&expiry::meta_path_for(&path))
             .and_then(Result::ok)
             .unwrap_or_default();
-        if meta.ssh.is_some() {
+        if meta.ssh.is_some() || meta.share_key.is_some() {
             continue;
         }
         let mut issues = Vec::new();

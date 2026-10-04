@@ -70,6 +70,12 @@ pub struct CredMeta {
     /// refuses it; the daemon only signs with it (`SshSign`).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ssh: Option<SshMeta>,
+    /// P5.1: the value is a typed record of this type (login, card, …).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub record_type: Option<String>,
+    /// P6.1: the value is this user's X25519 share key; `Get` refuses it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub share_key: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -83,13 +89,11 @@ impl CredMeta {
     /// True iff the meta has no flags set. Callers use this to
     /// decide whether to bother writing the file at all — an empty
     /// meta is identical to no meta from the read path's perspective.
+    /// No flag set at all. Compared against `Default` so a new field
+    /// can't be forgotten here (a forgotten field means its meta is
+    /// never written).
     pub fn is_empty(&self) -> bool {
-        self.expires_at_unix.is_none()
-            && self.requires_consent.is_none()
-            && self.requires_fido2.is_none()
-            && self.sealed.is_none()
-            && self.bindings.is_none()
-            && self.ssh.is_none()
+        *self == Self::default()
     }
 
     /// Build a `CredMeta` from per-flag CLI inputs. Returns `Err`
@@ -296,6 +300,16 @@ mod tests {
     }
 
     #[test]
+    fn any_single_field_makes_meta_non_empty() {
+        assert!(CredMeta::default().is_empty());
+        let m = CredMeta {
+            record_type: Some("login".into()),
+            ..Default::default()
+        };
+        assert!(!m.is_empty());
+    }
+
+    #[test]
     fn old_meta_without_seal_fields_parses() {
         let m: CredMeta = serde_json::from_str(r#"{"requires_consent":true}"#).unwrap();
         assert_eq!(m.sealed, None);
@@ -377,6 +391,7 @@ mod tests {
                 sealed: None,
                 bindings: None,
                 ssh: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -425,6 +440,7 @@ mod tests {
                 sealed: None,
                 bindings: None,
                 ssh: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -446,6 +462,7 @@ mod tests {
                 sealed: None,
                 bindings: None,
                 ssh: None,
+                ..Default::default()
             },
         )
         .unwrap();

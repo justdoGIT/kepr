@@ -19,6 +19,10 @@ pub enum Inject {
     /// `Authorization: Basic base64(<value>)`; store the value as
     /// `user:password`.
     Basic,
+    /// P7.1: a PostgreSQL login. The value is a `database` record (JSON:
+    /// user, password, database, sslmode, optional ca_pem); the gate logs
+    /// in to host:port with it on the agent's behalf.
+    Postgres,
 }
 
 /// One allowed destination for a sealed credential.

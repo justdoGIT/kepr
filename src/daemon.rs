@@ -17,8 +17,10 @@ mod daemon_expiry;
 mod daemon_extra;
 mod daemon_gate;
 mod daemon_gate_registry;
+mod daemon_gate_service;
 mod daemon_handlers;
 mod daemon_handlers_get;
+mod daemon_handlers_list;
 mod daemon_health;
 mod daemon_history;
 mod daemon_lock;
@@ -27,6 +29,10 @@ mod daemon_peer;
 mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
+mod daemon_records;
+mod daemon_recovery;
+mod daemon_share;
+mod daemon_share_seen;
 mod daemon_singleton;
 mod daemon_sleepwatch;
 mod daemon_socket;
@@ -46,7 +52,8 @@ use std::sync::OnceLock;
 
 use audit::{username_for_uid, AuditEvent, AuditResult};
 use daemon_audit::handle_audit_verify;
-use daemon_handlers::{handle_check, handle_delete, handle_list, handle_set, SetFlags};
+use daemon_handlers::{handle_check, handle_delete, handle_set, SetFlags};
+use daemon_handlers_list::handle_list;
 use daemon_peer::get_peer_creds;
 use daemon_pool::Pool;
 use daemon_ratelimit::RateLimiter;
@@ -374,22 +381,11 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::Unlock { password } => {
             daemon_lock::handle_unlock_gated(uid, username, password.as_bytes())
         }
-        Request::StartGate {
-            routes,
-            port,
-            limits,
-        } => daemon_gate::handle_start_gate(uid, peer_pid, username, &routes, (port, limits)),
         Request::Panic => daemon_gate_registry::handle_panic(uid, username),
         Request::SshGenerate { .. }
         | Request::SshImport { .. }
         | Request::SshList
         | Request::SshSign { .. } => daemon_ssh::dispatch(uid, peer_pid, username, request),
-        Request::History { .. }
-        | Request::Restore { .. }
-        | Request::Usage { .. }
-        | Request::Health { .. }
-        | Request::BreachCheck { .. }
-        | Request::Leaked { .. } => daemon_extra::dispatch(uid, username, request),
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),
@@ -425,7 +421,7 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
                 requires_fido2,
                 sealed,
                 bindings,
-                ssh: None,
+                ..Default::default()
             },
         ),
         Request::Get {
@@ -474,6 +470,9 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
                 credentials: fido2::list_for_uid(uid),
             }
         }
+        // History, restore, usage, health, leak response, recovery kit:
+        // routed (and unknown variants refused) in daemon_extra.rs.
+        other => daemon_extra::dispatch(uid, peer_pid, username, other),
     }
 }
 

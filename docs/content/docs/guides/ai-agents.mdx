@@ -62,8 +62,36 @@ places, or already stored in kepr, is skipped rather than overwritten.
 
 `kepr agent install` edits the harness's own config file
 (`~/.omp/agent/models.yml`, `~/.grok/config.toml`) to point at the gate on
-port 7878, after writing a timestamped backup. Running it twice changes
-nothing.
+port 7878, after writing a timestamped backup. It also installs kepr's
+plugin for that harness (below). Running it twice changes nothing.
+
+### Plugins for omp and Grok Build
+
+`kepr agent install omp|grok` installs a plugin that makes the harness
+itself keep secrets out of the conversation. Both plugins ask
+`kepr hook` for their decisions, so the rules are the same in each.
+
+| What it does | omp | Grok Build |
+| --- | --- | --- |
+| Sends provider calls through the gate with the placeholder (no config edit needed) | yes (`anthropic`, `openai`, `xai`) | via `config.toml` |
+| Refuses tool calls that would print a stored value (`kepr get`, `env`, `exec`, `totp`, `inject`, `copy`, `record`, `recovery-kit`) | yes | yes |
+| Refuses tool calls that contain a real key (a command, or file content) | yes | yes |
+| Refuses a prompt with a pasted key, before it reaches the model | interactive sessions | yes |
+| Removes keys from user messages before every model request | yes (covers `omp -p` and RPC) | – |
+| Tells the model that its keys are placeholders | system prompt | a `kepr` skill |
+| `kepr mcp` as an MCP server | – | yes |
+| Status command | `/kepr` | – |
+
+- **Where they go:** the omp extension goes into `~/.omp/agent/extensions/kepr/`,
+  where omp finds it on its own. The Grok Build plugin's source goes into
+  `~/.local/share/kepr/plugins/grok/kepr/`, and kepr registers it with
+  `grok plugin install … --trust`, or `grok plugin update kepr` after an
+  upgrade. If `grok` isn't on your `PATH`, kepr prints the command to run.
+- **What they don't do:** the plugins are a guard for sessions that run
+  without the sandbox. The boundary is still the gate and the sandbox: under
+  `kepr agent run`, the agent only ever holds placeholders, and the kepr
+  socket is hidden from it.
+- **Tested against:** omp 18.6.0 and Grok Build 1.0.46.
 
 Pass your own command line after `--`:
 
@@ -131,6 +159,73 @@ No tool returns a secret value. Example client entry:
 ```json
 { "mcpServers": { "kepr": { "command": "kepr", "args": ["mcp"] } } }
 ```
+
+## Tools the agent runs: `gh`, `curl`, SDKs
+
+Model calls use the gate's base URL. Tools that talk to a host by name can't,
+so every session also gets the gate as its HTTPS proxy:
+
+```bash
+kepr agent add GITHUB_TOKEN          # paste a ghp_/github_pat_ token: bound to api.github.com
+kepr agent run claude                # GH_TOKEN / GITHUB_TOKEN are placeholders now
+```
+
+- **Bound hosts:** for a host a sealed key is bound to (here
+  `api.github.com`), the gate terminates TLS with a CA made for this
+  session. It swaps the placeholder for the real key and re-encrypts to the
+  real host, trusting only its compiled-in roots.
+- **The CA:** it lives only in the gate's memory, lasts 24 hours, and is
+  name-constrained to the session's bound hosts, so its key can't sign a
+  certificate for any other site.
+- **How tools trust it:** the harness gets the CA through `SSL_CERT_FILE`,
+  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and
+  `NODE_EXTRA_CA_CERTS`. Those point to the system bundle plus the session
+  CA, so other HTTPS keeps working.
+- **Real tokens in your shell:** a `GH_TOKEN` or `GITHUB_TOKEN` you exported
+  is replaced by the placeholder and never reaches the agent.
+- **Other hosts:** they are tunnelled unchanged. With `--isolate-net` they
+  are refused, so the agent reaches only the providers its keys are bound
+  to.
+
+## Databases
+
+```bash
+kepr agent add-db PROD --url postgres://app@db.internal:5432/prod   # asks for the password
+kepr agent run claude
+```
+
+- **What the agent gets:** `DATABASE_URL` and `PGHOST`/`PGPORT`/`PGUSER`/
+  `PGPASSWORD`/`PGDATABASE`, pointing at a local gate port, with the
+  session placeholder as the password. With several databases, each one gets
+  `KEPR_DB_<NAME>_URL`.
+- **What the gate does:** it checks the placeholder, then logs in to the
+  real server with the sealed login using SCRAM-SHA-256 or cleartext (MD5 is
+  refused). From then on it relays the session unchanged.
+- **TLS to the server:** it's verified against public roots by default.
+  Pass `--ca FILE` for a managed database's own CA, or `--sslmode disable`
+  to allow plaintext, for local databases only.
+- **The login itself:** the user name, database and password stay sealed,
+  and `kepr get PROD` is refused. The agent can run queries as that user but
+  can't take the password anywhere.
+
+### Rotating the password
+
+```bash
+kepr agent rotate-db PROD
+```
+
+- **How it works:** the daemon adds a random 48-character password to the
+  sealed record as pending. A gate started for this database logs in with
+  the current password and runs `ALTER ROLE CURRENT_USER PASSWORD` with a
+  SCRAM verifier, so the new password never appears in SQL text or server
+  logs. The daemon then makes the pending password the current one.
+- **Who sees it:** nobody. Neither the old nor the new password reaches
+  the CLI, the terminal or the agent.
+- **If it's interrupted:** the pending password is kept. Running the
+  command again finishes the job, even when the server already has the new
+  password. `kepr agent rotate-db PROD --abort` drops a pending password.
+- **What the role needs:** it must be allowed to change its own password,
+  which PostgreSQL allows by default.
 
 ## Spending and rate limits
 
@@ -240,8 +335,11 @@ kepr exec --env DEPLOY_TOKEN --mask -- ./deploy.sh
 
 ## Current limits
 
-- **User-mode daemon only.** The system-mode service forbids network
-  sockets; a separate gate service is planned.
+- **System mode needs `kepr-gate.service`.** The root daemon forbids
+  itself network sockets, so its agent sessions run in this service, under
+  an unprivileged dynamic user with no access to the credential store.
+  `install.sh` enables it. The daemon passes each session's channel to it
+  over a root-only socket. `kepr panic` reaches these gates too.
 - **TLS-inspecting networks:** if your network intercepts TLS with its own
   certificate authority, the gate refuses the connection, because it trusts
   only public roots. A root-owned CA setting is planned.
