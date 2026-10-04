@@ -4,13 +4,16 @@
     "---Getting started---",
     "index",
     "quickstart",
+    "guides",
     "---Architecture---",
+    "architecture",
     "---Roadmap---",
     "roadmap",
     "security-roadmap",
     "agent-vault-plan",
     "agent-vault-tickets",
     "---Reference---",
+    "security",
     "reference"
   ]
 }
