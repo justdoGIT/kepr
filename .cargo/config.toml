@@ -1,10 +1,6 @@
-# Cluster-wide release-build baseline: four workers expose 15-16 logical CPUs.
-# Six Cargo jobs leave headroom for Cargo, linking, and the operating system.
+# Cluster-wide release-build baseline: jobs ~= logical CPUs that actually run
+# rustc. sccache-dist currently registers 7 CPUs; raise toward 12-15 once asus
+# and gigabyte register. No -Z threads: a wide crate graph already saturates
+# the cores and each extra frontend thread multiplies per-rustc memory.
 [build]
-jobs = 6
-
-[target.x86_64-unknown-linux-gnu]
-# Three frontend threads per rustc request: 6 jobs x 3 threads = 18 slots,
-# which fits the cluster's 16-20 logical CPUs without 8 jobs x 6 threads
-# oversubscription.
-rustflags = ["-Z", "threads=3"]
+jobs = 7
