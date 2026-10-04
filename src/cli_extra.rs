@@ -8,6 +8,7 @@
 //   kepr copy NAME [--clear SECS]
 //   kepr history NAME
 //   kepr restore NAME --version N
+//   kepr usage [--days N]
 
 use kepr_core::protocol::Response;
 
@@ -21,6 +22,7 @@ pub const VERBS: &[&str] = &[
     "ssh-agent",
     "history",
     "restore",
+    "usage",
     "__clipboard-clear",
 ];
 
@@ -96,6 +98,13 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                     None => Response::fail("usage: kepr restore NAME --version N"),
                 }
             }
+            "usage" => match value_of(args, &["--days"]).map_err(Response::fail)? {
+                Some(d) => match d.parse() {
+                    Ok(n) => crate::cli_usage::cmd_usage(Some(n)),
+                    Err(_) => Response::fail("--days needs a number"),
+                },
+                None => crate::cli_usage::cmd_usage(None),
+            },
             "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
             "ssh" => crate::cli_ssh::cmd_ssh(args),
             "ssh-agent" => crate::cli_ssh_agent::cmd_ssh_agent(args),

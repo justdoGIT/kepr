@@ -157,6 +157,10 @@ else
     pass "sealed version not restorable into a readable credential"
 fi
 
+echo "── usage report"
+uses=$("$KEPR" usage 2>/dev/null | awk '$1 == "E2E_MASK" { print $2 }')
+check "$([ "${uses:-0}" -ge 1 ] && echo ok)" "usage counts the masked exec read"
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

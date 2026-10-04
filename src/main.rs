@@ -38,6 +38,7 @@ mod cli_ssh;
 mod cli_ssh_agent;
 mod cli_totp;
 mod cli_ui;
+mod cli_usage;
 mod client;
 mod sync;
 mod sync_aws_sigv4;

@@ -25,6 +25,19 @@ pub struct HistoryEntry {
     pub sealed: Option<bool>,
 }
 
+/// One credential's usage (P9.6), as `kepr usage` shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyUsage {
+    pub name: String,
+    /// Successful get / gate resolve / SSH sign in the window.
+    pub uses: u64,
+    /// Refused attempts in the window.
+    pub refused: u64,
+    /// Last successful use, any time (`YYYY-MM-DD HH:MM` UTC).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_used: Option<String>,
+}
+
 // ── Credential info (for ListOk) ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

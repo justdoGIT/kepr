@@ -29,6 +29,7 @@ mod daemon_singleton;
 mod daemon_sleepwatch;
 mod daemon_socket;
 mod daemon_ssh;
+mod daemon_usage;
 mod expiry;
 mod fido2;
 mod key_unlock;
@@ -433,36 +434,30 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::List => handle_list(uid, username),
         Request::Delete { name } => handle_delete(uid, username, &name),
         Request::Check => handle_check(uid, username),
-        Request::AuditVerify => {
-            let path = audit_chain_path();
-            handle_audit_verify(uid, username, path.to_str().unwrap_or_default())
+        Request::AuditVerify => handle_audit_verify(uid, username, &audit_chain_path()),
+        Request::Usage { days } => {
+            daemon_usage::handle_usage(uid, username, &audit_chain_path(), days)
         }
         Request::Fido2Register {
             label,
             credential_id,
             public_key_cose,
-        } => match fido2::register(uid, &label, &credential_id, &public_key_cose) {
-            Ok(()) => {
-                audit::log(&AuditEvent {
-                    op: "fido2-register",
-                    name: Some(&label),
-                    uid,
-                    username,
-                    result: AuditResult::Ok,
-                });
-                Response::Fido2RegisterOk { credential_id }
+        } => {
+            let r = fido2::register(uid, &label, &credential_id, &public_key_cose);
+            audit::log(&AuditEvent {
+                op: "fido2-register",
+                name: Some(&label),
+                uid,
+                username,
+                result: r
+                    .clone()
+                    .map_or_else(AuditResult::Fail, |()| AuditResult::Ok),
+            });
+            match r {
+                Ok(()) => Response::Fido2RegisterOk { credential_id },
+                Err(e) => Response::fail(e),
             }
-            Err(e) => {
-                audit::log(&AuditEvent {
-                    op: "fido2-register",
-                    name: Some(&label),
-                    uid,
-                    username,
-                    result: AuditResult::Fail(e.clone()),
-                });
-                Response::fail(e)
-            }
-        },
+        }
         Request::Fido2List => {
             audit::log(&AuditEvent {
                 op: "fido2-list",

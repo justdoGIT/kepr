@@ -177,6 +177,11 @@ pub enum Request {
         name: String,
         version: u32,
     },
+    /// P9.6: per-credential usage from the audit log (last `days`, or all).
+    Usage {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        days: Option<u32>,
+    },
 }
 
 // ── Response ──────────────────────────────────────────────────────────────────
@@ -278,6 +283,15 @@ pub enum Response {
         name: String,
         version: u32,
     },
+    UsageOk {
+        /// Window start (`YYYY-MM-DD HH:MM` UTC); absent = all time.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        since: Option<String>,
+        /// False if the audit chain failed verification.
+        chain_intact: bool,
+        gate_sessions: u64,
+        keys: Vec<KeyUsage>,
+    },
     LockedOk,
     UnlockedOk,
     StatusOk {
@@ -323,7 +337,7 @@ impl Response {
 }
 
 pub use crate::protocol_types::{
-    CredInfo, Fido2Assertion, Fido2CredInfo, HistoryEntry, SshKeyInfo,
+    CredInfo, Fido2Assertion, Fido2CredInfo, HistoryEntry, KeyUsage, SshKeyInfo,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
