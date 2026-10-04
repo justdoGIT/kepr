@@ -50,17 +50,41 @@ pub trait Sealer: Send + Sync {
 /// blob instead of per-credential.
 pub struct SystemdCredsSealer;
 
+/// Arguments for sealing a new master key (P4.3). `KEPR_MASTER_KEY_SEAL`
+/// picks what the key is bound to: `host` (default: the machine's
+/// credential secret), `tpm2`, `host+tpm2` or `auto`. `KEPR_TPM2_PCRS`
+/// (e.g. `7` or `7+11`) binds TPM2 sealing to those PCRs, so a changed
+/// boot chain cannot unseal it. Values are allow-listed; decrypt detects
+/// the sealing type itself, so existing keys keep working.
+pub fn seal_args(seal: Option<&str>, pcrs: Option<&str>) -> Result<Vec<String>, String> {
+    let kind = seal.unwrap_or(KEY_TYPE);
+    if !matches!(kind, "host" | "tpm2" | "host+tpm2" | "auto") {
+        return Err(format!(
+            "KEPR_MASTER_KEY_SEAL={kind}: use host, tpm2, host+tpm2 or auto"
+        ));
+    }
+    let mut args = vec!["encrypt".to_string(), format!("--with-key={kind}")];
+    if let Some(p) = pcrs.filter(|p| !p.is_empty()) {
+        let valid = p.split('+').all(|n| n.parse::<u8>().is_ok_and(|n| n <= 23));
+        if !valid || !kind.contains("tpm2") && kind != "auto" {
+            return Err(format!(
+                "KEPR_TPM2_PCRS={p}: PCR numbers 0-23 joined by '+', with a tpm2 seal"
+            ));
+        }
+        args.push(format!("--tpm2-pcrs={p}"));
+    }
+    args.extend(["--name", SEALED_NAME, "-", "-"].map(String::from));
+    Ok(args)
+}
+
 impl Sealer for SystemdCredsSealer {
     fn seal(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<Vec<u8>, String> {
+        let args = seal_args(
+            std::env::var("KEPR_MASTER_KEY_SEAL").ok().as_deref(),
+            std::env::var("KEPR_TPM2_PCRS").ok().as_deref(),
+        )?;
         let mut child = Command::new(SYSTEMD_CREDS_BIN)
-            .args([
-                "encrypt",
-                &format!("--with-key={KEY_TYPE}"),
-                "--name",
-                SEALED_NAME,
-                "-",
-                "-",
-            ])
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -200,6 +224,22 @@ pub fn load_or_generate(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn seal_args_allow_list() {
+        let a = seal_args(None, None).unwrap();
+        assert_eq!(a[1], "--with-key=host");
+        let a = seal_args(Some("host+tpm2"), Some("7+11")).unwrap();
+        assert!(a.contains(&"--tpm2-pcrs=7+11".to_string()));
+        assert!(seal_args(Some("evil; rm -rf"), None).is_err());
+        assert!(seal_args(Some("tpm2"), Some("7+99")).is_err());
+        assert!(seal_args(Some("tpm2"), Some("7;x")).is_err());
+        assert!(
+            seal_args(Some("host"), Some("7")).is_err(),
+            "PCRs need a tpm2 seal"
+        );
+    }
+
     use super::*;
     use std::sync::Mutex;
 
