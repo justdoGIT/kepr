@@ -6,27 +6,40 @@ use crate::audit::{self, AuditEvent, AuditResult};
 use crate::crypto;
 use kepr_core::protocol::Response;
 
-/// Gates this daemon started: (gate pid, uid). Used by `kepr panic`.
-pub(crate) static GATES: std::sync::Mutex<Vec<(i32, u32)>> = std::sync::Mutex::new(Vec::new());
+/// How to stop a gate: a child this daemon spawned (user mode) gets
+/// SIGKILL; a session run by the kepr-gate service (system mode) is
+/// stopped by closing its control connection.
+pub(crate) enum Handle {
+    Pid(i32),
+    Conn(std::os::unix::net::UnixStream),
+}
 
-pub(crate) fn track_gate(pid: i32, uid: u32, add: bool) {
+/// Running gates: (key, uid, handle). The key is the gate pid in user
+/// mode and a negative serial for service-run gates.
+pub(crate) static GATES: std::sync::Mutex<Vec<(i32, u32, Handle)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// `Some(handle)` tracks a gate, `None` forgets it.
+pub(crate) fn track_gate(key: i32, uid: u32, handle: Option<Handle>) {
     if let Ok(mut g) = GATES.lock() {
-        if add {
-            g.push((pid, uid));
-        } else {
-            g.retain(|(p, _)| *p != pid);
+        match handle {
+            Some(h) => g.push((key, uid, h)),
+            None => g.retain(|(k, _, _)| *k != key),
         }
     }
 }
 
-/// SIGKILL every gate serving `uid`. Returns how many were signalled.
+/// Stop every gate serving `uid`. Returns how many were signalled.
 pub fn stop_gates_for(uid: u32) -> usize {
     let Ok(g) = GATES.lock() else { return 0 };
     g.iter()
-        .filter(|(_, u)| *u == uid)
-        // SAFETY: kill(2) on a pid this daemon spawned and still tracks
-        // (removed from the list when its channel thread reaps it).
-        .filter(|(p, _)| unsafe { libc::kill(*p, libc::SIGKILL) } == 0)
+        .filter(|(_, u, _)| *u == uid)
+        .filter(|(_, _, h)| match h {
+            // SAFETY: kill(2) on a pid this daemon spawned and still
+            // tracks (removed when its channel thread reaps it).
+            Handle::Pid(p) => (unsafe { libc::kill(*p, libc::SIGKILL) }) == 0,
+            Handle::Conn(c) => c.shutdown(std::net::Shutdown::Both).is_ok(),
+        })
         .count()
 }
 
@@ -36,7 +49,7 @@ pub(crate) const MAX_GATES_PER_UID: usize = 16;
 pub(crate) fn gates_for(uid: u32) -> usize {
     GATES
         .lock()
-        .map(|g| g.iter().filter(|(_, u)| *u == uid).count())
+        .map(|g| g.iter().filter(|(_, u, _)| *u == uid).count())
         .unwrap_or(0)
 }
 

@@ -5,8 +5,9 @@
 // one end of a socket pair on fd 3. Sealed values are released only
 // over that socket pair, never on the public socket, so an agent cannot
 // start its own gate under a debugger or with LD_PRELOAD and read keys
-// out of it. User-mode only for now: the system-mode unit forbids
-// network sockets, so a system gate needs its own service (T1.19).
+// out of it. The system-mode unit forbids network sockets, so there the
+// session is handed to kepr-gate.service instead (daemon_gate_service.rs,
+// T1.19); the channel and every resolve check stay here either way.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::io::AsRawFd;
@@ -17,7 +18,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::audit::{self, AuditEvent, AuditResult};
-use crate::daemon_gate_registry::{gates_for, track_gate, MAX_GATES_PER_UID};
+use crate::daemon_gate_registry::{gates_for, track_gate, Handle, MAX_GATES_PER_UID};
 use crate::store::{cred_path, validate_name};
 use crate::{crypto, expiry};
 use kepr_core::binding::Inject;
@@ -186,8 +187,7 @@ fn read_ready(child: &mut Child) -> Result<ReadyLine, String> {
     Ok(ready)
 }
 
-fn serve_gate_channel(mut chan: UnixStream, mut child: Child, owner: GateOwner) {
-    let gate_pid = child.id() as i32;
+fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, owner: GateOwner) {
     while let Ok(raw) = read_frame(&mut chan, MAX_MSG_BYTES) {
         let resp = match serde_json::from_slice::<GateRequest>(&raw) {
             Ok(GateRequest::Resolve {
@@ -219,10 +219,42 @@ fn serve_gate_channel(mut chan: UnixStream, mut child: Child, owner: GateOwner) 
         }
     }
     // Untrack before reaping so `stop_gates_for` can never signal a
-    // pid that has been reaped and reused.
-    let _ = child.kill();
-    track_gate(gate_pid, owner.uid, false);
-    let _ = child.wait();
+    // pid that has been reaped and reused. A service-run gate's lifeline
+    // connection is dropped with its registry entry.
+    track_gate(key, owner.uid, None);
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// Spawn the gate here (user mode): returns the child and its ready line.
+fn start_local(
+    peer_pid: i32,
+    gate_end: &UnixStream,
+    config: SessionConfig,
+) -> Result<(Child, ReadyLine), String> {
+    let mut child = spawn_gate(peer_pid, gate_end)?;
+    let payload = zeroize::Zeroizing::new(serde_json::to_vec(&config).map_err(|e| e.to_string())?);
+    drop(config);
+    let ready = child
+        .stdin
+        .take()
+        .ok_or_else(|| "kepr-gate has no stdin".to_string())
+        .and_then(|mut stdin| {
+            stdin
+                .write_all(&payload)
+                .map_err(|e| format!("kepr-gate: {e}"))
+        })
+        .and_then(|_| read_ready(&mut child));
+    match ready {
+        Ok(r) => Ok((child, r)),
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(e)
+        }
+    }
 }
 
 fn start(
@@ -232,9 +264,6 @@ fn start(
     routes: &[GateRoute],
     (port, limits): (Option<u16>, GateLimits),
 ) -> Result<Response, String> {
-    if !crate::user_mode() {
-        return Err("agent sessions need the user-mode daemon for now".into());
-    }
     validate_routes(routes)?;
     limits.validate()?;
     if gates_for(uid) >= MAX_GATES_PER_UID {
@@ -250,36 +279,28 @@ fn start(
         limits,
     };
     let (daemon_end, gate_end) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
-    let mut child = spawn_gate(peer_pid, &gate_end)?;
-    drop(gate_end);
-    let payload = zeroize::Zeroizing::new(serde_json::to_vec(&config).map_err(|e| e.to_string())?);
-    drop(config);
-    let ready = child
-        .stdin
-        .take()
-        .ok_or_else(|| "kepr-gate has no stdin".to_string())
-        .and_then(|mut stdin| {
-            stdin
-                .write_all(&payload)
-                .map_err(|e| format!("kepr-gate: {e}"))
-        })
-        .and_then(|_| read_ready(&mut child));
-    let ready = match ready {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(e);
-        }
+    let (child, ready, key, handle) = if crate::user_mode() {
+        let (child, ready) = start_local(peer_pid, &gate_end, config)?;
+        let pid = child.id() as i32;
+        (Some(child), ready, pid, Handle::Pid(pid))
+    } else {
+        let (conn, ready) = crate::daemon_gate_service::start(peer_pid, &gate_end, config)?;
+        (
+            None,
+            ready,
+            crate::daemon_gate_service::next_key(),
+            Handle::Conn(conn),
+        )
     };
-    let gate_pid = child.id() as i32;
+    drop(gate_end);
     let owner = GateOwner {
         uid,
         username: username.to_string(),
         pid: peer_pid,
     };
-    track_gate(gate_pid, uid, true);
-    std::thread::spawn(move || serve_gate_channel(daemon_end, child, owner));
+    track_gate(key, uid, Some(handle));
+    std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
+    let gate_pid = key.max(0);
     Ok(Response::GateStarted {
         port: ready.port,
         placeholders: ready.placeholders,

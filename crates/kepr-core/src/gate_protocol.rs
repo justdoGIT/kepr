@@ -111,6 +111,15 @@ impl GateLimits {
     }
 }
 
+/// System-mode daemon → kepr-gate service (T1.19), sent after the
+/// session channel fd (SCM_RIGHTS) on the service's root-only socket.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServiceStart {
+    /// The agent process; the session gate exits when it does.
+    pub owner_pid: i32,
+    pub config: SessionConfig,
+}
+
 /// The single line a gate prints to stdout once it is listening.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReadyLine {

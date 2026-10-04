@@ -35,7 +35,8 @@ the exact commands that prove it's done.
 | P10.7 `kepr discover` (aws, git, netrc, npm, pypi, docker, gh, kube) | shipped |
 | P10.2 `kepr import` (CSV, Bitwarden / Keeper / flat JSON, `.env`) | shipped (KDBX and encrypted export open) |
 | P5.5 `kepr totp`, P5.7 `kepr inject`, P6.4 `kepr scan`, P10.9 `kepr copy` | shipped |
-| T1.19 gate as a system service; P2.1 egress proxy, P2.2 SigV4 re-sign; P4 vault image; rest of P5–P10 | open (L: split before starting) |
+| T1.19 gate as a system service (`kepr-gate.service`, `kepr-gate --serve`) | shipped |
+| P2.1 egress proxy, P2.2 SigV4 re-sign; P4 vault image; rest of P5–P10 | open (L: split before starting) |
 
 **Where the code differs from the ticket text** (the code is authoritative):
 

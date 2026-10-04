@@ -7,12 +7,15 @@ description: "Feature gap analysis against Keeper Security, plus the design for 
 
 Status: **in progress** (October 2026). Shipped: P0; P1 (sealed
 credentials, daemon-spawned kepr-gate, `kepr agent add|run|install|adopt|ls|revoke`,
-the agent sandbox, `kepr mcp`) except the system-mode gate service;
+the agent sandbox, `kepr mcp`, the system-mode gate service);
 P2.4 `kepr ssh-agent`; P3 secret memory, doctor hardening, `kepr panic` and
-lock on suspend / screen lock; P4.3 TPM2 sealing; P5.3 history and restore;
-P6.4 `kepr health`; P8 Python SDK; P10.2 `kepr import`; P10.7 `kepr discover`; P9.1–P9.3 (consent, prompt DLP, output masking), P9.5 spend and rate guard, P9.8 `kepr leaked` and P9.6
-`kepr usage`; `kepr totp`, `kepr inject`, `kepr scan`, `kepr copy`. Not yet:
-the system-mode gate, P2.1–P2.3, the P4 vault image and the rest of P5–P10.
+lock on suspend / screen lock; P4.3 TPM2 sealing; P5.1 typed records;
+P5.3 history and restore; P5.6 passphrases; P6.3 recovery kit; P6.4
+`kepr health`; P8 Python, Node.js and Go clients; P9.1–P9.3 (consent,
+prompt DLP, output masking), P9.5 spend and rate guard, P9.6 `kepr usage`,
+P9.8 `kepr leaked`; P10.2 `kepr import`; P10.7 `kepr discover`; `kepr totp`,
+`kepr inject`, `kepr scan`, `kepr copy`. Not yet: P2.1–P2.3, the P4 vault
+image and the rest of P5–P10.
 Ticket status: [Agent Vault: Implementation Tickets](/docs/agent-vault-tickets).
 
 The plan has two halves:

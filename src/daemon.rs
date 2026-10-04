@@ -17,6 +17,7 @@ mod daemon_expiry;
 mod daemon_extra;
 mod daemon_gate;
 mod daemon_gate_registry;
+mod daemon_gate_service;
 mod daemon_handlers;
 mod daemon_handlers_get;
 mod daemon_health;

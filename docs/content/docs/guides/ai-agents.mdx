@@ -240,8 +240,11 @@ kepr exec --env DEPLOY_TOKEN --mask -- ./deploy.sh
 
 ## Current limits
 
-- **User-mode daemon only.** The system-mode service forbids network
-  sockets; a separate gate service is planned.
+- **System mode needs `kepr-gate.service`.** The root daemon forbids
+  itself network sockets, so its agent sessions run in this service, under
+  an unprivileged dynamic user with no access to the credential store.
+  `install.sh` enables it. The daemon passes each session's channel to it
+  over a root-only socket. `kepr panic` reaches these gates too.
 - **TLS-inspecting networks:** if your network intercepts TLS with its own
   certificate authority, the gate refuses the connection, because it trusts
   only public roots. A root-owned CA setting is planned.

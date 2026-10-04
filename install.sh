@@ -99,7 +99,11 @@ fi
 if $SYSTEM_MODE; then
     echo -e "\n${CYN}━━━ Installing systemd service ━━━${RST}"
     sudo cp systemd/kepr.service /etc/systemd/system/kepr.service
+    # Agent sessions under the system daemon run in their own service
+    # (unprivileged dynamic user with network access, no store access).
+    sudo cp systemd/kepr-gate.service /etc/systemd/system/kepr-gate.service
     sudo systemctl daemon-reload
+    sudo systemctl enable --now kepr-gate.service || warn "kepr-gate.service did not start; agent sessions need it in system mode"
     sudo systemctl enable kepr.service
     sudo systemctl restart kepr.service
     sleep 1

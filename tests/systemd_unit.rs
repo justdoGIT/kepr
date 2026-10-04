@@ -114,3 +114,26 @@ fn unit_keeps_capability_bounding_set_minimal() {
         "ambient set must be empty"
     );
 }
+
+/// The system-mode gate service (T1.19) must stay unprivileged and away
+/// from the credential store: it handles network traffic for agents.
+#[test]
+fn gate_service_unit_keeps_its_isolation() {
+    let unit = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("systemd/kepr-gate.service"),
+    )
+    .expect("read kepr-gate.service");
+    for d in [
+        "DynamicUser=yes",
+        "CapabilityBoundingSet=\n",
+        "NoNewPrivileges=yes",
+        "ProtectSystem=strict",
+        "InaccessiblePaths=-/etc/credstore.encrypted -/var/lib/kepr",
+        "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+        "LimitCORE=0",
+        "ExecStart=/usr/local/bin/kepr-gate --serve /run/kepr-gate/gate.sock",
+    ] {
+        assert!(unit.contains(d), "kepr-gate.service lost `{}`", d.trim());
+    }
+    assert!(!unit.contains("User=root"), "the gate service must not run as root");
+}

@@ -13,6 +13,7 @@
 
 pub mod auth;
 pub mod binding;
+pub mod fdpass;
 pub mod framing;
 pub mod gate_protocol;
 pub mod generate;
