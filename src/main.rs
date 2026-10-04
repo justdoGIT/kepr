@@ -42,6 +42,7 @@ mod cli_rotate;
 mod cli_sandbox_seccomp;
 mod cli_sandbox_sys;
 mod cli_scan;
+mod cli_share;
 mod cli_ssh;
 mod cli_ssh_agent;
 mod cli_totp;

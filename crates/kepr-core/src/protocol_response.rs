@@ -127,6 +127,15 @@ pub enum Response {
         name: String,
         breached: bool,
     },
+    ShareKeyOk {
+        /// `kepr-pub1-…`, safe to publish.
+        public: String,
+    },
+    ShareOk {
+        /// `kepr-share1-…`; readable only by the recipient.
+        envelope: String,
+        expires_at: String,
+    },
     RecoveryKitOk {
         fingerprint: String,
         shares: Vec<ZeroString>,

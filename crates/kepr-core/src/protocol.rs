@@ -218,6 +218,24 @@ pub enum Request {
         shares: Vec<ZeroString>,
         new_password: ZeroString,
     },
+    /// P6.1: this user's share public key (`create`: make one if missing).
+    ShareKey {
+        #[serde(default)]
+        create: bool,
+    },
+    /// P6.2: encrypt `name` to the public key `to` (expires after ttl).
+    ShareSend {
+        name: String,
+        to: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        ttl_secs: Option<u64>,
+    },
+    /// P6.2: decrypt and store a share (single use), optionally renamed.
+    ShareReceive {
+        envelope: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        name: Option<String>,
+    },
     /// P5.1: store a typed record; `fields` is a JSON object of strings.
     RecordSet {
         name: String,

@@ -51,6 +51,8 @@ COMMANDS:
   copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
   record add KEY --type T [--field k=v|k=-]...  typed record (login, card, database, server, api, note, custom)
   record show KEY [--reveal] | record get KEY FIELD | record types
+  share key | share send KEY --to PUBKEY [--ttl SECS] [-o FILE] | share receive [FILE] [--as KEY]
+                                       give one credential to another kepr user (encrypted, single-use)
   history KEY                          previous values kept (last 5), no values shown
   restore KEY --version N              make version N current again (undoable)
   usage [--days N]                     uses / refusals / last use per key; flags never-used keys

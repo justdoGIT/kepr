@@ -73,6 +73,9 @@ pub struct CredMeta {
     /// P5.1: the value is a typed record of this type (login, card, …).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub record_type: Option<String>,
+    /// P6.1: the value is this user's X25519 share key; `Get` refuses it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub share_key: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -388,7 +391,7 @@ mod tests {
                 sealed: None,
                 bindings: None,
                 ssh: None,
-                record_type: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -437,7 +440,7 @@ mod tests {
                 sealed: None,
                 bindings: None,
                 ssh: None,
-                record_type: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -459,7 +462,7 @@ mod tests {
                 sealed: None,
                 bindings: None,
                 ssh: None,
-                record_type: None,
+                ..Default::default()
             },
         )
         .unwrap();

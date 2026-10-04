@@ -74,6 +74,30 @@ the whole record. Templates read single fields:
 DATABASE_URL=postgres://kepr://PROD_DB/user:kepr://PROD_DB/password@kepr://PROD_DB/host/app
 ```
 
+## Sharing with another kepr user
+
+```bash
+kepr share key                                    # bob: print his public key (kepr-pub1-…)
+kepr share send DB_PASS --to kepr-pub1-… -o db.share --ttl 3600   # alice
+kepr share receive db.share                       # bob: stored as DB_PASS (or --as NAME)
+```
+
+How it works:
+
+- **Encryption:** the sender's daemon encrypts the value to the recipient's
+  key with an ephemeral X25519 key, HKDF-SHA256 and AES-256-GCM. The
+  envelope is bound to that recipient and is tamper-evident.
+- **Decryption:** only the recipient's daemon can decrypt it, and it stores
+  the value directly. Neither CLI sees the plaintext.
+- **Expiry:** shares expire after `--ttl` (default 24 h, at most 30 days).
+- **Single use:** a share can be received once; replaying the same file is
+  refused.
+- **What can't be shared:** sealed agent keys, SSH keys and the share key
+  itself.
+
+There's no server: move the envelope by any channel. On its own it is
+useless to anyone but the recipient.
+
 ## Credential history
 
 Every `set`, `rotate` or `restore` first saves the value being replaced.

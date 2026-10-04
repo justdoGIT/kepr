@@ -12,6 +12,7 @@
 //   kepr health [--max-age DAYS] [--breach]
 //   kepr leaked NAME [--yes]
 //   kepr record add|show|get|types        see cli_record.rs
+//   kepr share key|send|receive           see cli_share.rs
 //   kepr recovery-kit create|restore      see cli_recovery.rs
 //   kepr discover [--seal] [--overwrite] [--yes]
 //   kepr import FILE [--format F] [--prefix P] [--seal] [--overwrite] [--yes]
@@ -34,6 +35,7 @@ pub const VERBS: &[&str] = &[
     "discover",
     "leaked",
     "record",
+    "share",
     "recovery-kit",
     "__clipboard-clear",
 ];
@@ -157,6 +159,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
             ),
             "recovery-kit" => crate::cli_recovery::cmd_recovery_kit(args),
             "record" => crate::cli_record::cmd_record(args),
+            "share" => crate::cli_share::cmd_share(args),
             "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
             "ssh" => crate::cli_ssh::cmd_ssh(args),
             "ssh-agent" => crate::cli_ssh_agent::cmd_ssh_agent(args),
