@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "kepr": { "command": "kepr", "args": ["mcp"] }
+  }
+}

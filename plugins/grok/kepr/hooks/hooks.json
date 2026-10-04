@@ -1,0 +1,27 @@
+{
+  "description": "kepr: keep secrets out of prompts, tool calls and the model's context",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kepr hook prompt",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kepr hook pre-tool",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

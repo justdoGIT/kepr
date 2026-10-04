@@ -14,6 +14,7 @@ mod cli_agent_db_rotate;
 mod cli_agent_detect;
 mod cli_agent_egress;
 mod cli_agent_install;
+mod cli_agent_plugin;
 mod cli_agent_run;
 mod cli_agent_sandbox;
 mod cli_args;
@@ -29,6 +30,7 @@ mod cli_fido2;
 mod cli_health;
 mod cli_help;
 mod cli_history;
+mod cli_hook;
 mod cli_import;
 mod cli_import_parse;
 mod cli_inject;
@@ -71,6 +73,10 @@ fn main() {
     // Verbs with their own small parsers (cli_extra.rs).
     let raw: Vec<String> = std::env::args().collect();
     if let Some(pos) = raw.iter().skip(1).position(|a| !a.starts_with("--")) {
+        // Harness hooks speak exit codes, not Responses.
+        if raw[pos + 1] == "hook" {
+            std::process::exit(cli_hook::cmd_hook(&raw[pos + 2..]));
+        }
         if cli_extra::VERBS.contains(&raw[pos + 1].as_str()) {
             cli_mode::init_from_argv(&raw);
             let resp = cli_extra::dispatch(&raw[pos + 1], &raw[pos + 2..]);

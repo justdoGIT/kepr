@@ -62,8 +62,36 @@ places, or already stored in kepr, is skipped rather than overwritten.
 
 `kepr agent install` edits the harness's own config file
 (`~/.omp/agent/models.yml`, `~/.grok/config.toml`) to point at the gate on
-port 7878, after writing a timestamped backup. Running it twice changes
-nothing.
+port 7878, after writing a timestamped backup. It also installs kepr's
+plugin for that harness (below). Running it twice changes nothing.
+
+### Plugins for omp and Grok Build
+
+`kepr agent install omp|grok` installs a plugin that makes the harness
+itself keep secrets out of the conversation. Both plugins ask
+`kepr hook` for their decisions, so the rules are the same in each.
+
+| What it does | omp | Grok Build |
+| --- | --- | --- |
+| Sends provider calls through the gate with the placeholder (no config edit needed) | yes (`anthropic`, `openai`, `xai`) | via `config.toml` |
+| Refuses tool calls that would print a stored value (`kepr get`, `env`, `exec`, `totp`, `inject`, `copy`, `record`, `recovery-kit`) | yes | yes |
+| Refuses tool calls that contain a real key (a command, or file content) | yes | yes |
+| Refuses a prompt with a pasted key, before it reaches the model | interactive sessions | yes |
+| Removes keys from user messages before every model request | yes (covers `omp -p` and RPC) | – |
+| Tells the model that its keys are placeholders | system prompt | a `kepr` skill |
+| `kepr mcp` as an MCP server | – | yes |
+| Status command | `/kepr` | – |
+
+- **Where they go:** the omp extension goes into `~/.omp/agent/extensions/kepr/`,
+  where omp finds it on its own. The Grok Build plugin's source goes into
+  `~/.local/share/kepr/plugins/grok/kepr/`, and kepr registers it with
+  `grok plugin install … --trust`, or `grok plugin update kepr` after an
+  upgrade. If `grok` isn't on your `PATH`, kepr prints the command to run.
+- **What they don't do:** the plugins are a guard for sessions that run
+  without the sandbox. The boundary is still the gate and the sandbox: under
+  `kepr agent run`, the agent only ever holds placeholders, and the kepr
+  socket is hidden from it.
+- **Tested against:** omp 18.6.0 and Grok Build 1.0.46.
 
 Pass your own command line after `--`:
 

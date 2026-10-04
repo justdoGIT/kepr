@@ -172,12 +172,18 @@ pub fn cmd_run(
     // tokens the egress placeholders replace, then add ours.
     let shadowed = crate::cli_agent_egress::shadowed(&placeholders);
     let inherited = std::env::vars().filter(|(k, _)| {
-        !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
+        k != "KEPR_GATE_URL"
+            && !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
             && !crate::cli_agent_db::DB_VARS.contains(&k.as_str())
             && !shadowed.contains(&k.as_str())
     });
     let mut env = build_env(adapter, gate_port, &placeholders, inherited);
     env.extend(crate::cli_agent_db::env(&placeholders, &db_ports));
+    // Lets harness plugins (plugins/omp, plugins/grok) find the gate.
+    env.push((
+        "KEPR_GATE_URL".into(),
+        format!("http://127.0.0.1:{gate_port}"),
+    ));
     if let Some(pem) = ca_pem {
         match crate::cli_agent_egress::env(gate_port, &pem, &placeholders) {
             Ok(e) => env.extend(e),

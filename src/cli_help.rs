@@ -38,7 +38,9 @@ COMMANDS:
   agent add-db KEY --url postgres://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
                                        sealed database login; agents get DATABASE_URL to a local gate port
   agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new
-  agent install omp|grok               point the harness's config file at the gate (once)
+  agent install omp|grok               point the harness's config file at the gate and install
+                                       kepr's plugin for it (once)
+  hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
   agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
   agent ls | agent revoke KEY          list / delete sealed keys
   mcp                                  MCP server (stdio): list keys, call provider APIs, no values
