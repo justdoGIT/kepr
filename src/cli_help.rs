@@ -47,6 +47,8 @@ COMMANDS:
   restore KEY --version N              make version N current again (undoable)
   usage [--days N]                     uses / refusals / last use per key; flags never-used keys
   health [--max-age DAYS] [--breach]   weak / reused / old keys; --breach checks breach lists (k-anonymity)
+  discover [--seal] [--overwrite] [--yes]  find plain-text creds in aws/git/netrc/npm/pypi/docker/gh/kube
+                                       configs and import them (source files are left alone)
   import FILE [--format auto|csv|json|env] [--prefix P] [--seal] [--overwrite] [--yes]
                                        from 1Password/Bitwarden/KeePassXC/LastPass/browser CSV,
                                        Bitwarden/Keeper/Doppler/Infisical JSON or .env

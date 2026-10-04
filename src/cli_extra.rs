@@ -10,6 +10,7 @@
 //   kepr restore NAME --version N
 //   kepr usage [--days N]
 //   kepr health [--max-age DAYS] [--breach]
+//   kepr discover [--seal] [--overwrite] [--yes]
 //   kepr import FILE [--format F] [--prefix P] [--seal] [--overwrite] [--yes]
 
 use kepr_core::protocol::Response;
@@ -27,6 +28,7 @@ pub const VERBS: &[&str] = &[
     "usage",
     "health",
     "import",
+    "discover",
     "__clipboard-clear",
 ];
 
@@ -132,6 +134,16 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                     yes: flag("--yes") || flag("-y"),
                 };
                 crate::cli_import::cmd_import(&file, &opts)
+            }
+            "discover" => {
+                let flag = |f: &str| args.iter().any(|a| a == f);
+                crate::cli_discover::cmd_discover(&crate::cli_import::Opts {
+                    format: "auto",
+                    prefix: None,
+                    seal: flag("--seal"),
+                    overwrite: flag("--overwrite"),
+                    yes: flag("--yes") || flag("-y"),
+                })
             }
             "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
             "ssh" => crate::cli_ssh::cmd_ssh(args),

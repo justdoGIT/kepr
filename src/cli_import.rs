@@ -89,10 +89,16 @@ pub fn cmd_import(file: &str, o: &Opts) -> Response {
         Ok(t) => Zeroizing::new(t),
         Err(e) => return Response::fail(format!("{file}: {e}")),
     };
-    let mut entries = match cli_import_parse::parse(o.format, file, &text) {
+    let entries = match cli_import_parse::parse(o.format, file, &text) {
         Ok(e) => e,
         Err(e) => return Response::fail(e),
     };
+    import_entries(entries, o, Some(file))
+}
+
+/// Plan, print, and (with --yes) store `entries`. `file` is the export
+/// to remind the user to delete.
+pub fn import_entries(mut entries: Vec<Entry>, o: &Opts, file: Option<&str>) -> Response {
     if let Some(p) = o.prefix {
         let p = cli_import_parse::kepr_name(p);
         for e in &mut entries {
@@ -128,9 +134,11 @@ pub fn cmd_import(file: &str, o: &Opts) -> Response {
         }
     }
     cli_ui::ok(&format!("imported {stored} credential(s), {sealed} sealed"));
-    cli_ui::warn(&format!(
-        "{file} holds every value in plain text; delete it (shred -u {file})"
-    ));
+    if let Some(file) = file {
+        cli_ui::warn(&format!(
+            "{file} holds every value in plain text; delete it (shred -u {file})"
+        ));
+    }
     Response::Pong
 }
 

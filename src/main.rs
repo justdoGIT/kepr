@@ -16,6 +16,7 @@ mod cli_agent_sandbox;
 mod cli_args;
 mod cli_cmds;
 mod cli_copy;
+mod cli_discover;
 mod cli_doctor;
 mod cli_doctor_hardening;
 mod cli_envdump;

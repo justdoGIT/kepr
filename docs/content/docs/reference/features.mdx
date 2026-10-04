@@ -29,6 +29,7 @@ description: "Command surface, generators, audit log, environment variables, exi
 | `restore` |        | `KEY --version N`                                   | `RestoreOk`           |
 | `usage`  |         | `[--days N]`                                        | `UsageOk { keys }`    |
 | `health` |         | `[--max-age DAYS] [--breach]`                       | `HealthOk { items }` (flags only) |
+| `discover` |       | `[--seal] [--overwrite] [--yes]`                    | plan, then `SetOk` per entry |
 | `import` |         | `FILE [--format auto\|csv\|json\|env] [--prefix P] [--seal] [--overwrite] [--yes]` | plan, then `SetOk` per entry |
 | `ssh generate` / `import` / `list` | | `KEY [--comment C]` / `KEY FILE` / — | `SshKeyOk` / `SshListOk` |
 | `ssh-agent` |      | `[--foreground] [--socket PATH]`                    | prints `SSH_AUTH_SOCK` exports |
@@ -109,6 +110,27 @@ Names that already exist are skipped unless you pass `--overwrite`. With
 write-only and bound to that provider, as `kepr agent add` does. Encrypted
 exports and binary vaults (`.kdbx`, `.1pux`) aren't read: export to CSV or
 JSON, import, then delete the export.
+
+## Discover
+
+`kepr discover` looks for credentials that CLI tools keep in plain text:
+
+- `~/.aws/credentials`
+- `~/.git-credentials`
+- `~/.netrc`
+- `~/.npmrc`
+- `~/.pypirc`
+- `~/.docker/config.json`
+- gh's `hosts.yml`
+- the kubeconfig
+
+It imports them through the same plan / `--yes` flow as `kepr import`.
+
+Git and Docker entries are stored as `GIT_<HOST>` and `DOCKER_<HOST>`
+records in the format `git-credential-kepr` and `docker-credential-kepr`
+read. Pointing those tools at the kepr helper therefore works at once.
+Source files are never changed. For each file, the report says how to stop
+keeping the secret there.
 
 ## Python SDK
 
