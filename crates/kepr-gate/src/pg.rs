@@ -41,17 +41,20 @@ pub struct DbRoute {
 }
 
 #[derive(serde::Deserialize)]
-struct Login {
-    user: String,
-    password: kepr_core::generate::ZeroString,
-    database: String,
+pub(crate) struct Login {
+    pub(crate) user: String,
+    pub(crate) password: kepr_core::generate::ZeroString,
+    pub(crate) database: String,
     #[serde(default)]
-    sslmode: String,
+    pub(crate) sslmode: String,
     #[serde(default)]
-    ca_pem: String,
+    pub(crate) ca_pem: String,
+    /// P7.2: set during `kepr agent rotate-db`, until committed.
+    #[serde(default)]
+    pub(crate) pending_password: Option<kepr_core::generate::ZeroString>,
 }
 
-fn error_response(code: &str, msg: &str) -> Vec<u8> {
+pub(crate) fn error_response(code: &str, msg: &str) -> Vec<u8> {
     let mut body = Vec::new();
     for (k, v) in [(b'S', "FATAL"), (b'V', "FATAL"), (b'C', code), (b'M', msg)] {
         body.push(k);
@@ -65,7 +68,7 @@ fn error_response(code: &str, msg: &str) -> Vec<u8> {
     out
 }
 
-fn message(kind: u8, body: &[u8]) -> Vec<u8> {
+pub(crate) fn message(kind: u8, body: &[u8]) -> Vec<u8> {
     let mut out = vec![kind];
     out.extend_from_slice(&((body.len() + 4) as u32).to_be_bytes());
     out.extend_from_slice(body);
@@ -122,7 +125,7 @@ fn startup(params: &[(String, String)], login: &Login) -> Vec<u8> {
     put("user", &login.user);
     put("database", &login.database);
     for (k, v) in params {
-        if !matches!(k.as_str(), "user" | "database" | "replication") {
+        if !matches!(k.as_str(), "user" | "database" | "replication") && !k.starts_with("kepr_") {
             put(k, v);
         }
     }
@@ -134,7 +137,7 @@ fn startup(params: &[(String, String)], login: &Login) -> Vec<u8> {
 
 /// Log in to the server; on success the AuthenticationOk message is
 /// returned so it can be passed on to the client.
-async fn login(
+pub(crate) async fn login(
     up: &mut Box<dyn Io>,
     params: &[(String, String)],
     l: &Login,
@@ -290,6 +293,11 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
                 return Err((502, None));
             }
         };
+    if params.iter().any(|(k, v)| k == "kepr_rotate" && v == "1") {
+        let reply = crate::pg_rotate::session(up, route, &params, &login_rec).await;
+        let _ = client.write_all(&reply).await;
+        return Ok(());
+    }
     match login(&mut up, &params, &login_rec).await {
         Ok(ok) => client.write_all(&ok).await.map_err(io)?,
         Err(err) => {
@@ -316,6 +324,7 @@ mod tests {
             database: "prod".into(),
             sslmode: String::new(),
             ca_pem: String::new(),
+            pending_password: None,
         };
         let m = startup(&params, &l);
         let body = &m[8..];

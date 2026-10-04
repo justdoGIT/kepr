@@ -236,6 +236,12 @@ pub enum Request {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         name: Option<String>,
     },
+    /// P7.2: rotate a sealed database login: `begin` adds a random
+    /// pending password, `commit` makes it current, `abort` drops it.
+    DbRotate {
+        name: String,
+        phase: String,
+    },
     /// P5.1: store a typed record; `fields` is a JSON object of strings.
     RecordSet {
         name: String,

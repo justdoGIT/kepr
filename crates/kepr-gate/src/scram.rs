@@ -30,6 +30,23 @@ fn pbkdf2(password: &[u8], salt: &[u8], iterations: u32) -> Zeroizing<[u8; 32]> 
     out
 }
 
+/// The SCRAM-SHA-256 verifier PostgreSQL stores for `password`
+/// (`SCRAM-SHA-256$<iter>:<salt>$<StoredKey>:<ServerKey>`). Sending this in
+/// `ALTER ROLE … PASSWORD` keeps the password itself off the wire and out
+/// of server logs.
+pub fn verifier(password: &str, salt: &[u8], iterations: u32) -> String {
+    let salted = pbkdf2(password.as_bytes(), salt, iterations);
+    let client_key = Zeroizing::new(hmac(salted.as_ref(), b"Client Key"));
+    let stored: [u8; 32] = Sha256::digest(client_key.as_ref()).into();
+    let server = hmac(salted.as_ref(), b"Server Key");
+    format!(
+        "SCRAM-SHA-256${iterations}:{}${}:{}",
+        B64.encode(salt),
+        B64.encode(stored),
+        B64.encode(server)
+    )
+}
+
 /// One login in progress.
 pub struct Scram {
     client_first_bare: String,
@@ -122,6 +139,29 @@ mod tests {
             .verify_server("v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=")
             .is_ok());
         assert!(s.verify_server("v=AAAA").is_err());
+    }
+
+    /// A verifier made here must let the SCRAM client log in: replay the
+    /// server side of the exchange from the verifier's own keys.
+    #[test]
+    fn verifier_matches_the_client_proof() {
+        let v = verifier("pencil", b"0123456789abcdef", 4096);
+        let parts: Vec<&str> = v.split(['$', ':']).collect();
+        assert_eq!((parts[0], parts[1]), ("SCRAM-SHA-256", "4096"));
+        let (salt, stored, server_key) = (parts[2], parts[3], parts[4]);
+        let mut s = Scram::new("pencil", "abc");
+        let first = format!("r=abcXYZ,s={salt},i=4096");
+        let fin = s.client_final(&first).unwrap();
+        let proof = B64.decode(fin.rsplit_once("p=").unwrap().1).unwrap();
+        let auth = format!("n=,r=abc,{first},c=biws,r=abcXYZ");
+        let stored = B64.decode(stored).unwrap();
+        let sig = hmac(&stored, auth.as_bytes());
+        let client_key: Vec<u8> = proof.iter().zip(sig.iter()).map(|(a, b)| a ^ b).collect();
+        assert_eq!(Sha256::digest(&client_key).as_slice(), stored.as_slice());
+        let server_sig = hmac(&B64.decode(server_key).unwrap(), auth.as_bytes());
+        assert!(s
+            .verify_server(&format!("v={}", B64.encode(server_sig)))
+            .is_ok());
     }
 
     #[test]

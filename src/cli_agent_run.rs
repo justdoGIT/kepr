@@ -15,7 +15,7 @@ use crate::cli_agent_adapters::{self, Adapter, Value};
 use crate::client;
 
 /// The caller's sealed credentials.
-fn sealed_creds() -> Result<Vec<kepr_core::protocol::CredInfo>, String> {
+pub fn sealed_creds() -> Result<Vec<kepr_core::protocol::CredInfo>, String> {
     match client::send_request(&Request::List)? {
         Response::ListOk { credentials, .. } => Ok(credentials
             .into_iter()

@@ -81,8 +81,8 @@ impl State {
         }
     }
 
-    pub fn with_egress(mut self, ca: Arc<crate::ca::SessionCa>, tunnel: bool) -> Self {
-        (self.ca, self.tunnel) = (Some(ca), tunnel);
+    pub fn with_egress(mut self, ca: Option<Arc<crate::ca::SessionCa>>, tunnel: bool) -> Self {
+        (self.ca, self.tunnel) = (ca, tunnel);
         self
     }
 
@@ -567,7 +567,7 @@ mod tests {
         );
         let state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
             .with_test_upstream(upstream)
-            .with_egress(ca.clone(), tunnel);
+            .with_egress(Some(ca.clone()), tunnel);
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap().to_string();
         tokio::spawn(serve(l, Arc::new(state)));

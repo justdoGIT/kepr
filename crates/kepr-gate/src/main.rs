@@ -12,6 +12,7 @@ mod egress;
 mod journal;
 mod limits;
 mod pg;
+mod pg_rotate;
 mod pg_tls;
 mod placeholder;
 mod proxy;

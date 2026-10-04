@@ -133,8 +133,12 @@ pub fn run() -> Result<(), String> {
         .filter_map(|r| kepr_core::providers::lookup(&r.provider))
         .map(|p| p.host.to_string())
         .collect();
-    let ca = Arc::new(crate::ca::SessionCa::new(&hosts)?);
-    let ca_pem = ca.pem().to_string();
+    // A database-only session has no HTTPS host, hence no CA.
+    let ca = match hosts.is_empty() {
+        true => None,
+        false => Some(Arc::new(crate::ca::SessionCa::new(&hosts)?)),
+    };
+    let ca_pem = ca.as_ref().map(|c| c.pem().to_string());
     let state = Arc::new(
         State::new(
             cfg.session_id.clone(),
@@ -178,7 +182,7 @@ pub fn run() -> Result<(), String> {
             ready: true,
             port,
             placeholders,
-            ca_pem: Some(ca_pem),
+            ca_pem,
             db_ports,
         };
         let mut out = std::io::stdout();

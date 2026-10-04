@@ -74,6 +74,9 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         Request::ShareReceive { envelope, name } => {
             crate::daemon_share::handle_receive(uid, username, &envelope, name.as_deref())
         }
+        Request::DbRotate { name, phase } => {
+            crate::daemon_records::handle_db_rotate(uid, username, &name, &phase)
+        }
         _ => Response::fail("unsupported request"),
     }
 }

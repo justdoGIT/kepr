@@ -115,6 +115,80 @@ pub fn handle_record_set(
     handle_set(uid, username, name, Some(fields.as_str()), None, flags)
 }
 
+/// P7.2: `begin` puts a random `pending_password` into a sealed database
+/// record, `commit` makes it the password, `abort` drops it. The value is
+/// re-stored with its existing policy (seal, binding, consent); nothing is
+/// returned. The gate performs the actual ALTER ROLE in between.
+pub fn handle_db_rotate(uid: u32, username: &str, name: &str, phase: &str) -> Response {
+    let upper = name.to_uppercase();
+    let r = (|| -> Result<(), String> {
+        crate::store::validate_name(name)?;
+        let meta = crate::expiry::read_meta(&crate::expiry::meta_path_for(
+            &crate::store::cred_path(uid, &upper),
+        ))
+        .and_then(Result::ok)
+        .unwrap_or_default();
+        if meta.sealed != Some(true) || meta.record_type.as_deref() != Some("database") {
+            return Err("only sealed database logins (kepr agent add-db) can be rotated".into());
+        }
+        let value = crate::crypto::default_backend()
+            .decrypt(uid, &upper)
+            .map_err(|e| crate::crypto::sanitize_lookup_error(&e))?;
+        let mut obj: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(value.as_str()).map_err(|_| "damaged database record")?;
+        match phase {
+            // An unfinished rotation keeps its pending password: the
+            // server may already have it.
+            "begin" if obj.contains_key("pending_password") => return Ok(()),
+            "begin" => {
+                let p = kepr_core::generate::generate_secret(kepr_core::generate::GenKind::Base62)?;
+                obj.insert("pending_password".into(), p.as_str().into());
+            }
+            "commit" => {
+                let p = obj
+                    .remove("pending_password")
+                    .ok_or("no rotation pending")?;
+                obj.insert("password".into(), p);
+            }
+            "abort" => {
+                obj.remove("pending_password")
+                    .ok_or("no rotation pending")?;
+            }
+            _ => return Err("phase must be begin, commit or abort".into()),
+        }
+        let json = ZeroString::from_string(serde_json::Value::Object(obj).to_string());
+        let flags = SetFlags {
+            requires_consent: meta.requires_consent,
+            sealed: Some(true),
+            bindings: meta.bindings,
+            record_type: meta.record_type,
+            ..Default::default()
+        };
+        match handle_set(uid, username, &upper, Some(json.as_str()), None, flags) {
+            Response::SetOk { .. } => Ok(()),
+            Response::Err { error } => Err(error),
+            _ => Err("unexpected store reply".into()),
+        }
+    })();
+    crate::audit::log(&crate::audit::AuditEvent {
+        op: "db-rotate",
+        name: Some(&upper),
+        uid,
+        username,
+        result: match &r {
+            Ok(()) => crate::audit::AuditResult::Ok,
+            Err(e) => crate::audit::AuditResult::Fail(format!("{phase}: {e}")),
+        },
+    });
+    match r {
+        Ok(()) => Response::DbRotateOk {
+            name: upper,
+            phase: phase.into(),
+        },
+        Err(e) => Response::fail(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -180,6 +180,25 @@ kepr agent run claude
   and `kepr get PROD` is refused. The agent can run queries as that user but
   can't take the password anywhere.
 
+### Rotating the password
+
+```bash
+kepr agent rotate-db PROD
+```
+
+- **How it works:** the daemon adds a random 48-character password to the
+  sealed record as pending. A gate started for this database logs in with
+  the current password and runs `ALTER ROLE CURRENT_USER PASSWORD` with a
+  SCRAM verifier, so the new password never appears in SQL text or server
+  logs. The daemon then makes the pending password the current one.
+- **Who sees it:** nobody. Neither the old nor the new password reaches
+  the CLI, the terminal or the agent.
+- **If it's interrupted:** the pending password is kept. Running the
+  command again finishes the job, even when the server already has the new
+  password. `kepr agent rotate-db PROD --abort` drops a pending password.
+- **What the role needs:** it must be allowed to change its own password,
+  which PostgreSQL allows by default.
+
 ## Spending and rate limits
 
 ```bash

@@ -35,6 +35,7 @@ the exact commands that prove it's done.
 | P6.1 / P6.2 `kepr share` (per-user X25519 keys, expiring single-use envelopes) | shipped (ML-KEM hybrid, team vaults, relay open) |
 | T1.19 system-mode gate service, P2.1 egress proxy | shipped |
 | P7.1 PostgreSQL proxy (`kepr agent add-db`, SCRAM login with a sealed `database` record) | shipped (MySQL, Redis open) |
+| P7.2 `kepr agent rotate-db` (ALTER ROLE through the gate, SCRAM verifier, resumable) | shipped (scheduled rotation open) |
 | P10.7 `kepr discover` (aws, git, netrc, npm, pypi, docker, gh, kube) | shipped |
 | P10.2 `kepr import` (CSV, Bitwarden / Keeper / flat JSON, `.env`) | shipped (KDBX and encrypted export open) |
 | P5.5 `kepr totp`, P5.7 `kepr inject`, P6.4 `kepr scan`, P10.9 `kepr copy` | shipped |

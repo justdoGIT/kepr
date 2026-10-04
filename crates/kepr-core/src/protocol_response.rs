@@ -137,6 +137,10 @@ pub enum Response {
         envelope: String,
         expires_at: String,
     },
+    DbRotateOk {
+        name: String,
+        phase: String,
+    },
     RecoveryKitOk {
         fingerprint: String,
         shares: Vec<ZeroString>,
