@@ -163,6 +163,28 @@ pub fn check_mem_encryption(cpuinfo: Option<&str>) -> Finding {
     }
 }
 
+pub fn check_sleep_lock(gdbus: bool, system_bus: bool, opted_out: bool) -> Finding {
+    if opted_out {
+        f(
+            "lock on sleep",
+            Level::Warn,
+            "disabled by KEPR_LOCK_ON_SLEEP=0",
+        )
+    } else if gdbus && system_bus {
+        f(
+            "lock on sleep",
+            Level::Good,
+            "gates stop and the store locks on suspend / screen lock",
+        )
+    } else {
+        f(
+            "lock on sleep",
+            Level::Warn,
+            "needs gdbus and a system bus (logind) to react to suspend / screen lock",
+        )
+    }
+}
+
 pub fn check_iommu(group_count: usize) -> Finding {
     if group_count > 0 {
         f(
@@ -200,6 +222,12 @@ pub fn report() -> Vec<Finding> {
         ),
         check_mem_encryption(read("/proc/cpuinfo").as_deref()),
         check_iommu(iommu),
+        check_sleep_lock(
+            std::env::var_os("PATH")
+                .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("gdbus").is_file())),
+            std::path::Path::new("/run/dbus/system_bus_socket").exists(),
+            std::env::var("KEPR_LOCK_ON_SLEEP").as_deref() == Ok("0"),
+        ),
     ]
 }
 
@@ -269,5 +297,8 @@ mod tests {
         assert_eq!(check_iommu(0).level, Level::Warn);
         assert_eq!(check_iommu(3).level, Level::Good);
         assert_eq!(check_memfd_secret(true).level, Level::Good);
+        assert_eq!(check_sleep_lock(true, true, false).level, Level::Good);
+        assert_eq!(check_sleep_lock(true, true, true).level, Level::Warn);
+        assert_eq!(check_sleep_lock(false, true, false).level, Level::Warn);
     }
 }

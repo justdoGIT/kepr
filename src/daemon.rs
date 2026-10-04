@@ -25,6 +25,7 @@ mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
 mod daemon_singleton;
+mod daemon_sleepwatch;
 mod daemon_socket;
 mod expiry;
 mod fido2;
@@ -272,6 +273,9 @@ fn main() {
 
     sweep_legacy_credstore();
     daemon_expiry::spawn_sweeper(versions_for_sweeper);
+    if user {
+        daemon_sleepwatch::spawn(effective_uid());
+    }
 
     let chain = audit_chain::AuditChain::open(audit_chain_path()).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot open audit chain: {e}");

@@ -43,11 +43,19 @@ pub(crate) fn gates_for(uid: u32) -> usize {
 /// `kepr panic` (T3.05): stop the caller's gates (their key caches die
 /// with them) and, if the store is passphrase-protected, lock it so the
 /// master key leaves memory until `kepr unlock`.
-pub fn handle_panic(uid: u32, username: &str) -> Response {
+/// Stop `uid`'s gates and lock the store if allowed and protected.
+/// Returns (gates stopped, locked). Used by `kepr panic` and the
+/// suspend/screen-lock watcher.
+pub fn panic_now(uid: u32) -> (usize, bool) {
     let gates_stopped = stop_gates_for(uid);
     let may_lock = crate::user_mode() || uid == 0;
     let locked =
         may_lock && crate::protected_master_key_path().exists() && crypto::lock_backend().is_ok();
+    (gates_stopped, locked)
+}
+
+pub fn handle_panic(uid: u32, username: &str) -> Response {
+    let (gates_stopped, locked) = panic_now(uid);
     audit::log(&AuditEvent {
         op: "panic",
         name: None,
