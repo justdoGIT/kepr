@@ -158,6 +158,8 @@ pub fn cmd_set(a: &Args) -> Response {
         ttl_secs: a.ttl_secs,
         requires_consent: a.requires_consent.then_some(true),
         requires_fido2: a.requires_fido2.then_some(true),
+        sealed: None,
+        bindings: None,
     };
     let resp = dispatch(a, &req);
 
@@ -267,7 +269,7 @@ pub fn cmd_get(a: &Args) -> Response {
         Response::Err { error } => {
             if !a.json {
                 err(error);
-                einfo(&format!("Set it with: kepr set {name}"));
+                einfo(&crate::cli_agent_cmd::get_failure_hint(&name));
             }
             resp
         }

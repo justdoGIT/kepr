@@ -21,7 +21,7 @@ docs/
 ├── scripts/gen-rust-api.mjs   # rustdoc JSON → MDX generator
 ├── source.config.ts           # fumadocs-mdx config
 ├── next.config.mjs
-├── tailwind.config.ts
+├── postcss.config.mjs        # Tailwind 4 (styles: app/global.css)
 └── tsconfig.json
 ```
 

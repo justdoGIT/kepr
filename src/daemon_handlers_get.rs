@@ -36,14 +36,31 @@ fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result<(), String
         Ok(m) => m,
         Err(e) => return Err(format!("meta parse: {e}")),
     };
+    meta_gate(&meta, expiry::now_unix(), || {
+        crate::daemon_polkit::consent_granted(peer_pid)
+    })
+}
+
+/// Pure policy check over a parsed meta. Sealed wins over everything:
+/// a sealed credential is never decrypted for `Get`, and no FIDO2
+/// challenge is issued for it (agent vault plan §4.3).
+fn meta_gate(
+    meta: &expiry::CredMeta,
+    now_unix: u64,
+    consent: impl FnOnce() -> bool,
+) -> Result<(), String> {
+    if meta.sealed == Some(true) {
+        return Err("sealed".to_string());
+    }
+    if meta.ssh.is_some() {
+        return Err("ssh key (sign-only)".to_string());
+    }
     if let Some(exp) = meta.expires_at_unix {
-        if expiry::now_unix() >= exp {
+        if now_unix >= exp {
             return Err("expired".to_string());
         }
     }
-    if matches!(meta.requires_consent, Some(true))
-        && !crate::daemon_polkit::consent_granted(peer_pid)
-    {
+    if matches!(meta.requires_consent, Some(true)) && !consent() {
         return Err("consent denied".to_string());
     }
     // Phase 2 η: FIDO2 gate. The "fido2:" prefix in the error
@@ -182,5 +199,59 @@ pub fn handle_get(
             });
             Response::fail(crypto::sanitize_lookup_error(&e))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kepr_core::binding::{Binding, Inject};
+
+    /// Built directly (not via with_seal, which now rejects sealed +
+    /// FIDO2): a meta file written by an older daemon may still hold it,
+    /// and Get must refuse it all the same.
+    fn sealed_meta() -> expiry::CredMeta {
+        expiry::CredMeta {
+            expires_at_unix: Some(u64::MAX),
+            requires_fido2: Some(true),
+            sealed: Some(true),
+            bindings: Some(vec![Binding {
+                host: "api.x.ai".into(),
+                port: 443,
+                inject: Inject::Bearer,
+            }]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sealed_wins_over_fido2_and_valid_expiry() {
+        assert_eq!(meta_gate(&sealed_meta(), 0, || true), Err("sealed".into()));
+    }
+
+    #[test]
+    fn unsealed_meta_behaves_as_before() {
+        let fido = expiry::CredMeta {
+            requires_fido2: Some(true),
+            ..Default::default()
+        };
+        assert!(meta_gate(&fido, 0, || true)
+            .unwrap_err()
+            .starts_with("fido2:"));
+        let expired = expiry::CredMeta {
+            expires_at_unix: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(meta_gate(&expired, 10, || true), Err("expired".into()));
+        let consent = expiry::CredMeta {
+            requires_consent: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            meta_gate(&consent, 0, || false),
+            Err("consent denied".into())
+        );
+        assert_eq!(meta_gate(&consent, 0, || true), Ok(()));
+        assert_eq!(meta_gate(&expiry::CredMeta::default(), 0, || false), Ok(()));
     }
 }

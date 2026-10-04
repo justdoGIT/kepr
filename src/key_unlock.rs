@@ -73,13 +73,17 @@ pub fn unwrap(envelope: &[u8], password: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN
     let ciphertext = &envelope[nonce_start + NONCE_LEN..];
     let key = derive_key(password, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "invalid key".to_string())?;
-    let plaintext = cipher
-        .decrypt(&nonce.into(), ciphertext)
-        .map_err(|_| "invalid password or protected master-key envelope".to_string())?;
-    let array: [u8; KEY_LEN] = plaintext
-        .try_into()
-        .map_err(|_| "invalid protected master-key plaintext".to_string())?;
-    Ok(Zeroizing::new(array))
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(&nonce.into(), ciphertext)
+            .map_err(|_| "invalid password or protected master-key envelope".to_string())?,
+    );
+    if plaintext.len() != KEY_LEN {
+        return Err("invalid protected master-key plaintext".to_string());
+    }
+    let mut key_out = Zeroizing::new([0u8; KEY_LEN]);
+    key_out.copy_from_slice(&plaintext);
+    Ok(key_out)
 }
 
 #[cfg(test)]

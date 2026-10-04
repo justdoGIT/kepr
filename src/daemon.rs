@@ -14,15 +14,24 @@ mod crypto_inproc;
 mod daemon_audit;
 mod daemon_cache;
 mod daemon_expiry;
+mod daemon_extra;
+mod daemon_gate;
+mod daemon_gate_registry;
 mod daemon_handlers;
 mod daemon_handlers_get;
+mod daemon_health;
+mod daemon_history;
 mod daemon_lock;
+mod daemon_memlock;
 mod daemon_peer;
 mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
 mod daemon_singleton;
+mod daemon_sleepwatch;
 mod daemon_socket;
+mod daemon_ssh;
+mod daemon_usage;
 mod expiry;
 mod fido2;
 mod key_unlock;
@@ -37,12 +46,13 @@ use std::sync::OnceLock;
 
 use audit::{username_for_uid, AuditEvent, AuditResult};
 use daemon_audit::handle_audit_verify;
-use daemon_handlers::{handle_check, handle_delete, handle_list, handle_set};
+use daemon_handlers::{handle_check, handle_delete, handle_list, handle_set, SetFlags};
 use daemon_peer::get_peer_creds;
 use daemon_pool::Pool;
 use daemon_ratelimit::RateLimiter;
 use daemon_socket::{
-    effective_uid, set_socket_permissions, setup_socket_dir, tighten_umask_for_socket,
+    effective_uid, private_umask_after_bind, set_socket_permissions, setup_socket_dir,
+    tighten_umask_for_socket,
 };
 use kepr_core::framing::{read_frame, write_frame};
 use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES, TIMEOUT_SECS};
@@ -62,24 +72,6 @@ static RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 
 fn rate_limiter() -> &'static RateLimiter {
     RATE_LIMITER.get_or_init(|| RateLimiter::new(RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_PER_SEC))
-}
-
-// ── mlockall ─────────────────────────────────────────────────────────────────
-// Lock current and future allocations into RAM so decrypted secret bytes
-// never land on swap. Daemon runs as root, so RLIMIT_MEMLOCK is typically
-// unlimited; soft-fail with a warning if it isn't available.
-
-const MCL_CURRENT: i32 = 1;
-const MCL_FUTURE: i32 = 2;
-extern "C" {
-    fn mlockall(flags: i32) -> i32;
-}
-
-fn lock_memory() {
-    let ret = unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) };
-    if ret != 0 {
-        eprintln!("[kepr-daemon] warning: mlockall failed — secrets may be swappable");
-    }
 }
 
 /// Disable core dumps and ptrace attachment for this process.
@@ -205,7 +197,7 @@ fn sweep_legacy_credstore() {
 }
 
 fn main() {
-    lock_memory();
+    daemon_memlock::lock_memory();
     disable_core_dumps();
 
     let user = std::env::args().any(|arg| arg == "--user") || effective_uid() != 0;
@@ -286,6 +278,9 @@ fn main() {
 
     sweep_legacy_credstore();
     daemon_expiry::spawn_sweeper(versions_for_sweeper);
+    if user {
+        daemon_sleepwatch::spawn(effective_uid());
+    }
 
     let chain = audit_chain::AuditChain::open(audit_chain_path()).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot open audit chain: {e}");
@@ -302,6 +297,7 @@ fn main() {
     tighten_umask_for_socket();
     let listener = UnixListener::bind(&socket).expect("cannot bind socket");
     set_socket_permissions();
+    private_umask_after_bind();
 
     let pool = Pool::new(POOL_WORKERS, POOL_QUEUE, handle_client);
     eprintln!(
@@ -345,15 +341,22 @@ fn handle_client(mut stream: UnixStream) {
         return;
     }
 
+    // The raw frame can hold a secret (Set value, Unlock password):
+    // wipe it once parsed.
     let buf = match read_frame(&mut stream, MAX_MSG_BYTES) {
-        Ok(b) => b,
+        Ok(b) => zeroize::Zeroizing::new(b),
         Err(_) => return,
     };
 
     let request: Request = match serde_json::from_slice(&buf) {
         Ok(r) => r,
         Err(e) => {
-            send_error(&mut stream, &format!("invalid request: {e}"));
+            // serde's message can quote the offending value (possibly a
+            // secret); report only where parsing failed.
+            send_error(
+                &mut stream,
+                &format!("invalid request (line {}, column {})", e.line(), e.column()),
+            );
             return;
         }
     };
@@ -371,6 +374,22 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::Unlock { password } => {
             daemon_lock::handle_unlock_gated(uid, username, password.as_bytes())
         }
+        Request::StartGate {
+            routes,
+            port,
+            limits,
+        } => daemon_gate::handle_start_gate(uid, peer_pid, username, &routes, (port, limits)),
+        Request::Panic => daemon_gate_registry::handle_panic(uid, username),
+        Request::SshGenerate { .. }
+        | Request::SshImport { .. }
+        | Request::SshList
+        | Request::SshSign { .. } => daemon_ssh::dispatch(uid, peer_pid, username, request),
+        Request::History { .. }
+        | Request::Restore { .. }
+        | Request::Usage { .. }
+        | Request::Health { .. }
+        | Request::BreachCheck { .. }
+        | Request::Leaked { .. } => daemon_extra::dispatch(uid, username, request),
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),
@@ -392,15 +411,22 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
             ttl_secs,
             requires_consent,
             requires_fido2,
+            sealed,
+            bindings,
         } => handle_set(
             uid,
             username,
             &name,
             value.as_deref(),
             generate.as_deref(),
-            ttl_secs,
-            requires_consent,
-            requires_fido2,
+            SetFlags {
+                ttl_secs,
+                requires_consent,
+                requires_fido2,
+                sealed,
+                bindings,
+                ssh: None,
+            },
         ),
         Request::Get {
             name,
@@ -415,36 +441,27 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::List => handle_list(uid, username),
         Request::Delete { name } => handle_delete(uid, username, &name),
         Request::Check => handle_check(uid, username),
-        Request::AuditVerify => {
-            let path = audit_chain_path();
-            handle_audit_verify(uid, username, path.to_str().unwrap_or_default())
-        }
+        Request::AuditVerify => handle_audit_verify(uid, username, &audit_chain_path()),
         Request::Fido2Register {
             label,
             credential_id,
             public_key_cose,
-        } => match fido2::register(uid, &label, &credential_id, &public_key_cose) {
-            Ok(()) => {
-                audit::log(&AuditEvent {
-                    op: "fido2-register",
-                    name: Some(&label),
-                    uid,
-                    username,
-                    result: AuditResult::Ok,
-                });
-                Response::Fido2RegisterOk { credential_id }
+        } => {
+            let r = fido2::register(uid, &label, &credential_id, &public_key_cose);
+            audit::log(&AuditEvent {
+                op: "fido2-register",
+                name: Some(&label),
+                uid,
+                username,
+                result: r
+                    .clone()
+                    .map_or_else(AuditResult::Fail, |()| AuditResult::Ok),
+            });
+            match r {
+                Ok(()) => Response::Fido2RegisterOk { credential_id },
+                Err(e) => Response::fail(e),
             }
-            Err(e) => {
-                audit::log(&AuditEvent {
-                    op: "fido2-register",
-                    name: Some(&label),
-                    uid,
-                    username,
-                    result: AuditResult::Fail(e.clone()),
-                });
-                Response::fail(e)
-            }
-        },
+        }
         Request::Fido2List => {
             audit::log(&AuditEvent {
                 op: "fido2-list",

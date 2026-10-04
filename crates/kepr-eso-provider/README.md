@@ -54,6 +54,11 @@ spec:
 
 ## Configuration
 
-| Env variable      | Default         | Description        |
-|-------------------|-----------------|--------------------|
-| KEPR_ESO_LISTEN   | 0.0.0.0:8080    | Listen address:port|
+| Env variable               | Default          | Description |
+|----------------------------|------------------|-------------|
+| `KEPR_ESO_LISTEN`          | `127.0.0.1:8080` | Listen address:port. |
+| `KEPR_ESO_AUTH_TOKEN`      | (none)           | Bearer token required on `/v1/secrets*`. **Required**, including on loopback: any local user can reach a loopback port. Compared in constant time. |
+| `KEPR_ESO_INSECURE_NO_AUTH`| (unset)          | Set to `1` to run on loopback without a token, on a single-user host only. |
+
+Sealed credentials (`kepr agent add`) are never served: the daemon
+refuses `Get` for them.

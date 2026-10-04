@@ -17,16 +17,24 @@ use crate::store::{self, cred_path, file_mtime_str, file_size, validate_name};
 use kepr_core::generate::{self, generate_secret, GenKind};
 use kepr_core::protocol::{CredInfo, Response};
 
-#[allow(clippy::too_many_arguments)]
+/// Optional per-credential policy carried by `Request::Set`.
+pub struct SetFlags {
+    pub ttl_secs: Option<u64>,
+    pub requires_consent: Option<bool>,
+    pub requires_fido2: Option<bool>,
+    pub sealed: Option<bool>,
+    pub bindings: Option<Vec<kepr_core::binding::Binding>>,
+    /// P2.4: the value is an SSH key seed (sign-only).
+    pub ssh: Option<expiry::SshMeta>,
+}
+
 pub fn handle_set(
     uid: u32,
     username: &str,
     name: &str,
     value: Option<&str>,
     generate: Option<&str>,
-    ttl_secs: Option<u64>,
-    requires_consent: Option<bool>,
-    requires_fido2: Option<bool>,
+    flags: SetFlags,
 ) -> Response {
     if let Err(e) = validate_name(name) {
         audit::log(&AuditEvent {
@@ -40,6 +48,32 @@ pub fn handle_set(
     }
 
     let upper = name.to_uppercase();
+
+    // Validate every flag before touching the store, so a bad binding
+    // never leaves a half-written credential behind.
+    let meta = match expiry::CredMeta::from_flags(
+        expiry::now_unix(),
+        flags.ttl_secs,
+        flags.requires_consent,
+        flags.requires_fido2,
+    )
+    .and_then(|m| m.with_seal(flags.sealed, flags.bindings))
+    .map(|mut m| {
+        m.ssh = flags.ssh;
+        m
+    }) {
+        Ok(m) => m,
+        Err(e) => {
+            audit::log(&AuditEvent {
+                op: "set",
+                name: Some(&upper),
+                uid,
+                username,
+                result: AuditResult::Fail(e.clone()),
+            });
+            return Response::fail(e);
+        }
+    };
 
     let secret = if let Some(v) = value {
         generate::ZeroString::from_string(v.to_string())
@@ -60,29 +94,32 @@ pub fn handle_set(
         }
     };
 
+    // A sealed value must never be readable, even for an instant: write
+    // its sidecar *before* the value, so a concurrent Get already sees
+    // `sealed`. (Other flags keep the write-after order with rollback.)
+    let meta_path = expiry::meta_path_for(&cred_path(uid, &upper));
+    let meta_first = meta.sealed == Some(true) || meta.ssh.is_some();
+    let cred_existed = cred_path(uid, &upper).exists();
+    // P5.3: keep the value being replaced (before any meta rewrite).
+    crate::daemon_history::save_current(uid, &upper);
+    if meta_first {
+        if let Err(e) = expiry::write_meta(&meta_path, &meta) {
+            audit::log(&AuditEvent {
+                op: "set",
+                name: Some(&upper),
+                uid,
+                username,
+                result: AuditResult::Fail(format!("meta write: {e}")),
+            });
+            return Response::fail(format!("meta write failed: {e}"));
+        }
+    }
+
     match crypto::default_backend().encrypt(uid, &upper, secret.as_bytes()) {
         Ok(()) => {
-            let meta = match expiry::CredMeta::from_flags(
-                expiry::now_unix(),
-                ttl_secs,
-                requires_consent,
-                requires_fido2,
-            ) {
-                Ok(m) => m,
-                Err(e) => {
-                    let _ = crypto::default_backend().delete(uid, &upper);
-                    audit::log(&AuditEvent {
-                        op: "set",
-                        name: Some(&upper),
-                        uid,
-                        username,
-                        result: AuditResult::Fail(format!("{e} (cred rolled back)")),
-                    });
-                    return Response::fail(e);
-                }
-            };
-
-            if !meta.is_empty() {
+            if meta_first {
+                // already written above
+            } else if !meta.is_empty() {
                 let cp = cred_path(uid, &upper);
                 let mp = expiry::meta_path_for(&cp);
                 if let Err(e) = expiry::write_meta(&mp, &meta) {
@@ -117,6 +154,7 @@ pub fn handle_set(
 
             let cred_name = store::to_cred_name(uid, &upper);
             daemon_cache::invalidate(uid);
+            crate::daemon_gate::bump_generation();
             audit::log(&AuditEvent {
                 op: "set",
                 name: Some(&upper),
@@ -131,6 +169,9 @@ pub fn handle_set(
             }
         }
         Err(e) => {
+            if meta_first && !cred_existed {
+                expiry::delete_meta(&meta_path);
+            }
             audit::log(&AuditEvent {
                 op: "set",
                 name: Some(&upper),
@@ -162,6 +203,15 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                 .and_then(|m| m.requires_fido2)
                 .filter(|v| *v)
                 .map(|_| true);
+            let sealed = meta_opt.as_ref().and_then(|m| m.sealed).filter(|v| *v);
+            let bound_hosts = meta_opt
+                .as_ref()
+                .and_then(|m| m.bindings.as_ref())
+                .map(|bs| {
+                    bs.iter()
+                        .map(|b| format!("{}:{}", b.host, b.port))
+                        .collect()
+                });
             CredInfo {
                 name: name.clone(),
                 cred_name: store::to_cred_name(uid, name),
@@ -170,6 +220,8 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                 expires_at,
                 requires_consent,
                 requires_fido2,
+                sealed,
+                bound_hosts,
             }
         })
         .collect();
@@ -206,6 +258,7 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
     match crypto::default_backend().delete(uid, &upper) {
         Ok(()) => {
             expiry::delete_meta(&expiry::meta_path_for(&cred_path(uid, &upper)));
+            crate::daemon_history::purge(uid, &upper);
             daemon_cache::invalidate(uid);
             audit::log(&AuditEvent {
                 op: "delete",
@@ -214,6 +267,7 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
                 username,
                 result: AuditResult::Ok,
             });
+            crate::daemon_gate::bump_generation();
             Response::DeleteOk { name: upper }
         }
         Err(e) => {

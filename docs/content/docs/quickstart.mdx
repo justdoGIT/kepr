@@ -49,10 +49,10 @@ description: "Install Kepr and start protecting your API keys in 1 minute on Lin
     ```
   </Step>
 
-  <Step title="Protect AI Coding Agents">
+  <Step title="Give AI Coding Agents keys they never see">
     ```bash
-    # Run Claude Code with protected RAM-sealed API keys
-    kepr protect-agent claude -- claude
+    kepr agent add ANTHROPIC_API_KEY   # paste once; write-only afterwards
+    kepr agent run claude              # Claude Code gets a placeholder
     ```
   </Step>
 

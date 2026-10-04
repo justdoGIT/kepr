@@ -1,3 +1,8 @@
+---
+title: "RAM-Based API Key Delivery — Strategy & Design"
+description: "Strategy and design for delivering secrets through memory instead of environment variables."
+---
+
 # RAM-Based API Key Delivery — Strategy & Design
 
 **Status:** Draft  

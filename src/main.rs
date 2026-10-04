@@ -6,18 +6,44 @@
 
 mod cli_activity;
 mod cli_agent;
+mod cli_agent_adapters;
+mod cli_agent_adopt;
+mod cli_agent_cmd;
+mod cli_agent_detect;
+mod cli_agent_install;
+mod cli_agent_run;
+mod cli_agent_sandbox;
 mod cli_args;
 mod cli_cmds;
+mod cli_copy;
+mod cli_discover;
 mod cli_doctor;
+mod cli_doctor_hardening;
 mod cli_envdump;
 mod cli_exec;
+mod cli_extra;
 mod cli_fido2;
+mod cli_health;
 mod cli_help;
+mod cli_history;
+mod cli_import;
+mod cli_import_parse;
+mod cli_inject;
 mod cli_input;
+mod cli_leaked;
 mod cli_manifest;
+mod cli_mask;
+mod cli_mcp;
 mod cli_mode;
 mod cli_rotate;
+mod cli_sandbox_seccomp;
+mod cli_sandbox_sys;
+mod cli_scan;
+mod cli_ssh;
+mod cli_ssh_agent;
+mod cli_totp;
 mod cli_ui;
+mod cli_usage;
 mod client;
 mod sync;
 mod sync_aws_sigv4;
@@ -36,6 +62,21 @@ fn main() {
     //
     // On parse failure: honour --json mode, if it was already seen on
     // argv, by emitting a Response::Err on stdout with no stderr noise.
+    // Verbs with their own small parsers (cli_extra.rs).
+    let raw: Vec<String> = std::env::args().collect();
+    if let Some(pos) = raw.iter().skip(1).position(|a| !a.starts_with("--")) {
+        if cli_extra::VERBS.contains(&raw[pos + 1].as_str()) {
+            cli_mode::init_from_argv(&raw);
+            let resp = cli_extra::dispatch(&raw[pos + 1], &raw[pos + 2..]);
+            if raw[1..=pos].iter().any(|a| a == "--json") {
+                print_json(&resp);
+            } else if let Response::Err { error } = &resp {
+                err(error);
+            }
+            std::process::exit(if resp.is_success() { 0 } else { 1 });
+        }
+    }
+
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {

@@ -1,3 +1,14 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/* Tailwind 4 scans the project on its own; the MDX content lives outside
+   app/ and components/, so name it explicitly. */
+@source '../content';
+@source '../mdx-components.tsx';
+
+/* fumadocs-ui 15 renders prose <strong> at weight 500, which the system
+   font stack draws like regular text; keep emphasis visible. */
+.prose :where(strong):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+  font-weight: 600;
+}

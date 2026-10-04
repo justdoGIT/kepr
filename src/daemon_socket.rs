@@ -37,6 +37,15 @@ pub fn tighten_umask_for_socket() {
     }
 }
 
+/// After the socket exists: everything else the daemon creates (meta
+/// sidecars, audit log, state files) is private, so use a 0077 umask
+/// rather than leaving the socket's group-friendly 0117 in force.
+pub fn private_umask_after_bind() {
+    unsafe {
+        umask(0o077);
+    }
+}
+
 pub fn setup_socket_dir() {
     let dir = socket_dir();
     fs::create_dir_all(&dir).expect("cannot create socket dir");

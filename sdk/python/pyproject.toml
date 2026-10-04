@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kepr-client"
+version = "0.1.0"
+description = "Thin Python client for the kepr credential daemon (Unix socket, stdlib only)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+classifiers = ["Operating System :: POSIX :: Linux"]
+
+[tool.setuptools]
+packages = ["kepr_client"]

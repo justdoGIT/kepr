@@ -10,7 +10,6 @@
 
 use crate::generate::ZeroString;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // Runtime paths are user-scoped by default. Set `KEPR_SYSTEM_MODE=1` for the
 // optional root-managed deployment that uses the historical /run/kepr path.
@@ -58,7 +57,7 @@ pub enum Request {
         #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<ZeroString>, // None = generate
         #[serde(skip_serializing_if = "Option::is_none")]
-        generate: Option<String>, // "hex"|"base62"|"pass"|"uuid"
+        generate: Option<String>, // "hex"|"base62"|"pass"|"uuid"|"words"
         /// Phase 2 α: optional time-to-live in seconds. When set, the
         /// daemon writes a sidecar metadata file recording the absolute
         /// unix timestamp at which this credential expires. After that
@@ -84,6 +83,28 @@ pub enum Request {
         /// and must be retried with a valid FIDO2 assertion.
         #[serde(skip_serializing_if = "Option::is_none")]
         requires_fido2: Option<bool>,
+        /// Agent vault P1: write-only credential. The daemon refuses
+        /// `Get` and releases the value only to a daemon-spawned
+        /// kepr-gate, for a host in `bindings`. Requires `bindings`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        sealed: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        bindings: Option<Vec<crate::binding::Binding>>,
+    },
+    /// Agent vault P1: start a kepr-gate for the calling process
+    /// (the agent harness, after exec). User-mode daemon only.
+    StartGate {
+        routes: Vec<crate::gate_protocol::GateRoute>,
+        /// Fixed loopback port (for harnesses whose config file holds
+        /// a fixed base URL). `None` = any free port.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        port: Option<u16>,
+        /// P9.5 per-session request / token / rate caps.
+        #[serde(
+            skip_serializing_if = "crate::gate_protocol::GateLimits::is_none",
+            default
+        )]
+        limits: crate::gate_protocol::GateLimits,
     },
     Get {
         name: String,
@@ -129,179 +150,65 @@ pub enum Request {
     },
     Status,
     Ping,
-}
-
-// ── Response ──────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Response {
-    SetOk {
+    /// `kepr panic`: stop the caller's gates; lock if passphrase-protected.
+    Panic,
+    /// P2.4 SSH agent: create a new sign-only Ed25519 key in the vault.
+    SshGenerate {
         name: String,
-        cred_name: String,
-        /// Whether the master key is Argon2id-wrapped at the time of this
-        /// write. Carried on the response so the CLI can warn about an
-        /// un-wrapped key without a second `Request::Status` round-trip.
-        password_protected: bool,
+        comment: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        requires_consent: Option<bool>,
     },
-    GetOk {
+    /// Import an unencrypted OpenSSH Ed25519 private key (sign-only after).
+    SshImport {
         name: String,
-        // ZeroString rather than String so the deserialised secret on
-        // the client side is wiped from memory when the Response is
-        // dropped, instead of leaking through serde's allocation pool
-        // until the GC happens to overwrite the heap region. Wire
-        // format unchanged (still a JSON string); old daemons / new
-        // clients and vice versa interoperate.
-        value: ZeroString,
+        private_key: ZeroString,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        requires_consent: Option<bool>,
     },
-    DeleteOk {
+    SshList,
+    /// Sign `data_b64` with the named key; the private key never leaves
+    /// the daemon.
+    SshSign {
+        name: String,
+        data_b64: String,
+    },
+    /// P5.3: list saved previous values of a credential (no values).
+    History {
         name: String,
     },
-    ListOk {
-        credentials: Vec<CredInfo>,
-        count: usize,
-    },
-    CheckOk {
-        results: HashMap<String, String>,
-        count: usize,
-        all_ok: bool,
-    },
-    /// Phase 2 δ.3 — successful audit-chain verification. `entries`
-    /// is the count of validated chain entries; `last_hash` is the
-    /// hex-encoded head, intended for external attestation against
-    /// a checkpoint store (Phase 3 Sigstore Rekor anchor).
-    AuditOk {
-        entries: usize,
-        last_hash: String,
-    },
-    /// Phase 2 η: a FIDO2 assertion is required to decrypt this
-    /// credential. The client should obtain an assertion from the
-    /// FIDO2 authenticator identified by `credential_ids` over
-    /// `challenge`, then retry `Get` with `fido2_assertion` set.
-    Fido2Needed {
+    /// P5.3: make history version `version` (1 = newest) current again.
+    Restore {
         name: String,
-        /// 32 random bytes, hex-encoded. The client must include
-        /// this challenge verbatim in the `clientDataJSON` passed
-        /// to the authenticator.
-        challenge: String,
-        /// The credential IDs registered for this user whose
-        /// associated public keys the daemon can verify. The
-        /// client picks one that the user's authenticator holds.
-        credential_ids: Vec<String>, // hex
+        version: u32,
     },
-    /// Phase 2 η: successful FIDO2 registration. The daemon echoes
-    /// the credential ID it stored.
-    Fido2RegisterOk {
-        credential_id: String,
+    /// P9.6: per-credential usage from the audit log (last `days`, or all).
+    Usage {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        days: Option<u32>,
     },
-    /// Phase 2 η: list of registered FIDO2 credentials.
-    Fido2ListOk {
-        credentials: Vec<Fido2CredInfo>,
+    /// P6.4: weak / reused / old credentials (flags only, no values).
+    Health {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        max_age_days: Option<u32>,
     },
-    Pong,
-    LockedOk,
-    UnlockedOk,
-    StatusOk {
-        locked: bool,
-        password_protected: bool,
+    /// P6.4: is `name`'s SHA-1 among these breach-list suffixes (the
+    /// public range for the prefix `Health` returned)?
+    BreachCheck {
+        name: String,
+        suffixes: Vec<String>,
     },
-    Err {
-        error: String,
+    /// P9.8 leak response: stop the caller's agent gates, delete the
+    /// credential and its history, record an incident.
+    Leaked {
+        name: String,
     },
 }
 
-impl Response {
-    /// Transport-level success (request was understood and not rejected).
-    /// A CheckOk with `all_ok=false` is still transport-ok.
-    #[allow(dead_code)]
-    pub fn is_transport_ok(&self) -> bool {
-        !matches!(self, Response::Err { .. })
-    }
-
-    /// Semantic success — used for the CLI's exit code.
-    /// False for any Err and for CheckOk with a failing credential.
-    pub fn is_success(&self) -> bool {
-        match self {
-            Response::Err { .. } => false,
-            Response::CheckOk { all_ok, .. } => *all_ok,
-            _ => true,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn err_msg(&self) -> Option<&str> {
-        if let Response::Err { error } = self {
-            Some(error)
-        } else {
-            None
-        }
-    }
-
-    /// Convenience constructor used throughout the codebase.
-    pub fn fail(msg: impl Into<String>) -> Self {
-        Response::Err { error: msg.into() }
-    }
-}
-
-// ── Credential info (for ListOk) ──────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CredInfo {
-    pub name: String,      // ENV_VAR_NAME
-    pub cred_name: String, // kepr-<uid>-env-var-name
-    pub size: u64,
-    pub modified: String, // YYYY-MM-DD HH:MM
-    /// Phase 2 α: human-readable absolute expiry timestamp
-    /// (`YYYY-MM-DD HH:MM`) for creds that were set with `--ttl`.
-    /// `None` for credentials with no TTL — same wire shape as the
-    /// pre-Phase-2 daemon (the field is `skip_serializing_if =
-    /// "Option::is_none"`, so old clients never see the field and
-    /// new clients tolerate the missing-field path).
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub expires_at: Option<String>,
-    /// Phase 2 ε: true iff `kepr get` for this credential requires
-    /// a polkit consent prompt before the daemon decrypts. Surfaces
-    /// in `kepr list` so the user can spot consent-flagged creds at
-    /// a glance. Same backward-compat shape as `expires_at`.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub requires_consent: Option<bool>,
-    /// Phase 2 η: true iff `kepr get` for this credential requires a
-    /// FIDO2 hardware-key assertion before the daemon decrypts.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub requires_fido2: Option<bool>,
-}
-
-// ── FIDO2 types (Phase 2 η) ─────────────────────────────────────────────────
-
-/// A FIDO2 assertion produced by the client's authenticator. Sent as
-/// the second round-trip payload on `Request::Get` when the daemon
-/// returned `Fido2Needed`. All byte fields are hex-encoded.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Fido2Assertion {
-    /// The credential ID (from the authenticator). Hex-encoded.
-    pub credential_id: String,
-    /// The clientDataJSON that was hashed and signed. Hex-encoded
-    /// raw bytes — the daemon reconstructs the SHA-256 hash and
-    /// verifies it against the authenticator data.
-    pub client_data_json: String, // hex
-    /// The authenticatorData bytes returned by the authenticator.
-    /// Contains the RP ID hash, flags, and signature counter.
-    pub authenticator_data: String, // hex
-    /// The assertion signature over (authenticator_data ||
-    /// sha256(client_data_json)). Hex-encoded raw bytes.
-    pub signature: String, // hex
-}
-
-/// A registered FIDO2 credential, returned by `Fido2ListOk`.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Fido2CredInfo {
-    /// Human-readable label assigned at registration time.
-    pub label: String,
-    /// The FIDO2 credential ID, hex-encoded.
-    pub credential_id: String,
-    /// The user ID (kepr uid) this credential is registered for.
-    pub uid: u32,
-}
+pub use crate::protocol_response::Response;
+pub use crate::protocol_types::{
+    CredInfo, Fido2Assertion, Fido2CredInfo, HistoryEntry, KeyHealth, KeyUsage, SshKeyInfo,
+};
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -309,6 +216,7 @@ pub struct Fido2CredInfo {
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    use std::collections::HashMap;
 
     fn as_value<T: Serialize>(v: &T) -> Value {
         serde_json::to_value(v).expect("serialize")
@@ -344,6 +252,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             })["cmd"],
             json!("set"),
         );
@@ -367,6 +277,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             Request::Set {
                 name: "K".into(),
@@ -375,6 +287,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             Request::Set {
                 name: "K".into(),
@@ -383,6 +297,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             // Phase 2 α: TTL-bearing variant must round-trip cleanly.
             Request::Set {
@@ -392,6 +308,8 @@ mod tests {
                 ttl_secs: Some(60),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             // Phase 2 ε: consent-bearing variant must round-trip cleanly.
             Request::Set {
@@ -401,6 +319,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: Some(true),
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             // Phase 2 η: FIDO2-bearing variant must round-trip cleanly.
             Request::Set {
@@ -410,6 +330,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: Some(true),
+                sealed: None,
+                bindings: None,
             },
         ];
         for req in cases {
@@ -426,6 +348,8 @@ mod tests {
             ttl_secs: None,
             requires_consent: None,
             requires_fido2: None,
+            sealed: None,
+            bindings: None,
         };
         let v = as_value(&req);
         assert!(v.get("value").is_none(), "value should be absent: {v}");
@@ -492,6 +416,8 @@ mod tests {
                 expires_at: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bound_hosts: None,
             }],
             count: 1,
         };
