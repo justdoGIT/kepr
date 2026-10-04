@@ -165,6 +165,24 @@ the screen locks. That keeps keys out of RAM while a laptop sleeps. It
 follows logind through `gdbus`; `kepr doctor` reports whether it can. Turn
 it off with `KEPR_LOCK_ON_SLEEP=0`.
 
+## When a key leaks
+
+```bash
+kepr leaked ANTHROPIC_API_KEY
+```
+
+This command:
+
+1. Stops every agent session for your user, along with their cached copies.
+2. Deletes the credential and its saved history.
+3. Records a `leak-incident` entry in the audit chain.
+4. Tells you where to revoke the key at the provider; kepr can't revoke it
+   for you.
+
+Then store the new key with `kepr agent add`. To see where the old one was
+used: `journalctl -t kepr-daemon KEPR_NAME=ANTHROPIC_API_KEY`, or
+`kepr usage`.
+
 ## SSH keys the agent can use but never read
 
 ```bash

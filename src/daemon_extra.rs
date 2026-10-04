@@ -1,5 +1,6 @@
 // daemon_extra.rs — routes the store-maintenance and reporting requests
-// (history / restore, usage, health / breach check) to their modules,
+// (history / restore, usage, health / breach check, leak response) to
+// their modules,
 // keeping daemon.rs's dispatch to one arm for all of them.
 
 use kepr_core::protocol::{Request, Response};
@@ -20,6 +21,9 @@ pub fn dispatch(uid: u32, username: &str, request: Request) -> Response {
         }
         Request::BreachCheck { name, suffixes } => {
             daemon_health::handle_breach_check(uid, username, &name, &suffixes)
+        }
+        Request::Leaked { name } => {
+            crate::daemon_gate_registry::handle_leaked(uid, username, &name)
         }
         _ => Response::fail("unsupported request"),
     }

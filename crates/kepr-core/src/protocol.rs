@@ -198,6 +198,11 @@ pub enum Request {
         name: String,
         suffixes: Vec<String>,
     },
+    /// P9.8 leak response: stop the caller's agent gates, delete the
+    /// credential and its history, record an incident.
+    Leaked {
+        name: String,
+    },
 }
 
 pub use crate::protocol_response::Response;

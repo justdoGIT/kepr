@@ -54,6 +54,43 @@ pub fn panic_now(uid: u32) -> (usize, bool) {
     (gates_stopped, locked)
 }
 
+/// `kepr leaked NAME` (P9.8): a value is known to be exposed. Stop every
+/// agent gate of the caller (their caches hold it), delete it with its
+/// history, and record the incident in the audit chain.
+pub fn handle_leaked(uid: u32, username: &str, name: &str) -> Response {
+    if let Err(e) = crate::store::validate_name(name) {
+        return Response::fail(e);
+    }
+    let upper = name.to_uppercase();
+    let hosts: Vec<String> = crate::expiry::read_meta(&crate::expiry::meta_path_for(
+        &crate::store::cred_path(uid, &upper),
+    ))
+    .and_then(Result::ok)
+    .and_then(|m| m.bindings)
+    .map(|bs| bs.into_iter().map(|b| b.host).collect())
+    .unwrap_or_default();
+    let gates_stopped = stop_gates_for(uid);
+    let deleted = crate::daemon_handlers::handle_delete(uid, username, &upper);
+    audit::log(&AuditEvent {
+        op: "leak-incident",
+        name: Some(&upper),
+        uid,
+        username,
+        result: match &deleted {
+            Response::DeleteOk { .. } => AuditResult::Ok,
+            _ => AuditResult::Fail("credential not deleted".into()),
+        },
+    });
+    match deleted {
+        Response::DeleteOk { name } => Response::LeakedOk {
+            name,
+            gates_stopped,
+            hosts,
+        },
+        other => other,
+    }
+}
+
 pub fn handle_panic(uid: u32, username: &str) -> Response {
     let (gates_stopped, locked) = panic_now(uid);
     audit::log(&AuditEvent {

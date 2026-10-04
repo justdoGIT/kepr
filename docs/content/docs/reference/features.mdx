@@ -21,6 +21,7 @@ description: "Command surface, generators, audit log, environment variables, exi
 | `agent ls` / `revoke` | | `[KEY] [--force]`                              | sealed keys / delete  |
 | `mcp`    |         | — (stdio JSON-RPC)                                   | MCP server            |
 | `panic`  |         | —                                                   | `PanicOk`             |
+| `leaked` |         | `KEY [--yes]`                                       | `LeakedOk { gates_stopped, hosts }` |
 | `totp`   |         | `KEY`                                               | 6-8 digit code        |
 | `inject` |         | `-i TEMPLATE [-o OUT]`                              | rendered template     |
 | `scan`   |         | `[PATH...] [--staged]`                              | findings; exit 1 if any |

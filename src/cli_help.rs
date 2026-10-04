@@ -40,6 +40,8 @@ COMMANDS:
   agent ls | agent revoke KEY          list / delete sealed keys
   mcp                                  MCP server (stdio): list keys, call provider APIs, no values
   panic                                stop all agent gates; lock the store if passphrase-protected
+  leaked KEY [--yes]                   key exposed: stop agent sessions, delete it + history, log an
+                                       incident, show where to revoke it at the provider
   totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
   inject -i TEMPLATE [-o OUT]          fill kepr://NAME references (OUT created 0600)
   scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)

@@ -16,6 +16,8 @@ pub struct Provider {
     pub prefixes: &'static [&'static str],
     /// Upper-case words that identify it in a variable name.
     pub name_hints: &'static [&'static str],
+    /// Where the user revokes or rotates keys (`kepr leaked`).
+    pub keys_url: &'static str,
 }
 
 pub const PROVIDERS: &[Provider] = &[
@@ -25,6 +27,7 @@ pub const PROVIDERS: &[Provider] = &[
         header: Some("x-api-key"),
         prefixes: &["sk-ant-"],
         name_hints: &["ANTHROPIC", "CLAUDE"],
+        keys_url: "https://console.anthropic.com/settings/keys",
     },
     Provider {
         name: "openai",
@@ -32,6 +35,7 @@ pub const PROVIDERS: &[Provider] = &[
         header: None,
         prefixes: &["sk-proj-", "sk-svcacct-", "sk-admin-"],
         name_hints: &["OPENAI"],
+        keys_url: "https://platform.openai.com/api-keys",
     },
     Provider {
         name: "xai",
@@ -39,6 +43,7 @@ pub const PROVIDERS: &[Provider] = &[
         header: None,
         prefixes: &["xai-"],
         name_hints: &["XAI", "GROK"],
+        keys_url: "https://console.x.ai",
     },
     Provider {
         name: "google",
@@ -46,6 +51,7 @@ pub const PROVIDERS: &[Provider] = &[
         header: Some("x-goog-api-key"),
         prefixes: &["AIza"],
         name_hints: &["GEMINI", "GOOGLE"],
+        keys_url: "https://aistudio.google.com/app/apikey",
     },
     Provider {
         name: "mistral",
@@ -53,6 +59,7 @@ pub const PROVIDERS: &[Provider] = &[
         header: None,
         prefixes: &[],
         name_hints: &["MISTRAL"],
+        keys_url: "https://console.mistral.ai/api-keys",
     },
     Provider {
         name: "deepseek",
@@ -60,6 +67,7 @@ pub const PROVIDERS: &[Provider] = &[
         header: None,
         prefixes: &[],
         name_hints: &["DEEPSEEK"],
+        keys_url: "https://platform.deepseek.com/api_keys",
     },
     Provider {
         name: "groq",
@@ -67,6 +75,7 @@ pub const PROVIDERS: &[Provider] = &[
         header: None,
         prefixes: &["gsk_"],
         name_hints: &["GROQ"],
+        keys_url: "https://console.groq.com/keys",
     },
     Provider {
         name: "openrouter",
@@ -74,6 +83,7 @@ pub const PROVIDERS: &[Provider] = &[
         header: None,
         prefixes: &["sk-or-"],
         name_hints: &["OPENROUTER"],
+        keys_url: "https://openrouter.ai/settings/keys",
     },
 ];
 

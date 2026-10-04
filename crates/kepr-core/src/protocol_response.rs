@@ -124,6 +124,12 @@ pub enum Response {
         name: String,
         breached: bool,
     },
+    LeakedOk {
+        name: String,
+        gates_stopped: usize,
+        /// Hosts the credential was bound to (to find where to revoke it).
+        hosts: Vec<String>,
+    },
     LockedOk,
     UnlockedOk,
     StatusOk {

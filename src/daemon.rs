@@ -388,7 +388,8 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         | Request::Restore { .. }
         | Request::Usage { .. }
         | Request::Health { .. }
-        | Request::BreachCheck { .. } => daemon_extra::dispatch(uid, username, request),
+        | Request::BreachCheck { .. }
+        | Request::Leaked { .. } => daemon_extra::dispatch(uid, username, request),
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),

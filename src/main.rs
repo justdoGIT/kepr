@@ -30,6 +30,7 @@ mod cli_import;
 mod cli_import_parse;
 mod cli_inject;
 mod cli_input;
+mod cli_leaked;
 mod cli_manifest;
 mod cli_mask;
 mod cli_mcp;
