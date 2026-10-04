@@ -14,6 +14,7 @@ mod crypto_inproc;
 mod daemon_audit;
 mod daemon_cache;
 mod daemon_expiry;
+mod daemon_gate;
 mod daemon_handlers;
 mod daemon_handlers_get;
 mod daemon_lock;
@@ -370,6 +371,9 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         }
         Request::Unlock { password } => {
             daemon_lock::handle_unlock_gated(uid, username, password.as_bytes())
+        }
+        Request::StartGate { routes } => {
+            daemon_gate::handle_start_gate(uid, peer_pid, username, &routes)
         }
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),

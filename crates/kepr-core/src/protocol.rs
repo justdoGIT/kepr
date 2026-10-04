@@ -92,6 +92,11 @@ pub enum Request {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         bindings: Option<Vec<crate::binding::Binding>>,
     },
+    /// Agent vault P1: start a kepr-gate for the calling process
+    /// (the agent harness, after exec). User-mode daemon only.
+    StartGate {
+        routes: Vec<crate::gate_protocol::GateRoute>,
+    },
     Get {
         name: String,
         /// Phase 2 η: FIDO2 assertion payload for the second
@@ -150,6 +155,13 @@ pub enum Response {
         /// write. Carried on the response so the CLI can warn about an
         /// un-wrapped key without a second `Request::Status` round-trip.
         password_protected: bool,
+    },
+    /// Reply to `StartGate`: where the gate listens and the session
+    /// placeholders (credential NAME → placeholder; not secrets).
+    GateStarted {
+        port: u16,
+        placeholders: HashMap<String, String>,
+        gate_pid: i32,
     },
     GetOk {
         name: String,
