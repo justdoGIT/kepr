@@ -167,6 +167,15 @@ pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
                 "{harness} {what}: {} → kepr gate on port {port}",
                 path.display()
             ));
+            match crate::cli_agent_plugin::install(harness, &home) {
+                Ok(Some((dir, changed))) => cli_ui::ok(&format!(
+                    "kepr plugin {}: {}",
+                    if changed { "installed" } else { "up to date" },
+                    dir.display()
+                )),
+                Ok(None) => {}
+                Err(e) => return Response::fail(format!("plugin: {e}")),
+            }
             cli_ui::info(&format!("start it with: kepr agent run {harness}"));
             Response::Pong
         }

@@ -1,0 +1,10 @@
+{
+  "name": "kepr",
+  "version": "0.4.0",
+  "description": "Keep API keys out of Grok Build: blocks prompts and tool calls that contain or reveal secrets, tells the model how kepr placeholders work, and offers kepr's MCP server for API calls without keys.",
+  "author": { "name": "kepr" },
+  "homepage": "https://github.com/justdoGIT/kepr",
+  "repository": "https://github.com/justdoGIT/kepr",
+  "license": "MIT",
+  "keywords": ["kepr", "kepr vault", "kepr agent"]
+}

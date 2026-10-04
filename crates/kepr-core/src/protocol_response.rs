@@ -28,6 +28,10 @@ pub enum Response {
         port: u16,
         placeholders: HashMap<String, String>,
         gate_pid: i32,
+        /// Egress CA and database ports; boxed to keep `Response` small,
+        /// flattened so the wire format is unchanged.
+        #[serde(flatten)]
+        extras: Box<crate::protocol_types::GateExtras>,
     },
     GetOk {
         name: String,
@@ -123,6 +127,27 @@ pub enum Response {
     BreachOk {
         name: String,
         breached: bool,
+    },
+    ShareKeyOk {
+        /// `kepr-pub1-…`, safe to publish.
+        public: String,
+    },
+    ShareOk {
+        /// `kepr-share1-…`; readable only by the recipient.
+        envelope: String,
+        expires_at: String,
+    },
+    DbRotateOk {
+        name: String,
+        phase: String,
+    },
+    RecoveryKitOk {
+        fingerprint: String,
+        shares: Vec<ZeroString>,
+    },
+    RecoveryRestoreOk {
+        fingerprint: String,
+        credentials_opened: usize,
     },
     LeakedOk {
         name: String,

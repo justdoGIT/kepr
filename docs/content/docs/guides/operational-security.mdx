@@ -119,6 +119,41 @@ kepr set DATABASE_PASSWORD --generate --gen-kind pass
 
 ## Disaster Recovery
 
+### Recovery kit (recommended)
+
+Split the master key into shares and store them apart. Any *k* of
+them rebuild the key; fewer reveal nothing.
+
+```bash
+kepr lock                                    # the kit needs a passphrase-protected store
+kepr recovery-kit create --threshold 3 --shares 5 --out-dir /media/usb
+```
+
+Each share is one line like `kepr1-3-1-31b27750565eafdc-…`. The middle
+field is the kit's fingerprint; shares from different kits don't mix.
+Hand them to different people or places, and never keep them next to
+the machine.
+
+To recover, use a machine that has the old credential files but whose
+master key is gone: the TPM was replaced, the key file was lost, or the
+passphrase was forgotten.
+
+```bash
+kepr recovery-kit restore      # paste 3 shares, a blank line, then a new passphrase
+```
+
+The daemon rebuilds the key and checks that it opens the credential files
+on disk. It then stores the key under the new passphrase. Restore refuses
+while the current key still works, so it can't be used to re-key a healthy
+store.
+
+<Warning>
+  The recovery kit is the only path by which master-key material leaves
+  the daemon. That's why it needs the passphrase, refuses while agent
+  sessions run, is root-only in system mode, and is audited
+  (`KEPR_OP=recovery-kit`, `recovery-restore`).
+</Warning>
+
 ### Backup Master Key
 
 Pipe straight through encryption — never let the raw key touch disk

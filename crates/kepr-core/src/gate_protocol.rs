@@ -62,6 +62,22 @@ pub struct GateRoute {
     /// Credential NAME in the vault.
     pub cred: String,
     pub slot: u16,
+    /// P7.1 database routes (`provider` = `db:<CRED>`): where the gate
+    /// logs in. `None` for HTTP provider routes.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub target: Option<DbTarget>,
+}
+
+/// The database a `db:` route logs in to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DbTarget {
+    pub host: String,
+    pub port: u16,
+}
+
+/// Route key for a database credential.
+pub fn db_route_key(cred: &str) -> String {
+    format!("db:{cred}")
 }
 
 /// What the daemon writes to a freshly spawned gate's stdin.
@@ -78,6 +94,10 @@ pub struct SessionConfig {
     /// P9.5 spend and rate guard for this session.
     #[serde(default)]
     pub limits: GateLimits,
+    /// P2.1 egress proxy: tunnel CONNECTs to hosts no route is bound to
+    /// (off under `--isolate-net`, where only bound hosts are reachable).
+    #[serde(default)]
+    pub tunnel: bool,
 }
 
 /// Per-session caps the gate enforces (P9.5). `None` = no cap.
@@ -111,6 +131,15 @@ impl GateLimits {
     }
 }
 
+/// System-mode daemon → kepr-gate service (T1.19), sent after the
+/// session channel fd (SCM_RIGHTS) on the service's root-only socket.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServiceStart {
+    /// The agent process; the session gate exits when it does.
+    pub owner_pid: i32,
+    pub config: SessionConfig,
+}
+
 /// The single line a gate prints to stdout once it is listening.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReadyLine {
@@ -118,6 +147,12 @@ pub struct ReadyLine {
     pub port: u16,
     /// Provider name → placeholder (one per route; providers are unique).
     pub placeholders: std::collections::HashMap<String, String>,
+    /// P2.1: the session CA (PEM) the egress proxy signs bound hosts with.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ca_pem: Option<String>,
+    /// P7.1: route key (`db:<CRED>`) → local port of its database proxy.
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty", default)]
+    pub db_ports: std::collections::HashMap<String, u16>,
 }
 
 /// Rules every StartGate request must meet, checked by the daemon before
@@ -129,7 +164,12 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
         return Err("an agent session needs 1-16 routes".into());
     }
     for (i, r) in routes.iter().enumerate() {
-        if crate::providers::lookup(&r.provider).is_none() {
+        let db_ok = r.target.as_ref().is_some_and(|t| {
+            r.provider == db_route_key(&r.cred)
+                && t.port != 0
+                && crate::binding::validate_host(&t.host).is_ok()
+        });
+        if !db_ok && (r.target.is_some() || crate::providers::lookup(&r.provider).is_none()) {
             return Err(format!("unknown provider {}", r.provider));
         }
         if routes[..i]
@@ -173,6 +213,7 @@ mod tests {
             provider: p.into(),
             cred: "K".into(),
             slot,
+            target: None,
         };
         assert!(validate_routes(&[r("anthropic", 0), r("xai", 1)]).is_ok());
         assert!(validate_routes(&[]).is_err());

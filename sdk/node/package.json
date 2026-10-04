@@ -1,0 +1,11 @@
+{
+  "name": "kepr-client",
+  "version": "0.1.0",
+  "description": "Thin Node.js client for the kepr credential daemon (Unix socket, no dependencies)",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "MIT OR Apache-2.0",
+  "engines": { "node": ">=18" },
+  "os": ["linux"],
+  "scripts": { "test": "node --test test/*.test.js" }
+}

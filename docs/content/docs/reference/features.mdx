@@ -39,6 +39,65 @@ description: "Command surface, generators, audit log, environment variables, exi
 Global flags: `--json` (machine output, suppress stderr on clean
 errors), `--color` / `--no-color` (opt-in ANSI), `--version`, `--help`.
 
+## Typed records
+
+A record is one credential holding several named fields:
+
+```bash
+kepr record add PROD_DB --type database --field host=db.internal --field port=5432 \
+    --field user=app --field password=-     # `-` = ask, input hidden
+kepr record show PROD_DB                    # field names, values masked (--reveal shows them)
+kepr record get PROD_DB password            # one field, raw
+```
+
+Types and their standard fields (`kepr record types`):
+
+| Type | Standard fields |
+| --- | --- |
+| `login` | username, password, url, totp |
+| `card` | holder, number, expiry, cvv, pin |
+| `database` | host, port, user, password, database |
+| `server` | host, port, user, password |
+| `api` | key, secret, url |
+| `note` | text |
+| `custom` | any fields |
+
+With no `--field`, kepr asks for the standard ones. Field names are
+lower-case (`a-z`, `0-9`, `_`), and a record holds up to 64 fields. The
+record is encrypted as one value, and its type shows in `kepr list` as
+`[database]`.
+
+Every read goes through a normal `get`, so TTL, consent and FIDO2 apply to
+the whole record. Templates read single fields:
+
+```text
+DATABASE_URL=postgres://kepr://PROD_DB/user:kepr://PROD_DB/password@kepr://PROD_DB/host/app
+```
+
+## Sharing with another kepr user
+
+```bash
+kepr share key                                    # bob: print his public key (kepr-pub1-…)
+kepr share send DB_PASS --to kepr-pub1-… -o db.share --ttl 3600   # alice
+kepr share receive db.share                       # bob: stored as DB_PASS (or --as NAME)
+```
+
+How it works:
+
+- **Encryption:** the sender's daemon encrypts the value to the recipient's
+  key with an ephemeral X25519 key, HKDF-SHA256 and AES-256-GCM. The
+  envelope is bound to that recipient and is tamper-evident.
+- **Decryption:** only the recipient's daemon can decrypt it, and it stores
+  the value directly. Neither CLI sees the plaintext.
+- **Expiry:** shares expire after `--ttl` (default 24 h, at most 30 days).
+- **Single use:** a share can be received once; replaying the same file is
+  refused.
+- **What can't be shared:** sealed agent keys, SSH keys and the share key
+  itself.
+
+There's no server: move the envelope by any channel. On its own it is
+useless to anyone but the recipient.
+
 ## Credential history
 
 Every `set`, `rotate` or `restore` first saves the value being replaced.
@@ -133,7 +192,16 @@ read. Pointing those tools at the kepr helper therefore works at once.
 Source files are never changed. For each file, the report says how to stop
 keeping the secret there.
 
-## Python SDK
+## Client SDKs
+
+Thin clients over the same socket and wire format, so the daemon applies the
+same rules as for the CLI. None of them has dependencies:
+
+- **Python:** `sdk/python` (`kepr_client.Client`)
+- **Node.js:** `sdk/node` (`kepr-client`, `new Client().get(...)`)
+- **Go:** `sdk/go` (`kepr.New().Get(...)`)
+
+### Python SDK
 
 `sdk/python/kepr_client` is a stdlib-only client over the same socket and
 wire format (`Client().get(...)`, `set`, `list`, `history`, `restore`,

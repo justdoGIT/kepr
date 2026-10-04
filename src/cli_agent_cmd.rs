@@ -268,6 +268,12 @@ fn cmd_revoke(a: &AgentArgs) -> Response {
 }
 
 pub fn main(raw: &[String]) -> Response {
+    if raw.first().map(String::as_str) == Some("add-db") {
+        return crate::cli_agent_db::cmd_add_db(&raw[1..]);
+    }
+    if raw.first().map(String::as_str) == Some("rotate-db") {
+        return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]);
+    }
     let a = match parse(raw) {
         Ok(a) => a,
         Err(e) => return Response::fail(e),

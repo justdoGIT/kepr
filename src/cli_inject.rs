@@ -1,6 +1,6 @@
 // cli_inject.rs — `kepr inject -i TEMPLATE [-o OUT]` (agent vault P5.7).
 // Replaces every `kepr://NAME` reference in a template with the stored
-// value (like Keeper's `ksm interpolate`). Output goes to stdout or to a
+// value, and `kepr://NAME/field` with one field of a typed record (like Keeper's `ksm interpolate`). Output goes to stdout or to a
 // new 0600 file; a warning is printed when that file is not on tmpfs,
 // because rendered secrets on persistent disk outlive the process.
 // Sealed credentials cannot be injected (the daemon refuses them).
@@ -16,7 +16,7 @@ use crate::cli_exec::{CredFetcher, DaemonFetcher};
 
 pub const PREFIX: &str = "kepr://";
 
-/// (start, end, NAME) for every reference in `tpl`.
+/// (start, end, NAME or NAME/field) for every reference in `tpl`.
 pub fn references(tpl: &str) -> Vec<(usize, usize, String)> {
     let mut out = Vec::new();
     let mut from = 0;
@@ -27,14 +27,28 @@ pub fn references(tpl: &str) -> Vec<(usize, usize, String)> {
             .bytes()
             .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
             .count();
+        let name_end = name_start + len;
+        // Optional `/field` (lower-case record field names).
+        let flen = match tpl[name_end..].strip_prefix('/') {
+            Some(rest) => rest
+                .bytes()
+                .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
+                .count(),
+            None => 0,
+        };
+        let end = if flen > 0 {
+            name_end + 1 + flen
+        } else {
+            name_end
+        };
         if len > 0 {
-            out.push((
-                start,
-                name_start + len,
-                tpl[name_start..name_start + len].to_uppercase(),
-            ));
+            let mut key = tpl[name_start..name_end].to_uppercase();
+            if flen > 0 {
+                key = format!("{key}/{}", &tpl[name_end + 1..end]);
+            }
+            out.push((start, end, key));
         }
-        from = name_start + len;
+        from = end;
     }
     out
 }
@@ -97,7 +111,13 @@ pub fn cmd_inject(input: &str, output: Option<&str>) -> Response {
         Ok(t) => t,
         Err(e) => return Response::fail(format!("{input}: {e}")),
     };
-    let rendered = match render(&tpl, &|n| DaemonFetcher.fetch(n)) {
+    let fetch = |key: &str| match key.split_once('/') {
+        Some((name, field)) => DaemonFetcher
+            .fetch(name)
+            .and_then(|v| crate::cli_record::field_of(v.as_str(), field)),
+        None => DaemonFetcher.fetch(key),
+    };
+    let rendered = match render(&tpl, &fetch) {
         Ok(r) => r,
         Err(e) => return Response::fail(e),
     };
@@ -133,6 +153,19 @@ mod tests {
             "API" => Ok(ZeroString::from_string("k".into())),
             _ => Err("credential unavailable".into()),
         }
+    }
+
+    #[test]
+    fn field_references_keep_the_field_and_stop_at_upper_case() {
+        let refs = references("u=kepr://DB/user p=kepr://DB/password x=kepr://DB/Up kepr://DB/");
+        let keys: Vec<&str> = refs.iter().map(|r| r.2.as_str()).collect();
+        assert_eq!(keys, ["DB/user", "DB/password", "DB", "DB"]);
+        // `/Up` is not a field: the reference ends at the name.
+        assert_eq!(
+            &"u=kepr://DB/user p=kepr://DB/password x=kepr://DB/Up kepr://DB/"
+                [refs[2].0..refs[2].1],
+            "kepr://DB"
+        );
     }
 
     #[test]

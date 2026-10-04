@@ -220,6 +220,7 @@ impl Live {
                             provider: p.name.into(),
                             cred: s.name.clone(),
                             slot: routes.len() as u16,
+                            target: None,
                         });
                     }
                 }
@@ -232,6 +233,7 @@ impl Live {
             routes,
             port: None,
             limits: Default::default(),
+            tunnel: false,
         })? {
             Response::GateStarted {
                 port, placeholders, ..
