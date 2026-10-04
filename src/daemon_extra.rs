@@ -59,13 +59,13 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
             record_type,
             fields,
             requires_consent,
+            seal,
         } => crate::daemon_records::handle_record_set(
             uid,
             username,
             &name,
-            &record_type,
-            &fields,
-            requires_consent,
+            (&record_type, &fields),
+            (requires_consent, seal),
         ),
         Request::ShareKey { create } => crate::daemon_share::handle_key(uid, username, create),
         Request::ShareSend { name, to, ttl_secs } => {

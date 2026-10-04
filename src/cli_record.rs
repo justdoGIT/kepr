@@ -113,6 +113,7 @@ fn add(args: &[String]) -> Response {
         record_type: rtype.clone(),
         fields: json,
         requires_consent: consent,
+        seal: false,
     })
     .unwrap_or_else(Response::fail);
     if let Response::SetOk { name, .. } = &r {

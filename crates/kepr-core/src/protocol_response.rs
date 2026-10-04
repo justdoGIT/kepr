@@ -28,9 +28,10 @@ pub enum Response {
         port: u16,
         placeholders: HashMap<String, String>,
         gate_pid: i32,
-        /// P2.1: session CA (PEM) for the egress proxy; tools must trust it.
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        ca_pem: Option<String>,
+        /// Egress CA and database ports; boxed to keep `Response` small,
+        /// flattened so the wire format is unchanged.
+        #[serde(flatten)]
+        extras: Box<crate::protocol_types::GateExtras>,
     },
     GetOk {
         name: String,

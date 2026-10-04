@@ -306,7 +306,10 @@ fn start(
         port: ready.port,
         placeholders: ready.placeholders,
         gate_pid,
-        ca_pem: ready.ca_pem,
+        extras: Box::new(kepr_core::protocol_types::GateExtras {
+            ca_pem: ready.ca_pem,
+            db_ports: ready.db_ports,
+        }),
     })
 }
 
@@ -341,6 +344,7 @@ mod tests {
             provider: "anthropic".into(),
             cred: cred.into(),
             slot,
+            target: None,
         }
     }
 

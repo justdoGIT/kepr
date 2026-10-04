@@ -113,6 +113,8 @@ pub fn upstream_headers(
             out.insert(AUTHORIZATION, sensitive(format!("Basic {enc}"))?);
         }
         Inject::Query { .. } => {}
+        // A database login is never sent as an HTTP header.
+        Inject::Postgres => return Err("not an HTTP credential".into()),
     }
     Ok(out)
 }

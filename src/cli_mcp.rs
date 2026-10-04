@@ -220,6 +220,7 @@ impl Live {
                             provider: p.name.into(),
                             cred: s.name.clone(),
                             slot: routes.len() as u16,
+                            target: None,
                         });
                     }
                 }

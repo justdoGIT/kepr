@@ -159,6 +159,27 @@ kepr agent run claude                # GH_TOKEN / GITHUB_TOKEN are placeholders 
   are refused, so the agent reaches only the providers its keys are bound
   to.
 
+## Databases
+
+```bash
+kepr agent add-db PROD --url postgres://app@db.internal:5432/prod   # asks for the password
+kepr agent run claude
+```
+
+- **What the agent gets:** `DATABASE_URL` and `PGHOST`/`PGPORT`/`PGUSER`/
+  `PGPASSWORD`/`PGDATABASE`, pointing at a local gate port, with the
+  session placeholder as the password. With several databases, each one gets
+  `KEPR_DB_<NAME>_URL`.
+- **What the gate does:** it checks the placeholder, then logs in to the
+  real server with the sealed login using SCRAM-SHA-256 or cleartext (MD5 is
+  refused). From then on it relays the session unchanged.
+- **TLS to the server:** it's verified against public roots by default.
+  Pass `--ca FILE` for a managed database's own CA, or `--sslmode disable`
+  to allow plaintext, for local databases only.
+- **The login itself:** the user name, database and password stay sealed,
+  and `kepr get PROD` is refused. The agent can run queries as that user but
+  can't take the password anywhere.
+
 ## Spending and rate limits
 
 ```bash

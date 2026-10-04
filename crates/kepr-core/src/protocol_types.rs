@@ -52,6 +52,17 @@ pub struct KeyHealth {
     pub hibp_prefix: Option<String>,
 }
 
+/// Optional parts of `GateStarted` (P2.1 egress CA, P7.1 database ports).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GateExtras {
+    /// Session CA (PEM) for the egress proxy; tools must trust it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ca_pem: Option<String>,
+    /// `db:<CRED>` → local port of the gate's database proxy.
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty", default)]
+    pub db_ports: std::collections::HashMap<String, u16>,
+}
+
 // ── Credential info (for ListOk) ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

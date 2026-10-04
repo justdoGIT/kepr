@@ -39,6 +39,7 @@ pub fn routes_for(
             provider: provider.to_string(),
             cred: cred.to_string(),
             slot: i as u16,
+            target: None,
         })
         .collect();
     if routes.is_empty() {
@@ -142,6 +143,8 @@ pub fn cmd_run(
         let names: HashSet<String> = creds.iter().map(|c| c.name.clone()).collect();
         let mut routes = routes_for(adapter, &names)?;
         routes.extend(crate::cli_agent_egress::extra_routes(&routes, &creds));
+        let db = crate::cli_agent_db::routes(&routes, &creds);
+        routes.extend(db);
         Ok(routes)
     });
     let routes = match routes {
@@ -154,13 +157,13 @@ pub fn cmd_run(
         limits,
         tunnel: !isolate_net,
     };
-    let (gate_port, placeholders, ca_pem) = match client::send_request(&req) {
+    let (gate_port, placeholders, ca_pem, db_ports) = match client::send_request(&req) {
         Ok(Response::GateStarted {
             port,
             placeholders,
-            ca_pem,
+            extras,
             ..
-        }) => (port, placeholders, ca_pem),
+        }) => (port, placeholders, extras.ca_pem, extras.db_ports),
         Ok(Response::Err { error }) => return Response::fail(error),
         Ok(_) => return Response::fail("unexpected daemon response"),
         Err(e) => return Response::fail(e),
@@ -170,9 +173,11 @@ pub fn cmd_run(
     let shadowed = crate::cli_agent_egress::shadowed(&placeholders);
     let inherited = std::env::vars().filter(|(k, _)| {
         !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
+            && !crate::cli_agent_db::DB_VARS.contains(&k.as_str())
             && !shadowed.contains(&k.as_str())
     });
     let mut env = build_env(adapter, gate_port, &placeholders, inherited);
+    env.extend(crate::cli_agent_db::env(&placeholders, &db_ports));
     if let Some(pem) = ca_pem {
         match crate::cli_agent_egress::env(gate_port, &pem, &placeholders) {
             Ok(e) => env.extend(e),

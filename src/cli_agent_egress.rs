@@ -44,6 +44,7 @@ pub fn extra_routes(existing: &[GateRoute], sealed: &[CredInfo]) -> Vec<GateRout
                 provider: p.name.to_string(),
                 cred: c.name.clone(),
                 slot,
+                target: None,
             });
             slot += 1;
         }
@@ -166,6 +167,7 @@ mod tests {
             provider: "anthropic".into(),
             cred: "ANTHROPIC_API_KEY".into(),
             slot: 0,
+            target: None,
         }];
         let creds = [
             cred("ANTHROPIC_API_KEY", &["api.anthropic.com:443"]),

@@ -60,20 +60,56 @@ pub fn validate(record_type: &str, fields: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// P7.1: the binding a sealed `database` record gets: its own host:port,
+/// logged in to by the gate's PostgreSQL proxy.
+pub fn db_binding(fields: &str) -> Result<kepr_core::binding::Binding, String> {
+    let obj: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(fields).map_err(|_| "record fields must be a JSON object")?;
+    let get = |k: &str| obj.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    for k in ["host", "user", "password", "database"] {
+        if get(k).is_empty() {
+            return Err(format!("a sealed database record needs a {k} field"));
+        }
+    }
+    if !matches!(get("sslmode"), "" | "verify-full" | "disable") {
+        return Err("sslmode must be verify-full (default) or disable".into());
+    }
+    let port = match get("port") {
+        "" => 5432,
+        p => p.parse().map_err(|_| "port must be a number")?,
+    };
+    let b = kepr_core::binding::Binding {
+        host: get("host").to_ascii_lowercase(),
+        port,
+        inject: kepr_core::binding::Inject::Postgres,
+    };
+    kepr_core::binding::validate_binding(&b)?;
+    Ok(b)
+}
+
 pub fn handle_record_set(
     uid: u32,
     username: &str,
     name: &str,
-    record_type: &str,
-    fields: &ZeroString,
-    requires_consent: Option<bool>,
+    (record_type, fields): (&str, &ZeroString),
+    (requires_consent, seal): (Option<bool>, bool),
 ) -> Response {
     if let Err(e) = validate(record_type, fields.as_str()) {
         return Response::fail(e);
     }
+    let bindings = match (seal, record_type) {
+        (false, _) => None,
+        (true, "database") => match db_binding(fields.as_str()) {
+            Ok(b) => Some(vec![b]),
+            Err(e) => return Response::fail(e),
+        },
+        (true, _) => return Response::fail("only database records can be sealed"),
+    };
     let flags = SetFlags {
         requires_consent,
         record_type: Some(record_type.to_string()),
+        sealed: seal.then_some(true),
+        bindings,
         ..Default::default()
     };
     handle_set(uid, username, name, Some(fields.as_str()), None, flags)
@@ -82,6 +118,24 @@ pub fn handle_record_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn database_binding_comes_from_the_record() {
+        let b = db_binding(r#"{"host":"DB.Example.com","user":"u","password":"p","database":"d"}"#)
+            .unwrap();
+        assert_eq!((b.host.as_str(), b.port), ("db.example.com", 5432));
+        assert_eq!(b.inject, kepr_core::binding::Inject::Postgres);
+        assert!(db_binding(r#"{"host":"db.example.com","user":"u","password":"p"}"#).is_err());
+        assert!(db_binding(r#"{"host":"db","user":"u","password":"p","database":"d"}"#).is_err());
+        assert!(db_binding(
+            r#"{"host":"db.example.com","port":"x","user":"u","password":"p","database":"d"}"#
+        )
+        .is_err());
+        assert!(db_binding(
+            r#"{"host":"db.example.com","user":"u","password":"p","database":"d","sslmode":"prefer"}"#
+        )
+        .is_err());
+    }
 
     #[test]
     fn validates_type_and_fields() {

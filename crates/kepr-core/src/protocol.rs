@@ -243,6 +243,10 @@ pub enum Request {
         fields: ZeroString,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         requires_consent: Option<bool>,
+        /// P7.1: seal a `database` record for the gate's database proxy;
+        /// the daemon binds it to the record's own host:port.
+        #[serde(default)]
+        seal: bool,
     },
 }
 

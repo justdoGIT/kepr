@@ -35,6 +35,8 @@ COMMANDS:
             [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
                                        run claude|codex|grok-cli|aider|omp|grok sandboxed, with
                                        placeholders; a local gate injects the real key on the wire
+  agent add-db KEY --url postgres://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
+                                       sealed database login; agents get DATABASE_URL to a local gate port
   agent install omp|grok               point the harness's config file at the gate (once)
   agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
   agent ls | agent revoke KEY          list / delete sealed keys

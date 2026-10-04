@@ -97,7 +97,7 @@ impl State {
         Ok(self)
     }
 
-    fn valid_placeholder(&self, s: &str, slot: u16) -> bool {
+    pub(crate) fn valid_placeholder(&self, s: &str, slot: u16) -> bool {
         match placeholder::parse(s) {
             Some(p) => {
                 p.session_id == self.session_id

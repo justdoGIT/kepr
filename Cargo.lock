@@ -1044,6 +1044,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "webpki-roots 1.0.7",
  "zeroize",
 ]
 
