@@ -1,9 +1,14 @@
-//! cli_agent.rs — AI Agent protection wrappers (`kepr protect-agent`).
+//! cli_agent.rs — `kepr protect-agent` (disabled pending kepr-gate).
 //!
-//! Intercepts AI agent invocations (Claude Code, Cursor, Windsurf, Aider)
-//! and provisions required API keys via sealed memfd file descriptors
-//! (`KEPR_FD_*`) so secrets exist strictly in RAM and are protected
-//! against LLM context leakage.
+//! The original implementation exec'd the harness with only
+//! `KEPR_FD_<KEY>` set. No supported harness reads that variable, so the
+//! agent started without credentials, and the secret memfd (FD_CLOEXEC
+//! cleared) was inherited by every tool the agent spawned, readable with
+//! `cat <&3`. See docs/content/docs/agent-vault-plan.mdx §3.
+//!
+//! Until `kepr agent run` + `kepr-gate` ship (plan P1), the command refuses
+//! and names the explicit, env-exposing alternative instead of pretending
+//! to protect the agent.
 
 use kepr_core::protocol::Response;
 
@@ -46,8 +51,19 @@ pub fn cmd_protect_agent(agent_name: Option<&str>, argv: &[String]) -> Response 
             ))
         }
     };
-    let memfd_keys: Vec<String> = kind.default_keys().iter().map(|s| s.to_string()).collect();
-    crate::cli_exec::cmd_exec(&[], &memfd_keys, argv)
+    let _ = argv; // never exec'd: see module docs
+    Response::fail(refusal_message(name, kind))
+}
+
+fn refusal_message(name: &str, kind: AgentKind) -> String {
+    let keys = kind.default_keys().join(",");
+    format!(
+        "protect-agent is disabled: {name} reads {keys} from environment variables, \
+         and kepr cannot yet hand them over without exposing them to the agent. \
+         Sealed agent sessions (`kepr agent run`) are planned. If you accept that \
+         the agent and its tools can read the keys, run: \
+         kepr exec --env {keys} -- {name}"
+    )
 }
 
 #[cfg(test)]
@@ -71,5 +87,39 @@ mod tests {
         assert!(AgentKind::Aider
             .default_keys()
             .contains(&"DEEPSEEK_API_KEY"));
+    }
+
+    fn err_text(r: Response) -> String {
+        match r {
+            Response::Err { error } => error,
+            other => panic!("expected Response::Err, got {other:?}"),
+        }
+    }
+
+    // P0 (agent-vault-plan §3): protect-agent used to exec the harness with
+    // only KEPR_FD_<KEY> set, which no harness reads, and with the secret
+    // memfd inherited by every tool the agent spawns. It must now refuse
+    // before contacting the daemon or exec'ing anything.
+    #[test]
+    fn protect_agent_refuses_without_exec() {
+        let argv = vec!["/bin/false".to_string()];
+        let msg = err_text(cmd_protect_agent(Some("claude"), &argv));
+        assert!(msg.contains("ANTHROPIC_API_KEY"), "names the keys: {msg}");
+        assert!(
+            msg.contains("kepr exec --env"),
+            "offers explicit opt-in: {msg}"
+        );
+    }
+
+    #[test]
+    fn protect_agent_refusal_never_mentions_memfd_as_safe() {
+        let msg = err_text(cmd_protect_agent(Some("aider"), &[]));
+        assert!(!msg.contains("KEPR_FD_"), "{msg}");
+    }
+
+    #[test]
+    fn protect_agent_unknown_agent_still_rejected() {
+        let msg = err_text(cmd_protect_agent(Some("nope"), &[]));
+        assert!(msg.contains("unknown agent"), "{msg}");
     }
 }

@@ -1,95 +1,273 @@
 ---
-title: "AI Agent & IDE Protection"
-description: "Use Kepr to protect Claude Code, Cursor, Windsurf, and Aider from exposing API keys in context logs."
+title: "AI Agent Protection"
+description: "Give AI coding agents (Claude Code, Codex, grok-cli, Aider, oh-my-pi, Grok Build) API keys they can use but never see."
 ---
 
-## Problem: AI Agents Leak Secrets in Context Windows
+## The idea
 
-Modern AI coding agents (Claude Code, Cursor, Windsurf, Aider) capture environment variables and process state in their context logs. This exposes API keys and credentials to the model (and LLM provider logs).
+Paste a key once. From then on an agent can **use** it but never **hold** it:
 
----
+- the key is stored **sealed** (write-only): `kepr get` refuses it, and so
+  does every other API;
+- the agent receives a worthless **placeholder** (`kepr-ph-…`) and a local
+  base URL;
+- **kepr-gate**, a local proxy started by the kepr daemon, swaps the
+  placeholder for the real key on the wire, and only toward the host the key
+  is bound to (`api.anthropic.com` for an Anthropic key, and so on).
 
-## Solution: `kepr protect-agent`
+The real key is never in the agent's environment, files, inherited file
+descriptors or memory.
 
-Kepr intercepts agent invocations and injects credentials via sealed RAM memory descriptors instead of environment variables.
+## Quick start
 
 ```bash
-kepr protect-agent claude -- claude
+kepr agent add ANTHROPIC_API_KEY     # paste the key (input hidden)
+kepr agent run claude                # starts Claude Code with a placeholder
+```
+
+The provider is detected from the key's prefix (`sk-ant-`, `xai-`, `sk-`,
+`sk-or-`, `gsk_`, `AIza`). For keys without a recognisable prefix, say which
+provider it belongs to:
+
+```bash
+kepr agent add MISTRAL_API_KEY --for mistral
+kepr agent add DEEPSEEK_API_KEY --for deepseek
+```
+
+Supported providers: anthropic, openai, xai, google, mistral, deepseek,
+groq, openrouter.
+
+## Already have keys in `.env` or your shell profile?
+
+```bash
+kepr agent adopt                 # lists keys found in .env, .envrc, ~/.bashrc, ~/.zshrc …
+kepr agent adopt --yes           # imports them as sealed keys
+kepr agent adopt --yes --remove  # …and deletes the plaintext lines
+```
+
+Values are never printed. A name found with different values in two
+places, or already stored in kepr, is skipped rather than overwritten.
+`--remove` keeps no plaintext backup, on purpose.
+
+## Harnesses
+
+| Harness | Command | Key it uses |
+| --- | --- | --- |
+| Claude Code | `kepr agent run claude` | `ANTHROPIC_API_KEY` |
+| OpenAI Codex CLI | `kepr agent run codex` | `OPENAI_API_KEY` |
+| grok-cli | `kepr agent run grok-cli` | `XAI_API_KEY` |
+| Aider (OpenAI path) | `kepr agent run aider` | `OPENAI_API_KEY` |
+| oh-my-pi | `kepr agent install omp` once, then `kepr agent run omp` | `ANTHROPIC_API_KEY` |
+| Grok Build | `kepr agent install grok` once, then `kepr agent run grok` | `XAI_API_KEY` |
+
+`kepr agent install` edits the harness's own config file
+(`~/.omp/agent/models.yml`, `~/.grok/config.toml`) to point at the gate on
+port 7878, after writing a timestamped backup. Running it twice changes
+nothing.
+
+Pass your own command line after `--`:
+
+```bash
+kepr agent run claude -- claude --model claude-sonnet-5-5
+```
+
+Any real key already exported in your shell (for example
+`ANTHROPIC_API_KEY=sk-ant-…`) is removed from the agent's environment.
+
+## The sandbox
+
+`kepr agent run` starts the harness in its own user, mount and PID
+namespaces (when the kernel allows it):
+
+- the credential store, the daemon's state (master key, audit log) and the
+  daemon socket are covered by empty read-only directories;
+- only the session's own processes are visible, so other processes'
+  `/proc/PID/root` can't be used to reach the host filesystem;
+- the harness has no capabilities, `no_new_privs`, and a seccomp filter
+  that denies `ptrace`, `process_vm_readv/writev`, `bpf`,
+  `perf_event_open`, kexec and module loading (debuggers don't work inside
+  a session).
+
+Networking stays as normal, so package installs work. Add `--isolate-net`
+to give the session nothing but loopback: the gate is still reachable
+(connections are relayed to it), but nothing else is.
+
+```bash
+kepr agent run claude                 # sandboxed (default when available)
+kepr agent run claude --isolate-net   # sandboxed, gate-only network
+kepr agent run claude --strict-sandbox  # refuse to run unsandboxed
+kepr agent run claude --no-sandbox    # opt out
+```
+
+If the kernel refuses unprivileged user namespaces (Ubuntu 24.04+ restricts
+them through AppArmor), kepr warns and runs unsandboxed; `install.sh`
+installs an AppArmor profile that allows it for `/usr/local/bin/kepr`.
+`kepr doctor` shows what your kernel supports.
+
+## Asking before a key is used
+
+```bash
+kepr agent add ANTHROPIC_API_KEY --requires-consent
+```
+
+Before the daemon hands such a key to a gate, polkit asks you to approve
+the agent process (the desktop's authentication dialog). No answer within
+60 seconds, or no polkit agent, means no. One approval covers the gate's
+cache window (5 minutes, or until the key changes).
+
+## MCP: `kepr mcp`
+
+For agent platforms that talk to tools over MCP, `kepr mcp` is a stdio MCP
+server with two tools:
+
+- `list_secrets`: names of your sealed keys and the hosts they're bound to;
+- `call_api`: an HTTP call to a provider API (`provider`, `method`, `path`,
+  optional `body` and `headers`). The call goes through a gate session, so
+  the key is injected by kepr, prompt DLP applies, and the model never sees
+  the key.
+
+No tool returns a secret value. Example client entry:
+
+```json
+{ "mcpServers": { "kepr": { "command": "kepr", "args": ["mcp"] } } }
+```
+
+## Spending and rate limits
+
+```bash
+kepr agent run claude --max-requests 500 --max-tokens 2000000 --rate 30
+```
+
+The gate enforces these per session:
+
+- `--max-requests`: total forwarded requests.
+- `--max-tokens`: total tokens, counted from the provider's own `usage`
+  fields as responses stream back. A response that crosses the limit
+  completes; the next request is refused.
+- `--rate`: requests per rolling minute.
+
+When a cap is reached, the agent gets `403` with error type `kepr_limit` and
+a message naming the limit. That stops it rather than leaving it to retry.
+The rate limit answers `429` with `Retry-After`. Refusals appear in the gate
+journal as `"blocked":"limit"`.
+
+## Emergency stop
+
+```bash
+kepr panic
+```
+
+Stops every running gate for your user (their cached keys die with them)
+and, if the store is passphrase-protected, locks it until `kepr unlock`.
+
+The user-mode daemon also does this by itself when the machine suspends or
+the screen locks. That keeps keys out of RAM while a laptop sleeps. It
+follows logind through `gdbus`; `kepr doctor` reports whether it can. Turn
+it off with `KEPR_LOCK_ON_SLEEP=0`.
+
+## When a key leaks
+
+```bash
+kepr leaked ANTHROPIC_API_KEY
 ```
 
 This command:
-1. Inspects `~/.config/claude/AGENTS.md` for declared credential requirements.
-2. Fetches each credential from the daemon.
-3. Mounts secrets in sealed `memfd` blocks with `KEPR_FD_*` environment variables.
-4. Executes Claude Code with a clean environment (no plaintext API keys).
 
----
+1. Stops every agent session for your user, along with their cached copies.
+2. Deletes the credential and its saved history.
+3. Records a `leak-incident` entry in the audit chain.
+4. Tells you where to revoke the key at the provider; kepr can't revoke it
+   for you.
 
-## Configuration: Declare Agent Requirements
+Then store the new key with `kepr agent add`. To see where the old one was
+used: `journalctl -t kepr-daemon KEPR_NAME=ANTHROPIC_API_KEY`, or
+`kepr usage`.
 
-In your agent config file (e.g., `~/.config/claude/AGENTS.md`):
-
-```yaml
-# Credentials this agent requires (Kepr will inject via memfd)
-credentials:
-  - OPENAI_API_KEY
-  - ANTHROPIC_API_KEY
-  - GITHUB_TOKEN
-```
-
-On agent startup, Kepr ensures all declared credentials exist and are available via sealed FDs.
-
----
-
-## Usage Examples
-
-### Claude Code
-```bash
-kepr protect-agent claude -- claude
-```
-
-### Cursor
-```bash
-kepr protect-agent cursor -- cursor
-```
-
-### Windsurf
-```bash
-kepr protect-agent windsurf -- windsurf
-```
-
-### Aider
-```bash
-kepr protect-agent aider -- aider
-```
-
----
-
-## What Gets Protected?
-
-- ✅ API key environment variables no longer appear in `/proc/<pid>/environ`
-- ✅ Process inspection (`ps`, `/proc/self/cmdline`) reveals no plaintext secrets
-- ✅ Environment-variable-based context capture sees only a file descriptor number (`KEPR_FD_KEY=3`), not the raw token
-- ✅ Agent stdout/stderr remains completely unmodified
-
-**What this does *not* protect against:** once the agent process opens the
-sealed `memfd` and reads the key (it has to, to call the API), the raw
-value is in that process's memory like any other secret it handles. If the
-agent's own logging, telemetry, or a downstream tool call echoes the value
-it just read, `protect-agent` does not intercept or redact that — it only
-removes the *accidental* exposure paths (environment tables, `/proc`,
-shell history, crash dumps of the parent).
-
----
-
-## Auditing Agent Access
+## SSH keys the agent can use but never read
 
 ```bash
-journalctl -t kepr-daemon KEPR_OP=get
+kepr ssh generate DEPLOY_KEY            # or: kepr ssh import DEPLOY_KEY ~/.ssh/id_ed25519
+kepr ssh list                           # authorized_keys lines to install on servers
+eval "$(kepr ssh-agent)"                # sets SSH_AUTH_SOCK for ssh and git
 ```
 
-Each credential fetch by an agent is logged with:
-- Operation type (`get`)
-- Credential name
-- Peer UID (agent process owner)
-- Success/failure result
+The Ed25519 private key stays in the daemon. `kepr get` refuses it, and the
+agent socket only lists keys and signs. Requests to add, export or remove
+keys fail. Add `--requires-consent` to get a prompt before each signature.
+Encrypted key files must be decrypted (on a copy) before import.
+
+## What the gate enforces
+
+- **Placeholder check:** a request without this session's placeholder gets
+  `401`. Placeholders are HMAC-bound to one session and useless elsewhere.
+- **Destination binding:** the daemon releases a sealed key to the gate only
+  for a host in its bindings, and the gate only talks to the provider's real
+  host over TLS with compiled-in public roots (it ignores proxy and CA
+  settings from the environment, which the agent could control).
+- **Prompt DLP:** a request whose body contains a stored key (or something
+  shaped like an API key) is **blocked** with `403`, and the agent is told
+  why, e.g. `kepr blocked this request: it contains the stored secret
+  ANTHROPIC_API_KEY. Remove it and retry.` Nothing is redacted silently.
+- **Lifetime:** the gate exits, and wipes its cache, when the agent exits.
+  Any `set`, `delete` or expiry in the store invalidates cached keys at
+  once, so `kepr agent revoke` takes effect immediately.
+- **Journal:** one metadata-only line per request on the daemon's stderr
+  (provider, method, path without query, status, sizes, time). Never
+  headers or bodies.
+
+## Managing keys
+
+```bash
+kepr agent ls                        # sealed keys and their bound hosts
+kepr agent revoke ANTHROPIC_API_KEY  # delete (asks for confirmation)
+kepr history ANTHROPIC_API_KEY       # previous values kept (no values shown)
+kepr restore ANTHROPIC_API_KEY --version 1   # undo the last change
+kepr usage --days 30                 # uses, refusals, last use; never-used keys
+```
+
+A sealed key can't be unsealed. To change its value or provider, run
+`kepr agent add` again.
+
+## Commands you run yourself: `kepr exec --mask`
+
+For your own scripts that need a readable key, `--mask` replaces stored
+values in the command's output with `****`, so a script that echoes a key
+can't leak it into a log or an agent's context:
+
+```bash
+kepr exec --env DEPLOY_TOKEN --mask -- ./deploy.sh
+```
+
+## Current limits
+
+- **User-mode daemon only.** The system-mode service forbids network
+  sockets; a separate gate service is planned.
+- **TLS-inspecting networks:** if your network intercepts TLS with its own
+  certificate authority, the gate refuses the connection, because it trusts
+  only public roots. A root-owned CA setting is planned.
+- **Root:** an attacker with root on the running machine can read any
+  process's memory. Run agents as your normal user.
+- **Use, not read:** an agent can still make calls with the key toward its
+  bound provider. It cannot copy it or send it anywhere else.
+- **FIDO2:** sealed keys can't require a FIDO2 touch yet (use
+  `--requires-consent`).
+
+`kepr protect-agent` is retired: it now explains why and exits.
+
+## Auditing
+
+```bash
+journalctl -t kepr-daemon KEPR_OP=resolve
+```
+
+Every release of a sealed key to the gate is logged as `op=resolve`; every
+refused `get` of a sealed key as `result=fail: sealed`. `kepr usage` sums
+these per key from the hash-chained audit log.
+
+## Binding the store to this machine
+
+Set `KEPR_MASTER_KEY_SEAL=tpm2` (or `host+tpm2`) in the service
+environment, optionally with `KEPR_TPM2_PCRS=7`. The master key is then
+sealed to this machine's TPM, so a copied disk can't be decrypted
+elsewhere, and with PCRs, not after the boot chain changes either. The
+commented lines in `systemd/kepr.service` show the setting.

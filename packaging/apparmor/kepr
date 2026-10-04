@@ -1,0 +1,17 @@
+# AppArmor profile for kepr (agent vault decision 3).
+#
+# Ubuntu 24.04+ restricts unprivileged user namespaces
+# (kernel.apparmor_restrict_unprivileged_userns=1). `kepr agent run`
+# needs one for its agent sandbox. This profile grants exactly that to
+# the installed kepr binary and otherwise leaves it unconfined, the same
+# pattern Ubuntu ships for browsers. Installed by install.sh to
+# /etc/apparmor.d/kepr when AppArmor is present.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile kepr /usr/local/bin/kepr flags=(unconfined) {
+  userns,
+
+  include if exists <local/kepr>
+}

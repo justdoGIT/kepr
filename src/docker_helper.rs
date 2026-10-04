@@ -87,12 +87,13 @@ pub fn url_to_kepr_name(url: &str) -> String {
     out
 }
 
-fn read_stdin_to_string() -> Result<String, String> {
-    let mut buf = String::new();
+/// stdin for `store` carries the registry secret: keep it in wiped buffers.
+fn read_stdin_to_string() -> Result<zeroize::Zeroizing<String>, String> {
+    let mut buf = zeroize::Zeroizing::new(String::new());
     io::stdin()
         .read_to_string(&mut buf)
         .map_err(|e| format!("read stdin: {e}"))?;
-    Ok(buf.trim().to_string())
+    Ok(zeroize::Zeroizing::new(buf.trim().to_string()))
 }
 
 /// `get`: stdin is the registry URL (plain text). Response is a
@@ -182,6 +183,8 @@ pub fn cmd_store() -> ExitCode {
         ttl_secs: None,
         requires_consent: None,
         requires_fido2: None,
+        sealed: None,
+        bindings: None,
     };
     match client::send_request(&req) {
         Ok(Response::SetOk { .. }) => ExitCode::from(0),

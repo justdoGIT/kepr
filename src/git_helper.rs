@@ -41,6 +41,8 @@ pub fn host_to_kepr_name(host: &str) -> String {
 pub fn parse_git_input<R: BufRead>(reader: R) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in reader.lines().map_while(Result::ok) {
+        // A `password=` line is a secret: wipe the raw line after parsing.
+        let line = zeroize::Zeroizing::new(line);
         let trimmed = line.trim();
         if trimmed.is_empty() {
             break;
@@ -82,7 +84,13 @@ pub fn cmd_get() -> ExitCode {
 }
 
 pub fn cmd_store() -> ExitCode {
-    let input = parse_git_input(io::stdin().lock());
+    let mut input = parse_git_input(io::stdin().lock());
+    // Move (not clone) the password out of the map, straight into a
+    // ZeroString, so no plain copy is left behind.
+    let password = match input.remove("password") {
+        Some(p) if !p.is_empty() => ZeroString::from_string(p),
+        _ => return ExitCode::SUCCESS,
+    };
     let host = match input.get("host") {
         Some(h) if !h.is_empty() => h,
         _ => return ExitCode::SUCCESS,
@@ -91,27 +99,25 @@ pub fn cmd_store() -> ExitCode {
         .get("username")
         .cloned()
         .unwrap_or_else(|| "git".to_string());
-    let password = match input.get("password") {
-        Some(p) if !p.is_empty() => p.clone(),
-        _ => return ExitCode::SUCCESS,
-    };
     let cred = GitCred {
         host: host.to_string(),
         username,
-        password: ZeroString::from_string(password),
+        password,
     };
     let payload = match serde_json::to_string(&cred) {
-        Ok(json) => json,
+        Ok(json) => ZeroString::from_string(json),
         Err(_) => return ExitCode::FAILURE,
     };
     let kepr_name = host_to_kepr_name(host);
     match client::send_request(&Request::Set {
         name: kepr_name,
-        value: Some(ZeroString::from_string(payload)),
+        value: Some(payload),
         generate: None,
         ttl_secs: None,
         requires_consent: None,
         requires_fido2: None,
+        sealed: None,
+        bindings: None,
     }) {
         Ok(Response::SetOk { .. }) => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,

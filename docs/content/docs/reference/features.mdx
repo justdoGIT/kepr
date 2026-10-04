@@ -12,9 +12,132 @@ description: "Command surface, generators, audit log, environment variables, exi
 | `list`   | `ls`    | —                                                   | `ListOk { credentials }` |
 | `delete` | `rm`    | `KEY [--force]`                                     | `DeleteOk`            |
 | `check`  |         | —                                                   | `CheckOk { all_ok }`  |
+| `exec`   |         | `[--env CSV\|--memfd CSV\|--manifest P] [--mask] -- CMD` | runs CMD     |
+| `env`    |         | `[--env CSV\|--manifest P]`                         | `export` lines        |
+| `agent add` |      | `KEY [--for PROVIDER\|host[:port]:inject]... [--requires-consent] [--stdin]` | sealed `SetOk` |
+| `agent run` |      | `HARNESS [--port N] [--isolate-net\|--no-sandbox\|--strict-sandbox] [--max-requests N] [--max-tokens N] [--rate N] [-- ARGV]` | execs the harness |
+| `agent install` |  | `omp\|grok [--port N]`                              | edits harness config  |
+| `agent adopt` |    | `[FILE...] [--yes] [--remove]`                      | imports found keys    |
+| `agent ls` / `revoke` | | `[KEY] [--force]`                              | sealed keys / delete  |
+| `mcp`    |         | — (stdio JSON-RPC)                                   | MCP server            |
+| `panic`  |         | —                                                   | `PanicOk`             |
+| `leaked` |         | `KEY [--yes]`                                       | `LeakedOk { gates_stopped, hosts }` |
+| `totp`   |         | `KEY`                                               | 6-8 digit code        |
+| `inject` |         | `-i TEMPLATE [-o OUT]`                              | rendered template     |
+| `scan`   |         | `[PATH...] [--staged]`                              | findings; exit 1 if any |
+| `copy`   |         | `KEY [--clear SECS]`                                | clipboard             |
+| `history` |        | `KEY`                                               | `HistoryOk { versions }` (no values) |
+| `restore` |        | `KEY --version N`                                   | `RestoreOk`           |
+| `usage`  |         | `[--days N]`                                        | `UsageOk { keys }`    |
+| `health` |         | `[--max-age DAYS] [--breach]`                       | `HealthOk { items }` (flags only) |
+| `discover` |       | `[--seal] [--overwrite] [--yes]`                    | plan, then `SetOk` per entry |
+| `import` |         | `FILE [--format auto\|csv\|json\|env] [--prefix P] [--seal] [--overwrite] [--yes]` | plan, then `SetOk` per entry |
+| `ssh generate` / `import` / `list` | | `KEY [--comment C]` / `KEY FILE` / — | `SshKeyOk` / `SshListOk` |
+| `ssh-agent` |      | `[--foreground] [--socket PATH]`                    | prints `SSH_AUTH_SOCK` exports |
+| `doctor` |         | —                                                   | setup + hardening checks |
 
 Global flags: `--json` (machine output, suppress stderr on clean
 errors), `--color` / `--no-color` (opt-in ANSI), `--version`, `--help`.
+
+## Credential history
+
+Every `set`, `rotate` or `restore` first saves the value being replaced.
+The last **5** are kept, each encrypted like a credential and bound to
+its slot name (`<cred>~N` on disk; never listed, never nameable in a
+request). `kepr history KEY` shows version numbers, times and sizes, but
+never values. `kepr restore KEY --version N` makes one current again under the
+credential's current policy, and saves the value it replaces, so a restore
+can itself be undone.
+
+- A value saved while the credential was sealed is only restored into a
+  sealed credential.
+- SSH keys keep no history.
+- `delete` and TTL expiry remove the history with the credential.
+
+## Usage report
+
+`kepr usage [--days N]` reads the caller's own entries from the
+hash-chained audit log. For each current credential it shows:
+
+- successful uses (`get`, gate `resolve`, `ssh-sign`) and refusals in the
+  window;
+- the last use ever;
+- the number of agent gate sessions.
+
+Never-used keys are listed so they can be removed. If the audit chain
+fails verification, the report says so.
+
+## Health and breach checks
+
+`kepr health` asks the daemon to look at every value it holds. Each
+credential can be flagged as:
+
+- weak, short or a common password;
+- reused (the same value as another credential, compared by digest inside
+  the daemon);
+- not changed in over `--max-age` days (default 365);
+- expired.
+
+Only the flags come back.
+
+`--breach` adds a [Have I Been Pwned](https://haveibeenpwned.com/API/v3#PwnedPasswords)
+range check:
+
+1. The daemon gives the CLI the first 5 hex digits of each value's SHA-1.
+   Sealed keys and SSH keys get none.
+2. The CLI downloads the public list of suffixes for that prefix, with
+   padding.
+3. The CLI sends the suffixes back, and the daemon answers yes or no.
+
+Neither the value nor its full hash leaves the daemon. If the lookup
+fails, the CLI prints a warning and still shows the local report.
+
+## Import
+
+`kepr import FILE` reads another manager's export:
+
+- CSV from 1Password, Bitwarden, KeePassXC, LastPass or a browser (columns
+  are found by header name);
+- JSON from Bitwarden or Vault;
+- flat JSON or key/value arrays (Doppler, Infisical);
+- `.env` files.
+
+A record titled `GitHub` becomes `GITHUB` (the password), plus
+`GITHUB_USERNAME`, `GITHUB_TOTP` and one name per custom field.
+
+The first run prints the names (never values). `--yes` stores them.
+Names that already exist are skipped unless you pass `--overwrite`. With
+`--seal`, values that look like a known provider's API key are stored
+write-only and bound to that provider, as `kepr agent add` does. Encrypted
+exports and binary vaults (`.kdbx`, `.1pux`) aren't read: export to CSV or
+JSON, import, then delete the export.
+
+## Discover
+
+`kepr discover` looks for credentials that CLI tools keep in plain text:
+
+- `~/.aws/credentials`
+- `~/.git-credentials`
+- `~/.netrc`
+- `~/.npmrc`
+- `~/.pypirc`
+- `~/.docker/config.json`
+- gh's `hosts.yml`
+- the kubeconfig
+
+It imports them through the same plan / `--yes` flow as `kepr import`.
+
+Git and Docker entries are stored as `GIT_<HOST>` and `DOCKER_<HOST>`
+records in the format `git-credential-kepr` and `docker-credential-kepr`
+read. Pointing those tools at the kepr helper therefore works at once.
+Source files are never changed. For each file, the report says how to stop
+keeping the secret there.
+
+## Python SDK
+
+`sdk/python/kepr_client` is a stdlib-only client over the same socket and
+wire format (`Client().get(...)`, `set`, `list`, `history`, `restore`,
+`usage`, `ssh_sign`, …). The daemon applies the same rules as for the CLI.
 
 ## Generators (`--gen-kind`)
 
@@ -24,6 +147,7 @@ errors), `--color` / `--no-color` (opt-in ANSI), `--version`, `--help`.
 | `base62` | 48     | `[A-Za-z0-9]`, rejection-sampled (no modulo bias).      |
 | `pass`   | 32     | upper + lower + digit + symbol (retry until all four).  |
 | `uuid`   | 36     | RFC 4122 v4 (version + variant nibbles enforced).       |
+| `words`  | 6 words | EFF large wordlist (7776 words), `-`-joined, ~77.5 bits; rejection-sampled. |
 
 All entropy comes from `/dev/urandom`. The rejection-sampling helper
 discards bytes ≥ `(256 / |alphabet|) * |alphabet|` to stay uniform.

@@ -1,0 +1,31 @@
+[package]
+name = "kepr-gate"
+version = "0.4.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Credential-injecting local proxy for kepr agent sessions"
+publish = false
+
+# hyper/tokio/rustls live in this crate only, so they never reach the
+# daemon's dependency tree (agent vault plan decision 1).
+[dependencies]
+kepr-core = { path = "../kepr-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "signal", "sync"] }
+hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1", "http2", "server"] }
+http-body-util = "0.1"
+bytes = "1"
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "webpki-roots", "ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libc = "0.2"
+zeroize = "1.8"
+hmac = "0.13"
+sha2 = "0.11"
+hex = "0.4"
+getrandom = "0.4"
+memchr = "2"
+base64 = "0.22"
+
+[dev-dependencies]

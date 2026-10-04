@@ -76,12 +76,18 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // `Aes256Gcm::generate_nonce`/`aead::OsRng`; the replacement
     // `getrandom::fill` call needs one extra line over the old
     // single-line RNG call.
-    ("src/crypto_inproc.rs", 383),
+    // crypto_inproc.rs grew 383 → 386: encrypt/decrypt plaintext buffers
+    // are now Zeroizing (the decrypted secret no longer lingers in freed
+    // heap); rustfmt spreads the wrapped decrypt call over 3 more lines.
+    ("src/crypto_inproc.rs", 386),
     // cli_cmds.rs grew 463 → 470: `cmd_set` now destructures
     // `password_protected` off the real `Response::SetOk` instead of
     // firing a second `Request::Status` round-trip to the daemon just
     // to render the same un-wrapped-master-key warning.
-    ("src/cli_cmds.rs", 470),
+    // cli_cmds.rs grew 470 → 472: `Request::Set` gained the agent
+    // vault `sealed` / `bindings` fields; `cmd_set` passes `None` for
+    // both (sealed credentials are created via `kepr agent add`).
+    ("src/cli_cmds.rs", 472),
 ];
 
 fn count_production_loc(path: &Path) -> usize {

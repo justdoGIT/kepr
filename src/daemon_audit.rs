@@ -27,8 +27,8 @@ use kepr_core::protocol::Response;
 /// the audit pipeline — operators get a paper trail of every
 /// `kepr audit-verify` call, distinguishable in journald via
 /// `KEPR_OP=audit_verify`.
-pub fn handle_audit_verify(uid: u32, username: &str, chain_path: &str) -> Response {
-    match AuditChain::verify(Path::new(chain_path)) {
+pub fn handle_audit_verify(uid: u32, username: &str, chain_path: &Path) -> Response {
+    match AuditChain::verify(chain_path) {
         Ok(report) => {
             audit::log(&AuditEvent {
                 op: "audit_verify",
@@ -70,7 +70,7 @@ mod tests {
         // in audit_chain::tests; here we just confirm that the
         // handler propagates verify errors as `Response::Err`
         // rather than panicking.
-        let resp = handle_audit_verify(0, "root", "/nonexistent/audit/chain");
+        let resp = handle_audit_verify(0, "root", Path::new("/nonexistent/audit/chain"));
         match resp {
             Response::Err { error } => {
                 assert!(

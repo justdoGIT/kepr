@@ -12,8 +12,16 @@
 //! without pulling in root-only privileges.
 
 pub mod auth;
+pub mod binding;
 pub mod framing;
+pub mod gate_protocol;
 pub mod generate;
 pub mod keyring;
+pub mod leak;
 pub mod memfd;
 pub mod protocol;
+pub mod protocol_response;
+pub mod protocol_types;
+pub mod providers;
+pub mod secmem;
+pub mod ssh_wire;

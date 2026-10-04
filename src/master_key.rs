@@ -28,11 +28,11 @@ const SEALED_NAME: &str = "kepr-master-key";
 /// source for long-term key material; getrandom(2) would be equivalent
 /// but adds an extra dependency.
 pub fn random_master_key() -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
-    let mut key = [0u8; MASTER_KEY_LEN];
+    let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
     let mut f = fs::File::open(URANDOM_PATH).map_err(|e| format!("open {URANDOM_PATH}: {e}"))?;
-    f.read_exact(&mut key)
+    f.read_exact(key.as_mut())
         .map_err(|e| format!("read {URANDOM_PATH}: {e}"))?;
-    Ok(Zeroizing::new(key))
+    Ok(key)
 }
 
 /// Pluggable seal/unseal layer. Production uses `SystemdCredsSealer`;
@@ -50,17 +50,41 @@ pub trait Sealer: Send + Sync {
 /// blob instead of per-credential.
 pub struct SystemdCredsSealer;
 
+/// Arguments for sealing a new master key (P4.3). `KEPR_MASTER_KEY_SEAL`
+/// picks what the key is bound to: `host` (default: the machine's
+/// credential secret), `tpm2`, `host+tpm2` or `auto`. `KEPR_TPM2_PCRS`
+/// (e.g. `7` or `7+11`) binds TPM2 sealing to those PCRs, so a changed
+/// boot chain cannot unseal it. Values are allow-listed; decrypt detects
+/// the sealing type itself, so existing keys keep working.
+pub fn seal_args(seal: Option<&str>, pcrs: Option<&str>) -> Result<Vec<String>, String> {
+    let kind = seal.unwrap_or(KEY_TYPE);
+    if !matches!(kind, "host" | "tpm2" | "host+tpm2" | "auto") {
+        return Err(format!(
+            "KEPR_MASTER_KEY_SEAL={kind}: use host, tpm2, host+tpm2 or auto"
+        ));
+    }
+    let mut args = vec!["encrypt".to_string(), format!("--with-key={kind}")];
+    if let Some(p) = pcrs.filter(|p| !p.is_empty()) {
+        let valid = p.split('+').all(|n| n.parse::<u8>().is_ok_and(|n| n <= 23));
+        if !valid || !kind.contains("tpm2") && kind != "auto" {
+            return Err(format!(
+                "KEPR_TPM2_PCRS={p}: PCR numbers 0-23 joined by '+', with a tpm2 seal"
+            ));
+        }
+        args.push(format!("--tpm2-pcrs={p}"));
+    }
+    args.extend(["--name", SEALED_NAME, "-", "-"].map(String::from));
+    Ok(args)
+}
+
 impl Sealer for SystemdCredsSealer {
     fn seal(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<Vec<u8>, String> {
+        let args = seal_args(
+            std::env::var("KEPR_MASTER_KEY_SEAL").ok().as_deref(),
+            std::env::var("KEPR_TPM2_PCRS").ok().as_deref(),
+        )?;
         let mut child = Command::new(SYSTEMD_CREDS_BIN)
-            .args([
-                "encrypt",
-                &format!("--with-key={KEY_TYPE}"),
-                "--name",
-                SEALED_NAME,
-                "-",
-                "-",
-            ])
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -102,18 +126,19 @@ impl Sealer for SystemdCredsSealer {
         let out = child
             .wait_with_output()
             .map_err(|e| format!("backend wait: {e}"))?;
+        let stdout = Zeroizing::new(out.stdout);
         if !out.status.success() {
             return Err("master-key unseal failed".to_string());
         }
-        if out.stdout.len() != MASTER_KEY_LEN {
+        if stdout.len() != MASTER_KEY_LEN {
             return Err(format!(
                 "unseal returned {} bytes, expected {MASTER_KEY_LEN}",
-                out.stdout.len()
+                stdout.len()
             ));
         }
-        let mut key = [0u8; MASTER_KEY_LEN];
-        key.copy_from_slice(&out.stdout);
-        Ok(Zeroizing::new(key))
+        let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
+        key.copy_from_slice(&stdout);
+        Ok(key)
     }
 }
 
@@ -148,12 +173,13 @@ pub fn load_or_generate(
     sealer: &dyn Sealer,
 ) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
     if path.exists() {
-        let blob = fs::read(path).map_err(|e| format!("read master key: {e}"))?;
+        // The local sealer's blob contains the key itself.
+        let blob = Zeroizing::new(fs::read(path).map_err(|e| format!("read master key: {e}"))?);
         return sealer.unseal(&blob);
     }
 
     let key = random_master_key()?;
-    let blob = sealer.seal(&key)?;
+    let blob = Zeroizing::new(sealer.seal(&key)?);
 
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -177,20 +203,43 @@ pub fn load_or_generate(
     // returned false above; re-entering it with the file present
     // would be a TOCTOU race we explicitly want to fail on rather
     // than reopen at a stale mode.
-    let mut f = fs::OpenOptions::new()
+    // Write to a temp file, fsync, then rename: a crash mid-write must
+    // never leave a torn master.key (every credential would become
+    // unreadable and the daemon would refuse to start).
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let written = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)
-        .map_err(|e| format!("open master key: {e}"))?;
-    f.write_all(&blob)
-        .map_err(|e| format!("write master key: {e}"))?;
-    drop(f);
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(&blob).and_then(|_| f.sync_all()))
+        .and_then(|_| fs::hard_link(&tmp, path));
+    let _ = fs::remove_file(&tmp);
+    written.map_err(|e| format!("write master key: {e}"))?;
+    if let Some(dir) = path.parent().and_then(|d| fs::File::open(d).ok()) {
+        let _ = dir.sync_all();
+    }
     Ok(key)
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn seal_args_allow_list() {
+        let a = seal_args(None, None).unwrap();
+        assert_eq!(a[1], "--with-key=host");
+        let a = seal_args(Some("host+tpm2"), Some("7+11")).unwrap();
+        assert!(a.contains(&"--tpm2-pcrs=7+11".to_string()));
+        assert!(seal_args(Some("evil; rm -rf"), None).is_err());
+        assert!(seal_args(Some("tpm2"), Some("7+99")).is_err());
+        assert!(seal_args(Some("tpm2"), Some("7;x")).is_err());
+        assert!(
+            seal_args(Some("host"), Some("7")).is_err(),
+            "PCRs need a tpm2 seal"
+        );
+    }
+
     use super::*;
     use std::sync::Mutex;
 

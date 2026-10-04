@@ -180,7 +180,7 @@ impl Backend for InProcBackend {
                 // The counter is inside the AEAD plaintext so the GCM
                 // tag binds it: any tamper with the counter on disk
                 // fails the auth check.
-                let mut plaintext = Vec::with_capacity(COUNTER_LEN + value.len());
+                let mut plaintext = Zeroizing::new(Vec::with_capacity(COUNTER_LEN + value.len()));
                 plaintext.extend_from_slice(&counter.to_le_bytes());
                 plaintext.extend_from_slice(value);
 
@@ -234,15 +234,18 @@ impl Backend for InProcBackend {
         let aad = Self::aad(uid, name);
 
         let cipher = self.cipher()?;
-        let plaintext = cipher
-            .decrypt(
-                &nonce_bytes.into(),
-                Payload {
-                    msg: ciphertext,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| "decryption failed: authentication".to_string())?;
+        // Zeroizing: the decrypted secret must not linger in freed heap.
+        let plaintext = Zeroizing::new(
+            cipher
+                .decrypt(
+                    &nonce_bytes.into(),
+                    Payload {
+                        msg: ciphertext,
+                        aad: &aad,
+                    },
+                )
+                .map_err(|_| "decryption failed: authentication".to_string())?,
+        );
 
         // Split off the counter (v2) or treat as 0 (v1) BEFORE
         // building the ZeroString, so the secret bytes never share a

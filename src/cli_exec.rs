@@ -150,7 +150,12 @@ pub fn run_exec(env: HashMap<String, String>, argv: &[String]) -> Response {
 /// Top-level handler. Returns `Response::Err` for any pre-exec
 /// failure; on success this function does not return because the
 /// process image has been replaced.
-pub fn cmd_exec(env_vars: &[String], memfd_vars: &[String], argv: &[String]) -> Response {
+pub fn cmd_exec(
+    env_vars: &[String],
+    memfd_vars: &[String],
+    argv: &[String],
+    mask: bool,
+) -> Response {
     if env_vars.is_empty() && memfd_vars.is_empty() {
         return Response::fail("`kepr exec` requires --env or --memfd VAR[,VAR…]");
     }
@@ -167,6 +172,9 @@ pub fn cmd_exec(env_vars: &[String], memfd_vars: &[String], argv: &[String]) -> 
             Ok(e) => env.extend(e),
             Err(e) => return Response::fail(e),
         }
+    }
+    if mask {
+        return crate::cli_mask::run_masked(env, env_vars, argv);
     }
     run_exec(env, argv)
 }
@@ -302,7 +310,7 @@ mod tests {
 
     #[test]
     fn cmd_exec_rejects_empty_env_and_memfd_vars() {
-        let resp = cmd_exec(&[], &[], &["/bin/echo".to_string()]);
+        let resp = cmd_exec(&[], &[], &["/bin/echo".to_string()], false);
         match resp {
             Response::Err { error } => {
                 assert!(

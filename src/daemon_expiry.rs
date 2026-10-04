@@ -196,6 +196,9 @@ pub fn sweep_once(dir: &Path, now: u64, versions: Option<&Arc<VersionState>>) ->
         // Drop the meta file. Best-effort — a present meta with no
         // cred would just be ignored by future sweeps, but tidiness.
         expiry::delete_meta(&meta_path);
+        crate::daemon_history::purge_in(dir, versions.map(|v| &**v), uid, &name_upper);
+        // Running gates must drop any cached copy of this value.
+        crate::daemon_gate::bump_generation();
 
         // Invalidate the per-uid scan cache so list/check pick up
         // the removal on their next call without waiting for the
@@ -286,6 +289,9 @@ mod tests {
                 expires_at_unix: Some(expires_at_unix),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
+                ssh: None,
             },
         )
         .unwrap();
@@ -302,6 +308,9 @@ mod tests {
                 expires_at_unix: Some(expires_at_unix),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
+                ssh: None,
             },
         )
         .unwrap();

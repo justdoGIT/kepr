@@ -16,6 +16,12 @@ use std::os::unix::io::RawFd;
 /// 5. Clears `FD_CLOEXEC` on the raw FD so child processes retain access post-`exec`.
 ///
 /// Returns the open `RawFd` on success.
+///
+/// Consumer contract: because `FD_CLOEXEC` is cleared, the descriptor is
+/// inherited by the exec'd program *and by every child it spawns*. The
+/// consumer must read the secret once and `close()` the fd before starting
+/// subprocesses. Never hand these fds to programs that run arbitrary tools
+/// (AI agent harnesses, shells): any child could read the secret.
 pub fn create_sealed_memfd(name: &str, secret: &[u8]) -> Result<RawFd, String> {
     let name_clean = name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_");
     let c_name = match std::ffi::CString::new(format!("kepr_{name_clean}")) {

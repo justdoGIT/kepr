@@ -1,0 +1,59 @@
+---
+title: "Kubernetes (External Secrets Operator)"
+description: "Serve kepr credentials to Kubernetes through the External Secrets Operator webhook provider."
+---
+
+`kepr-eso-provider` is a small HTTP service that the External Secrets
+Operator (ESO) polls through its webhook provider. Each request becomes a
+kepr `Get` over the daemon socket, so the usual per-user namespacing and
+audit log apply.
+
+## Run it
+
+```bash
+export KEPR_ESO_AUTH_TOKEN="$(openssl rand -hex 32)"
+kepr-eso-provider            # listens on 127.0.0.1:8080
+```
+
+A bearer token is **required**, even on loopback: a loopback TCP port is
+reachable by every local user, so a token-less provider would hand your
+secrets to anyone logged in. On a single-user machine you can opt out with
+`KEPR_ESO_INSECURE_NO_AUTH=1`. Listening beyond loopback always needs a
+token.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `KEPR_ESO_LISTEN` | `127.0.0.1:8080` | address:port to listen on |
+| `KEPR_ESO_AUTH_TOKEN` | none | token expected as `Authorization: Bearer …` (constant-time compare) |
+| `KEPR_ESO_INSECURE_NO_AUTH` | unset | `1` = allow loopback without a token |
+
+## Endpoints
+
+| Method | Path | Returns |
+| --- | --- | --- |
+| GET | `/health` | `{"status":"ok"}` (unauthenticated, for probes) |
+| GET | `/v1/secrets/NAME` | one secret |
+| POST | `/v1/secrets` | several: body `{"keys": ["A", "B"]}` (max 100) |
+
+## In a cluster
+
+The manifests in `crates/kepr-eso-provider/deploy/` deploy the provider
+with the token taken from a Kubernetes Secret and a `ClusterSecretStore`
+that sends it:
+
+```bash
+kubectl create secret generic kepr-eso-provider-auth \
+  --from-literal=token="$(openssl rand -hex 32)"
+kubectl apply -f crates/kepr-eso-provider/deploy/deployment.yaml
+kubectl apply -f crates/kepr-eso-provider/deploy/cluster-secret-store.yaml
+```
+
+Then reference keys from an `ExternalSecret` as usual
+(`remoteRef.key: OPENAI_API_KEY`).
+
+## Limits
+
+- Sealed credentials (`kepr agent add`) are never served: they are
+  write-only, usable only through `kepr agent run`.
+- The parser is deliberately minimal (no keep-alive, no chunked bodies);
+  request and header lines are capped at 8 KiB and bodies at 64 KiB.

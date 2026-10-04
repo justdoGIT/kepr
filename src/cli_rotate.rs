@@ -176,6 +176,8 @@ pub fn cmd_rotate(name: &str, kind: GenKind, hook_path: &Path) -> Response {
             ttl_secs: None,
             requires_consent: None,
             requires_fido2: None,
+            sealed: None,
+            bindings: None,
         }) {
             Ok(Response::SetOk {
                 cred_name,

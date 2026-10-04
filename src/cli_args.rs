@@ -22,6 +22,8 @@ pub struct Args {
     pub env_vars: Vec<String>,
     /// `kepr exec` only: memfd names from `--memfd CSV`. Delivered via sealed RAM descriptors.
     pub memfd_vars: Vec<String>,
+    /// `kepr exec` only: mask secret values in the child's output.
+    pub mask: bool,
     /// `kepr exec` only: argv after `--`. First element is the binary.
     pub exec_argv: Vec<String>,
     /// Explicit `.kepr.toml` path. Falls back to walk-up then no-manifest.
@@ -67,6 +69,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut exec_argv: Vec<String> = Vec::new();
     let mut manifest_path: Option<std::path::PathBuf> = None;
     let mut stdin = false;
+    let mut mask = false;
     let mut ttl_secs: Option<u64> = None;
     let mut hook_path: Option<std::path::PathBuf> = None;
     let mut url: Option<String> = None;
@@ -142,6 +145,10 @@ pub fn parse_args() -> Result<Args, String> {
                 stdin = true;
                 i += 1;
             }
+            "--mask" => {
+                mask = true;
+                i += 1;
+            }
             "--value" | "-v" => {
                 i += 1;
                 value = Some(raw.get(i).ok_or("--value needs a value")?.clone());
@@ -150,8 +157,9 @@ pub fn parse_args() -> Result<Args, String> {
             "--gen-kind" => {
                 i += 1;
                 let k = raw.get(i).ok_or("--gen-kind needs a value")?;
-                gen_kind = GenKind::from_str(k)
-                    .ok_or(format!("unknown gen-kind: {k} (hex|base62|pass|uuid)"))?;
+                gen_kind = GenKind::from_str(k).ok_or(format!(
+                    "unknown gen-kind: {k} (hex|base62|pass|uuid|words)"
+                ))?;
                 i += 1;
             }
             "--env" => {
@@ -268,6 +276,7 @@ pub fn parse_args() -> Result<Args, String> {
         force,
         env_vars,
         memfd_vars,
+        mask,
         exec_argv,
         manifest_path,
         ttl_secs,

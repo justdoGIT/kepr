@@ -24,6 +24,7 @@ INSTALL_USER="${SUDO_USER:-$USER}"
 
 echo -e "\n${CYN}━━━ Building kepr ━━━${RST}"
 cargo build --release
+cargo build --release -p kepr-gate
 ok "Build complete"
 
 SYSTEM_MODE=false
@@ -43,9 +44,11 @@ echo -e "\n${CYN}━━━ Installing binaries ━━━${RST}"
 sudo install -o root -g root -m 0755 target/release/kepr /usr/local/bin/kepr
 sudo install -o root -g root -m 0755 target/release/kepr-daemon /usr/local/bin/kepr-daemon
 sudo install -o root -g root -m 0755 target/release/docker-credential-kepr /usr/local/bin/docker-credential-kepr
+sudo install -o root -g root -m 0755 target/release/kepr-gate /usr/local/bin/kepr-gate
 ok "kepr                    → /usr/local/bin/kepr"
 ok "kepr-daemon             → /usr/local/bin/kepr-daemon"
 ok "docker-credential-kepr  → /usr/local/bin/docker-credential-kepr"
+ok "kepr-gate               → /usr/local/bin/kepr-gate"
 
 
 # Phase 2 ε: install the polkit action so creds set with
@@ -61,6 +64,18 @@ if [ -d /usr/share/polkit-1/actions ]; then
 else
     warn "polkit not installed — --requires-consent flag will deny all reads"
     warn "install policykit-1 (or your distro's equivalent) and re-run install.sh"
+fi
+
+# Agent sandbox: Ubuntu 24.04+ restricts unprivileged user namespaces
+# via AppArmor. The kepr profile grants `userns` to /usr/local/bin/kepr
+# only, so `kepr agent run` can build its sandbox.
+if [ -d /etc/apparmor.d ] && command -v apparmor_parser >/dev/null 2>&1; then
+    sudo install -o root -g root -m 0644 packaging/apparmor/kepr /etc/apparmor.d/kepr
+    if sudo apparmor_parser -r /etc/apparmor.d/kepr 2>/dev/null; then
+        ok "AppArmor profile (agent sandbox) → /etc/apparmor.d/kepr"
+    else
+        warn "AppArmor profile installed but not loaded; run: sudo apparmor_parser -r /etc/apparmor.d/kepr"
+    fi
 fi
 
 echo -e "\n${CYN}━━━ Installing shell completion ━━━${RST}"

@@ -6,6 +6,7 @@
     "ai-agents",
     "git-integration",
     "cloud-sync",
-    "operational-security"
+    "operational-security",
+    "kubernetes-eso"
   ]
 }
