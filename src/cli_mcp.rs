@@ -12,7 +12,7 @@ use kepr_core::gate_protocol::GateRoute;
 use kepr_core::protocol::{Request, Response};
 use serde_json::{json, Value};
 
-use crate::{cli_agent_detect, client};
+use crate::client;
 
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_BODY: usize = 64 * 1024;
@@ -35,7 +35,10 @@ pub trait Backend {
 }
 
 fn tools() -> Value {
-    let providers: Vec<&str> = cli_agent_detect::PROVIDERS.iter().map(|p| p.name).collect();
+    let providers: Vec<&str> = kepr_core::providers::PROVIDERS
+        .iter()
+        .map(|p| p.name)
+        .collect();
     json!([
         {
             "name": "list_secrets",
@@ -176,9 +179,7 @@ pub fn handle(backend: &mut dyn Backend, msg: &Value) -> Option<Value> {
 /// session (owned by this process) for API calls.
 struct GateSession {
     port: u16,
-    /// provider → credential NAME
-    creds: HashMap<String, String>,
-    /// credential NAME → placeholder
+    /// provider → placeholder
     placeholders: HashMap<String, String>,
 }
 
@@ -212,7 +213,7 @@ impl Live {
         for s in list_sealed()? {
             for h in &s.hosts {
                 let host = h.split(':').next().unwrap_or_default();
-                if let Some(p) = cli_agent_detect::PROVIDERS.iter().find(|p| p.host == host) {
+                if let Some(p) = kepr_core::providers::by_host(host) {
                     if !by_provider.contains_key(p.name) {
                         by_provider.insert(p.name.to_string(), s.name.clone());
                         routes.push(GateRoute {
@@ -231,15 +232,54 @@ impl Live {
             Response::GateStarted {
                 port, placeholders, ..
             } => {
-                self.gate = Some(GateSession {
-                    port,
-                    creds: by_provider,
-                    placeholders,
-                });
+                self.gate = Some(GateSession { port, placeholders });
                 Ok(())
             }
             Response::Err { error } => Err(error),
             _ => Err("unexpected daemon response".into()),
+        }
+    }
+}
+
+enum Attempt {
+    Done(u16, String),
+    /// The gate is not answering (stopped by `kepr panic`, crashed).
+    GateGone,
+}
+
+impl Live {
+    fn attempt(
+        &self,
+        provider: &str,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+        headers: &HashMap<String, String>,
+    ) -> Result<Attempt, String> {
+        let GateSession { port, placeholders } = self.gate.as_ref().ok_or("no gate session")?;
+        let ph = placeholders
+            .get(provider)
+            .ok_or_else(|| format!("no sealed key for provider {provider}"))?;
+        let mut req = ureq::request(method, &format!("http://127.0.0.1:{port}/{provider}{path}"));
+        for (k, v) in headers {
+            if !matches!(
+                k.as_str(),
+                "authorization" | "x-api-key" | "x-goog-api-key" | "host"
+            ) {
+                req = req.set(k, v);
+            }
+        }
+        req = req.set("authorization", &format!("Bearer {ph}"));
+        let resp = match body {
+            Some(b) => req.send_string(b),
+            None => req.call(),
+        };
+        match resp {
+            Ok(r) | Err(ureq::Error::Status(_, r)) => {
+                let status = r.status();
+                Ok(Attempt::Done(status, r.into_string().unwrap_or_default()))
+            }
+            Err(ureq::Error::Transport(_)) => Ok(Attempt::GateGone),
         }
     }
 }
@@ -257,39 +297,14 @@ impl Backend for Live {
         body: Option<&str>,
         headers: &HashMap<String, String>,
     ) -> Result<(u16, String), String> {
-        self.ensure_gate()?;
-        let GateSession {
-            port,
-            creds,
-            placeholders,
-        } = self.gate.as_ref().expect("gate started above");
-        let cred = creds
-            .get(provider)
-            .ok_or_else(|| format!("no sealed key for provider {provider}"))?;
-        let ph = placeholders
-            .get(cred)
-            .ok_or("gate returned no placeholder")?;
-        let mut req = ureq::request(method, &format!("http://127.0.0.1:{port}/{provider}{path}"));
-        for (k, v) in headers {
-            if !matches!(
-                k.as_str(),
-                "authorization" | "x-api-key" | "x-goog-api-key" | "host"
-            ) {
-                req = req.set(k, v);
+        for _ in 0..2 {
+            self.ensure_gate()?;
+            match self.attempt(provider, method, path, body, headers)? {
+                Attempt::Done(status, text) => return Ok((status, text)),
+                Attempt::GateGone => self.gate = None, // start a fresh session and retry once
             }
         }
-        req = req.set("authorization", &format!("Bearer {ph}"));
-        let resp = match body {
-            Some(b) => req.send_string(b),
-            None => req.call(),
-        };
-        let resp = match resp {
-            Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
-            Err(e) => return Err(format!("request failed: {e}")),
-        };
-        let status = resp.status();
-        Ok((status, resp.into_string().unwrap_or_default()))
+        Err("kepr gate unavailable; is the store locked? (`kepr unlock`)".into())
     }
 }
 

@@ -118,6 +118,11 @@ impl CredMeta {
         const MSG: &str = "sealed credentials need at least one valid binding";
         match (sealed, bindings) {
             (None | Some(false), None) => Ok(self),
+            (Some(true), _) if self.requires_fido2 == Some(true) => Err(
+                "sealed credentials can't require FIDO2 yet (the gate can't ask for a touch); \
+                 use --requires-consent"
+                    .to_string(),
+            ),
             (Some(true), Some(bs)) if !bs.is_empty() => {
                 for b in &bs {
                     kepr_core::binding::validate_binding(b).map_err(|e| format!("{MSG}: {e}"))?;
@@ -308,6 +313,11 @@ mod tests {
         bad.host = "localhost".into();
         assert!(d().with_seal(Some(true), Some(vec![bad])).is_err());
         assert_eq!(d().with_seal(None, None).unwrap(), d());
+        let fido = CredMeta {
+            requires_fido2: Some(true),
+            ..Default::default()
+        };
+        assert!(fido.with_seal(Some(true), Some(vec![binding()])).is_err());
     }
 
     use super::*;

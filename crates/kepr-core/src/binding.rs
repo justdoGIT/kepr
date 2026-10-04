@@ -16,7 +16,8 @@ pub enum Inject {
     Header { name: String },
     /// `?<param>=<value>`
     Query { param: String },
-    /// `Authorization: Basic base64(user:<value>)`
+    /// `Authorization: Basic base64(<value>)`; store the value as
+    /// `user:password`.
     Basic,
 }
 

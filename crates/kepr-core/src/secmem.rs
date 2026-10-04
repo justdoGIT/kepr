@@ -102,20 +102,25 @@ impl SecretRegion {
         if base == libc::MAP_FAILED {
             return Err("cannot reserve secret memory".into());
         }
-        let mut region = Self {
+        // SAFETY: data = base + one guard page, inside our reservation.
+        let data = unsafe { (base as *mut u8).add(page) } as *mut libc::c_void;
+        let secret_backed = Self::map_secret(data, data_len);
+        if !secret_backed {
+            if let Err(e) = Self::map_locked(data, data_len) {
+                // Not wrapped in Self yet, so Drop (which zeroizes the
+                // data pages) can't run on pages that may be PROT_NONE.
+                // SAFETY: unmapping exactly the reservation made above.
+                unsafe { libc::munmap(base, total) };
+                return Err(e);
+            }
+        }
+        Ok(Self {
             base: base as *mut u8,
             total,
             data_len,
             page,
-            secret_backed: false,
-        };
-        // SAFETY: data = base + one guard page, inside our reservation.
-        let data = unsafe { region.base.add(page) } as *mut libc::c_void;
-        region.secret_backed = Self::map_secret(data, data_len);
-        if !region.secret_backed {
-            Self::map_locked(data, data_len)?;
-        }
-        Ok(region)
+            secret_backed,
+        })
     }
 
     /// Replace the data pages with memfd_secret pages. False if unavailable.

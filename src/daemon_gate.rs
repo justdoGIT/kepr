@@ -8,7 +8,6 @@
 // out of it. User-mode only for now: the system-mode unit forbids
 // network sockets, so a system gate needs its own service (T1.19).
 
-use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -26,7 +25,6 @@ use kepr_core::gate_protocol::{GateRequest, GateResponse, GateRoute, ReadyLine, 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Response, MAX_MSG_BYTES};
 
-const MAX_ROUTES: usize = 16;
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const UNAVAILABLE: &str = "credential unavailable";
 
@@ -37,20 +35,8 @@ fn gate_bin() -> std::path::PathBuf {
 }
 
 pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
-    if routes.is_empty() || routes.len() > MAX_ROUTES {
-        return Err(format!("an agent session needs 1-{MAX_ROUTES} routes"));
-    }
-    let mut slots = HashSet::new();
-    for r in routes {
-        validate_name(&r.cred)?;
-        if r.provider.is_empty() || !r.provider.chars().all(|c| c.is_ascii_lowercase()) {
-            return Err("invalid provider name".to_string());
-        }
-        if !slots.insert(r.slot) {
-            return Err("route slots must be unique".to_string());
-        }
-    }
-    Ok(())
+    kepr_core::gate_protocol::validate_routes(routes)?;
+    routes.iter().try_for_each(|r| validate_name(&r.cred))
 }
 
 /// Pure policy: may this meta be released to the gate for host:port?
@@ -64,6 +50,10 @@ pub fn check_resolvable(
     let meta = meta.ok_or("resolve: not sealed")?;
     if meta.sealed != Some(true) {
         return Err("resolve: not sealed".to_string());
+    }
+    if meta.requires_fido2 == Some(true) {
+        // with_seal rejects this combination; refuse metas written before it did.
+        return Err("resolve: fido2 required".to_string());
     }
     if meta.expires_at_unix.is_some_and(|exp| now_unix >= exp) {
         return Err("resolve: expired".to_string());
@@ -109,13 +99,24 @@ pub fn stop_gates_for(uid: u32) -> usize {
         .count()
 }
 
-pub fn resolve_for_gate(owner: &GateOwner, name: &str, host: &str, port: u16) -> GateResponse {
+/// Bumped on every set, delete and expiry sweep; gates compare it
+/// before using a cached value so revoked or rotated keys stop at once.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub fn bump_generation() {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Release a sealed value to a gate, or `Err(())` after auditing why.
+/// The gate only ever sees the generic "credential unavailable".
+pub fn resolve_for_gate(
+    owner: &GateOwner,
+    name: &str,
+    host: &str,
+    port: u16,
+) -> Result<(ZeroString, Inject), ()> {
     let (uid, username) = (owner.uid, owner.username.as_str());
-    if validate_name(name).is_err() {
-        return GateResponse::Err {
-            error: UNAVAILABLE.into(),
-        };
-    }
+    validate_name(name).map_err(|_| ())?;
     let upper = name.to_uppercase();
     let fail = |reason: String| {
         audit::log(&AuditEvent {
@@ -125,9 +126,7 @@ pub fn resolve_for_gate(owner: &GateOwner, name: &str, host: &str, port: u16) ->
             username,
             result: AuditResult::Fail(reason),
         });
-        GateResponse::Err {
-            error: UNAVAILABLE.into(),
-        }
+        Err(())
     };
     let meta = match expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, &upper))) {
         Some(Ok(m)) => Some(m),
@@ -153,7 +152,7 @@ pub fn resolve_for_gate(owner: &GateOwner, name: &str, host: &str, port: u16) ->
                 username,
                 result: AuditResult::Ok,
             });
-            GateResponse::ResolveOk { value, inject }
+            Ok((value, inject))
         }
         Err(e) => fail(format!("resolve: {e}")),
     }
@@ -212,10 +211,24 @@ fn serve_gate_channel(mut chan: UnixStream, mut child: Child, owner: GateOwner) 
     let gate_pid = child.id() as i32;
     while let Ok(raw) = read_frame(&mut chan, MAX_MSG_BYTES) {
         let resp = match serde_json::from_slice::<GateRequest>(&raw) {
-            Ok(GateRequest::Resolve { name, host, port }) => {
-                resolve_for_gate(&owner, &name, &host, port)
-            }
+            Ok(GateRequest::Resolve {
+                id,
+                name,
+                host,
+                port,
+            }) => match resolve_for_gate(&owner, &name, &host, port) {
+                Ok((value, inject)) => GateResponse::ResolveOk { id, value, inject },
+                Err(()) => GateResponse::Err {
+                    id,
+                    error: UNAVAILABLE.into(),
+                },
+            },
+            Ok(GateRequest::Generation { id }) => GateResponse::Generation {
+                id,
+                generation: GENERATION.load(std::sync::atomic::Ordering::SeqCst),
+            },
             Err(_) => GateResponse::Err {
+                id: 0,
                 error: "malformed request".into(),
             },
         };

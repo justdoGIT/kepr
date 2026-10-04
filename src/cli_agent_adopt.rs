@@ -4,7 +4,7 @@
 // optionally deletes the plaintext lines.
 //
 // Only values with a recognised provider prefix are adopted (see
-// cli_agent_detect::detect). Values are never printed. `--remove`
+// kepr_core::providers::detect). Values are never printed. `--remove`
 // rewrites files without keeping a plaintext backup (a backup would
 // leave the key on disk, which is what adoption is meant to end).
 
@@ -75,7 +75,7 @@ pub fn scan_text(file: &Path, text: &str) -> Vec<Found> {
         .enumerate()
         .filter_map(|(i, l)| {
             let (name, value) = parse_line(l)?;
-            let provider = cli_agent_detect::detect(&value)?;
+            let provider = kepr_core::providers::detect(Some(&name), &value)?.name;
             Some(Found {
                 file: file.to_path_buf(),
                 line: i + 1,
@@ -120,12 +120,80 @@ fn store(f: &Found) -> Result<(), String> {
     }
 }
 
+/// What adoption will do: one representative per NAME to store, every
+/// source line to delete, and NAMEs skipped with the reason.
+pub struct Plan<'a> {
+    pub store: Vec<&'a Found>,
+    pub remove: Vec<(PathBuf, usize)>,
+    pub skipped: Vec<(String, String)>,
+}
+
+/// Group findings by NAME. A NAME found with different values in
+/// different places, or already stored in kepr, is skipped rather than
+/// silently overwritten.
+pub fn plan<'a>(found: &'a [Found], existing: &std::collections::HashSet<String>) -> Plan<'a> {
+    let mut p = Plan {
+        store: Vec::new(),
+        remove: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let mut names: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
+    names.sort();
+    names.dedup();
+    for name in names {
+        let group: Vec<&Found> = found.iter().filter(|f| f.name == name).collect();
+        if existing.contains(name) {
+            p.skipped.push((
+                name.into(),
+                "already in kepr (use `kepr agent add` to replace it)".into(),
+            ));
+        } else if group
+            .iter()
+            .any(|f| f.value.as_str() != group[0].value.as_str())
+        {
+            let places: Vec<String> = group
+                .iter()
+                .map(|f| format!("{}:{}", f.file.display(), f.line))
+                .collect();
+            p.skipped.push((
+                name.into(),
+                format!(
+                    "different values at {}; adopt one with `kepr agent add`",
+                    places.join(", ")
+                ),
+            ));
+        } else {
+            p.store.push(group[0]);
+            p.remove
+                .extend(group.iter().map(|f| (f.file.clone(), f.line)));
+        }
+    }
+    p
+}
+
+fn existing_names() -> std::collections::HashSet<String> {
+    match client::send_request(&Request::List) {
+        Ok(Response::ListOk { credentials, .. }) => {
+            credentials.into_iter().map(|c| c.name).collect()
+        }
+        _ => Default::default(),
+    }
+}
+
 pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
-    let paths: Vec<PathBuf> = if files.is_empty() {
+    let requested: Vec<PathBuf> = if files.is_empty() {
         default_files()
     } else {
         files.iter().map(PathBuf::from).collect()
     };
+    // Canonical, de-duplicated: the same file under two spellings must be
+    // scanned (and rewritten) once, or line numbers would go stale.
+    let mut paths: Vec<PathBuf> = requested
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .collect();
+    paths.sort();
+    paths.dedup();
     let mut found: Vec<Found> = Vec::new();
     for p in &paths {
         if let Ok(text) = std::fs::read_to_string(p) {
@@ -145,43 +213,54 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
             f.provider
         );
     }
+    let plan = plan(&found, &existing_names());
+    for (name, why) in &plan.skipped {
+        cli_ui::warn(&format!("skipping {name}: {why}"));
+    }
     if !yes {
         cli_ui::info("re-run with --yes to import these as sealed keys (add --remove to delete the plaintext lines)");
         return Response::Pong;
     }
-    let mut adopted: Vec<&Found> = Vec::new();
-    for f in &found {
+    let mut stored: Vec<&str> = Vec::new();
+    for f in &plan.store {
         match store(f) {
-            Ok(()) => adopted.push(f),
+            Ok(()) => stored.push(&f.name),
             Err(e) => cli_ui::err(&format!("{}: {e}", f.name)),
         }
     }
     cli_ui::ok(&format!(
         "adopted {} key(s) as sealed credentials",
-        adopted.len()
+        stored.len()
     ));
-    if remove {
-        let mut files: Vec<&PathBuf> = adopted.iter().map(|f| &f.file).collect();
-        files.dedup();
-        for file in files {
-            let lines: Vec<usize> = adopted
-                .iter()
-                .filter(|f| &f.file == file)
-                .map(|f| f.line)
-                .collect();
-            let result = std::fs::read_to_string(file)
-                .and_then(|t| std::fs::write(file, remove_lines(&t, &lines)));
-            match result {
-                Ok(()) => cli_ui::ok(&format!(
-                    "removed {} line(s) from {}",
-                    lines.len(),
-                    file.display()
-                )),
-                Err(e) => cli_ui::err(&format!("{}: {e}", file.display())),
-            }
-        }
-    } else {
+    if !remove {
         cli_ui::warn("the plaintext lines are still in place; delete them or re-run with --remove");
+        return Response::Pong;
+    }
+    for file in &paths {
+        let lines: Vec<usize> = plan
+            .remove
+            .iter()
+            .filter(|(p, _)| p == file)
+            .filter(|(p, l)| {
+                found
+                    .iter()
+                    .any(|f| &f.file == p && f.line == *l && stored.contains(&f.name.as_str()))
+            })
+            .map(|(_, l)| *l)
+            .collect();
+        if lines.is_empty() {
+            continue;
+        }
+        let result = std::fs::read_to_string(file)
+            .and_then(|t| std::fs::write(file, remove_lines(&t, &lines)));
+        match result {
+            Ok(()) => cli_ui::ok(&format!(
+                "removed {} line(s) from {}",
+                lines.len(),
+                file.display()
+            )),
+            Err(e) => cli_ui::err(&format!("{}: {e}", file.display())),
+        }
     }
     Response::Pong
 }
@@ -229,6 +308,26 @@ mod tests {
             got,
             vec![(2, "ANTHROPIC_API_KEY", "anthropic"), (4, "XAI", "xai")]
         );
+    }
+
+    #[test]
+    fn plan_skips_conflicts_and_existing() {
+        let a = scan_text(
+            Path::new("a"),
+            "ANTHROPIC_API_KEY=sk-ant-AAA\nXAI_API_KEY=xai-1\nOPENAI_API_KEY=sk-proj-1\n",
+        );
+        let b = scan_text(
+            Path::new("b"),
+            "ANTHROPIC_API_KEY=sk-ant-BBB\nXAI_API_KEY=xai-1\n",
+        );
+        let found: Vec<Found> = a.into_iter().chain(b).collect();
+        let existing: std::collections::HashSet<String> = ["OPENAI_API_KEY".to_string()].into();
+        let p = plan(&found, &existing);
+        let stored: Vec<&str> = p.store.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(stored, vec!["XAI_API_KEY"]);
+        assert_eq!(p.remove.len(), 2, "same value in two files: both lines go");
+        let skipped: Vec<&str> = p.skipped.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(skipped, vec!["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
     }
 
     #[test]

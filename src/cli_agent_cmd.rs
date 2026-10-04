@@ -85,7 +85,7 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
 
 fn read_value(from_stdin: bool, name: &str) -> ZeroString {
     if from_stdin || !std::io::stdin().is_terminal() {
-        let mut s = String::new();
+        let mut s = zeroize::Zeroizing::new(String::new());
         let _ = std::io::stdin().lock().read_line(&mut s);
         return ZeroString::from_string(s.trim_end_matches(['\n', '\r']).to_string());
     }
@@ -103,8 +103,8 @@ fn cmd_add(a: &AgentArgs) -> Response {
         return Response::fail("empty value — nothing stored");
     }
     let specs: Vec<String> = if a.fors.is_empty() {
-        match cli_agent_detect::detect(value.as_str()) {
-            Some(p) => vec![p.to_string()],
+        match kepr_core::providers::detect(Some(&name), value.as_str()) {
+            Some(p) => vec![p.name.to_string()],
             None => {
                 return Response::fail(
                     "can't tell which provider this key is for; add --for PROVIDER",

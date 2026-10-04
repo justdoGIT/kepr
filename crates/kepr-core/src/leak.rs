@@ -1,6 +1,7 @@
 //! Shapes of well-known API keys and private keys. Shared by kepr-gate's
 //! prompt DLP and `kepr scan`, so both agree on what "looks like a key".
-//! Matching is byte-level and dependency-free.
+//! Matching is byte-level (memchr's SIMD substring search per prefix),
+//! linear in the input, so the gate can run it on every request body.
 
 /// One key shape: literal prefix, allowed body characters, body length.
 pub struct Pattern {
@@ -161,12 +162,7 @@ fn matches_at(p: &Pattern, text: &[u8], i: usize) -> Option<usize> {
 pub fn find_all(text: &[u8]) -> Vec<Hit> {
     let mut hits = Vec::new();
     for p in PATTERNS {
-        let mut start = 0;
-        while let Some(pos) = text[start..]
-            .windows(p.prefix.len())
-            .position(|w| w == p.prefix)
-        {
-            let i = start + pos;
+        for i in memchr::memmem::find_iter(text, p.prefix) {
             if let Some(len) = matches_at(p, text, i) {
                 hits.push(Hit {
                     offset: i,
@@ -174,7 +170,6 @@ pub fn find_all(text: &[u8]) -> Vec<Hit> {
                     kind: p.kind,
                 });
             }
-            start = i + 1;
         }
     }
     hits.sort_by_key(|h| h.offset);

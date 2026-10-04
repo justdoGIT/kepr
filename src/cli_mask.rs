@@ -20,32 +20,42 @@ pub struct Masker {
 
 impl Masker {
     pub fn new(secrets: Vec<ZeroString>) -> Self {
-        let secrets = secrets
+        let mut secrets: Vec<ZeroString> = secrets
             .into_iter()
             .filter(|s| !s.as_str().is_empty())
             .collect();
+        // Longest first: if one secret is a prefix of another, the longer
+        // must win or its tail would be printed.
+        secrets.sort_by_key(|s| std::cmp::Reverse(s.as_str().len()));
         Self {
             secrets,
             carry: Vec::new(),
         }
     }
 
-    fn longest(&self) -> usize {
+    /// Length of the longest suffix of `carry` that is a proper prefix of
+    /// some secret: only those bytes might still turn into a secret.
+    fn pending_len(&self) -> usize {
+        let c = &self.carry;
         self.secrets
             .iter()
-            .map(|s| s.as_str().len())
+            .map(|s| {
+                let s = s.as_str().as_bytes();
+                (1..s.len().min(c.len() + 1))
+                    .rev()
+                    .find(|&k| c.ends_with(&s[..k]))
+                    .unwrap_or(0)
+            })
             .max()
             .unwrap_or(0)
     }
 
-    /// Bytes safe to emit now. Keeps back up to (longest secret - 1)
-    /// unmasked bytes so a secret split across two reads is still caught.
+    /// Bytes safe to emit now. Holds back only a trailing partial match
+    /// of a secret, so a secret split across two reads is still caught
+    /// while ordinary output (e.g. a `Password: ` prompt) appears at once.
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         self.carry.extend_from_slice(chunk);
-        let keep = self.longest().saturating_sub(1);
-        if self.carry.len() <= keep {
-            return Vec::new();
-        }
+        let keep = self.pending_len();
         let (out, used) = self.mask_prefix(self.carry.len() - keep);
         self.carry.drain(..used);
         out
@@ -184,10 +194,30 @@ mod tests {
     }
 
     #[test]
-    fn finish_flushes_held_back_tail() {
+    fn holds_back_only_partial_matches() {
         let mut mk = m(&["longsecret"]);
-        assert_eq!(mk.feed(b"abc"), b"");
-        assert_eq!(mk.finish(), b"abc");
+        assert_eq!(
+            mk.feed(b"Password: "),
+            b"Password: ",
+            "prompt is not delayed"
+        );
+        assert_eq!(
+            mk.feed(b"abc lon"),
+            b"abc ",
+            "possible start of a secret is held"
+        );
+        assert_eq!(mk.finish(), b"lon");
+    }
+
+    #[test]
+    fn longer_secret_wins_over_its_prefix() {
+        assert_eq!(
+            run(
+                &mut m(&["abcd1234", "abcd1234XYZsecret"]),
+                &[b"v=abcd1234XYZsecret!"]
+            ),
+            "v=****!"
+        );
     }
 
     #[test]

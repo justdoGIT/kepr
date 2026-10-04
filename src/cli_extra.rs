@@ -9,7 +9,14 @@
 
 use kepr_core::protocol::Response;
 
-pub const VERBS: &[&str] = &["agent", "totp", "inject", "scan", "copy"];
+pub const VERBS: &[&str] = &[
+    "agent",
+    "totp",
+    "inject",
+    "scan",
+    "copy",
+    "__clipboard-clear",
+];
 
 fn value_of<'a>(args: &'a [String], flags: &[&str]) -> Result<Option<&'a str>, String> {
     match args.iter().position(|a| flags.contains(&a.as_str())) {
@@ -70,6 +77,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 };
                 crate::cli_copy::cmd_copy(&name, secs)
             }
+            "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
             other => Response::fail(format!("unknown command: {other}")),
         })
     };

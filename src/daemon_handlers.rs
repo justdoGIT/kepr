@@ -89,9 +89,30 @@ pub fn handle_set(
         }
     };
 
+    // A sealed value must never be readable, even for an instant: write
+    // its sidecar *before* the value, so a concurrent Get already sees
+    // `sealed`. (Other flags keep the write-after order with rollback.)
+    let meta_path = expiry::meta_path_for(&cred_path(uid, &upper));
+    let meta_first = meta.sealed == Some(true);
+    let cred_existed = cred_path(uid, &upper).exists();
+    if meta_first {
+        if let Err(e) = expiry::write_meta(&meta_path, &meta) {
+            audit::log(&AuditEvent {
+                op: "set",
+                name: Some(&upper),
+                uid,
+                username,
+                result: AuditResult::Fail(format!("meta write: {e}")),
+            });
+            return Response::fail(format!("meta write failed: {e}"));
+        }
+    }
+
     match crypto::default_backend().encrypt(uid, &upper, secret.as_bytes()) {
         Ok(()) => {
-            if !meta.is_empty() {
+            if meta_first {
+                // already written above
+            } else if !meta.is_empty() {
                 let cp = cred_path(uid, &upper);
                 let mp = expiry::meta_path_for(&cp);
                 if let Err(e) = expiry::write_meta(&mp, &meta) {
@@ -126,6 +147,7 @@ pub fn handle_set(
 
             let cred_name = store::to_cred_name(uid, &upper);
             daemon_cache::invalidate(uid);
+            crate::daemon_gate::bump_generation();
             audit::log(&AuditEvent {
                 op: "set",
                 name: Some(&upper),
@@ -140,6 +162,9 @@ pub fn handle_set(
             }
         }
         Err(e) => {
+            if meta_first && !cred_existed {
+                expiry::delete_meta(&meta_path);
+            }
             audit::log(&AuditEvent {
                 op: "set",
                 name: Some(&upper),
@@ -234,6 +259,7 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
                 username,
                 result: AuditResult::Ok,
             });
+            crate::daemon_gate::bump_generation();
             Response::DeleteOk { name: upper }
         }
         Err(e) => {

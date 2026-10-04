@@ -21,16 +21,20 @@ pub const HOP_BY_HOP: &[&str] = &[
 ];
 
 /// Every placeholder-looking value in the credential-carrying places of
-/// a request: any header (with an optional `Bearer ` prefix) and any
-/// query-string value.
+/// a request: any header (optionally after an auth scheme such as
+/// `Bearer`) and any query-string value.
 pub fn placeholders_in(headers: &HeaderMap, query: Option<&str>) -> Vec<String> {
     let mut out = Vec::new();
     for v in headers.values() {
         if let Ok(s) = v.to_str() {
-            let s = s.trim();
-            let s = s.strip_prefix("Bearer ").unwrap_or(s).trim();
-            if s.starts_with(PREFIX) {
-                out.push(s.to_string());
+            // Any auth scheme (`Bearer`, `bearer`, `Token`, ...) or none:
+            // the placeholder is the last whitespace-separated token.
+            if let Some(tok) = s
+                .split_whitespace()
+                .last()
+                .filter(|t| t.starts_with(PREFIX))
+            {
+                out.push(tok.to_string());
             }
         }
     }

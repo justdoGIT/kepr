@@ -189,6 +189,13 @@ pub fn probe(isolate_net: bool) -> Result<(), String> {
 }
 
 fn exec_harness(plan: &Plan) -> ! {
+    // Restore the signals the sandbox's own processes ignore, so Ctrl-C
+    // and Ctrl-\ reach the harness normally.
+    // SAFETY: signal(2) with constant arguments.
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_DFL);
+        libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+    }
     sys::drop_all_caps();
     if let Err(e) = seccomp::install(&plan.filter) {
         die(e);
@@ -286,6 +293,15 @@ pub fn run(plan: Plan) -> ! {
         Some(Err(e)) => die(&e.to_string()),
         None => (None, None),
     };
+    // Ctrl-C / Ctrl-\ are for the harness. Ignore them *before* forking
+    // so the namespace child and pid 1 never die of them (that would end
+    // the session and kill the gate while the harness keeps running);
+    // exec_harness restores the defaults.
+    // SAFETY: signal(2) with constant arguments.
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_IGN);
+        libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+    }
     let child = fork();
     if child < 0 {
         die("fork failed");
@@ -305,13 +321,10 @@ pub fn run(plan: Plan) -> ! {
         unsafe { libc::_exit(code) }
     }
     drop(relay_sandbox);
-    // SAFETY: constant prctl/signal arguments. Non-dumpable: the agent
-    // must not reach the host mount namespace via /proc/<our pid>/root.
-    // Ctrl-C/Ctrl-\ are for the harness; we just wait for it.
+    // SAFETY: constant prctl arguments. Non-dumpable: the agent must
+    // not reach the host mount namespace via /proc/<our pid>/root.
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
-        libc::signal(libc::SIGINT, libc::SIG_IGN);
-        libc::signal(libc::SIGQUIT, libc::SIG_IGN);
     }
     if let Some(r) = relay_host {
         let port = plan.gate_port;

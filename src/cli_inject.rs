@@ -43,13 +43,28 @@ pub fn render(
     tpl: &str,
     fetch: &dyn Fn(&str) -> Result<ZeroString, String>,
 ) -> Result<Zeroizing<String>, String> {
-    let mut out = Zeroizing::new(String::with_capacity(tpl.len()));
+    let refs = references(tpl);
+    // One fetch per distinct name: a repeated consent/FIDO2-gated
+    // credential prompts once, not once per occurrence.
+    let mut values: std::collections::HashMap<&str, ZeroString> = std::collections::HashMap::new();
+    for (_, _, name) in &refs {
+        if !values.contains_key(name.as_str()) {
+            let v = fetch(name).map_err(|e| format!("kepr://{name}: {e}"))?;
+            values.insert(name, v);
+        }
+    }
+    // Exact capacity up front: a reallocation would leave freed, unwiped
+    // copies of the secrets rendered so far.
+    let extra: usize = refs
+        .iter()
+        .map(|(_, _, n)| values[n.as_str()].as_str().len())
+        .sum();
+    let mut out = Zeroizing::new(String::with_capacity(tpl.len() + extra));
     let mut last = 0;
-    for (start, end, name) in references(tpl) {
-        let v = fetch(&name).map_err(|e| format!("kepr://{name}: {e}"))?;
-        out.push_str(&tpl[last..start]);
-        out.push_str(v.as_str());
-        last = end;
+    for (start, end, name) in &refs {
+        out.push_str(&tpl[last..*start]);
+        out.push_str(values[name.as_str()].as_str());
+        last = *end;
     }
     out.push_str(&tpl[last..]);
     Ok(out)
@@ -130,6 +145,18 @@ mod tests {
             render("dangling kepr://", &fake).unwrap().as_str(),
             "dangling kepr://"
         );
+    }
+
+    #[test]
+    fn repeated_reference_fetched_once() {
+        let n = std::cell::Cell::new(0);
+        let counting = |name: &str| {
+            n.set(n.get() + 1);
+            fake(name)
+        };
+        let out = render("kepr://API kepr://API kepr://API", &counting).unwrap();
+        assert_eq!(out.as_str(), "k k k");
+        assert_eq!(n.get(), 1);
     }
 
     #[test]

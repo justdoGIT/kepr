@@ -36,19 +36,19 @@ pub fn base32_decode(s: &str) -> Option<Zeroizing<Vec<u8>>> {
 }
 
 /// Split a stored value into (base32 secret, params).
-pub fn parse_seed(stored: &str) -> Result<(String, TotpParams), String> {
+pub fn parse_seed(stored: &str) -> Result<(Zeroizing<String>, TotpParams), String> {
     let mut p = TotpParams {
         digits: 6,
         period: 30,
     };
     let Some(rest) = stored.trim().strip_prefix("otpauth://totp/") else {
-        return Ok((stored.trim().to_string(), p));
+        return Ok((Zeroizing::new(stored.trim().to_string()), p));
     };
     let query = rest.split_once('?').map(|(_, q)| q).unwrap_or_default();
     let mut secret = None;
     for kv in query.split('&') {
         match kv.split_once('=') {
-            Some(("secret", v)) => secret = Some(v.to_string()),
+            Some(("secret", v)) => secret = Some(Zeroizing::new(v.to_string())),
             Some(("digits", v)) => p.digits = v.parse().map_err(|_| "bad digits")?,
             Some(("period", v)) => p.period = v.parse().map_err(|_| "bad period")?,
             Some(("algorithm", v)) if !v.eq_ignore_ascii_case("SHA1") => {
@@ -148,6 +148,6 @@ mod tests {
         .unwrap();
         assert_eq!((s.as_str(), p.digits), (b32, 8));
         assert!(parse_seed("otpauth://totp/x?secret=A&algorithm=SHA256").is_err());
-        assert_eq!(parse_seed(" ABC ").unwrap().0, "ABC");
+        assert_eq!(parse_seed(" ABC ").unwrap().0.as_str(), "ABC");
     }
 }

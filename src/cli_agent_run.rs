@@ -56,6 +56,7 @@ pub fn routes_for(
 /// The harness environment: inherited env minus every variable the
 /// adapter controls and every credential NAME it uses, plus gate URLs
 /// and placeholders for the credentials that are available.
+/// `placeholders` is keyed by provider (as returned in GateStarted).
 pub fn build_env(
     adapter: &Adapter,
     port: u16,
@@ -67,18 +68,19 @@ pub fn build_env(
     let mut env: Vec<(String, String)> = inherited
         .filter(|(k, _)| !drop.contains(k.as_str()))
         .collect();
-    let provider_ok = |p: &str| {
+    let provider_of = |cred: &str| {
         adapter
             .creds
             .iter()
-            .any(|(q, c)| *q == p && placeholders.contains_key(*c))
+            .find(|(_, c)| *c == cred)
+            .map(|(p, _)| *p)
     };
     for v in adapter.env {
         let value = match v.value {
-            Value::Placeholder(c) => placeholders.get(c).cloned(),
-            Value::BaseUrl(p, suffix) => {
-                provider_ok(p).then(|| format!("http://127.0.0.1:{port}/{p}{suffix}"))
-            }
+            Value::Placeholder(c) => provider_of(c).and_then(|p| placeholders.get(p)).cloned(),
+            Value::BaseUrl(p, suffix) => placeholders
+                .contains_key(p)
+                .then(|| format!("http://127.0.0.1:{port}/{p}{suffix}")),
         };
         if let Some(val) = value {
             env.push((v.name.to_string(), val));
@@ -184,7 +186,7 @@ mod tests {
     #[test]
     fn real_key_in_shell_is_replaced_by_placeholder() {
         let mut ph = HashMap::new();
-        ph.insert("ANTHROPIC_API_KEY".to_string(), "kepr-ph-x".to_string());
+        ph.insert("anthropic".to_string(), "kepr-ph-x".to_string());
         let inherited = vec![
             ("ANTHROPIC_API_KEY".to_string(), "sk-ant-real".to_string()),
             (

@@ -293,6 +293,9 @@ mod tests {
 
     struct Fixed;
     impl Resolve for Fixed {
+        fn generation(&self) -> Result<u64, String> {
+            Ok(1)
+        }
         fn resolve(&self, _: &str, _: &str, _: u16) -> Result<(ZeroString, Inject), String> {
             Ok((
                 ZeroString::from_string(REAL.into()),
@@ -453,6 +456,12 @@ mod tests {
             HeaderValue::from_str(&format!("Bearer {ph}")).unwrap(),
         );
         assert_eq!(placeholders_in(&h, Some(&q)).len(), 2);
+        let mut lower = HeaderMap::new();
+        lower.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("bearer {ph}")).unwrap(),
+        );
+        assert_eq!(placeholders_in(&lower, None), vec![ph.clone()]);
         let inject = Inject::Query {
             param: "key".into(),
         };

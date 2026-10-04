@@ -143,7 +143,7 @@ mod tests {
                 }
             }
             for (p, _) in a.creds {
-                assert!(crate::cli_agent_detect::provider(p).is_some(), "{p}");
+                assert!(kepr_core::providers::lookup(p).is_some(), "{p}");
             }
         }
     }

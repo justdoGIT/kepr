@@ -204,21 +204,21 @@ mod tests {
     use super::*;
     use kepr_core::binding::{Binding, Inject};
 
+    /// Built directly (not via with_seal, which now rejects sealed +
+    /// FIDO2): a meta file written by an older daemon may still hold it,
+    /// and Get must refuse it all the same.
     fn sealed_meta() -> expiry::CredMeta {
         expiry::CredMeta {
             expires_at_unix: Some(u64::MAX),
             requires_fido2: Some(true),
-            ..Default::default()
-        }
-        .with_seal(
-            Some(true),
-            Some(vec![Binding {
+            sealed: Some(true),
+            bindings: Some(vec![Binding {
                 host: "api.x.ai".into(),
                 port: 443,
                 inject: Inject::Bearer,
             }]),
-        )
-        .unwrap()
+            ..Default::default()
+        }
     }
 
     #[test]

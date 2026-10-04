@@ -49,7 +49,7 @@ fn starts_reports_ready_and_exits_with_owner() {
         .unwrap();
     let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(ready["ready"], true);
-    let ph = ready["placeholders"]["ANTHROPIC_API_KEY"].as_str().unwrap();
+    let ph = ready["placeholders"]["anthropic"].as_str().unwrap();
     assert!(ph.starts_with("kepr-ph-0123456789abcdef-0000-"));
     let port = ready["port"].as_u64().unwrap();
 

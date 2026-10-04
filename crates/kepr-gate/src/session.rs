@@ -9,13 +9,12 @@ use std::sync::Arc;
 use kepr_core::gate_protocol::{ReadyLine, SessionConfig};
 use zeroize::Zeroizing;
 
+use crate::placeholder;
 use crate::proxy::{self, Route, State};
 use crate::vault::{Cache, FdResolver, DEFAULT_TTL};
-use crate::{placeholder, routes};
 use kepr_core::secmem::SplitKey;
 
 const MAX_CONFIG: u64 = 64 * 1024;
-const MAX_ROUTES: usize = 16;
 
 /// Non-dumpable (blocks same-uid ptrace and makes /proc/PID/mem
 /// root-owned) and no core files. Must run before any secret exists.
@@ -62,24 +61,7 @@ pub fn validate_config(cfg: &SessionConfig) -> Result<(), String> {
     if cfg.session_id.len() != 16 || !cfg.session_id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("session id must be 16 hex chars".into());
     }
-    if cfg.routes.is_empty() || cfg.routes.len() > MAX_ROUTES {
-        return Err("1-16 routes required".into());
-    }
-    for r in &cfg.routes {
-        if routes::lookup(&r.provider).is_none() {
-            return Err(format!("unknown provider {}", r.provider));
-        }
-        if cfg
-            .routes
-            .iter()
-            .filter(|o| o.provider == r.provider || o.slot == r.slot)
-            .count()
-            != 1
-        {
-            return Err("providers and slots must be unique".into());
-        }
-    }
-    Ok(())
+    kepr_core::gate_protocol::validate_routes(&cfg.routes)
 }
 
 fn pidfd_open(pid: i32) -> Result<OwnedFd, String> {
@@ -118,7 +100,7 @@ pub fn run() -> Result<(), String> {
     let mut table = HashMap::new();
     for r in &cfg.routes {
         placeholders.insert(
-            r.cred.clone(),
+            r.provider.clone(),
             placeholder::make(&key, &cfg.session_id, r.slot),
         );
         table.insert(

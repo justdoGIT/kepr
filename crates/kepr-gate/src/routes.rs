@@ -1,51 +1,10 @@
-//! Provider route table (T1.08): where each provider lives. Base URLs
-//! handed to harnesses look like `http://127.0.0.1:PORT/<name>/...`.
+//! Provider routing (T1.08). The provider table itself lives in
+//! `kepr_core::providers` (shared with the CLI). Base URLs handed to
+//! harnesses look like `http://127.0.0.1:PORT/<name>/...`.
 //! How the key is injected is not decided here: it comes from the
 //! credential's binding, which the daemon returns with the value.
 
-pub struct Provider {
-    pub name: &'static str,
-    pub host: &'static str,
-}
-
-pub const PROVIDERS: &[Provider] = &[
-    Provider {
-        name: "anthropic",
-        host: "api.anthropic.com",
-    },
-    Provider {
-        name: "openai",
-        host: "api.openai.com",
-    },
-    Provider {
-        name: "xai",
-        host: "api.x.ai",
-    },
-    Provider {
-        name: "google",
-        host: "generativelanguage.googleapis.com",
-    },
-    Provider {
-        name: "mistral",
-        host: "api.mistral.ai",
-    },
-    Provider {
-        name: "deepseek",
-        host: "api.deepseek.com",
-    },
-    Provider {
-        name: "groq",
-        host: "api.groq.com",
-    },
-    Provider {
-        name: "openrouter",
-        host: "openrouter.ai",
-    },
-];
-
-pub fn lookup(name: &str) -> Option<&'static Provider> {
-    PROVIDERS.iter().find(|p| p.name == name)
-}
+pub use kepr_core::providers::lookup;
 
 /// `"/anthropic/v1/messages"` → `Some(("anthropic", "/v1/messages"))`.
 pub fn split_path(path: &str) -> Option<(&str, &str)> {
@@ -62,20 +21,6 @@ pub fn split_path(path: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kepr_core::binding::{validate_binding, Binding, Inject};
-
-    #[test]
-    fn hosts_are_valid_and_names_unique() {
-        for p in PROVIDERS {
-            let b = Binding {
-                host: p.host.into(),
-                port: 443,
-                inject: Inject::Bearer,
-            };
-            assert!(validate_binding(&b).is_ok(), "{}", p.host);
-            assert_eq!(PROVIDERS.iter().filter(|q| q.name == p.name).count(), 1);
-        }
-    }
 
     #[test]
     fn split_path_cases() {
