@@ -182,6 +182,8 @@ pub fn cmd_store() -> ExitCode {
         ttl_secs: None,
         requires_consent: None,
         requires_fido2: None,
+        sealed: None,
+        bindings: None,
     };
     match client::send_request(&req) {
         Ok(Response::SetOk { .. }) => ExitCode::from(0),

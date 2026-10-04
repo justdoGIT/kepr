@@ -286,6 +286,8 @@ mod tests {
                 expires_at_unix: Some(expires_at_unix),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
         )
         .unwrap();
@@ -302,6 +304,8 @@ mod tests {
                 expires_at_unix: Some(expires_at_unix),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
         )
         .unwrap();

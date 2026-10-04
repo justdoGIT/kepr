@@ -37,7 +37,7 @@ use std::sync::OnceLock;
 
 use audit::{username_for_uid, AuditEvent, AuditResult};
 use daemon_audit::handle_audit_verify;
-use daemon_handlers::{handle_check, handle_delete, handle_list, handle_set};
+use daemon_handlers::{handle_check, handle_delete, handle_list, handle_set, SetFlags};
 use daemon_peer::get_peer_creds;
 use daemon_pool::Pool;
 use daemon_ratelimit::RateLimiter;
@@ -392,15 +392,21 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
             ttl_secs,
             requires_consent,
             requires_fido2,
+            sealed,
+            bindings,
         } => handle_set(
             uid,
             username,
             &name,
             value.as_deref(),
             generate.as_deref(),
-            ttl_secs,
-            requires_consent,
-            requires_fido2,
+            SetFlags {
+                ttl_secs,
+                requires_consent,
+                requires_fido2,
+                sealed,
+                bindings,
+            },
         ),
         Request::Get {
             name,

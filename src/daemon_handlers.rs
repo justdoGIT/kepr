@@ -17,16 +17,22 @@ use crate::store::{self, cred_path, file_mtime_str, file_size, validate_name};
 use kepr_core::generate::{self, generate_secret, GenKind};
 use kepr_core::protocol::{CredInfo, Response};
 
-#[allow(clippy::too_many_arguments)]
+/// Optional per-credential policy carried by `Request::Set`.
+pub struct SetFlags {
+    pub ttl_secs: Option<u64>,
+    pub requires_consent: Option<bool>,
+    pub requires_fido2: Option<bool>,
+    pub sealed: Option<bool>,
+    pub bindings: Option<Vec<kepr_core::binding::Binding>>,
+}
+
 pub fn handle_set(
     uid: u32,
     username: &str,
     name: &str,
     value: Option<&str>,
     generate: Option<&str>,
-    ttl_secs: Option<u64>,
-    requires_consent: Option<bool>,
-    requires_fido2: Option<bool>,
+    flags: SetFlags,
 ) -> Response {
     if let Err(e) = validate_name(name) {
         audit::log(&AuditEvent {
@@ -40,6 +46,29 @@ pub fn handle_set(
     }
 
     let upper = name.to_uppercase();
+
+    // Validate every flag before touching the store, so a bad binding
+    // never leaves a half-written credential behind.
+    let meta = match expiry::CredMeta::from_flags(
+        expiry::now_unix(),
+        flags.ttl_secs,
+        flags.requires_consent,
+        flags.requires_fido2,
+    )
+    .and_then(|m| m.with_seal(flags.sealed, flags.bindings))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            audit::log(&AuditEvent {
+                op: "set",
+                name: Some(&upper),
+                uid,
+                username,
+                result: AuditResult::Fail(e.clone()),
+            });
+            return Response::fail(e);
+        }
+    };
 
     let secret = if let Some(v) = value {
         generate::ZeroString::from_string(v.to_string())
@@ -62,26 +91,6 @@ pub fn handle_set(
 
     match crypto::default_backend().encrypt(uid, &upper, secret.as_bytes()) {
         Ok(()) => {
-            let meta = match expiry::CredMeta::from_flags(
-                expiry::now_unix(),
-                ttl_secs,
-                requires_consent,
-                requires_fido2,
-            ) {
-                Ok(m) => m,
-                Err(e) => {
-                    let _ = crypto::default_backend().delete(uid, &upper);
-                    audit::log(&AuditEvent {
-                        op: "set",
-                        name: Some(&upper),
-                        uid,
-                        username,
-                        result: AuditResult::Fail(format!("{e} (cred rolled back)")),
-                    });
-                    return Response::fail(e);
-                }
-            };
-
             if !meta.is_empty() {
                 let cp = cred_path(uid, &upper);
                 let mp = expiry::meta_path_for(&cp);
@@ -162,6 +171,15 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                 .and_then(|m| m.requires_fido2)
                 .filter(|v| *v)
                 .map(|_| true);
+            let sealed = meta_opt.as_ref().and_then(|m| m.sealed).filter(|v| *v);
+            let bound_hosts = meta_opt
+                .as_ref()
+                .and_then(|m| m.bindings.as_ref())
+                .map(|bs| {
+                    bs.iter()
+                        .map(|b| format!("{}:{}", b.host, b.port))
+                        .collect()
+                });
             CredInfo {
                 name: name.clone(),
                 cred_name: store::to_cred_name(uid, name),
@@ -170,6 +188,8 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                 expires_at,
                 requires_consent,
                 requires_fido2,
+                sealed,
+                bound_hosts,
             }
         })
         .collect();

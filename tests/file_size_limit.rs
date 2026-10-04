@@ -81,7 +81,10 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // `password_protected` off the real `Response::SetOk` instead of
     // firing a second `Request::Status` round-trip to the daemon just
     // to render the same un-wrapped-master-key warning.
-    ("src/cli_cmds.rs", 470),
+    // cli_cmds.rs grew 470 → 472: `Request::Set` gained the agent
+    // vault `sealed` / `bindings` fields; `cmd_set` passes `None` for
+    // both (sealed credentials are created via `kepr agent add`).
+    ("src/cli_cmds.rs", 472),
 ];
 
 fn count_production_loc(path: &Path) -> usize {

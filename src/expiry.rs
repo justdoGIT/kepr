@@ -58,6 +58,14 @@ pub struct CredMeta {
     /// before the daemon decrypts. Phase 2 η.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub requires_fido2: Option<bool>,
+    /// True iff the value is write-only: `Get` is refused and only a
+    /// daemon-spawned kepr-gate may resolve it, for a host listed in
+    /// `bindings`. Agent vault plan §4.3.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sealed: Option<bool>,
+    /// Destinations a sealed value may be sent to.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub bindings: Option<Vec<kepr_core::binding::Binding>>,
 }
 
 impl CredMeta {
@@ -68,6 +76,8 @@ impl CredMeta {
         self.expires_at_unix.is_none()
             && self.requires_consent.is_none()
             && self.requires_fido2.is_none()
+            && self.sealed.is_none()
+            && self.bindings.is_none()
     }
 
     /// Build a `CredMeta` from per-flag CLI inputs. Returns `Err`
@@ -94,6 +104,30 @@ impl CredMeta {
             meta.requires_fido2 = Some(true);
         }
         Ok(meta)
+    }
+
+    /// Apply the sealed flag and bindings after validating them.
+    /// Sealed requires at least one valid binding; bindings without
+    /// sealed are rejected so nobody believes a readable credential is
+    /// destination-restricted.
+    pub fn with_seal(
+        mut self,
+        sealed: Option<bool>,
+        bindings: Option<Vec<kepr_core::binding::Binding>>,
+    ) -> Result<Self, String> {
+        const MSG: &str = "sealed credentials need at least one valid binding";
+        match (sealed, bindings) {
+            (None | Some(false), None) => Ok(self),
+            (Some(true), Some(bs)) if !bs.is_empty() => {
+                for b in &bs {
+                    kepr_core::binding::validate_binding(b).map_err(|e| format!("{MSG}: {e}"))?;
+                }
+                self.sealed = Some(true);
+                self.bindings = Some(bs);
+                Ok(self)
+            }
+            _ => Err(MSG.to_string()),
+        }
     }
 }
 
@@ -232,6 +266,50 @@ pub fn format_expires_at(unix: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use kepr_core::binding::{Binding, Inject};
+
+    fn binding() -> Binding {
+        Binding {
+            host: "api.anthropic.com".into(),
+            port: 443,
+            inject: Inject::Header {
+                name: "x-api-key".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn old_meta_without_seal_fields_parses() {
+        let m: CredMeta = serde_json::from_str(r#"{"requires_consent":true}"#).unwrap();
+        assert_eq!(m.sealed, None);
+        assert_eq!(m.bindings, None);
+    }
+
+    #[test]
+    fn sealed_meta_round_trips_and_default_omits_fields() {
+        let m = CredMeta::default()
+            .with_seal(Some(true), Some(vec![binding()]))
+            .unwrap();
+        let json = serde_json::to_string(&m).unwrap();
+        let back: CredMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
+        assert!(!m.is_empty());
+        let empty = serde_json::to_string(&CredMeta::default()).unwrap();
+        assert!(!empty.contains("sealed") && !empty.contains("bindings"));
+    }
+
+    #[test]
+    fn with_seal_validation() {
+        let d = CredMeta::default;
+        assert!(d().with_seal(Some(true), None).is_err());
+        assert!(d().with_seal(Some(true), Some(vec![])).is_err());
+        assert!(d().with_seal(None, Some(vec![binding()])).is_err());
+        let mut bad = binding();
+        bad.host = "localhost".into();
+        assert!(d().with_seal(Some(true), Some(vec![bad])).is_err());
+        assert_eq!(d().with_seal(None, None).unwrap(), d());
+    }
+
     use super::*;
 
     #[test]
@@ -274,6 +352,8 @@ mod tests {
                 expires_at_unix: Some(1_777_500_000),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
         )
         .unwrap();
@@ -319,6 +399,8 @@ mod tests {
                 expires_at_unix: Some(42),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
         )
         .unwrap();
@@ -337,6 +419,8 @@ mod tests {
                 expires_at_unix: Some(1),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
         )
         .unwrap();

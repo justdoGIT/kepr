@@ -112,6 +112,8 @@ pub fn cmd_store() -> ExitCode {
         ttl_secs: None,
         requires_consent: None,
         requires_fido2: None,
+        sealed: None,
+        bindings: None,
     }) {
         Ok(Response::SetOk { .. }) => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,

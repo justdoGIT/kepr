@@ -124,6 +124,8 @@ pub fn cmd_sync_pull(name: &str, url: &str) -> kepr_core::protocol::Response {
         ttl_secs: None,
         requires_consent: None,
         requires_fido2: None,
+        sealed: None,
+        bindings: None,
     };
     match crate::client::send_request(&req) {
         Ok(r @ Response::SetOk { .. }) => r,

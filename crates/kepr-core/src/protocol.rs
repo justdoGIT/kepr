@@ -84,6 +84,13 @@ pub enum Request {
         /// and must be retried with a valid FIDO2 assertion.
         #[serde(skip_serializing_if = "Option::is_none")]
         requires_fido2: Option<bool>,
+        /// Agent vault P1: write-only credential. The daemon refuses
+        /// `Get` and releases the value only to a daemon-spawned
+        /// kepr-gate, for a host in `bindings`. Requires `bindings`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        sealed: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        bindings: Option<Vec<crate::binding::Binding>>,
     },
     Get {
         name: String,
@@ -269,6 +276,12 @@ pub struct CredInfo {
     /// FIDO2 hardware-key assertion before the daemon decrypts.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub requires_fido2: Option<bool>,
+    /// Agent vault P1: true iff the credential is write-only.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sealed: Option<bool>,
+    /// Hosts a sealed credential is bound to (no secret material).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub bound_hosts: Option<Vec<String>>,
 }
 
 // ── FIDO2 types (Phase 2 η) ─────────────────────────────────────────────────
@@ -344,6 +357,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             })["cmd"],
             json!("set"),
         );
@@ -367,6 +382,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             Request::Set {
                 name: "K".into(),
@@ -375,6 +392,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             Request::Set {
                 name: "K".into(),
@@ -383,6 +402,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             // Phase 2 α: TTL-bearing variant must round-trip cleanly.
             Request::Set {
@@ -392,6 +413,8 @@ mod tests {
                 ttl_secs: Some(60),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             // Phase 2 ε: consent-bearing variant must round-trip cleanly.
             Request::Set {
@@ -401,6 +424,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: Some(true),
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
             },
             // Phase 2 η: FIDO2-bearing variant must round-trip cleanly.
             Request::Set {
@@ -410,6 +435,8 @@ mod tests {
                 ttl_secs: None,
                 requires_consent: None,
                 requires_fido2: Some(true),
+                sealed: None,
+                bindings: None,
             },
         ];
         for req in cases {
@@ -426,6 +453,8 @@ mod tests {
             ttl_secs: None,
             requires_consent: None,
             requires_fido2: None,
+            sealed: None,
+            bindings: None,
         };
         let v = as_value(&req);
         assert!(v.get("value").is_none(), "value should be absent: {v}");
@@ -492,6 +521,8 @@ mod tests {
                 expires_at: None,
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bound_hosts: None,
             }],
             count: 1,
         };

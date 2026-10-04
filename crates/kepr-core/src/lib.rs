@@ -12,6 +12,7 @@
 //! without pulling in root-only privileges.
 
 pub mod auth;
+pub mod binding;
 pub mod framing;
 pub mod generate;
 pub mod keyring;
