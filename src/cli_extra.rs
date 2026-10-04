@@ -10,6 +10,7 @@
 //   kepr restore NAME --version N
 //   kepr usage [--days N]
 //   kepr health [--max-age DAYS] [--breach]
+//   kepr import FILE [--format F] [--prefix P] [--seal] [--overwrite] [--yes]
 
 use kepr_core::protocol::Response;
 
@@ -25,6 +26,7 @@ pub const VERBS: &[&str] = &[
     "restore",
     "usage",
     "health",
+    "import",
     "__clipboard-clear",
 ];
 
@@ -116,6 +118,20 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                     None => None,
                 };
                 crate::cli_health::cmd_health(max_age, args.iter().any(|a| a == "--breach"))
+            }
+            "import" => {
+                let file = one_name(args, verb, &["--format", "--prefix"])?;
+                let flag = |f: &str| args.iter().any(|a| a == f);
+                let opts = crate::cli_import::Opts {
+                    format: value_of(args, &["--format"])
+                        .map_err(Response::fail)?
+                        .unwrap_or("auto"),
+                    prefix: value_of(args, &["--prefix"]).map_err(Response::fail)?,
+                    seal: flag("--seal"),
+                    overwrite: flag("--overwrite"),
+                    yes: flag("--yes") || flag("-y"),
+                };
+                crate::cli_import::cmd_import(&file, &opts)
             }
             "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
             "ssh" => crate::cli_ssh::cmd_ssh(args),

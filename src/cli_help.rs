@@ -46,6 +46,10 @@ COMMANDS:
   history KEY                          previous values kept (last 5), no values shown
   restore KEY --version N              make version N current again (undoable)
   usage [--days N]                     uses / refusals / last use per key; flags never-used keys
+  health [--max-age DAYS] [--breach]   weak / reused / old keys; --breach checks breach lists (k-anonymity)
+  import FILE [--format auto|csv|json|env] [--prefix P] [--seal] [--overwrite] [--yes]
+                                       from 1Password/Bitwarden/KeePassXC/LastPass/browser CSV,
+                                       Bitwarden/Keeper/Doppler/Infisical JSON or .env
   ssh generate KEY [--comment C] | ssh import KEY FILE | ssh list
                                        SSH keys that stay in the daemon (sign-only)
   ssh-agent [--foreground] [--socket PATH]  ssh-agent for those keys: eval "$(kepr ssh-agent)"

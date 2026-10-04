@@ -25,6 +25,8 @@ mod cli_fido2;
 mod cli_health;
 mod cli_help;
 mod cli_history;
+mod cli_import;
+mod cli_import_parse;
 mod cli_inject;
 mod cli_input;
 mod cli_manifest;

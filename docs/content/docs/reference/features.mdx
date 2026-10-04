@@ -28,6 +28,8 @@ description: "Command surface, generators, audit log, environment variables, exi
 | `history` |        | `KEY`                                               | `HistoryOk { versions }` (no values) |
 | `restore` |        | `KEY --version N`                                   | `RestoreOk`           |
 | `usage`  |         | `[--days N]`                                        | `UsageOk { keys }`    |
+| `health` |         | `[--max-age DAYS] [--breach]`                       | `HealthOk { items }` (flags only) |
+| `import` |         | `FILE [--format auto\|csv\|json\|env] [--prefix P] [--seal] [--overwrite] [--yes]` | plan, then `SetOk` per entry |
 | `ssh generate` / `import` / `list` | | `KEY [--comment C]` / `KEY FILE` / — | `SshKeyOk` / `SshListOk` |
 | `ssh-agent` |      | `[--foreground] [--socket PATH]`                    | prints `SSH_AUTH_SOCK` exports |
 | `doctor` |         | —                                                   | setup + hardening checks |
@@ -62,6 +64,51 @@ hash-chained audit log. For each current credential it shows:
 
 Never-used keys are listed so they can be removed. If the audit chain
 fails verification, the report says so.
+
+## Health and breach checks
+
+`kepr health` asks the daemon to look at every value it holds. Each
+credential can be flagged as:
+
+- weak, short or a common password;
+- reused (the same value as another credential, compared by digest inside
+  the daemon);
+- not changed in over `--max-age` days (default 365);
+- expired.
+
+Only the flags come back.
+
+`--breach` adds a [Have I Been Pwned](https://haveibeenpwned.com/API/v3#PwnedPasswords)
+range check:
+
+1. The daemon gives the CLI the first 5 hex digits of each value's SHA-1.
+   Sealed keys and SSH keys get none.
+2. The CLI downloads the public list of suffixes for that prefix, with
+   padding.
+3. The CLI sends the suffixes back, and the daemon answers yes or no.
+
+Neither the value nor its full hash leaves the daemon. If the lookup
+fails, the CLI prints a warning and still shows the local report.
+
+## Import
+
+`kepr import FILE` reads another manager's export:
+
+- CSV from 1Password, Bitwarden, KeePassXC, LastPass or a browser (columns
+  are found by header name);
+- JSON from Bitwarden or Keeper;
+- flat JSON or key/value arrays (Doppler, Infisical);
+- `.env` files.
+
+A record titled `GitHub` becomes `GITHUB` (the password), plus
+`GITHUB_USERNAME`, `GITHUB_TOTP` and one name per custom field.
+
+The first run prints the names (never values). `--yes` stores them.
+Names that already exist are skipped unless you pass `--overwrite`. With
+`--seal`, values that look like a known provider's API key are stored
+write-only and bound to that provider, as `kepr agent add` does. Encrypted
+exports and binary vaults (`.kdbx`, `.1pux`) aren't read: export to CSV or
+JSON, import, then delete the export.
 
 ## Python SDK
 
