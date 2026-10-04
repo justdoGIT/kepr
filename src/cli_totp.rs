@@ -3,7 +3,7 @@
 // base32 seed (as shown by sites during 2FA setup) or an otpauth:// URI;
 // SHA1, 30-second steps and 6 digits unless the URI says otherwise.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use kepr_core::protocol::Response;
 use zeroize::Zeroizing;
 

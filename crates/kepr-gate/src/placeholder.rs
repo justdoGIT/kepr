@@ -4,7 +4,7 @@
 //! worthless outside this gate session: the MAC is keyed with a
 //! per-session random key that never leaves the daemon and the gate.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 pub const PREFIX: &str = "kepr-ph-";

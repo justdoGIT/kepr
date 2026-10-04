@@ -44,18 +44,18 @@ aes-gcm = "0.11"
 # chain on `/var/lib/kepr/audit.log`. RustCrypto's `sha2` is the
 # standard pure-Rust impl; aes-gcm already pulls related primitives,
 # so the marginal binary size is small.
-sha2 = "0.10"
+sha2 = "0.11"
 # `kepr totp`: RFC 6238 codes use HMAC-SHA1 (the authenticator-app
 # default). RustCrypto, same family as sha2/hmac.
-sha1 = "0.10"
+sha1 = "0.11"
 # `kepr ssh-agent` (P2.4): Ed25519 signing inside the daemon; private keys
-# never leave it. RustCrypto/dalek, uses the sha2 0.10 already in the tree.
+# never leave it. RustCrypto/dalek (brings its own sha2 0.10 internally).
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 # AWS SigV4 signing for `kepr sync-{push,pull} --url aws-sm:…`.
 # `hmac` composes with sha2 to produce HMAC-SHA256, the primitive
 # that drives SigV4's signing-key derivation chain. RustCrypto, no
 # system deps, shares sha2's compiled code.
-hmac = "0.12"
+hmac = "0.13"
 # `kepr sync-{push,pull} --url gcp-sm:…` — GCP Secret Manager
 # wraps payload bytes in base64. RustCrypto-adjacent crate, ~30 KB,
 # pure Rust, no system deps.
