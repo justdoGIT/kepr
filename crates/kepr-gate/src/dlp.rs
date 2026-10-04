@@ -29,41 +29,8 @@ pub fn scan(body: &[u8], secrets: &[(String, ZeroString)]) -> Verdict {
     Verdict::Clean
 }
 
-fn run_len(rest: &[u8], ok: impl Fn(u8) -> bool) -> usize {
-    rest.iter().take_while(|b| ok(**b)).count()
-}
-
-fn key_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
-}
-
-/// (prefix, charset, min length, exact length?)
-type Pattern = (&'static [u8], fn(u8) -> bool, usize, bool);
-
-const PATTERNS: &[Pattern] = &[
-    (b"sk-ant-", key_char, 20, false),
-    (b"xai-", |b| b.is_ascii_alphanumeric(), 20, false),
-    (
-        b"AKIA",
-        |b| b.is_ascii_digit() || b.is_ascii_uppercase(),
-        16,
-        true,
-    ),
-    (b"ghp_", |b| b.is_ascii_alphanumeric(), 36, true),
-    (b"glpat-", key_char, 20, false),
-];
-
 pub fn looks_like_key(body: &[u8]) -> bool {
-    PATTERNS.iter().any(|(prefix, ok, min, exact)| {
-        memchr::memmem::find_iter(body, prefix).any(|i| {
-            let n = run_len(&body[i + prefix.len()..], ok);
-            if *exact {
-                n == *min
-            } else {
-                n >= *min
-            }
-        })
-    })
+    kepr_core::leak::looks_like_key(body)
 }
 
 #[cfg(test)]

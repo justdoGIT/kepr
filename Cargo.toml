@@ -45,6 +45,9 @@ aes-gcm = "0.11"
 # standard pure-Rust impl; aes-gcm already pulls related primitives,
 # so the marginal binary size is small.
 sha2 = "0.10"
+# `kepr totp`: RFC 6238 codes use HMAC-SHA1 (the authenticator-app
+# default). RustCrypto, same family as sha2/hmac.
+sha1 = "0.10"
 # AWS SigV4 signing for `kepr sync-{push,pull} --url aws-sm:…`.
 # `hmac` composes with sha2 to produce HMAC-SHA256, the primitive
 # that drives SigV4's signing-key derivation chain. RustCrypto, no

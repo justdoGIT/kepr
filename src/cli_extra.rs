@@ -1,0 +1,108 @@
+// cli_extra.rs — verbs with their own small parsers (kept out of
+// cli_args.rs, which is near its size limit):
+//
+//   kepr agent …                       see cli_agent_cmd.rs
+//   kepr totp NAME
+//   kepr inject -i TEMPLATE [-o OUT]
+//   kepr scan [PATH...] [--staged]
+//   kepr copy NAME [--clear SECS]
+
+use kepr_core::protocol::Response;
+
+pub const VERBS: &[&str] = &["agent", "totp", "inject", "scan", "copy"];
+
+fn value_of<'a>(args: &'a [String], flags: &[&str]) -> Result<Option<&'a str>, String> {
+    match args.iter().position(|a| flags.contains(&a.as_str())) {
+        Some(i) => args
+            .get(i + 1)
+            .map(|s| Some(s.as_str()))
+            .ok_or_else(|| format!("{} needs a value", flags[0])),
+        None => Ok(None),
+    }
+}
+
+fn positionals(args: &[String], value_flags: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip = false;
+    for a in args {
+        if skip {
+            skip = false;
+        } else if value_flags.contains(&a.as_str()) {
+            skip = true;
+        } else if !a.starts_with('-') {
+            out.push(a.clone());
+        }
+    }
+    out
+}
+
+fn one_name(args: &[String], verb: &str, value_flags: &[&str]) -> Result<String, Response> {
+    match positionals(args, value_flags).as_slice() {
+        [n] => Ok(n.clone()),
+        _ => Err(Response::fail(format!("usage: kepr {verb} NAME"))),
+    }
+}
+
+pub fn dispatch(verb: &str, args: &[String]) -> Response {
+    let r = || -> Result<Response, Response> {
+        Ok(match verb {
+            "agent" => crate::cli_agent_cmd::main(args),
+            "totp" => crate::cli_totp::cmd_totp(&one_name(args, verb, &[])?),
+            "inject" => {
+                let input = value_of(args, &["-i", "--input"]).map_err(Response::fail)?;
+                let output = value_of(args, &["-o", "--output"]).map_err(Response::fail)?;
+                match input {
+                    Some(i) => crate::cli_inject::cmd_inject(i, output),
+                    None => Response::fail("usage: kepr inject -i TEMPLATE [-o OUT]"),
+                }
+            }
+            "scan" => crate::cli_scan::cmd_scan(
+                &positionals(args, &[]),
+                args.iter().any(|a| a == "--staged"),
+            ),
+            "copy" => {
+                let name = one_name(args, verb, &["--clear"])?;
+                let secs = match value_of(args, &["--clear"]).map_err(Response::fail)? {
+                    Some(s) => s
+                        .parse()
+                        .map_err(|_| Response::fail("--clear needs a number of seconds"))?,
+                    None => crate::cli_copy::DEFAULT_CLEAR_SECS,
+                };
+                crate::cli_copy::cmd_copy(&name, secs)
+            }
+            other => Response::fail(format!("unknown command: {other}")),
+        })
+    };
+    r().unwrap_or_else(|e| e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn flag_and_positional_helpers() {
+        let a = v(&["NAME", "--clear", "5"]);
+        assert_eq!(value_of(&a, &["--clear"]).unwrap(), Some("5"));
+        assert_eq!(positionals(&a, &["--clear"]), v(&["NAME"]));
+        assert!(value_of(&v(&["--clear"]), &["--clear"]).is_err());
+        assert_eq!(value_of(&v(&["x"]), &["-i"]).unwrap(), None);
+    }
+
+    #[test]
+    fn usage_errors() {
+        assert!(matches!(dispatch("totp", &[]), Response::Err { .. }));
+        assert!(matches!(
+            dispatch("inject", &v(&["-o", "x"])),
+            Response::Err { .. }
+        ));
+        assert!(matches!(
+            dispatch("copy", &v(&["A", "--clear", "x"])),
+            Response::Err { .. }
+        ));
+    }
+}
