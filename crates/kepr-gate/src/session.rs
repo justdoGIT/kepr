@@ -112,6 +112,15 @@ pub fn run() -> Result<(), String> {
         );
     }
     let bind_port = cfg.port.unwrap_or(0);
+    // P2.1: a CA for exactly the hosts this session's keys are bound to.
+    let hosts: Vec<String> = cfg
+        .routes
+        .iter()
+        .filter_map(|r| kepr_core::providers::lookup(&r.provider))
+        .map(|p| p.host.to_string())
+        .collect();
+    let ca = Arc::new(crate::ca::SessionCa::new(&hosts)?);
+    let ca_pem = ca.pem().to_string();
     let state = Arc::new(
         State::new(
             cfg.session_id.clone(),
@@ -120,6 +129,7 @@ pub fn run() -> Result<(), String> {
             cache.clone(),
         )
         .with_limits(cfg.limits)
+        .with_egress(ca, cfg.tunnel)
         .validated()?,
     );
 
@@ -139,6 +149,7 @@ pub fn run() -> Result<(), String> {
             ready: true,
             port,
             placeholders,
+            ca_pem: Some(ca_pem),
         };
         let mut out = std::io::stdout();
         writeln!(
@@ -174,6 +185,7 @@ mod tests {
             routes,
             port: None,
             limits: Default::default(),
+            tunnel: false,
         }
     }
 

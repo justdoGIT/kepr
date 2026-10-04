@@ -105,6 +105,9 @@ pub enum Request {
             default
         )]
         limits: crate::gate_protocol::GateLimits,
+        /// P2.1: let the egress proxy tunnel hosts no route is bound to.
+        #[serde(default)]
+        tunnel: bool,
     },
     Get {
         name: String,

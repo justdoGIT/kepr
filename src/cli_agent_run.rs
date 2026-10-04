@@ -14,13 +14,12 @@ use kepr_core::protocol::{Request, Response};
 use crate::cli_agent_adapters::{self, Adapter, Value};
 use crate::client;
 
-/// Names of the caller's sealed credentials.
-fn sealed_names() -> Result<HashSet<String>, String> {
+/// The caller's sealed credentials.
+fn sealed_creds() -> Result<Vec<kepr_core::protocol::CredInfo>, String> {
     match client::send_request(&Request::List)? {
         Response::ListOk { credentials, .. } => Ok(credentials
             .into_iter()
             .filter(|c| c.sealed == Some(true))
-            .map(|c| c.name)
             .collect()),
         Response::Err { error } => Err(error),
         _ => Err("unexpected daemon response".into()),
@@ -139,7 +138,13 @@ pub fn cmd_run(
         Ok(s) => s,
         Err(e) => return Response::fail(e),
     };
-    let routes = match sealed_names().and_then(|n| routes_for(adapter, &n)) {
+    let routes = sealed_creds().and_then(|creds| {
+        let names: HashSet<String> = creds.iter().map(|c| c.name.clone()).collect();
+        let mut routes = routes_for(adapter, &names)?;
+        routes.extend(crate::cli_agent_egress::extra_routes(&routes, &creds));
+        Ok(routes)
+    });
+    let routes = match routes {
         Ok(r) => r,
         Err(e) => return Response::fail(e),
     };
@@ -147,16 +152,33 @@ pub fn cmd_run(
         routes,
         port: port.or(adapter.port),
         limits,
+        tunnel: !isolate_net,
     };
-    let (gate_port, placeholders) = match client::send_request(&req) {
+    let (gate_port, placeholders, ca_pem) = match client::send_request(&req) {
         Ok(Response::GateStarted {
-            port, placeholders, ..
-        }) => (port, placeholders),
+            port,
+            placeholders,
+            ca_pem,
+            ..
+        }) => (port, placeholders, ca_pem),
         Ok(Response::Err { error }) => return Response::fail(error),
         Ok(_) => return Response::fail("unexpected daemon response"),
         Err(e) => return Response::fail(e),
     };
-    let env = build_env(adapter, gate_port, &placeholders, std::env::vars());
+    // Egress proxy (P2.1): drop inherited proxy/CA settings and the real
+    // tokens the egress placeholders replace, then add ours.
+    let shadowed = crate::cli_agent_egress::shadowed(&placeholders);
+    let inherited = std::env::vars().filter(|(k, _)| {
+        !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
+            && !shadowed.contains(&k.as_str())
+    });
+    let mut env = build_env(adapter, gate_port, &placeholders, inherited);
+    if let Some(pem) = ca_pem {
+        match crate::cli_agent_egress::env(gate_port, &pem, &placeholders) {
+            Ok(e) => env.extend(e),
+            Err(e) => return Response::fail(e),
+        }
+    }
     let default_argv = [adapter.program.to_string()];
     let argv = if argv.is_empty() {
         &default_argv[..]

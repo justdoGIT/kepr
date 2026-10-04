@@ -132,6 +132,33 @@ No tool returns a secret value. Example client entry:
 { "mcpServers": { "kepr": { "command": "kepr", "args": ["mcp"] } } }
 ```
 
+## Tools the agent runs: `gh`, `curl`, SDKs
+
+Model calls use the gate's base URL. Tools that talk to a host by name can't,
+so every session also gets the gate as its HTTPS proxy:
+
+```bash
+kepr agent add GITHUB_TOKEN          # paste a ghp_/github_pat_ token: bound to api.github.com
+kepr agent run claude                # GH_TOKEN / GITHUB_TOKEN are placeholders now
+```
+
+- **Bound hosts:** for a host a sealed key is bound to (here
+  `api.github.com`), the gate terminates TLS with a CA made for this
+  session. It swaps the placeholder for the real key and re-encrypts to the
+  real host, trusting only its compiled-in roots.
+- **The CA:** it lives only in the gate's memory, lasts 24 hours, and is
+  name-constrained to the session's bound hosts, so its key can't sign a
+  certificate for any other site.
+- **How tools trust it:** the harness gets the CA through `SSL_CERT_FILE`,
+  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and
+  `NODE_EXTRA_CA_CERTS`. Those point to the system bundle plus the session
+  CA, so other HTTPS keeps working.
+- **Real tokens in your shell:** a `GH_TOKEN` or `GITHUB_TOKEN` you exported
+  is replaced by the placeholder and never reaches the agent.
+- **Other hosts:** they are tunnelled unchanged. With `--isolate-net` they
+  are refused, so the agent reaches only the providers its keys are bound
+  to.
+
 ## Spending and rate limits
 
 ```bash

@@ -6,7 +6,9 @@
 //! ready line, then forwards provider API calls, replacing the session
 //! placeholder with the real key. See docs/content/docs/agent-vault-plan.mdx.
 
+mod ca;
 mod dlp;
+mod egress;
 mod journal;
 mod limits;
 mod placeholder;

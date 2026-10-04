@@ -18,6 +18,10 @@ pub struct Provider {
     pub name_hints: &'static [&'static str],
     /// Where the user revokes or rotates keys (`kepr leaked`).
     pub keys_url: &'static str,
+    /// Variables tools read the key from when they reach this host through
+    /// the gate's egress proxy (P2.1), e.g. `GH_TOKEN` for `gh`. Empty for
+    /// providers reached by base URL only.
+    pub egress_env: &'static [&'static str],
 }
 
 pub const PROVIDERS: &[Provider] = &[
@@ -28,6 +32,7 @@ pub const PROVIDERS: &[Provider] = &[
         prefixes: &["sk-ant-"],
         name_hints: &["ANTHROPIC", "CLAUDE"],
         keys_url: "https://console.anthropic.com/settings/keys",
+        egress_env: &[],
     },
     Provider {
         name: "openai",
@@ -36,6 +41,7 @@ pub const PROVIDERS: &[Provider] = &[
         prefixes: &["sk-proj-", "sk-svcacct-", "sk-admin-"],
         name_hints: &["OPENAI"],
         keys_url: "https://platform.openai.com/api-keys",
+        egress_env: &[],
     },
     Provider {
         name: "xai",
@@ -44,6 +50,7 @@ pub const PROVIDERS: &[Provider] = &[
         prefixes: &["xai-"],
         name_hints: &["XAI", "GROK"],
         keys_url: "https://console.x.ai",
+        egress_env: &[],
     },
     Provider {
         name: "google",
@@ -52,6 +59,7 @@ pub const PROVIDERS: &[Provider] = &[
         prefixes: &["AIza"],
         name_hints: &["GEMINI", "GOOGLE"],
         keys_url: "https://aistudio.google.com/app/apikey",
+        egress_env: &[],
     },
     Provider {
         name: "mistral",
@@ -60,6 +68,7 @@ pub const PROVIDERS: &[Provider] = &[
         prefixes: &[],
         name_hints: &["MISTRAL"],
         keys_url: "https://console.mistral.ai/api-keys",
+        egress_env: &[],
     },
     Provider {
         name: "deepseek",
@@ -68,6 +77,7 @@ pub const PROVIDERS: &[Provider] = &[
         prefixes: &[],
         name_hints: &["DEEPSEEK"],
         keys_url: "https://platform.deepseek.com/api_keys",
+        egress_env: &[],
     },
     Provider {
         name: "groq",
@@ -76,6 +86,7 @@ pub const PROVIDERS: &[Provider] = &[
         prefixes: &["gsk_"],
         name_hints: &["GROQ"],
         keys_url: "https://console.groq.com/keys",
+        egress_env: &[],
     },
     Provider {
         name: "openrouter",
@@ -84,6 +95,16 @@ pub const PROVIDERS: &[Provider] = &[
         prefixes: &["sk-or-"],
         name_hints: &["OPENROUTER"],
         keys_url: "https://openrouter.ai/settings/keys",
+        egress_env: &[],
+    },
+    Provider {
+        name: "github",
+        host: "api.github.com",
+        header: None,
+        prefixes: &["ghp_", "github_pat_", "gho_", "ghu_", "ghs_"],
+        name_hints: &["GITHUB", "GH"],
+        keys_url: "https://github.com/settings/tokens",
+        egress_env: &["GH_TOKEN", "GITHUB_TOKEN"],
     },
 ];
 

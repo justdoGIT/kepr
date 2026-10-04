@@ -262,7 +262,7 @@ fn start(
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
-    (port, limits): (Option<u16>, GateLimits),
+    (port, limits, tunnel): (Option<u16>, GateLimits, bool),
 ) -> Result<Response, String> {
     validate_routes(routes)?;
     limits.validate()?;
@@ -277,6 +277,7 @@ fn start(
         routes: routes.to_vec(),
         port,
         limits,
+        tunnel,
     };
     let (daemon_end, gate_end) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
     let (child, ready, key, handle) = if crate::user_mode() {
@@ -305,6 +306,7 @@ fn start(
         port: ready.port,
         placeholders: ready.placeholders,
         gate_pid,
+        ca_pem: ready.ca_pem,
     })
 }
 
@@ -313,7 +315,7 @@ pub fn handle_start_gate(
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
-    port_limits: (Option<u16>, GateLimits),
+    port_limits: (Option<u16>, GateLimits, bool),
 ) -> Response {
     let result = start(uid, peer_pid, username, routes, port_limits);
     audit::log(&AuditEvent {

@@ -37,6 +37,9 @@ pub struct State {
     pub routes: HashMap<String, Route>,
     pub cache: Arc<Cache>,
     pub limiter: Arc<Limiter>,
+    /// P2.1 egress proxy: the session CA and whether unbound hosts tunnel.
+    pub ca: Option<Arc<crate::ca::SessionCa>>,
+    pub tunnel: bool,
     pub(crate) client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     pub(crate) base_override: Option<String>,
 }
@@ -73,7 +76,14 @@ impl State {
             limiter: Arc::new(Limiter::new(Default::default())),
             client: build_client(false),
             base_override: None,
+            ca: None,
+            tunnel: false,
         }
+    }
+
+    pub fn with_egress(mut self, ca: Arc<crate::ca::SessionCa>, tunnel: bool) -> Self {
+        (self.ca, self.tunnel) = (Some(ca), tunnel);
+        self
     }
 
     pub fn with_limits(mut self, limits: kepr_core::gate_protocol::GateLimits) -> Self {
@@ -166,14 +176,34 @@ pub async fn handle(
     state: Arc<State>,
     req: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
+    if req.method() == hyper::Method::CONNECT {
+        return Ok(crate::egress::connect(state, req).await);
+    }
     let path = req.uri().path().to_string();
     if path == "/__kepr/health" {
         return Ok(json(StatusCode::OK, "\"ok\"".into()));
     }
-    let not_found = || kepr_error(StatusCode::NOT_FOUND, "kepr", "unknown kepr route");
     let Some((pname, rest)) = routes::split_path(&path) else {
-        return Ok(not_found());
+        return Ok(kepr_error(
+            StatusCode::NOT_FOUND,
+            "kepr",
+            "unknown kepr route",
+        ));
     };
+    let (pname, rest) = (pname.to_string(), rest.to_string());
+    proxy_request(state, &pname, &rest, req).await
+}
+
+/// Everything after routing, shared by base-URL requests and requests
+/// arriving through the egress proxy: placeholder check, limits, key
+/// resolve, DLP, forward over TLS, stream back (metering tokens).
+pub async fn proxy_request(
+    state: Arc<State>,
+    pname: &str,
+    rest: &str,
+    req: Request<Incoming>,
+) -> Result<Response<Body>, Infallible> {
+    let not_found = || kepr_error(StatusCode::NOT_FOUND, "kepr", "unknown kepr route");
     let (Some(provider), Some(route)) = (routes::lookup(pname), state.routes.get(pname)) else {
         return Ok(not_found());
     };
@@ -308,8 +338,10 @@ pub async fn serve(listener: tokio::net::TcpListener, state: Arc<State>) {
         tokio::spawn(async move {
             let io = hyper_util::rt::TokioIo::new(stream);
             let svc = hyper::service::service_fn(move |req| handle(st.clone(), req));
+            // with_upgrades: CONNECT (egress proxy) takes over the socket.
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(io, svc)
+                .with_upgrades()
                 .await;
         });
     }
@@ -517,6 +549,101 @@ mod tests {
         assert_eq!(r.status(), StatusCode::OK);
         r.into_body().collect().await.unwrap(); // the meter sees the body
         assert_eq!(send(&gate, &ph, "{}").await.status(), StatusCode::FORBIDDEN);
+    }
+
+    async fn start_egress_gate(
+        upstream: String,
+        tunnel: bool,
+    ) -> (String, Arc<crate::ca::SessionCa>) {
+        let ca = Arc::new(crate::ca::SessionCa::new(&["api.anthropic.com".into()]).unwrap());
+        let cache = Arc::new(Cache::new(Box::new(Fixed), DEFAULT_TTL));
+        let mut routes = HashMap::new();
+        routes.insert(
+            "anthropic".to_string(),
+            Route {
+                cred: "ANTHROPIC_API_KEY".into(),
+                slot: 0,
+            },
+        );
+        let state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
+            .with_test_upstream(upstream)
+            .with_egress(ca.clone(), tunnel);
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        tokio::spawn(serve(l, Arc::new(state)));
+        (addr, ca)
+    }
+
+    /// Send CONNECT and return the stream plus the status line.
+    async fn connect_to(gate: &str, target: &str) -> (tokio::net::TcpStream, String) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let mut s = tokio::net::TcpStream::connect(gate).await.unwrap();
+        s.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut r = tokio::io::BufReader::new(&mut s);
+        let mut status = String::new();
+        r.read_line(&mut status).await.unwrap();
+        loop {
+            let mut l = String::new();
+            r.read_line(&mut l).await.unwrap();
+            if l == "\r\n" || l.is_empty() {
+                break;
+            }
+        }
+        (s, status)
+    }
+
+    #[tokio::test]
+    async fn egress_intercepts_bound_host_and_swaps_the_placeholder() {
+        let (up, mut rx) =
+            fake_upstream_with(Some(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")).await;
+        let (gate, ca) = start_egress_gate(up, false).await;
+        let (stream, status) = connect_to(&gate, "api.anthropic.com:443").await;
+        assert!(status.contains("200"), "{status}");
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca.ca_der()).unwrap();
+        let tls_cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(tls_cfg))
+            .connect("api.anthropic.com".try_into().unwrap(), stream)
+            .await
+            .expect("TLS with the session CA");
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(tls))
+                .await
+                .unwrap();
+        tokio::spawn(conn);
+        let ph = placeholder::make(&KEY, SID, 0);
+        let req = Request::post("/v1/messages")
+            .header("host", "api.anthropic.com")
+            .header("x-api-key", ph.as_str())
+            .body(Full::new(Bytes::from_static(b"{}")))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = rx.recv().await.unwrap();
+        assert!(seen.contains(REAL), "upstream got the real key");
+        assert!(
+            !seen.contains("kepr-ph-"),
+            "placeholder must not reach upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn egress_refuses_unbound_hosts_without_tunnel() {
+        let (up, _rx) = fake_upstream().await;
+        let (gate, _) = start_egress_gate(up, false).await;
+        let (_s, status) = connect_to(&gate, "example.com:443").await;
+        assert!(status.contains("403"), "{status}");
+        // A bound name on another port is not intercepted either.
+        let (_s, status) = connect_to(&gate, "api.anthropic.com:8443").await;
+        assert!(status.contains("403"), "{status}");
     }
 
     #[tokio::test]

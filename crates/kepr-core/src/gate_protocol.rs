@@ -78,6 +78,10 @@ pub struct SessionConfig {
     /// P9.5 spend and rate guard for this session.
     #[serde(default)]
     pub limits: GateLimits,
+    /// P2.1 egress proxy: tunnel CONNECTs to hosts no route is bound to
+    /// (off under `--isolate-net`, where only bound hosts are reachable).
+    #[serde(default)]
+    pub tunnel: bool,
 }
 
 /// Per-session caps the gate enforces (P9.5). `None` = no cap.
@@ -127,6 +131,9 @@ pub struct ReadyLine {
     pub port: u16,
     /// Provider name → placeholder (one per route; providers are unique).
     pub placeholders: std::collections::HashMap<String, String>,
+    /// P2.1: the session CA (PEM) the egress proxy signs bound hosts with.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ca_pem: Option<String>,
 }
 
 /// Rules every StartGate request must meet, checked by the daemon before

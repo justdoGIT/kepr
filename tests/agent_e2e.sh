@@ -157,6 +157,21 @@ echo "── output masking"
 masked=$("$KEPR" exec --env E2E_MASK --mask -- sh -c 'echo "v=$E2E_MASK"')
 check "$([ "$masked" = "v=****" ] && echo ok)" "exec --mask hides the value"
 
+echo "── egress proxy"
+printf 'ghp_%s\n' E2EGITHUBTOKEN0123456789abcdefghij | "$KEPR" agent add E2E_GH --stdin >/dev/null 2>&1
+cat >"$WORK/egress.sh" <<'PROBE'
+case "$GH_TOKEN" in kepr-ph-*) echo "ok placeholder in GH_TOKEN";; *) echo "bad GH_TOKEN is not a placeholder";; esac
+c=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer ghp_guess' https://api.github.com/user)
+[ "$c" = 401 ] && echo "ok egress proxy refuses a guessed token ($c)" || echo "bad egress proxy answered $c to a guessed token"
+c=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user)
+case "$c" in 000) echo "bad TLS to the gate failed (session CA not trusted)";; *) echo "ok TLS via the session CA ($c)";; esac
+PROBE
+OUT=$(GH_TOKEN=ghp_real_in_shell "$KEPR" agent run claude --no-sandbox -- sh "$WORK/egress.sh" 2>&1) || true
+while read -r status msg; do
+    case "$status" in ok) pass "$msg" ;; bad) fail "$msg" ;; esac
+done <<<"$OUT"
+"$KEPR" delete E2E_GH --force >/dev/null 2>&1 || true
+
 echo "── history and restore"
 "$KEPR" set E2E_HIST --value one -q >/dev/null 2>&1
 "$KEPR" set E2E_HIST --value two -q >/dev/null 2>&1

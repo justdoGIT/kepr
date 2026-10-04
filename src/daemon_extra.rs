@@ -7,8 +7,20 @@ use kepr_core::protocol::{Request, Response};
 
 use crate::{daemon_health, daemon_history, daemon_usage};
 
-pub fn dispatch(uid: u32, username: &str, request: Request) -> Response {
+pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
     match request {
+        Request::StartGate {
+            routes,
+            port,
+            limits,
+            tunnel,
+        } => crate::daemon_gate::handle_start_gate(
+            uid,
+            peer_pid,
+            username,
+            &routes,
+            (port, limits, tunnel),
+        ),
         Request::History { name } => daemon_history::handle_history(uid, username, &name),
         Request::Restore { name, version } => {
             daemon_history::handle_restore(uid, username, &name, version)

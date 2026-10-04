@@ -232,6 +232,7 @@ impl Live {
             routes,
             port: None,
             limits: Default::default(),
+            tunnel: false,
         })? {
             Response::GateStarted {
                 port, placeholders, ..

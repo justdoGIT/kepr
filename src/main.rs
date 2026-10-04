@@ -10,6 +10,7 @@ mod cli_agent_adapters;
 mod cli_agent_adopt;
 mod cli_agent_cmd;
 mod cli_agent_detect;
+mod cli_agent_egress;
 mod cli_agent_install;
 mod cli_agent_run;
 mod cli_agent_sandbox;
