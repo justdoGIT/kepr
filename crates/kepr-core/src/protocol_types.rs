@@ -38,6 +38,20 @@ pub struct KeyUsage {
     pub last_used: Option<String>,
 }
 
+/// One credential's health (P6.4), as `kepr health` shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyHealth {
+    pub name: String,
+    /// Human-readable findings; empty = healthy.
+    pub issues: Vec<String>,
+    /// Days since the value last changed.
+    pub age_days: u64,
+    /// First 5 hex digits of the value's SHA-1, for the breach-list
+    /// range lookup. Absent for sealed credentials.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub hibp_prefix: Option<String>,
+}
+
 // ── Credential info (for ListOk) ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

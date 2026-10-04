@@ -20,6 +20,7 @@ pub mod keyring;
 pub mod leak;
 pub mod memfd;
 pub mod protocol;
+pub mod protocol_response;
 pub mod protocol_types;
 pub mod providers;
 pub mod secmem;

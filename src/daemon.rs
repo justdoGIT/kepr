@@ -14,10 +14,12 @@ mod crypto_inproc;
 mod daemon_audit;
 mod daemon_cache;
 mod daemon_expiry;
+mod daemon_extra;
 mod daemon_gate;
 mod daemon_gate_registry;
 mod daemon_handlers;
 mod daemon_handlers_get;
+mod daemon_health;
 mod daemon_history;
 mod daemon_lock;
 mod daemon_memlock;
@@ -380,9 +382,11 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         | Request::SshImport { .. }
         | Request::SshList
         | Request::SshSign { .. } => daemon_ssh::dispatch(uid, peer_pid, username, request),
-        Request::History { .. } | Request::Restore { .. } => {
-            daemon_history::dispatch(uid, username, request)
-        }
+        Request::History { .. }
+        | Request::Restore { .. }
+        | Request::Usage { .. }
+        | Request::Health { .. }
+        | Request::BreachCheck { .. } => daemon_extra::dispatch(uid, username, request),
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),
@@ -435,9 +439,6 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::Delete { name } => handle_delete(uid, username, &name),
         Request::Check => handle_check(uid, username),
         Request::AuditVerify => handle_audit_verify(uid, username, &audit_chain_path()),
-        Request::Usage { days } => {
-            daemon_usage::handle_usage(uid, username, &audit_chain_path(), days)
-        }
         Request::Fido2Register {
             label,
             credential_id,

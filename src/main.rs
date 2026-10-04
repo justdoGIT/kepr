@@ -22,6 +22,7 @@ mod cli_envdump;
 mod cli_exec;
 mod cli_extra;
 mod cli_fido2;
+mod cli_health;
 mod cli_help;
 mod cli_history;
 mod cli_inject;

@@ -20,7 +20,7 @@
 use std::path::Path;
 
 use kepr_core::generate::ZeroString;
-use kepr_core::protocol::{HistoryEntry, Request, Response};
+use kepr_core::protocol::{HistoryEntry, Response};
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::store::{cred_path, to_cred_name, validate_name};
@@ -233,14 +233,6 @@ pub fn handle_restore(uid: u32, username: &str, name: &str, version: u32) -> Res
             }
         }
         Err(e) => Response::fail(e),
-    }
-}
-
-pub fn dispatch(uid: u32, username: &str, request: Request) -> Response {
-    match request {
-        Request::History { name } => handle_history(uid, username, &name),
-        Request::Restore { name, version } => handle_restore(uid, username, &name, version),
-        _ => Response::fail("unsupported request"),
     }
 }
 

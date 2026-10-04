@@ -10,7 +10,6 @@
 
 use crate::generate::ZeroString;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // Runtime paths are user-scoped by default. Set `KEPR_SYSTEM_MODE=1` for the
 // optional root-managed deployment that uses the historical /run/kepr path.
@@ -182,162 +181,22 @@ pub enum Request {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         days: Option<u32>,
     },
-}
-
-// ── Response ──────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Response {
-    SetOk {
-        name: String,
-        cred_name: String,
-        /// Whether the master key is Argon2id-wrapped at the time of this
-        /// write. Carried on the response so the CLI can warn about an
-        /// un-wrapped key without a second `Request::Status` round-trip.
-        password_protected: bool,
-    },
-    /// Reply to `StartGate`: where the gate listens and the session
-    /// placeholders (credential NAME → placeholder; not secrets).
-    GateStarted {
-        port: u16,
-        placeholders: HashMap<String, String>,
-        gate_pid: i32,
-    },
-    GetOk {
-        name: String,
-        // ZeroString rather than String so the deserialised secret on
-        // the client side is wiped from memory when the Response is
-        // dropped, instead of leaking through serde's allocation pool
-        // until the GC happens to overwrite the heap region. Wire
-        // format unchanged (still a JSON string); old daemons / new
-        // clients and vice versa interoperate.
-        value: ZeroString,
-    },
-    DeleteOk {
-        name: String,
-    },
-    ListOk {
-        credentials: Vec<CredInfo>,
-        count: usize,
-    },
-    CheckOk {
-        results: HashMap<String, String>,
-        count: usize,
-        all_ok: bool,
-    },
-    /// Phase 2 δ.3 — successful audit-chain verification. `entries`
-    /// is the count of validated chain entries; `last_hash` is the
-    /// hex-encoded head, intended for external attestation against
-    /// a checkpoint store (Phase 3 Sigstore Rekor anchor).
-    AuditOk {
-        entries: usize,
-        last_hash: String,
-    },
-    /// Phase 2 η: a FIDO2 assertion is required to decrypt this
-    /// credential. The client should obtain an assertion from the
-    /// FIDO2 authenticator identified by `credential_ids` over
-    /// `challenge`, then retry `Get` with `fido2_assertion` set.
-    Fido2Needed {
-        name: String,
-        /// 32 random bytes, hex-encoded. The client must include
-        /// this challenge verbatim in the `clientDataJSON` passed
-        /// to the authenticator.
-        challenge: String,
-        /// The credential IDs registered for this user whose
-        /// associated public keys the daemon can verify. The
-        /// client picks one that the user's authenticator holds.
-        credential_ids: Vec<String>, // hex
-    },
-    /// Phase 2 η: successful FIDO2 registration. The daemon echoes
-    /// the credential ID it stored.
-    Fido2RegisterOk {
-        credential_id: String,
-    },
-    /// Phase 2 η: list of registered FIDO2 credentials.
-    Fido2ListOk {
-        credentials: Vec<Fido2CredInfo>,
-    },
-    Pong,
-    PanicOk {
-        gates_stopped: usize,
-        locked: bool,
-    },
-    SshKeyOk {
-        name: String,
-        /// `ssh-ed25519 AAAA… comment`
-        public_line: String,
-    },
-    SshListOk {
-        keys: Vec<SshKeyInfo>,
-    },
-    /// OpenSSH signature blob (`string "ssh-ed25519" || string sig`), base64.
-    SshSignOk {
-        signature_b64: String,
-    },
-    HistoryOk {
-        name: String,
-        versions: Vec<HistoryEntry>,
-    },
-    RestoreOk {
-        name: String,
-        version: u32,
-    },
-    UsageOk {
-        /// Window start (`YYYY-MM-DD HH:MM` UTC); absent = all time.
+    /// P6.4: weak / reused / old credentials (flags only, no values).
+    Health {
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        since: Option<String>,
-        /// False if the audit chain failed verification.
-        chain_intact: bool,
-        gate_sessions: u64,
-        keys: Vec<KeyUsage>,
+        max_age_days: Option<u32>,
     },
-    LockedOk,
-    UnlockedOk,
-    StatusOk {
-        locked: bool,
-        password_protected: bool,
-    },
-    Err {
-        error: String,
+    /// P6.4: is `name`'s SHA-1 among these breach-list suffixes (the
+    /// public range for the prefix `Health` returned)?
+    BreachCheck {
+        name: String,
+        suffixes: Vec<String>,
     },
 }
 
-impl Response {
-    /// Transport-level success (request was understood and not rejected).
-    /// A CheckOk with `all_ok=false` is still transport-ok.
-    #[allow(dead_code)]
-    pub fn is_transport_ok(&self) -> bool {
-        !matches!(self, Response::Err { .. })
-    }
-
-    /// Semantic success — used for the CLI's exit code.
-    /// False for any Err and for CheckOk with a failing credential.
-    pub fn is_success(&self) -> bool {
-        match self {
-            Response::Err { .. } => false,
-            Response::CheckOk { all_ok, .. } => *all_ok,
-            _ => true,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn err_msg(&self) -> Option<&str> {
-        if let Response::Err { error } = self {
-            Some(error)
-        } else {
-            None
-        }
-    }
-
-    /// Convenience constructor used throughout the codebase.
-    pub fn fail(msg: impl Into<String>) -> Self {
-        Response::Err { error: msg.into() }
-    }
-}
-
+pub use crate::protocol_response::Response;
 pub use crate::protocol_types::{
-    CredInfo, Fido2Assertion, Fido2CredInfo, HistoryEntry, KeyUsage, SshKeyInfo,
+    CredInfo, Fido2Assertion, Fido2CredInfo, HistoryEntry, KeyHealth, KeyUsage, SshKeyInfo,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -346,6 +205,7 @@ pub use crate::protocol_types::{
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    use std::collections::HashMap;
 
     fn as_value<T: Serialize>(v: &T) -> Value {
         serde_json::to_value(v).expect("serialize")

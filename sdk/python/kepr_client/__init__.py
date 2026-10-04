@@ -147,6 +147,13 @@ class Client:
             req["days"] = int(days)
         return self._expect(req, "usage_ok")
 
+    def health(self, max_age_days=None):
+        """Weak / reused / old findings per credential (no values)."""
+        req = {"cmd": "health"}
+        if max_age_days is not None:
+            req["max_age_days"] = int(max_age_days)
+        return self._expect(req, "health_ok")["items"]
+
     # ── SSH keys (sign-only) ─────────────────────────────────────────
 
     def ssh_list(self):

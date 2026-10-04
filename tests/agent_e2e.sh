@@ -161,6 +161,10 @@ echo "── usage report"
 uses=$("$KEPR" usage 2>/dev/null | awk '$1 == "E2E_MASK" { print $2 }')
 check "$([ "${uses:-0}" -ge 1 ] && echo ok)" "usage counts the masked exec read"
 
+echo "── health"
+"$KEPR" set E2E_WEAK --value password1 -q >/dev/null 2>&1
+check "$("$KEPR" health 2>/dev/null | grep -q '^E2E_WEAK: common password' && echo ok)" "health flags a common password"
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -9,6 +9,7 @@
 //   kepr history NAME
 //   kepr restore NAME --version N
 //   kepr usage [--days N]
+//   kepr health [--max-age DAYS] [--breach]
 
 use kepr_core::protocol::Response;
 
@@ -23,6 +24,7 @@ pub const VERBS: &[&str] = &[
     "history",
     "restore",
     "usage",
+    "health",
     "__clipboard-clear",
 ];
 
@@ -105,6 +107,16 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 },
                 None => crate::cli_usage::cmd_usage(None),
             },
+            "health" => {
+                let max_age = match value_of(args, &["--max-age"]).map_err(Response::fail)? {
+                    Some(d) => Some(
+                        d.parse()
+                            .map_err(|_| Response::fail("--max-age needs a number of days"))?,
+                    ),
+                    None => None,
+                };
+                crate::cli_health::cmd_health(max_age, args.iter().any(|a| a == "--breach"))
+            }
             "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
             "ssh" => crate::cli_ssh::cmd_ssh(args),
             "ssh-agent" => crate::cli_ssh_agent::cmd_ssh_agent(args),
