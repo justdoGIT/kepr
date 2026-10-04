@@ -25,7 +25,7 @@ description: "Per-user secret vault for Linux and macOS. Eliminates .env leaks v
 | Feature | Kepr | `pass` / `gopass` | `sops` | 1Password CLI | HashiCorp Vault |
 |---|---|---|---|---|---|
 | **No `/proc` Env Leaks** | **Yes (`memfd` RAM delivery)** | No | No | No | No |
-| **AI Agent Protection** | **Planned (`kepr agent run`)** | No | No | No | No |
+| **AI Agent Protection** | **Yes (`kepr agent run`: agents never see the key)** | No | No | No | No |
 | **Zero `sudo` Required** | **Yes (Standalone User Mode)** | Yes | Yes | Yes | Yes |
 | **OS Peer Credential Auth** | **Yes (`SO_PEERCRED` / `LOCAL_PEERCRED`)** | No | No | No | No |
 | **Git / Docker Helpers** | **Yes (`git-credential-kepr`)** | Optional | No | Optional | Optional |

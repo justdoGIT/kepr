@@ -20,7 +20,8 @@ COMMANDS:
   list                                 (alias: ls)
   delete KEY [--force]                 (alias: rm)
   lock | unlock | status               password-protect or inspect the store
-  exec [--env CSV|--memfd CSV|--manifest PATH] -- CMD ARGS  run CMD with creds in env/memfd
+  exec [--env CSV|--memfd CSV|--manifest PATH] [--mask] -- CMD ARGS  run CMD with creds in env/memfd
+                                       (--mask prints stored values in CMD's output as ****)
   doctor                               diagnose common setup issues
   env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval
   rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid]   atomic rotation
@@ -29,6 +30,11 @@ COMMANDS:
   sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally
   fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions
   fido2-list                             list registered FIDO2 keys
+  agent add KEY [--for PROVIDER]       store a write-only key bound to its provider (paste once)
+  agent run HARNESS [-- ARGV]          run claude|codex|grok-cli|aider|omp|grok with placeholders;
+                                       a local gate injects the real key on the wire
+  agent install omp|grok               point the harness's config file at the gate (once)
+  agent ls | agent revoke KEY          list / delete sealed keys
 
 GLOBAL FLAGS:
   --json       machine-readable output; no stderr on clean errors
@@ -58,6 +64,8 @@ EXAMPLES:
   kepr exec --memfd OPENAI_API_KEY -- python train.py # RAM-sealed memfd delivery
   kepr exec --env OPENAI_API_KEY -- python train.py  # provision creds in env
   kepr doctor                          # ✓/✗ list of setup checks
+  kepr agent add ANTHROPIC_API_KEY     # paste once; can never be read back
+  kepr agent run claude                # Claude Code sees only a placeholder
   kepr rotate STRIPE_KEY --hook ./bin/refresh-stripe.sh
                                        # generate, validate via hook, commit on hook exit 0
   kepr sync-push DB_PASS --url vault:secret/team/db_pass

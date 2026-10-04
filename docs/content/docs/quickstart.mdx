@@ -49,10 +49,11 @@ description: "Install Kepr and start protecting your API keys in 1 minute on Lin
     ```
   </Step>
 
-  <Step title="AI Coding Agents (planned)">
-    Sealed agent sessions (`kepr agent run`) are in development; see the
-    [agent vault plan](/docs/agent-vault-plan). `kepr protect-agent` is
-    disabled until they ship.
+  <Step title="Give AI Coding Agents keys they never see">
+    ```bash
+    kepr agent add ANTHROPIC_API_KEY   # paste once; write-only afterwards
+    kepr agent run claude              # Claude Code gets a placeholder
+    ```
   </Step>
 
   <Step title="Argon2id Store Lock & Unlock">

@@ -11,7 +11,33 @@ no memory of earlier tickets, can finish it in one sitting: it names every
 file to touch, every type and function to add, the tests to write first, and
 the exact commands that prove it's done.
 
-**Status:** P0 is shipped. Everything else is open.
+**Status (2026-10-04):**
+
+| Tickets | State |
+| --- | --- |
+| P0 | shipped |
+| T1.01–T1.17 (P1 Stage A) | shipped; `tests/agent_e2e.sh` passes 15/15 as an unprivileged user |
+| T9.02 prompt DLP, T9.03 output masking | shipped |
+| T3.01–T3.04 secret memory, doctor hardening | shipped; the gate's session key uses `SplitKey` |
+| T1.18–T1.21, T9.01, T3.05, later phases | open (L: split before starting) |
+
+**Where the code differs from the ticket text** (the code is authoritative):
+
+- `SessionConfig`, `ReadyLine` and `GateRoute` live in
+  `kepr-core::gate_protocol` (shared by daemon and gate), not in the gate's
+  `config.rs`. `SessionConfig` and `Request::StartGate` carry an optional
+  fixed `port` (oh-my-pi and Grok Build read a fixed base URL from their
+  config files; default 7878).
+- The gate's provider table has no inject style: the credential's binding,
+  returned by the daemon with the value, decides how the key is injected.
+- The gate, not the CLI, generates placeholders; `kepr agent run` receives
+  them in `GateStarted` and never holds the session key.
+- The proxy buffers request bodies (up to 8 MiB) so the DLP check can run;
+  responses are still streamed.
+- `kepr agent …` is parsed by `cli_agent_cmd.rs`, not `cli_args.rs`.
+- Found and fixed on the way: the user-mode daemon could not start for
+  non-root users (`mlockall(MCL_FUTURE)` under an 8 MiB `RLIMIT_MEMLOCK`),
+  see `src/daemon_memlock.rs`.
 
 ---
 

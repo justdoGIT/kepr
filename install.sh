@@ -24,6 +24,7 @@ INSTALL_USER="${SUDO_USER:-$USER}"
 
 echo -e "\n${CYN}━━━ Building kepr ━━━${RST}"
 cargo build --release
+cargo build --release -p kepr-gate
 ok "Build complete"
 
 SYSTEM_MODE=false
@@ -43,9 +44,11 @@ echo -e "\n${CYN}━━━ Installing binaries ━━━${RST}"
 sudo install -o root -g root -m 0755 target/release/kepr /usr/local/bin/kepr
 sudo install -o root -g root -m 0755 target/release/kepr-daemon /usr/local/bin/kepr-daemon
 sudo install -o root -g root -m 0755 target/release/docker-credential-kepr /usr/local/bin/docker-credential-kepr
+sudo install -o root -g root -m 0755 target/release/kepr-gate /usr/local/bin/kepr-gate
 ok "kepr                    → /usr/local/bin/kepr"
 ok "kepr-daemon             → /usr/local/bin/kepr-daemon"
 ok "docker-credential-kepr  → /usr/local/bin/docker-credential-kepr"
+ok "kepr-gate               → /usr/local/bin/kepr-gate"
 
 
 # Phase 2 ε: install the polkit action so creds set with
