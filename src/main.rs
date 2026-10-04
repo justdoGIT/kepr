@@ -6,6 +6,11 @@
 
 mod cli_activity;
 mod cli_agent;
+mod cli_agent_adapters;
+mod cli_agent_cmd;
+mod cli_agent_detect;
+mod cli_agent_install;
+mod cli_agent_run;
 mod cli_args;
 mod cli_cmds;
 mod cli_doctor;
@@ -15,6 +20,7 @@ mod cli_fido2;
 mod cli_help;
 mod cli_input;
 mod cli_manifest;
+mod cli_mask;
 mod cli_mode;
 mod cli_rotate;
 mod cli_ui;
@@ -36,6 +42,21 @@ fn main() {
     //
     // On parse failure: honour --json mode, if it was already seen on
     // argv, by emitting a Response::Err on stdout with no stderr noise.
+    // `kepr agent …` has its own sub-verbs and flags (cli_agent_cmd.rs).
+    let raw: Vec<String> = std::env::args().collect();
+    if let Some(pos) = raw.iter().skip(1).position(|a| !a.starts_with("--")) {
+        if raw[pos + 1] == "agent" {
+            cli_mode::init_from_argv(&raw);
+            let resp = cli_agent_cmd::main(&raw[pos + 2..]);
+            if raw[1..=pos].iter().any(|a| a == "--json") {
+                print_json(&resp);
+            } else if let Response::Err { error } = &resp {
+                err(error);
+            }
+            std::process::exit(if resp.is_success() { 0 } else { 1 });
+        }
+    }
+
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {

@@ -79,7 +79,7 @@ impl CliActivity {
             "unlock" => cli_cmds::cmd_unlock(args),
             "status" => cli_cmds::cmd_status(args),
             "exec" => match resolve_env_for(args) {
-                Ok(vars) => cli_exec::cmd_exec(&vars, &args.memfd_vars, &args.exec_argv),
+                Ok(vars) => cli_exec::cmd_exec(&vars, &args.memfd_vars, &args.exec_argv, args.mask),
                 Err(e) => Response::fail(e),
             },
             "doctor" => cli_doctor::cmd_doctor(args.json),

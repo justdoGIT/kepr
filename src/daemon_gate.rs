@@ -201,6 +201,7 @@ fn start(
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
+    port: Option<u16>,
 ) -> Result<Response, String> {
     if !crate::user_mode() {
         return Err("agent sessions need the user-mode daemon for now".into());
@@ -210,6 +211,7 @@ fn start(
         session_id: random_hex(8)?.as_str().to_string(),
         session_key_hex: random_hex(32)?,
         routes: routes.to_vec(),
+        port,
     };
     let (daemon_end, gate_end) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
     let mut child = spawn_gate(peer_pid, &gate_end)?;
@@ -249,8 +251,9 @@ pub fn handle_start_gate(
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
+    port: Option<u16>,
 ) -> Response {
-    let result = start(uid, peer_pid, username, routes);
+    let result = start(uid, peer_pid, username, routes, port);
     audit::log(&AuditEvent {
         op: "start-gate",
         name: None,

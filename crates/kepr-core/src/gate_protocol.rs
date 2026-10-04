@@ -46,6 +46,9 @@ pub struct SessionConfig {
     /// 64 hex chars (32 bytes).
     pub session_key_hex: ZeroString,
     pub routes: Vec<GateRoute>,
+    /// Fixed loopback port; `None` = any free port.
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 /// The single line a gate prints to stdout once it is listening.

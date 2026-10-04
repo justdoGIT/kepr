@@ -96,6 +96,10 @@ pub enum Request {
     /// (the agent harness, after exec). User-mode daemon only.
     StartGate {
         routes: Vec<crate::gate_protocol::GateRoute>,
+        /// Fixed loopback port (for harnesses whose config file holds
+        /// a fixed base URL). `None` = any free port.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        port: Option<u16>,
     },
     Get {
         name: String,

@@ -128,6 +128,7 @@ pub fn run() -> Result<(), String> {
             },
         );
     }
+    let bind_port = cfg.port.unwrap_or(0);
     let state = Arc::new(State::new(
         cfg.session_id.clone(),
         key,
@@ -140,9 +141,9 @@ pub fn run() -> Result<(), String> {
         .build()
         .map_err(|e| format!("runtime: {e}"))?;
     rt.block_on(async move {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", bind_port))
             .await
-            .map_err(|e| format!("bind: {e}"))?;
+            .map_err(|e| format!("cannot listen on 127.0.0.1:{bind_port}: {e}"))?;
         let port = listener
             .local_addr()
             .map_err(|e| format!("bind: {e}"))?
@@ -184,6 +185,7 @@ mod tests {
             session_id: "0123456789abcdef".into(),
             session_key_hex: ZeroString::from_string("00".repeat(32)),
             routes,
+            port: None,
         }
     }
 

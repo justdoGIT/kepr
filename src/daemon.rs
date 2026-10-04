@@ -372,8 +372,8 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::Unlock { password } => {
             daemon_lock::handle_unlock_gated(uid, username, password.as_bytes())
         }
-        Request::StartGate { routes } => {
-            daemon_gate::handle_start_gate(uid, peer_pid, username, &routes)
+        Request::StartGate { routes, port } => {
+            daemon_gate::handle_start_gate(uid, peer_pid, username, &routes, port)
         }
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
