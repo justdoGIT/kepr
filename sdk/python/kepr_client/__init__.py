@@ -111,7 +111,7 @@ class Client:
         return {_upper(n): self.get(n) for n in names}
 
     def set(self, name, value=None, generate=None, ttl_secs=None, requires_consent=None):
-        """Store ``value``, or generate one (``"hex"|"base62"|"pass"|"uuid"``)."""
+        """Store ``value``, or generate one (``"hex"|"base62"|"pass"|"uuid"|"words"``)."""
         req = {"cmd": "set", "name": _upper(name)}
         if value is not None:
             req["value"] = value

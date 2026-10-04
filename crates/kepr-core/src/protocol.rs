@@ -57,7 +57,7 @@ pub enum Request {
         #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<ZeroString>, // None = generate
         #[serde(skip_serializing_if = "Option::is_none")]
-        generate: Option<String>, // "hex"|"base62"|"pass"|"uuid"
+        generate: Option<String>, // "hex"|"base62"|"pass"|"uuid"|"words"
         /// Phase 2 α: optional time-to-live in seconds. When set, the
         /// daemon writes a sidecar metadata file recording the absolute
         /// unix timestamp at which this credential expires. After that

@@ -15,7 +15,7 @@ USAGE:
   kepr [--json] [--color] COMMAND [args]
 
 COMMANDS:
-  set KEY [--stdin|--value V|--generate] [--gen-kind hex|base62|pass|uuid] [--ttl SECS] [--requires-consent] [--requires-fido2]
+  set KEY [--stdin|--value V|--generate] [--gen-kind hex|base62|pass|uuid|words] [--ttl SECS] [--requires-consent] [--requires-fido2]
   get KEY [--quiet] [--export]
   list                                 (alias: ls)
   delete KEY [--force]                 (alias: rm)
@@ -24,7 +24,7 @@ COMMANDS:
                                        (--mask prints stored values in CMD's output as ****)
   doctor                               diagnose common setup issues
   env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval
-  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid]   atomic rotation
+  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid|words]   atomic rotation
   audit-verify                         verify the hash-chained audit log
   sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:|gcp-sm:)
   sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally

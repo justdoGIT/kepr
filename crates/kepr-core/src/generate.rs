@@ -118,7 +118,15 @@ pub enum GenKind {
     Base62,
     Pass,
     Uuid,
+    /// Diceware passphrase (P5.6): 6 words from the EFF large wordlist,
+    /// ~77.5 bits.
+    Words,
 }
+
+/// The EFF large wordlist (7776 words, one per line; CC BY 3.0, Electronic
+/// Frontier Foundation).
+const EFF_WORDS: &str = include_str!("eff_large_wordlist.txt");
+const PASSPHRASE_WORDS: usize = 6;
 
 impl GenKind {
     // We want Option<Self> here so callers can chain via .and_then on
@@ -133,6 +141,7 @@ impl GenKind {
             "base62" => Some(Self::Base62),
             "pass" => Some(Self::Pass),
             "uuid" => Some(Self::Uuid),
+            "words" => Some(Self::Words),
             _ => None,
         }
     }
@@ -143,6 +152,7 @@ impl GenKind {
             Self::Base62 => "base62",
             Self::Pass => "pass",
             Self::Uuid => "uuid",
+            Self::Words => "words",
         }
     }
 }
@@ -215,6 +225,22 @@ pub fn generate_secret(kind: GenKind) -> Result<ZeroString, String> {
             }
         }
 
+        GenKind::Words => {
+            let words: Vec<&str> = EFF_WORDS.lines().collect();
+            let n = words.len();
+            let max = (65_536 / n) * n; // rejection bound: no modulo bias
+            let mut out = Vec::with_capacity(PASSPHRASE_WORDS);
+            while out.len() < PASSPHRASE_WORDS {
+                for pair in UrandomRng::bytes(32)?.chunks_exact(2) {
+                    let v = u16::from_le_bytes([pair[0], pair[1]]) as usize;
+                    if v < max && out.len() < PASSPHRASE_WORDS {
+                        out.push(words[v % n]);
+                    }
+                }
+            }
+            out.join("-")
+        }
+
         GenKind::Uuid => {
             let b = UrandomRng::bytes(16)?;
             // v4 third group is exactly 4 chars: literal '4' + 3 hex digits
@@ -241,6 +267,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wordlist_is_the_eff_large_list() {
+        let words: Vec<&str> = EFF_WORDS.lines().collect();
+        assert_eq!(words.len(), 7776);
+        let unique: std::collections::HashSet<&&str> = words.iter().collect();
+        assert_eq!(unique.len(), 7776);
+        assert_eq!((words[0], words[7775]), ("abacus", "zoom"));
+        let p = generate_secret(GenKind::Words).unwrap();
+        let parts: Vec<&str> = p.as_str().split('-').collect();
+        assert_eq!(parts.len(), PASSPHRASE_WORDS);
+        assert!(parts.iter().all(|w| unique.contains(w)));
+    }
+
+    #[test]
     fn zero_string_debug_does_not_leak_value() {
         // Pin the contract: Debug formatting of a ZeroString must never
         // print the inner value, so any code path that logs a Debug
@@ -255,7 +294,13 @@ mod tests {
 
     #[test]
     fn gen_kind_roundtrip() {
-        for kind in [GenKind::Hex, GenKind::Base62, GenKind::Pass, GenKind::Uuid] {
+        for kind in [
+            GenKind::Hex,
+            GenKind::Base62,
+            GenKind::Pass,
+            GenKind::Uuid,
+            GenKind::Words,
+        ] {
             let s = kind.as_str();
             let parsed = GenKind::from_str(s)
                 .unwrap_or_else(|| panic!("as_str {s:?} must roundtrip through from_str"));

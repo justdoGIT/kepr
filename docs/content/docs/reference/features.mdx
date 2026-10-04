@@ -147,6 +147,7 @@ wire format (`Client().get(...)`, `set`, `list`, `history`, `restore`,
 | `base62` | 48     | `[A-Za-z0-9]`, rejection-sampled (no modulo bias).      |
 | `pass`   | 32     | upper + lower + digit + symbol (retry until all four).  |
 | `uuid`   | 36     | RFC 4122 v4 (version + variant nibbles enforced).       |
+| `words`  | 6 words | EFF large wordlist (7776 words), `-`-joined, ~77.5 bits; rejection-sampled. |
 
 All entropy comes from `/dev/urandom`. The rejection-sampling helper
 discards bytes ≥ `(256 / |alphabet|) * |alphabet|` to stay uniform.

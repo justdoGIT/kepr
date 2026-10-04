@@ -157,8 +157,9 @@ pub fn parse_args() -> Result<Args, String> {
             "--gen-kind" => {
                 i += 1;
                 let k = raw.get(i).ok_or("--gen-kind needs a value")?;
-                gen_kind = GenKind::from_str(k)
-                    .ok_or(format!("unknown gen-kind: {k} (hex|base62|pass|uuid)"))?;
+                gen_kind = GenKind::from_str(k).ok_or(format!(
+                    "unknown gen-kind: {k} (hex|base62|pass|uuid|words)"
+                ))?;
                 i += 1;
             }
             "--env" => {

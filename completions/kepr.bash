@@ -6,7 +6,7 @@
 # Features:
 #   - verbs:   set / get / list / ls / delete / rm / check
 #   - flags:   context-aware per subcommand
-#   - values:  --gen-kind => hex | base62 | pass | uuid
+#   - values:  --gen-kind => hex | base62 | pass | uuid | words
 #   - dynamic: get / delete / rm complete existing credential names via
 #              `kepr --json list | jq -r '.credentials[]?.name'`
 #
@@ -44,7 +44,7 @@ _kepr() {
             # Free-form secret value; no suggestion.
             return ;;
         --gen-kind)
-            COMPREPLY=( $(compgen -W 'hex base62 pass uuid' -- "$cur") )
+            COMPREPLY=( $(compgen -W 'hex base62 pass uuid words' -- "$cur") )
             return ;;
     esac
 
