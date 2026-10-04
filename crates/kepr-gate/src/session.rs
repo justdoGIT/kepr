@@ -12,6 +12,7 @@ use zeroize::Zeroizing;
 use crate::proxy::{self, Route, State};
 use crate::vault::{Cache, FdResolver, DEFAULT_TTL};
 use crate::{placeholder, routes};
+use kepr_core::secmem::SplitKey;
 
 const MAX_CONFIG: u64 = 64 * 1024;
 const MAX_ROUTES: usize = 16;
@@ -131,7 +132,7 @@ pub fn run() -> Result<(), String> {
     let bind_port = cfg.port.unwrap_or(0);
     let state = Arc::new(State::new(
         cfg.session_id.clone(),
-        key,
+        SplitKey::new(&key)?,
         table,
         cache.clone(),
     ));

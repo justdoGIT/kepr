@@ -13,7 +13,7 @@ use hyper::header::HeaderValue;
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
-use zeroize::Zeroizing;
+use kepr_core::secmem::SplitKey;
 
 use crate::dlp::{self, Verdict};
 use crate::journal;
@@ -32,7 +32,7 @@ pub struct Route {
 
 pub struct State {
     pub session_id: String,
-    pub session_key: Zeroizing<[u8; 32]>,
+    pub session_key: SplitKey<32>,
     pub routes: HashMap<String, Route>,
     pub cache: Arc<Cache>,
     pub(crate) client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
@@ -59,7 +59,7 @@ pub(crate) fn build_client(
 impl State {
     pub fn new(
         session_id: String,
-        session_key: Zeroizing<[u8; 32]>,
+        session_key: SplitKey<32>,
         routes: HashMap<String, Route>,
         cache: Arc<Cache>,
     ) -> Self {
@@ -78,7 +78,7 @@ impl State {
             Some(p) => {
                 p.session_id == self.session_id
                     && p.slot == slot
-                    && placeholder::verify(&self.session_key, &p)
+                    && self.session_key.with_key(|k| placeholder::verify(k, &p))
             }
             None => false,
         }
@@ -357,8 +357,8 @@ mod tests {
                 slot: 0,
             },
         );
-        let state =
-            State::new(SID.into(), Zeroizing::new(KEY), routes, cache).with_test_upstream(upstream);
+        let state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
+            .with_test_upstream(upstream);
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://{}", l.local_addr().unwrap());
         tokio::spawn(serve(l, Arc::new(state)));
