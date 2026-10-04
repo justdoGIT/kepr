@@ -1,95 +1,47 @@
 ---
 title: "AI Agent & IDE Protection"
-description: "Use Kepr to protect Claude Code, Cursor, Windsurf, and Aider from exposing API keys in context logs."
+description: "Status of kepr's AI agent protection: why protect-agent is disabled and what replaces it."
 ---
 
-## Problem: AI Agents Leak Secrets in Context Windows
+## Status
 
-Modern AI coding agents (Claude Code, Cursor, Windsurf, Aider) capture environment variables and process state in their context logs. This exposes API keys and credentials to the model (and LLM provider logs).
+`kepr protect-agent` is **disabled**. Running it prints an explanation and
+exits without starting the agent.
 
----
+The original command started the harness (Claude Code, Cursor, Windsurf,
+Aider) with the key in a sealed `memfd` and only `KEPR_FD_<KEY>=3` in the
+environment. That had two problems:
 
-## Solution: `kepr protect-agent`
+1. **No harness reads `KEPR_FD_*`.** They read `ANTHROPIC_API_KEY`,
+   `OPENAI_API_KEY` and so on, so the agent started without credentials.
+2. **The memfd was inherited by everything the agent ran.** Any shell
+   command the agent executed could print the key with `cat <&3`.
 
-Kepr intercepts agent invocations and injects credentials via sealed RAM memory descriptors instead of environment variables.
+## What replaces it
+
+Sealed agent sessions: `kepr agent run`. The agent gets a worthless
+placeholder, a local proxy (`kepr-gate`) swaps in the real key on the wire
+toward that key's own API host, and the agent runs in a sandbox whose only
+network route is the proxy. The agent can use the key but never hold it.
+See the [Keeper parity & agent vault plan](/docs/agent-vault-plan).
+
+## Until then
+
+If you accept that the agent and every tool it runs can read the keys:
 
 ```bash
-kepr protect-agent claude -- claude
+kepr exec --env ANTHROPIC_API_KEY -- claude
 ```
 
-This command:
-1. Inspects `~/.config/claude/AGENTS.md` for declared credential requirements.
-2. Fetches each credential from the daemon.
-3. Mounts secrets in sealed `memfd` blocks with `KEPR_FD_*` environment variables.
-4. Executes Claude Code with a clean environment (no plaintext API keys).
+This keeps keys out of shell history and dotfiles, but they are visible in
+the agent's environment and `/proc/<pid>/environ`.
 
----
+`kepr exec --memfd` remains supported for your **own** programs that read
+the fd once and close it before starting subprocesses. Don't use it for
+agents or shells.
 
-## Configuration: Declare Agent Requirements
-
-In your agent config file (e.g., `~/.config/claude/AGENTS.md`):
-
-```yaml
-# Credentials this agent requires (Kepr will inject via memfd)
-credentials:
-  - OPENAI_API_KEY
-  - ANTHROPIC_API_KEY
-  - GITHUB_TOKEN
-```
-
-On agent startup, Kepr ensures all declared credentials exist and are available via sealed FDs.
-
----
-
-## Usage Examples
-
-### Claude Code
-```bash
-kepr protect-agent claude -- claude
-```
-
-### Cursor
-```bash
-kepr protect-agent cursor -- cursor
-```
-
-### Windsurf
-```bash
-kepr protect-agent windsurf -- windsurf
-```
-
-### Aider
-```bash
-kepr protect-agent aider -- aider
-```
-
----
-
-## What Gets Protected?
-
-- ✅ API key environment variables no longer appear in `/proc/<pid>/environ`
-- ✅ Process inspection (`ps`, `/proc/self/cmdline`) reveals no plaintext secrets
-- ✅ Environment-variable-based context capture sees only a file descriptor number (`KEPR_FD_KEY=3`), not the raw token
-- ✅ Agent stdout/stderr remains completely unmodified
-
-**What this does *not* protect against:** once the agent process opens the
-sealed `memfd` and reads the key (it has to, to call the API), the raw
-value is in that process's memory like any other secret it handles. If the
-agent's own logging, telemetry, or a downstream tool call echoes the value
-it just read, `protect-agent` does not intercept or redact that — it only
-removes the *accidental* exposure paths (environment tables, `/proc`,
-shell history, crash dumps of the parent).
-
----
-
-## Auditing Agent Access
+## Auditing agent access
 
 ```bash
 journalctl -t kepr-daemon KEPR_OP=get
 ```
-
-Each credential fetch by an agent is logged with:
-- Operation type (`get`)
-- Credential name
-- Peer UID (agent process owner)
-- Success/failure result

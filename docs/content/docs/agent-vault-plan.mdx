@@ -5,8 +5,8 @@ description: "Feature gap analysis against Keeper Security, plus the design for 
 
 # Keeper Parity & Zero-Touch Agent Vault Plan
 
-Status: **proposal** (October 2026). Nothing on this page is implemented yet
-unless it is marked *shipped*. It extends [Roadmap](/docs/roadmap) and
+Status: **in progress** (October 2026). P0 is shipped; everything else is a
+proposal. Implementation tickets: [Agent Vault: Implementation Tickets](/docs/agent-vault-tickets). It extends [Roadmap](/docs/roadmap) and
 [Security Extension Roadmap](/docs/security-roadmap); where it overlaps
 (TPM2, FIDO2 wrapping, team mode) this page takes the newer, more detailed
 position.
@@ -284,9 +284,9 @@ hand the agent the key at all.
  user (once)                                          upstream APIs
    │ kepr agent add ANTHROPIC_API_KEY --for api.anthropic.com          ▲ TLS (rustls,
    ▼                                                                   │  pinned roots)
-┌───────────────┐  AF_UNIX, SO_PEERCRED   ┌──────────────────────────┐ │
+┌───────────────┐ private socketpair (fd3)┌──────────────────────────┐ │
 │  kepr-daemon  │◀── Resolve{name,dest} ──│  kepr-gate               │─┘
-│ vault image,  │   (gate uid only)       │  uid kepr-gate, non-     │
+│ vault image,  │  daemon spawns the gate │  own uid (system mode),  │
 │ TPM-sealed KEK│── value (memfd_secret)─▶│  dumpable, memfd_secret  │
 └───────────────┘                         │  key cache, policy, audit│
                                           └────────────▲─────────────┘
@@ -333,11 +333,16 @@ surface don't grow.
 - `handle_get` returns the generic `"credential unavailable"` for sealed
   credentials (same sanitised error, so callers can't probe which ones are
   sealed) and audits `KEPR_RESULT=sealed-denied`.
-- New `Request::Resolve { name, dest }`, accepted only when the peer uid is
-  the `kepr-gate` system user (system mode) or the peer's `/proc/pid/exe`
-  matches the installed gate binary and the peer is non-dumpable (user mode).
-  The daemon checks `dest` against `bindings` itself; it does not trust the
-  gate's policy alone.
+- The daemon **starts the gate itself** (`Request::StartGate`), with a
+  cleared environment and one end of a private socket pair on fd 3. Sealed
+  values are resolved only over that socket pair (`GateRequest::Resolve
+  { name, host, port }`), never on the public socket. That rules out an agent
+  launching its own gate under a debugger or with `LD_PRELOAD`, and needs no
+  `/proc` inspection of the gate (which a same-uid daemon couldn't do once
+  the gate is non-dumpable). In system mode the gate is its own service
+  account and the daemon accepts the private channel only from that uid.
+  The daemon checks the host against `bindings` itself; it does not trust
+  the gate's policy alone.
 - `Unseal` is deliberately absent. Changing a binding or un-sealing requires
   re-entering the value (`kepr agent add` again) or a FIDO2 touch plus polkit.
   The user "sees it once" when pasting it, and never again unless they choose
@@ -617,7 +622,11 @@ variants touching `protocol.rs` + `cli_cmds.rs`/client + `daemon_handlers.rs`
 + audit, every file under 350 lines of production code, and
 `cargo clippy -D warnings` clean.
 
-### P0: fix agent protection (small, ship first)
+Step-by-step tickets for P0, P1, P3 and the first P9 items, written so a
+small model can implement them one at a time, are in
+[Agent Vault: Implementation Tickets](/docs/agent-vault-tickets).
+
+### P0: fix agent protection (shipped)
 
 - P0.1 `protect-agent` stops clearing `FD_CLOEXEC` on fds it hands to agent
   harnesses; mark the command experimental and point at P1.
@@ -628,8 +637,8 @@ variants touching `protocol.rs` + `cli_cmds.rs`/client + `daemon_handlers.rs`
 
 ### P1: sealed credentials + gate API mode + harness adapters
 
-- P1.1 `.meta` `sealed` + `bindings`; `handle_get` denial; `Request::Resolve`
-  with gate peer check; audit `sealed-denied` / `resolved`.
+- P1.1 `.meta` `sealed` + `bindings`; `handle_get` denial; daemon-spawned
+  gate with a private resolve channel; audit `sealed-denied` / `resolved`.
 - P1.2 `kepr-gate` bin: accept loop, session table, API-mode routing for
   Anthropic, OpenAI, xAI, Google, Mistral, DeepSeek, Groq, OpenRouter;
   SSE-safe streaming over `hyper` (HTTP/1.1 and HTTP/2, connection pooling

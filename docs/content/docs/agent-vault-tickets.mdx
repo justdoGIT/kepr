@@ -1,0 +1,816 @@
+---
+title: "Agent Vault: Implementation Tickets"
+description: "The agent vault plan broken into small, self-contained tickets that a small model or a new contributor can implement one at a time."
+---
+
+# Agent Vault: Implementation Tickets
+
+This page turns the [Keeper parity & agent vault plan](/docs/agent-vault-plan)
+into tickets. Each ticket is sized so that a small model, working alone with
+no memory of earlier tickets, can finish it in one sitting: it names every
+file to touch, every type and function to add, the tests to write first, and
+the exact commands that prove it's done.
+
+**Status:** P0 is shipped. Everything else is open.
+
+---
+
+## How to work a ticket (read this first, every time)
+
+1. **One ticket per branch / PR.** Never combine tickets. Never start a
+   ticket whose "Depends on" tickets aren't merged.
+2. **Read only the files the ticket lists**, plus `AGENTS.md`. If you need
+   another file, the ticket is wrong: stop and say so instead of guessing.
+3. **Write the tests first** (they're listed under *Tests*). Run them and
+   confirm they fail for the reason you expect. Then write the code.
+4. **Copy existing patterns.** When a ticket says "follow the pattern in
+   X", open X and imitate it exactly (naming, error handling, test setup).
+5. **Done means all of these pass**, run from the repo root:
+
+   ```bash
+   cargo fmt --all -- --check
+   cargo clippy --workspace --all-targets --all-features -- -D warnings
+   cargo test --workspace
+   cargo test --test file_size_limit
+   ```
+
+   Known exception: `version_state::tests::with_next_reverts_in_memory_on_persist_failure`
+   fails when tests run as root (it relies on directory permissions). Ignore
+   only that test, and only when running as root.
+6. **Never do these**, whatever the ticket seems to need:
+   - log, print, `Debug`-format, or put in an error message any secret value;
+   - convert a `ZeroString` to `String` except at the socket boundary;
+   - name the encryption backend in user-facing text (say "the credential backend");
+   - skip `store::validate_name` on a name that came from a request;
+   - trust a uid or pid sent in a request body (only `SO_PEERCRED` is trusted);
+   - add a dependency the ticket doesn't list;
+   - disable, skip or loosen a test to make CI pass.
+7. **File size.** No `.rs` file may exceed 350 lines of production code
+   (tests at the bottom don't count). If yours would, split by concept into a
+   new file and list it in your PR. `src/daemon.rs` and `src/cli_cmds.rs`
+   are at their ceilings: put new logic in new files and add only the
+   minimal dispatch line there.
+8. **New request type?** It always touches three layers: a variant in
+   `crates/kepr-core/src/protocol.rs`, a client call, and a daemon handler
+   that calls `audit::log`. The ticket will say which.
+9. **Security-critical tickets** are marked 🔒. They need a human (or strong
+   model) review of the diff before merge, even if CI is green.
+
+### Ticket sizes
+
+- **S**: under ~150 lines changed, one concept. Fine for a small model.
+- **M**: ~150–400 lines, a few files. Small model OK if it follows the steps literally.
+- **L**: needs design judgement. A strong model or a human should implement
+  it, or first split it into S/M tickets using the template at the bottom.
+
+---
+
+## Dependency order
+
+```text
+P1 core (sealed creds + gate, same-uid gate):
+  T1.01 ─▶ T1.02 ─▶ T1.03 ─▶ T1.04
+  T1.06 ─▶ T1.07 ─▶ T1.08
+  T1.03 + T1.06 ─▶ T1.05 (daemon spawns gate, private resolve channel)
+  T1.05 + T1.08 ─▶ T1.09 ─▶ T1.10 ─▶ T1.11
+  T1.12 (needs T1.03)
+  T1.13 (needs T1.10, T1.12) ─▶ T1.14 ─▶ T1.15 ─▶ T1.16 ─▶ T1.17
+P1 hardening (L): T1.18 sandbox, T1.19 gate as system service, T1.20 adopt, T1.21 MCP
+P9 first: T9.02 DLP (needs T1.10), T9.03 output masking (independent), T9.01 approvals (L)
+P3: T3.01 ─▶ T3.02 ─▶ T3.03, T3.04 doctor (independent), T3.05 suspend lock
+```
+
+---
+
+## P0: fix agent protection (shipped)
+
+- `kepr protect-agent` refuses to run and names the explicit
+  `kepr exec --env …` alternative (`src/cli_agent.rs`, three tests).
+- `create_sealed_memfd` documents the consumer contract: read once, close
+  before spawning children (`crates/kepr-core/src/memfd.rs`).
+- README, quickstart, docs index and the AI-agents guide no longer claim
+  agent protection.
+
+---
+
+## P1: sealed credentials and the gate
+
+Design decisions already made (don't revisit them in a ticket):
+the gate uses `hyper` 1.x on tokio with `hyper-rustls` and compiled-in
+`webpki-roots`; `kepr agent add` seals by default; the gate lives in its own
+workspace crate so its dependencies never reach the daemon.
+
+P1 ships in two security stages:
+
+- **Stage A (T1.01–T1.17):** the user-mode daemon spawns the gate (same uid
+  as the user, clean environment, private socket pair for resolves) and the
+  gate makes itself non-dumpable. The agent never
+  receives the key and cannot ptrace or read the gate's memory. The agent can
+  still reach the network directly (it just has no key to use there).
+- **Stage B (T1.18–T1.19):** sandboxed network namespace and a gate running
+  as its own system user.
+
+### T1.01 Binding types (S)
+
+**Goal:** shared types that say where a sealed credential may be sent.
+
+**Depends on:** nothing.
+
+**Files:** create `crates/kepr-core/src/binding.rs`; modify
+`crates/kepr-core/src/lib.rs` (add `pub mod binding;`).
+
+**Add:**
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Inject {
+    Bearer,                    // Authorization: Bearer <value>
+    Header { name: String },   // <name>: <value>, e.g. x-api-key
+    Query { param: String },   // ?<param>=<value>
+    Basic,                     // Authorization: Basic base64(user:<value>)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Binding {
+    pub host: String,          // lowercase DNS name, no scheme, no path
+    #[serde(default = "default_port")]
+    pub port: u16,             // default 443
+    pub inject: Inject,
+}
+
+fn default_port() -> u16 { 443 }
+
+/// Ok(()) or a short reason. Rules: host is 1..=253 chars of [a-z0-9.-],
+/// does not start or end with '.' or '-', contains at least one '.';
+/// port != 0; header/param names are 1..=64 chars of [A-Za-z0-9-_].
+pub fn validate_binding(b: &Binding) -> Result<(), String>;
+
+/// Parse the CLI form "host[:port]:inject" where inject is one of
+/// "bearer", "basic", "header=NAME", "query=NAME".
+/// Example: "api.anthropic.com:header=x-api-key".
+pub fn parse_binding(s: &str) -> Result<Binding, String>;
+```
+
+**Tests** (in `binding.rs`): JSON round-trip of each `Inject` variant;
+`port` defaults to 443 when missing from JSON; `validate_binding` rejects
+`"https://x.com"`, `"x.com/path"`, `"EXAMPLE.COM"`, `"localhost"`, port 0,
+header name with a space; `parse_binding` accepts
+`"api.openai.com:bearer"` and `"h.example.com:8443:query=key"` and rejects
+`"api.openai.com"` (no inject) and `"a.b:99999:bearer"`.
+
+**Done when:** the standard commands pass.
+
+### T1.02 Meta fields `sealed` and `bindings` (S)
+
+**Goal:** the sidecar `.meta` file can record that a credential is sealed.
+
+**Depends on:** T1.01.
+
+**Files:** modify `src/expiry.rs` (only the `CredMeta` struct and its tests).
+
+**Add** to `CredMeta`, copying the existing `#[serde(skip_serializing_if = "Option::is_none", default)]` style:
+
+```rust
+pub sealed: Option<bool>,
+pub bindings: Option<Vec<kepr_core::binding::Binding>>,
+```
+
+**Tests:** a meta JSON written by the old code (no new fields) still parses
+with `sealed == None`; a meta with both fields round-trips; serializing a
+default `CredMeta` doesn't emit `sealed` or `bindings`.
+
+### T1.03 Store sealed credentials via `Set` (M) 🔒
+
+**Goal:** a client can create a sealed credential with bindings.
+
+**Depends on:** T1.02.
+
+**Files:** `crates/kepr-core/src/protocol.rs`, `src/daemon.rs` (dispatch arm
+only), `src/daemon_handlers.rs` (`handle_set`), `src/cli_cmds.rs` only if it
+constructs `Request::Set` (add `sealed: None, bindings: None` there).
+
+**Steps:**
+
+1. Add to `Request::Set`, same serde style as `requires_consent`:
+   `sealed: Option<bool>` and `bindings: Option<Vec<Binding>>`.
+2. `handle_set` already takes many arguments. Replace the trailing
+   `ttl_secs, requires_consent, requires_fido2` parameters with one struct,
+   defined in `src/daemon_handlers.rs`:
+
+   ```rust
+   pub struct SetFlags {
+       pub ttl_secs: Option<u64>,
+       pub requires_consent: Option<bool>,
+       pub requires_fido2: Option<bool>,
+       pub sealed: Option<bool>,
+       pub bindings: Option<Vec<kepr_core::binding::Binding>>,
+   }
+   ```
+
+   Update the one caller in `src/daemon.rs`.
+3. In `handle_set`, before writing anything: if `sealed == Some(true)` then
+   `bindings` must be `Some` and non-empty and every binding must pass
+   `validate_binding`; otherwise return `Response::fail("sealed credentials need at least one valid binding")`
+   and audit the failure. Bindings without `sealed` are also rejected (same
+   message).
+4. Write `sealed` and `bindings` into the `CredMeta` that `handle_set`
+   already writes (find where it builds `CredMeta`). Keep the existing
+   rollback-on-meta-failure behaviour.
+
+**Tests:** follow the existing `handle_set` tests' setup. Sealed with one
+valid binding → `SetOk` and the meta on disk has `sealed: Some(true)`;
+sealed with no bindings → error; sealed with an invalid binding → error and
+no credential file left behind; bindings without sealed → error; protocol
+JSON for `Set` without the new fields still deserializes.
+
+### T1.04 Refuse `Get` for sealed credentials (S) 🔒
+
+**Goal:** no API returns a sealed value to an ordinary caller.
+
+**Depends on:** T1.03.
+
+**Files:** `src/daemon_handlers_get.rs` (`precheck_meta`), and for the list
+flag: `crates/kepr-core/src/protocol.rs` (`CredInfo`), `src/daemon_handlers.rs`
+(`handle_list`).
+
+**Steps:**
+
+1. In `precheck_meta`, as the **first** check after reading meta:
+   `if meta.sealed == Some(true) { return Err("sealed".to_string()); }`.
+   The existing code already maps any `Err` to the wire message
+   `"credential unavailable"` and audits the precise reason. Don't change that.
+2. Add `#[serde(default)] pub sealed: bool` to `CredInfo` and fill it in
+   `handle_list` from the meta. Never include bindings' secrets (there are
+   none) or values.
+
+**Tests:** `precheck_meta` returns `Err("sealed")` for a sealed meta even
+when `expires_at_unix` is in the future and `requires_fido2` is set (sealed
+wins, so no FIDO2 challenge is issued); a non-sealed meta behaves exactly as
+before; `handle_list` reports `sealed: true` for a sealed credential.
+
+### T1.05 Daemon starts the gate; private resolve channel (M) 🔒
+
+**Goal:** only a gate process that the daemon itself started can obtain a
+sealed value, and only for a host the credential is bound to.
+
+Why the daemon starts the gate: if any process could start a gate and then
+ask the daemon for keys, an agent could start one under a debugger or with
+`LD_PRELOAD` and read the key out of it. A process the daemon spawns with a
+clean environment, reached over a socket pair only the daemon holds, has no
+such hole, and needs no `/proc` inspection (which the daemon couldn't do
+anyway once the gate is non-dumpable).
+
+**Depends on:** T1.03, T1.06 (the binary must exist to test end to end; unit
+tests don't need it).
+
+**Files:** `crates/kepr-core/src/protocol.rs`; `src/daemon.rs` (one dispatch
+arm); create `src/daemon_gate.rs` (add `mod daemon_gate;` next to the other
+`mod daemon_*;` lines).
+
+**Public protocol (on the normal socket):**
+
+```rust
+// Request
+StartGate { routes: Vec<GateRoute> },
+// Response
+GateStarted { port: u16, placeholders: HashMap<String, String>, gate_pid: i32 },
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GateRoute { pub provider: String, pub cred: String, pub slot: u16 }
+```
+
+**Private protocol (only on the socket pair; never accepted on the public socket):**
+
+```rust
+#[derive(Serialize, Deserialize)] #[serde(tag = "cmd", rename_all = "lowercase")]
+pub enum GateRequest { Resolve { name: String, host: String, port: u16 } }
+#[derive(Serialize, Deserialize)] #[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GateResponse { ResolveOk { value: ZeroString, inject: Inject }, Err { error: String } }
+```
+
+Put these two enums in a new file `crates/kepr-core/src/gate_protocol.rs`.
+
+**`handle_start_gate(uid, peer_pid, username, routes) -> Response`:**
+
+1. If `!user_mode()`: return `Response::fail("agent sessions need the user-mode daemon for now")`
+   (system mode comes with T1.19). Audit it.
+2. Validate: 1..=16 routes, every `cred` passes `validate_name`, slots unique.
+3. Generate `session_id` (8 random bytes, hex) and `session_key` (32 bytes) with `getrandom`.
+4. `std::os::unix::net::UnixStream::pair()` → `(daemon_end, gate_end)`.
+5. Spawn the gate with `std::process::Command`:
+   path from the daemon's own env `KEPR_GATE_BIN` (default
+   `/usr/local/bin/kepr-gate`); `.env_clear()`; `.env("PATH", "/usr/bin:/bin")`;
+   stdin and stdout piped; stderr inherited; in `pre_exec` `dup2` the gate end
+   to fd 3 and clear its `FD_CLOEXEC`. Pass `--owner-pid {peer_pid}` (the
+   pid comes from `SO_PEERCRED`, never from the request).
+6. Write the T1.06 `SessionConfig` JSON to the gate's stdin, then close it.
+7. Read the ready line from its stdout (5 s timeout). Parse port and placeholders.
+8. Spawn a thread that serves `GateRequest`s on `daemon_end` (framed with
+   `kepr_core::framing`) until EOF, calling `resolve_for_gate(uid, ...)`.
+9. Return `GateStarted`. Audit `op: "start-gate"` with `Ok`. Zeroize `session_key`.
+
+**`resolve_for_gate(uid, username, name, host, port) -> GateResponse`:**
+
+1. `validate_name(name)`.
+2. Read the meta (same helpers `precheck_meta` uses). Require `sealed == Some(true)`; expiry still applies.
+3. Find a binding with `host == host.to_lowercase()` and the same port. None → `Err("credential unavailable")`.
+4. Decrypt exactly as `handle_get` does after its prechecks (call the same function).
+5. Audit `op: "resolve"` with `Ok` or the precise failure reason. Never log the value or the host.
+
+**Tests:** `resolve_for_gate` refuses a non-sealed credential, an unbound
+host, a wrong port and an expired credential (all `"credential unavailable"`);
+route validation (17 routes, duplicate slot, bad name); JSON round-trips of
+all new types; a test that `Request` JSON with `"cmd":"resolve"` does **not**
+deserialize on the public socket.
+
+### T1.06 `kepr-gate` crate skeleton (M)
+
+**Goal:** an empty gate binary that starts, hardens itself, binds a port
+and reports readiness.
+
+**Depends on:** nothing (can run in parallel with T1.01–T1.05).
+
+**Files:** create `crates/kepr-gate/Cargo.toml`, `crates/kepr-gate/src/main.rs`,
+`crates/kepr-gate/src/config.rs`; modify root `Cargo.toml` `[workspace] members`.
+
+**Dependencies** (gate crate only): `kepr-core` (path), `tokio` (features
+`rt-multi-thread`, `macros`, `net`, `io-util`, `time`, `signal`), `hyper` 1
+(`server`, `client`, `http1`, `http2`), `hyper-util` (`tokio`,
+`server-auto`, `client-legacy`, `http1`, `http2`), `http-body-util`,
+`hyper-rustls` (`http1`, `http2`, `webpki-roots`, `ring`), `rustls`,
+`serde`, `serde_json`, `libc`, `zeroize`, `hmac`, `sha2`, `hex`, `getrandom`.
+Use versions compatible with the existing `Cargo.lock`; run `cargo deny check`.
+
+**`config.rs`:**
+
+```rust
+#[derive(serde::Deserialize)]
+pub struct SessionConfig {
+    pub session_id: String,      // 16 hex chars
+    pub session_key_hex: String, // 64 hex chars (32 bytes)
+    pub routes: Vec<RouteConfig>,
+}
+#[derive(serde::Deserialize)]
+pub struct RouteConfig {
+    pub provider: String,        // key into the T1.08 table, e.g. "anthropic"
+    pub cred: String,            // credential NAME in the vault
+    pub slot: u16,
+}
+```
+
+**`main.rs` order of operations:**
+
+1. First line of `main`: `prctl(PR_SET_DUMPABLE, 0)`; exit 70 if it fails.
+2. `setrlimit(RLIMIT_CORE, 0)`.
+3. Parse `--owner-pid PID`. Open it with `pidfd_open` (`libc::syscall(libc::SYS_pidfd_open, pid, 0)`);
+   spawn a task that waits for the pidfd to become readable and then exits
+   the process (the agent session ended). Exit 70 if `pidfd_open` fails.
+4. Read one JSON `SessionConfig` from stdin (max 64 KiB), then close stdin.
+   Fd 3 is the daemon channel (used from T1.09); check it is open with
+   `fcntl(3, F_GETFD)` and exit 70 if not.
+5. Bind `127.0.0.1:0` with tokio.
+6. Print exactly one line to stdout:
+   `{"ready":true,"port":PORT}` and flush. (T1.07 adds placeholders here.)
+7. Serve `GET /__kepr/health` → `200 ok`; everything else → `404`.
+8. Exit cleanly on SIGTERM.
+
+**Tests:** `config.rs` parse tests (valid, missing field, bad hex). An
+integration test in `crates/kepr-gate/tests/startup.rs` that runs the built
+binary (`env!("CARGO_BIN_EXE_kepr-gate")`) with a socket pair end on fd 3
+and `--owner-pid` set to a `sleep 30` child, writes a config to stdin, reads
+the ready line, and gets `200` from `/__kepr/health`; killing the `sleep`
+child makes the gate exit within 2 s.
+
+### T1.07 Placeholders (S) 🔒
+
+**Goal:** worthless, session-bound stand-ins for real keys.
+
+**Depends on:** T1.06.
+
+**Files:** create `crates/kepr-gate/src/placeholder.rs`; modify `main.rs`
+to print placeholders in the ready line:
+`{"ready":true,"port":PORT,"placeholders":{"ANTHROPIC_API_KEY":"kepr-ph-…"}}`.
+
+**Format:** `kepr-ph-{session_id}-{slot:04x}-{mac}` where `mac` is the first
+16 hex chars of `HMAC-SHA256(session_key, "{session_id}:{slot}")`.
+
+```rust
+pub fn make(session_key: &[u8; 32], session_id: &str, slot: u16) -> String;
+pub struct Parsed { pub session_id: String, pub slot: u16, pub mac: String }
+pub fn parse(s: &str) -> Option<Parsed>;
+/// Constant-time MAC check (use hmac's `verify_truncated_left`).
+pub fn verify(session_key: &[u8; 32], p: &Parsed) -> bool;
+```
+
+**Tests:** make→parse→verify round-trip; a placeholder from another session
+key fails `verify`; one changed character fails; `parse` rejects
+`"sk-ant-…"`, empty string, wrong prefix, non-hex slot.
+
+### T1.08 Provider route table (S)
+
+**Goal:** one table that says where each provider lives and how it
+authenticates.
+
+**Depends on:** T1.06.
+
+**Files:** create `crates/kepr-gate/src/routes.rs`.
+
+```rust
+pub struct Provider {
+    pub name: &'static str,       // URL prefix: /anthropic/...
+    pub host: &'static str,       // upstream TLS host, port 443
+    pub inject: InjectStatic,     // how the key is sent
+}
+pub enum InjectStatic { Bearer, Header(&'static str) }
+pub const PROVIDERS: &[Provider] = &[ /* table below */ ];
+pub fn lookup(name: &str) -> Option<&'static Provider>;
+/// "/anthropic/v1/messages" -> Some(("anthropic", "/v1/messages"))
+pub fn split_path(path: &str) -> Option<(&str, &str)>;
+```
+
+| name | host | inject |
+| --- | --- | --- |
+| anthropic | api.anthropic.com | Header("x-api-key") |
+| openai | api.openai.com | Bearer |
+| xai | api.x.ai | Bearer |
+| google | generativelanguage.googleapis.com | Header("x-goog-api-key") |
+| mistral | api.mistral.ai | Bearer |
+| deepseek | api.deepseek.com | Bearer |
+| groq | api.groq.com | Bearer |
+| openrouter | openrouter.ai | Bearer |
+
+**Tests:** every row's host passes `kepr_core::binding::validate_binding`;
+`split_path` cases (`"/xai/v1/chat"`, `"/unknown/x"` → provider not found
+via `lookup`, `"/"` → `None`); names are unique.
+
+### T1.09 Daemon client and value cache in the gate (M) 🔒
+
+**Goal:** the gate fetches sealed values with `Resolve` and keeps them
+briefly.
+
+**Depends on:** T1.05, T1.08.
+
+**Files:** create `crates/kepr-gate/src/vault.rs`.
+
+- Blocking function `resolve(name, host, port) -> Result<(ZeroString, Inject), String>`
+  that sends `GateRequest::Resolve` over **fd 3** (wrap it once at startup
+  with `UnixStream::from_raw_fd(3)` and keep it behind a `Mutex`), using
+  `kepr_core::framing::write_frame` / `read_frame`. Never connect to the
+  public daemon socket. Call it from async code via
+  `tokio::task::spawn_blocking`. Set a 10 s read timeout.
+- `struct Cache` holding `HashMap<(String, String), (ZeroString, Inject, Instant)>`
+  behind a `std::sync::Mutex`; entries older than 300 s are refetched;
+  `clear()` zeroizes everything (it's `ZeroString`, so dropping is enough).
+- Errors returned to callers must never contain the value.
+
+**Tests:** cache returns a fresh entry without calling the fetcher (inject a
+fetcher closure for tests), refetches after expiry (make the TTL a
+parameter), `clear` empties it.
+
+### T1.10 Forwarding proxy (L → do as M by following the steps) 🔒
+
+**Goal:** swap the placeholder for the real key and stream the upstream
+response back.
+
+**Depends on:** T1.07, T1.09.
+
+**Files:** create `crates/kepr-gate/src/proxy.rs`; wire it into `main.rs`
+replacing the 404 fallback.
+
+**Per request:**
+
+1. `routes::split_path` → provider and rest-of-path; unknown → `404`.
+2. Find the route in `SessionConfig.routes` with that provider; none → `404`.
+3. Read the credential header for that provider (`Authorization: Bearer X`
+   or the named header). Missing, not a placeholder, or `verify` fails →
+   `401` with body `{"error":{"type":"kepr","message":"invalid or missing kepr placeholder"}}`.
+   The placeholder's slot must equal the route's slot.
+4. `vault` cache → real value and inject (host = provider host, port 443).
+   Error → `502` with a generic message (no value, no daemon detail).
+5. Build the upstream request: `https://{host}{rest}{?query}`, same method,
+   same body (streamed, don't buffer), copy headers except hop-by-hop ones
+   (`connection`, `keep-alive`, `proxy-*`, `te`, `trailer`,
+   `transfer-encoding`, `upgrade`) and `host`; set the credential header
+   with the real value per `inject`.
+6. Send with a `hyper_util` client using `hyper_rustls::HttpsConnectorBuilder::new().with_webpki_roots().https_only().enable_http1().enable_http2()`.
+   Never read proxy settings or CA files from the environment.
+7. Stream status, headers (minus hop-by-hop) and body back unchanged
+   (Server-Sent Events must flow chunk by chunk).
+
+**Testability:** make the upstream base URL a field of a `Forwarder`
+struct; production code always builds `https://{host}`; tests construct a
+`Forwarder` pointing at a local plain-HTTP hyper server via a
+`#[cfg(test)]`-only constructor.
+
+**Tests (in `proxy.rs` or `crates/kepr-gate/tests/`):** a fake upstream
+asserts it received the real key and never the placeholder; a wrong
+placeholder gets `401` and the upstream receives nothing; a placeholder for
+slot 1 on a slot-0 route gets `401`; a streamed response arrives in at
+least two chunks; hop-by-hop headers are stripped.
+
+### T1.11 Gate request journal (S)
+
+**Goal:** a metadata-only log of every forwarded request.
+
+**Depends on:** T1.10.
+
+**Files:** create `crates/kepr-gate/src/journal.rs`.
+
+One JSON line per request to stderr:
+`{"ts":UNIX,"session":ID,"provider":"anthropic","method":"POST","path":"/v1/messages","status":200,"bytes_out":N,"bytes_in":N,"ms":N}`.
+Never include headers, query strings or bodies. Strip the query string from
+`path`.
+
+**Tests:** formatting function produces exactly these keys; a path with
+`?key=secret` is logged without the query.
+
+### T1.12 `kepr agent add` (M)
+
+**Goal:** paste a key once; it's stored sealed and bound to its provider.
+
+**Depends on:** T1.03 (and T1.08's table, copied as data, see below).
+
+**Files:** rewrite `src/cli_agent.rs` (keep `cmd_protect_agent` and its
+tests); `src/cli_args.rs` and `src/cli_activity.rs` for the new verb
+`agent` with subcommand `add`; create `src/cli_agent_detect.rs`.
+
+**Behaviour:** `kepr agent add NAME [--for PROVIDER|BINDING]...`
+
+1. Read the value with the existing masked-input helper in `src/cli_input.rs`.
+2. If no `--for`: detect from the value's prefix in `cli_agent_detect.rs`:
+   `sk-ant-` → anthropic; `xai-` → xai; `sk-or-` → openrouter;
+   `gsk_` → groq; `AIza` → google; `sk-` → openai (check this one last).
+   Unknown → error asking for `--for`.
+3. Turn a provider name into a `Binding` using a small table that mirrors
+   T1.08 (host + inject). `--for` may also be a raw binding string parsed by
+   `kepr_core::binding::parse_binding`.
+4. Send `Request::Set { sealed: Some(true), bindings: Some(...), ... }`.
+5. Print `stored NAME (sealed, bound to HOST)`. Never echo the value.
+
+**Tests:** detection table (each prefix, `sk-ant-` must not be detected as
+openai); `--for anthropic` → expected binding; unknown prefix without
+`--for` → error.
+
+### T1.13 `kepr agent run` (M) 🔒
+
+**Goal:** start the gate, then exec the harness with placeholders.
+
+**Depends on:** T1.10, T1.12.
+
+**Files:** create `src/cli_agent_run.rs`; dispatch in `src/cli_activity.rs`.
+
+**Behaviour:** `kepr agent run HARNESS -- ARGV...`
+
+1. Look up the harness in the T1.14 adapter table → list of
+   `(provider, cred_name)`; assign slots 0, 1, 2… in table order.
+2. Send `Request::StartGate { routes }` with `client::send_request`. The
+   daemon spawns the gate (T1.05) and returns port and placeholders.
+3. Build the env for the harness: start from the current env, **remove** any
+   variable named in the adapter (so a real key exported in the shell never
+   reaches the agent), then add the adapter's variables with the gate URL
+   and placeholders.
+4. `exec` the harness (like `cli_exec::run_exec`). The pid stays the same, so
+   the gate's `--owner-pid` watch ends the gate when the harness exits.
+
+**Tests:** env-building function (pure): a pre-existing
+`ANTHROPIC_API_KEY=sk-ant-real` is replaced by the placeholder; base URL is
+`http://127.0.0.1:PORT/anthropic`; an unknown harness gives a clear error
+listing the supported ones.
+
+### T1.14 Harness adapters: environment-based (S)
+
+**Goal:** a table that tells `kepr agent run` which variables each harness
+reads.
+
+**Depends on:** T1.13.
+
+**Files:** create `src/cli_agent_adapters.rs`.
+
+```rust
+pub struct EnvVar { pub name: &'static str, pub value: Value }
+pub enum Value { BaseUrl(&'static str /* provider */, &'static str /* suffix */), Placeholder(&'static str /* cred */) }
+pub struct Adapter { pub harness: &'static str, pub creds: &'static [(&'static str, &'static str)], pub env: &'static [EnvVar] }
+```
+
+Initial rows (verify each variable name against the harness's current
+docs before merging; record the doc URL in a comment above the row):
+
+| harness | variables |
+| --- | --- |
+| claude | `ANTHROPIC_BASE_URL` = base(anthropic), `ANTHROPIC_API_KEY` = ph(ANTHROPIC_API_KEY) |
+| grok-cli | `GROK_BASE_URL` = base(xai, "/v1"), `GROK_API_KEY` = ph(XAI_API_KEY) |
+| aider | `OPENAI_API_BASE` = base(openai, "/v1"), `OPENAI_API_KEY` = ph(OPENAI_API_KEY), `ANTHROPIC_API_KEY` = ph(ANTHROPIC_API_KEY) |
+| omp | `KEPR_PH_ANTHROPIC` = ph(ANTHROPIC_API_KEY) (used by T1.15's config) |
+| grok | `KEPR_PH_XAI` = ph(XAI_API_KEY) (used by T1.15's config) |
+
+**Tests:** every harness name unique; every placeholder cred has a
+matching entry in `creds`.
+
+### T1.15 Harness adapters: config-file writers (M)
+
+**Goal:** `kepr agent install omp|grok` points the harness's own config at
+the gate once.
+
+**Depends on:** T1.14.
+
+**Files:** create `src/cli_agent_install.rs`.
+
+- **omp:** in `~/.omp/agent/models.yml`, add or replace a provider entry
+  `kepr-anthropic` with `baseUrl: http://127.0.0.1:${KEPR_GATE_PORT}/anthropic`
+  and `apiKey: KEPR_PH_ANTHROPIC`. Confirm in the omp docs how env
+  expansion works in `baseUrl`; if it isn't supported, use a fixed port
+  instead (add `--port` to `kepr agent run` and pin it).
+- **grok (Grok Build):** in `~/.grok/config.toml`, add a `[model.kepr-grok]`
+  block with `base_url = "http://127.0.0.1:PORT/xai/v1"` and
+  `env_key = "KEPR_PH_XAI"`.
+- Always write a timestamped backup first; never delete user entries; be
+  idempotent (running twice changes nothing the second time).
+- Implement on plain strings with a minimal line-based editor. Do **not**
+  add YAML or TOML crates for this ticket.
+
+**Tests:** fixture configs in, expected configs out; idempotency; backup
+created.
+
+### T1.16 `kepr agent ls` and `kepr agent revoke` (S)
+
+**Depends on:** T1.12. `ls` prints sealed credentials (from `List`, using
+the `sealed` flag from T1.04) with their providers. `revoke NAME` deletes
+the credential after a y/N confirmation. Tests for the formatting function.
+
+### T1.17 End-to-end "malicious agent" test (M)
+
+**Depends on:** T1.13. Add `tests/agent_e2e.sh` (style: copy
+`tests/e2e.sh`, including skip-if-no-daemon logic and the cleanup trap). It
+stores a fake sealed key bound to a local test host, runs
+`kepr agent run` with a script as the "harness" that tries, and must fail
+at, each of: `env | grep` for the real value; `cat /proc/*/environ`;
+reading `/proc/<gate-pid>/mem` and `/proc/<gate-pid>/environ`;
+`kepr get NAME`; sending a `{"cmd":"resolve"}` request to the public daemon socket; sending the placeholder to a non-bound host through the
+gate. Run `shellcheck tests/agent_e2e.sh`.
+
+### T1.18 Agent sandbox (L)
+
+User + network + PID + mount namespaces, gate listening fd passed into the
+namespace, Landlock rules hiding the vault and socket paths, seccomp denying
+`ptrace`, `process_vm_readv`, `process_vm_writev`, `bpf`. Ships the
+AppArmor profile (decision 3). Split into S/M tickets before starting.
+
+### T1.19 Gate as a system service (L)
+
+`kepr-gate.service` with its own system user so the root daemon (whose unit
+forbids network sockets) doesn't spawn networked children. The daemon
+accepts the gate's private channel only from that uid via `SO_PEERCRED`.
+Split first.
+
+### T1.20 `kepr adopt` (L) · T1.21 `kepr-mcp` (L)
+
+Split first, following plan sections 4.7 and 4.8.
+
+---
+
+## P9: agent safety extras (first three)
+
+### T9.02 Prompt DLP: block requests containing a stored secret (M) 🔒
+
+**Depends on:** T1.10.
+
+**Files:** create `crates/kepr-gate/src/dlp.rs`; call it in `proxy.rs`
+before forwarding.
+
+- Keep the set of values this gate session has resolved (from the T1.09
+  cache). Before forwarding, buffer the request body up to 8 MiB (larger →
+  `413`), and check whether any cached value appears in it as bytes
+  (`memchr::memmem` is acceptable; add `memchr` to the gate crate). Also
+  check for these patterns: `sk-ant-[A-Za-z0-9_-]{20,}`, `xai-[A-Za-z0-9]{20,}`,
+  `AKIA[0-9A-Z]{16}`, `ghp_[A-Za-z0-9]{36}`, `glpat-[A-Za-z0-9_-]{20,}`
+  (hand-written matchers, no regex crate).
+- On a match, do not forward. Respond `403` with body
+  `{"error":{"type":"kepr_blocked","message":"kepr blocked this request: it contains the stored secret NAME. Remove it and retry."}}`.
+  For pattern matches say `"it contains what looks like an API key"`.
+  Never put the matched bytes in the response or the journal.
+- Journal the block with `"status":403,"blocked":"dlp"`.
+
+**Tests:** body containing a cached value → 403 and upstream untouched;
+body with `AKIA` + 16 chars → 403; clean body → forwarded; the 403 body
+contains the credential NAME but not the value.
+
+### T9.03 Output masking for `kepr exec --mask` (M)
+
+**Depends on:** nothing.
+
+**Files:** create `src/cli_mask.rs`; add `--mask` to `src/cli_args.rs`;
+use it in `src/cli_exec.rs`.
+
+With `--mask`, `kepr exec` can't use `execvp` (it must stay alive to filter
+output). Spawn the child with piped stdout/stderr, copy each stream through
+a `Masker` to our own stdout/stderr, and exit with the child's exit code.
+
+```rust
+pub struct Masker { /* secrets, carry-over buffer */ }
+impl Masker {
+    pub fn new(secrets: Vec<ZeroString>) -> Self;
+    /// Returns bytes safe to emit now; keeps up to (longest secret - 1)
+    /// bytes back so a secret split across two reads is still caught.
+    pub fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
+    pub fn finish(&mut self) -> Vec<u8>;
+}
+```
+
+Each occurrence of a secret becomes `****`.
+
+**Tests:** secret in one chunk; secret split across two chunks; two
+secrets; no secret (output identical); `finish` flushes the held-back tail.
+
+### T9.01 Per-agent approvals (L)
+
+Split first, following plan P9.1.
+
+---
+
+## P3: secret enclave in RAM
+
+### T3.01 `secmem` capability probe (S)
+
+**Files:** create `crates/kepr-core/src/secmem.rs` with
+`pub fn memfd_secret_available() -> bool` (call
+`libc::syscall(libc::SYS_memfd_secret, 0)`; success → close the fd and
+return true). Test: the function returns without panicking; on Linux it
+returns a bool consistent with a second call.
+
+### T3.02 `SecretRegion` allocator (M) 🔒
+
+**Depends on:** T3.01. A type that owns one page-aligned region: backed by
+`memfd_secret` + `mmap` when available, otherwise anonymous `mmap` +
+`mlock` + `madvise(MADV_DONTDUMP | MADV_WIPEONFORK)`. One `PROT_NONE` guard
+page before and after. Placement at a random page-aligned hint address
+(`getrandom`), retrying without the hint if `mmap` refuses. `Drop` zeroizes,
+`munlock`s and `munmap`s. API: `new(len) -> Result<Self, String>`,
+`as_slice()`, `as_mut_slice()`. Tests: write/read round-trip, length
+rounding, drop doesn't crash, guard-page layout (inspect
+`/proc/self/maps`).
+
+### T3.03 Relocation and XOR splitting (M) 🔒
+
+**Depends on:** T3.02. `SplitKey` holding two `SecretRegion`s A and
+B = key ⊕ A; `with_key(|k| ...)` recombines into a stack buffer and
+zeroizes it after the closure; `relocate()` allocates fresh regions with a
+new random A and drops the old ones. Tests: `with_key` sees the original
+key before and after `relocate`; the raw bytes of neither region equal the
+key.
+
+### T3.04 `kepr doctor` hardening section (M)
+
+Add checks (each a pure function over file contents, plus one thin I/O
+wrapper) for: `memfd_secret` (T3.01), Yama `ptrace_scope`, `lockdown`,
+swap on/encrypted (`/proc/swaps`), Landlock ABI, unprivileged userns
+(`/proc/sys/kernel/unprivileged_userns_clone` and the AppArmor restriction
+sysctl), TME/SME flags in `/proc/cpuinfo`, IOMMU groups present. Follow the
+existing structure of `src/cli_doctor.rs`.
+
+### T3.05 Lock on suspend and `kepr panic` (L)
+
+Split first, following plan P3.5.
+
+---
+
+## Later phases
+
+These need splitting (by a strong model or a human, using the template
+below) before a small model starts on them. Size shown is for the whole
+item.
+
+| Item | Size | Notes |
+| --- | --- | --- |
+| P2.1 egress `CONNECT` proxy with per-session CA | L | needs `rcgen`; decide CA lifetime and trust-store env vars |
+| P2.2 SigV4 verify-and-re-sign | M | reuse `src/sync_aws_sigv4.rs` functions; move shared parts to a crate |
+| P2.3 placeholder presets (gh, git, aws, gcloud, stripe, npm, docker) | M | one adapter row per tool |
+| P2.4 `kepr ssh-agent` | L | ssh-agent wire protocol; sign-only |
+| P3.3 pull-on-demand fd delivery | M | replaces inherited memfds |
+| P4.x vault image, TPM2, BYOK | L | each sub-item is its own ticket set |
+| P5.x typed records, history, attachments, TOTP, references, `inject` | M each | protocol changes in every one |
+| P6.x sharing, one-time share, emergency access, health, sync, policy | L | team mode design first |
+| P7.x DB proxies, rotators, journal, JIT, anomaly rules, SIEM, FIPS | L | |
+| P8 ecosystem | M each | |
+| P9.4–P9.8 | M–L | |
+| P10.x | S–L | P10.2 importers and P10.9 clipboard are S/M and good first tickets |
+
+---
+
+## Ticket template
+
+Copy this when splitting an L item. A ticket isn't ready for a small model
+until every field is filled in with concrete names.
+
+```text
+### TX.YY Title (S|M) [🔒 if it touches secrets, auth, crypto or the sandbox]
+
+Goal: one sentence, user-visible outcome.
+Depends on: ticket ids, or "nothing".
+Files: exact paths to create / modify. Nothing else may change.
+Add: exact types, function signatures, protocol variants, CLI syntax.
+Steps: numbered, each one checkable.
+Tests: named cases with inputs and expected outputs, written first.
+Out of scope: what NOT to do in this ticket.
+Done when: the standard commands pass (+ any extra command).
+```

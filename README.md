@@ -28,7 +28,7 @@ It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/
 | Feature | Kepr | `.env` / `export` | `pass` / `gopass` | 1Password CLI / Vault |
 |---|---|---|---|---|
 | **No `/proc` Env Leaks** | **Yes (`memfd` RAM delivery)** | No (visible in `/proc`) | No (visible in `/proc`) | No (environment variables) |
-| **AI Agent Protection** | **Yes (`kepr protect-agent`)** | No | No | No |
+| **AI Agent Protection** | **Planned (`kepr agent run`, see [plan](docs/content/docs/agent-vault-plan.mdx))** | No | No | No |
 | **Zero `sudo` Required** | **Yes (Standalone User Daemon)** | Yes | Yes | Yes |
 | **OS Peer Isolation** | **Yes (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS)** | No | No | No |
 | **Git / Docker Helpers** | **Yes (`git-credential-kepr`)** | No | Optional | Optional |
@@ -39,7 +39,7 @@ It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/
 ## Features
 
 - **RAM-Based Execution (`kepr exec --memfd`)**: Pass secrets to child processes using sealed, read-only memory descriptors (`KEPR_FD_<KEY>=3`). Secrets never touch `/proc/<pid>/environ` or shell history.
-- **AI Agent Protection (`kepr protect-agent`)**: Native wrapper for Claude Code, Cursor, Windsurf, and Aider. Keys never touch the environment table, `/proc/<pid>/environ`, or shell history — the agent reads them from a sealed `memfd`. This stops *accidental* leaks (env dumps, crash reports, shared shells); it does not stop an agent that deliberately echoes a key it already read back into its own output.
+- **AI Agent Protection (planned)**: `kepr protect-agent` is disabled — harnesses read keys from environment variables, not kepr's memfds, and an inherited memfd is readable by every tool an agent runs. Sealed agent sessions (`kepr agent run` + `kepr-gate`, where the agent never holds the key) are designed in the [Keeper parity & agent vault plan](docs/content/docs/agent-vault-plan.mdx).
 - **Cross-Platform (in progress)**: Linux is fully supported and CI-tested today (`SO_PEERCRED`, systemd). macOS has a user-mode daemon (`LOCAL_PEERCRED`, `launchd`) with master-key protection currently resting on filesystem permissions, not yet real Keychain integration — the macOS path compiles but has no macOS CI runner exercising it yet. Windows has trait scaffolding only — the daemon does not yet build or run on Windows; tracked as a follow-up.
 - **Master Key Security**: Argon2id passphrase protection (`kepr lock` / `kepr unlock`) with in-process AES-256-GCM encryption and zeroized buffers.
 - **Universal Integrations**: `git-credential-kepr` (Git HTTP auth), `docker-credential-kepr` (Docker login), `.envrc` (`direnv`), and `kepr-eso-provider` (Kubernetes External Secrets Operator).
@@ -66,8 +66,7 @@ kepr set OPENAI_API_KEY
 # 2. Run your app with zero secrets in /proc (RAM delivery via memfd)
 kepr exec --memfd OPENAI_API_KEY -- python train.py
 
-# 3. Protect an AI Agent session
-kepr protect-agent claude -- claude
+# 3. AI agent sessions: planned (kepr agent run); see the agent vault plan
 
 # 4. Lock your store with Argon2id passphrase
 kepr lock
