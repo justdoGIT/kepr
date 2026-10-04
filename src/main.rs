@@ -23,6 +23,7 @@ mod cli_exec;
 mod cli_extra;
 mod cli_fido2;
 mod cli_help;
+mod cli_history;
 mod cli_inject;
 mod cli_input;
 mod cli_manifest;

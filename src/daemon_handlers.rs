@@ -100,6 +100,8 @@ pub fn handle_set(
     let meta_path = expiry::meta_path_for(&cred_path(uid, &upper));
     let meta_first = meta.sealed == Some(true) || meta.ssh.is_some();
     let cred_existed = cred_path(uid, &upper).exists();
+    // P5.3: keep the value being replaced (before any meta rewrite).
+    crate::daemon_history::save_current(uid, &upper);
     if meta_first {
         if let Err(e) = expiry::write_meta(&meta_path, &meta) {
             audit::log(&AuditEvent {
@@ -256,6 +258,7 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
     match crypto::default_backend().delete(uid, &upper) {
         Ok(()) => {
             expiry::delete_meta(&expiry::meta_path_for(&cred_path(uid, &upper)));
+            crate::daemon_history::purge(uid, &upper);
             daemon_cache::invalidate(uid);
             audit::log(&AuditEvent {
                 op: "delete",

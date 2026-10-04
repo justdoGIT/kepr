@@ -18,6 +18,7 @@ mod daemon_gate;
 mod daemon_gate_registry;
 mod daemon_handlers;
 mod daemon_handlers_get;
+mod daemon_history;
 mod daemon_lock;
 mod daemon_memlock;
 mod daemon_peer;
@@ -378,6 +379,9 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         | Request::SshImport { .. }
         | Request::SshList
         | Request::SshSign { .. } => daemon_ssh::dispatch(uid, peer_pid, username, request),
+        Request::History { .. } | Request::Restore { .. } => {
+            daemon_history::dispatch(uid, username, request)
+        }
         Request::Status => Response::StatusOk {
             locked: crypto::backend_is_locked(),
             password_protected: protected_master_key_path().exists(),

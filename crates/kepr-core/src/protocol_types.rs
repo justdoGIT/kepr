@@ -13,6 +13,18 @@ pub struct SshKeyInfo {
     pub comment: String,
 }
 
+/// One saved previous value (P5.3), as `kepr history` shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    /// 1 = the most recently replaced value.
+    pub version: u32,
+    /// `YYYY-MM-DD HH:MM` UTC, when it was replaced.
+    pub saved_at: String,
+    pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sealed: Option<bool>,
+}
+
 // ── Credential info (for ListOk) ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

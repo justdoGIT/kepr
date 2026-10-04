@@ -168,6 +168,15 @@ pub enum Request {
         name: String,
         data_b64: String,
     },
+    /// P5.3: list saved previous values of a credential (no values).
+    History {
+        name: String,
+    },
+    /// P5.3: make history version `version` (1 = newest) current again.
+    Restore {
+        name: String,
+        version: u32,
+    },
 }
 
 // ── Response ──────────────────────────────────────────────────────────────────
@@ -261,6 +270,14 @@ pub enum Response {
     SshSignOk {
         signature_b64: String,
     },
+    HistoryOk {
+        name: String,
+        versions: Vec<HistoryEntry>,
+    },
+    RestoreOk {
+        name: String,
+        version: u32,
+    },
     LockedOk,
     UnlockedOk,
     StatusOk {
@@ -305,7 +322,9 @@ impl Response {
     }
 }
 
-pub use crate::protocol_types::{CredInfo, Fido2Assertion, Fido2CredInfo, SshKeyInfo};
+pub use crate::protocol_types::{
+    CredInfo, Fido2Assertion, Fido2CredInfo, HistoryEntry, SshKeyInfo,
+};
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

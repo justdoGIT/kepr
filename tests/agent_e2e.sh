@@ -144,6 +144,19 @@ echo "── output masking"
 masked=$("$KEPR" exec --env E2E_MASK --mask -- sh -c 'echo "v=$E2E_MASK"')
 check "$([ "$masked" = "v=****" ] && echo ok)" "exec --mask hides the value"
 
+echo "── history and restore"
+"$KEPR" set E2E_HIST --value one -q >/dev/null 2>&1
+"$KEPR" set E2E_HIST --value two -q >/dev/null 2>&1
+check "$("$KEPR" list | grep -q '~' || echo ok)" "history slots hidden from list"
+"$KEPR" restore E2E_HIST --version 1 >/dev/null 2>&1
+check "$([ "$("$KEPR" get E2E_HIST -q 2>/dev/null)" = one ] && echo ok)" "restore brings back the replaced value"
+"$KEPR" set ANTHROPIC_API_KEY --value now-readable -q >/dev/null 2>&1
+if "$KEPR" restore ANTHROPIC_API_KEY --version 1 >/dev/null 2>&1; then
+    fail "sealed version restored into a readable credential"
+else
+    pass "sealed version not restorable into a readable credential"
+fi
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

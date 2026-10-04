@@ -6,6 +6,8 @@
 //   kepr inject -i TEMPLATE [-o OUT]
 //   kepr scan [PATH...] [--staged]
 //   kepr copy NAME [--clear SECS]
+//   kepr history NAME
+//   kepr restore NAME --version N
 
 use kepr_core::protocol::Response;
 
@@ -17,6 +19,8 @@ pub const VERBS: &[&str] = &[
     "copy",
     "ssh",
     "ssh-agent",
+    "history",
+    "restore",
     "__clipboard-clear",
 ];
 
@@ -79,6 +83,19 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 };
                 crate::cli_copy::cmd_copy(&name, secs)
             }
+            "history" => crate::cli_history::cmd_history(&one_name(args, verb, &[])?),
+            "restore" => {
+                let name = one_name(args, verb, &["--version"])?;
+                match value_of(args, &["--version"]).map_err(Response::fail)? {
+                    Some(v) => match v.parse() {
+                        Ok(n) => crate::cli_history::cmd_restore(&name, n),
+                        Err(_) => {
+                            Response::fail("--version needs a number (see: kepr history NAME)")
+                        }
+                    },
+                    None => Response::fail("usage: kepr restore NAME --version N"),
+                }
+            }
             "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
             "ssh" => crate::cli_ssh::cmd_ssh(args),
             "ssh-agent" => crate::cli_ssh_agent::cmd_ssh_agent(args),
@@ -114,6 +131,14 @@ mod tests {
         ));
         assert!(matches!(
             dispatch("copy", &v(&["A", "--clear", "x"])),
+            Response::Err { .. }
+        ));
+        assert!(matches!(
+            dispatch("restore", &v(&["A"])),
+            Response::Err { .. }
+        ));
+        assert!(matches!(
+            dispatch("restore", &v(&["A", "--version", "one"])),
             Response::Err { .. }
         ));
     }

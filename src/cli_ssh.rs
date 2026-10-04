@@ -10,13 +10,16 @@ use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
 use kepr_core::ssh_wire;
 
-use crate::{cli_ui, client};
+use crate::{cli_mode, cli_ui, client};
 
 fn send(req: &Request) -> Response {
     client::send_request(req).unwrap_or_else(Response::fail)
 }
 
 fn print_key(r: Response) -> Response {
+    if cli_mode::json_mode() {
+        return r;
+    }
     if let Response::SshKeyOk { public_line, .. } = &r {
         println!("{public_line}");
     }
@@ -71,6 +74,7 @@ pub fn cmd_ssh(args: &[String]) -> Response {
             r
         }
         [verb] if verb.as_str() == "list" => match send(&Request::SshList) {
+            Response::SshListOk { keys } if cli_mode::json_mode() => Response::SshListOk { keys },
             Response::SshListOk { keys } => {
                 for k in &keys {
                     let line = format!("{} {} {}", ssh_wire::ED25519, k.public_b64, k.comment);
