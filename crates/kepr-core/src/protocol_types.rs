@@ -84,6 +84,9 @@ pub struct CredInfo {
     /// Hosts a sealed credential is bound to (no secret material).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub bound_hosts: Option<Vec<String>>,
+    /// P5.1: typed record (`login`, `card`, …); absent for a plain value.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub record_type: Option<String>,
 }
 
 // ── FIDO2 types (Phase 2 η) ─────────────────────────────────────────────────

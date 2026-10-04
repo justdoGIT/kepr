@@ -297,12 +297,11 @@ pub fn cmd_list(a: &Args) -> Response {
             println!();
             bold(&format!("  Stored credentials ({})\n", credentials.len()));
             for c in credentials {
-                // Phase 2 α: append `(expires <ts>)` for creds with
-                // a TTL sidecar so the user can spot ephemeral
-                // credentials at a glance. Renders nothing for
-                // pre-Phase-2 / no-TTL creds, matching the prior
-                // wire shape.
+                // Flags from the sidecar meta: TTL, consent, record type.
                 let mut tail = format!("{}B  {}", c.size, c.modified);
+                if let Some(t) = &c.record_type {
+                    tail.push_str(&format!("  [{t}]"));
+                }
                 if let Some(exp) = &c.expires_at {
                     tail.push_str(&format!("  (expires {exp})"));
                 }

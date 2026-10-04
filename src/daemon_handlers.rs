@@ -18,6 +18,7 @@ use kepr_core::generate::{self, generate_secret, GenKind};
 use kepr_core::protocol::{CredInfo, Response};
 
 /// Optional per-credential policy carried by `Request::Set`.
+#[derive(Default)]
 pub struct SetFlags {
     pub ttl_secs: Option<u64>,
     pub requires_consent: Option<bool>,
@@ -26,6 +27,8 @@ pub struct SetFlags {
     pub bindings: Option<Vec<kepr_core::binding::Binding>>,
     /// P2.4: the value is an SSH key seed (sign-only).
     pub ssh: Option<expiry::SshMeta>,
+    /// P5.1: the value is a typed record (JSON object of fields).
+    pub record_type: Option<String>,
 }
 
 pub fn handle_set(
@@ -59,7 +62,7 @@ pub fn handle_set(
     )
     .and_then(|m| m.with_seal(flags.sealed, flags.bindings))
     .map(|mut m| {
-        m.ssh = flags.ssh;
+        (m.ssh, m.record_type) = (flags.ssh, flags.record_type);
         m
     }) {
         Ok(m) => m,
@@ -222,6 +225,7 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                 requires_fido2,
                 sealed,
                 bound_hosts,
+                record_type: meta_opt.as_ref().and_then(|m| m.record_type.clone()),
             }
         })
         .collect();

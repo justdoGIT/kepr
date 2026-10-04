@@ -27,6 +27,7 @@ mod daemon_peer;
 mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
+mod daemon_records;
 mod daemon_recovery;
 mod daemon_singleton;
 mod daemon_sleepwatch;
@@ -420,7 +421,7 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
                 requires_fido2,
                 sealed,
                 bindings,
-                ssh: None,
+                ..Default::default()
             },
         ),
         Request::Get {

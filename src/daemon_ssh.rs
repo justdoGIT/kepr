@@ -40,12 +40,9 @@ fn store_key(
     };
     let value = Zeroizing::new(ssh_wire::b64(seed));
     let flags = SetFlags {
-        ttl_secs: None,
         requires_consent: consent,
-        requires_fido2: None,
-        sealed: None,
-        bindings: None,
         ssh: Some(meta),
+        ..Default::default()
     };
     match handle_set(uid, username, name, Some(value.as_str()), None, flags) {
         Response::SetOk { name, .. } => Response::SshKeyOk {

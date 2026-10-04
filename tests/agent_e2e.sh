@@ -178,6 +178,12 @@ echo "── health"
 "$KEPR" set E2E_WEAK --value password1 -q >/dev/null 2>&1
 check "$("$KEPR" health 2>/dev/null | grep -q '^E2E_WEAK: common password' && echo ok)" "health flags a common password"
 
+echo "── typed records"
+"$KEPR" record add E2E_REC --type login --field username=me --field password=pw-123 >/dev/null 2>&1
+check "$([ "$("$KEPR" record get E2E_REC password 2>/dev/null)" = pw-123 ] && echo ok)" "record field readable"
+printf 'u=kepr://E2E_REC/username\n' >"$WORK/rec.tpl"
+check "$([ "$("$KEPR" inject -i "$WORK/rec.tpl" 2>/dev/null)" = "u=me" ] && echo ok)" "kepr://NAME/field renders"
+
 echo "── recovery kit"
 out=$(printf 'nope\n' | "$KEPR" recovery-kit create 2>&1) || true
 check "$(echo "$out" | grep -q 'passphrase' && echo ok)" "recovery kit refused without a passphrase-protected store"

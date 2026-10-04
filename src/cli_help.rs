@@ -46,9 +46,11 @@ COMMANDS:
   leaked KEY [--yes]                   key exposed: stop agent sessions, delete it + history, log an
                                        incident, show where to revoke it at the provider
   totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
-  inject -i TEMPLATE [-o OUT]          fill kepr://NAME references (OUT created 0600)
+  inject -i TEMPLATE [-o OUT]          fill kepr://NAME and kepr://NAME/field references (OUT 0600)
   scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
   copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
+  record add KEY --type T [--field k=v|k=-]...  typed record (login, card, database, server, api, note, custom)
+  record show KEY [--reveal] | record get KEY FIELD | record types
   history KEY                          previous values kept (last 5), no values shown
   restore KEY --version N              make version N current again (undoable)
   usage [--days N]                     uses / refusals / last use per key; flags never-used keys

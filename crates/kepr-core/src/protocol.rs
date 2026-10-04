@@ -215,6 +215,14 @@ pub enum Request {
         shares: Vec<ZeroString>,
         new_password: ZeroString,
     },
+    /// P5.1: store a typed record; `fields` is a JSON object of strings.
+    RecordSet {
+        name: String,
+        record_type: String,
+        fields: ZeroString,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        requires_consent: Option<bool>,
+    },
 }
 
 pub use crate::protocol_response::Response;
@@ -430,6 +438,7 @@ mod tests {
                 requires_fido2: None,
                 sealed: None,
                 bound_hosts: None,
+                record_type: None,
             }],
             count: 1,
         };

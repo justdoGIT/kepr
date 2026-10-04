@@ -42,6 +42,19 @@ pub fn dispatch(uid: u32, username: &str, request: Request) -> Response {
         } => {
             crate::daemon_recovery::handle_restore(uid, username, &shares, new_password.as_bytes())
         }
+        Request::RecordSet {
+            name,
+            record_type,
+            fields,
+            requires_consent,
+        } => crate::daemon_records::handle_record_set(
+            uid,
+            username,
+            &name,
+            &record_type,
+            &fields,
+            requires_consent,
+        ),
         _ => Response::fail("unsupported request"),
     }
 }
