@@ -82,7 +82,13 @@ fn on_tmpfs(path: &std::path::Path) -> bool {
     // SAFETY: statfs writes into a zeroed, stack-local struct.
     unsafe {
         let mut s: libc::statfs = std::mem::zeroed();
-        libc::statfs(c.as_ptr(), &mut s) == 0 && s.f_type as i64 == TMPFS_MAGIC
+        if libc::statfs(c.as_ptr(), &mut s) != 0 {
+            return false;
+        }
+        // f_type is i64 on x86_64 but i32 / u32 on other targets.
+        #[allow(clippy::unnecessary_cast)]
+        let fs_type = s.f_type as i64;
+        fs_type == TMPFS_MAGIC
     }
 }
 
