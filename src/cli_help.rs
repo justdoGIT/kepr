@@ -8,6 +8,7 @@
 use crate::cli_args::VERSION;
 
 pub fn print_help() {
+    let more = crate::cli_more::help();
     print!(
         r#"kepr {VERSION} — credential manager
 
@@ -70,7 +71,7 @@ COMMANDS:
   ssh generate KEY [--comment C] | ssh import KEY FILE | ssh list
                                        SSH keys that stay in the daemon (sign-only)
   ssh-agent [--foreground] [--socket PATH]  ssh-agent for those keys: eval "$(kepr ssh-agent)"
-
+{MORE}
 GLOBAL FLAGS:
   --json       machine-readable output; no stderr on clean errors
   --color      enable ANSI colours (default is plain text)
@@ -121,6 +122,7 @@ MANIFEST:
 
   View audit log: journalctl -t kepr-daemon
     journalctl -t kepr-daemon KEPR_OP=get
-"#
+"#,
+        MORE = more
     );
 }

@@ -77,6 +77,21 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         Request::DbRotate { name, phase } => {
             crate::daemon_records::handle_db_rotate(uid, username, &name, &phase)
         }
+        // ── P2–P11 ticket batches: one arm per batch, e.g.
+        // `Request::Vault(r) => crate::daemon_vault::dispatch(uid, peer_pid, username, r),`
+        // batch: vault
+        // batch: seal
+        // batch: store
+        // batch: records
+        // batch: share
+        // batch: sync
+        // batch: policy
+        // batch: gate
+        // batch: aws
+        // batch: eco
+        // batch: platform
+        // batch: session
+        // end of batches
         _ => Response::fail("unsupported request"),
     }
 }

@@ -164,6 +164,21 @@ pub enum Response {
     Err {
         error: String,
     },
+    // ── P2–P11 ticket batches: one `#[serde(untagged)]` variant per batch
+    // (that batch's `#[serde(tag = "kind")]` enum). Untagged variants last.
+    // batch: vault
+    // batch: seal
+    // batch: store
+    // batch: records
+    // batch: share
+    // batch: sync
+    // batch: policy
+    // batch: gate
+    // batch: aws
+    // batch: eco
+    // batch: platform
+    // batch: session
+    // end of batches
 }
 
 impl Response {

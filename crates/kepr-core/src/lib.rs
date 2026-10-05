@@ -28,3 +28,19 @@ pub mod secmem;
 pub mod shamir;
 pub mod sigv4;
 pub mod ssh_wire;
+
+// ── P2–P11 ticket batches (2026-10-05): `protocol_<batch>` and other
+// shared modules, declared under each batch's marker.
+// batch: vault
+// batch: seal
+// batch: store
+// batch: records
+// batch: share
+// batch: sync
+// batch: policy
+// batch: gate
+// batch: aws
+// batch: eco
+// batch: platform
+// batch: session
+// end of batches

@@ -98,6 +98,20 @@ pub struct CredInfo {
     /// P5.1: typed record (`login`, `card`, …); absent for a plain value.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub record_type: Option<String>,
+    // ── P2–P11 ticket batches: new optional fields under the batch's marker.
+    // batch: vault
+    // batch: seal
+    // batch: store
+    // batch: records
+    // batch: share
+    // batch: sync
+    // batch: policy
+    // batch: gate
+    // batch: aws
+    // batch: eco
+    // batch: platform
+    // batch: session
+    // end of batches
 }
 
 // ── FIDO2 types (Phase 2 η) ─────────────────────────────────────────────────

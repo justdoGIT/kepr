@@ -39,6 +39,7 @@ mod cli_manifest;
 mod cli_mask;
 mod cli_mcp;
 mod cli_mode;
+mod cli_more;
 mod cli_record;
 mod cli_recovery;
 mod cli_rotate;
@@ -58,6 +59,22 @@ mod sync_gcp_sm;
 mod sync_http;
 mod sync_vault;
 
+// ── P2–P11 ticket batches (2026-10-05): one `cli_<batch>` directory module
+// per batch, declared under its own marker (registered in cli_more.rs).
+// batch: vault
+// batch: seal
+// batch: store
+// batch: records
+// batch: share
+// batch: sync
+// batch: policy
+// batch: gate
+// batch: aws
+// batch: eco
+// batch: platform
+// batch: session
+// end of batches
+
 use cli_args::parse_args;
 use cli_ui::{err, json_mode, print_json};
 use kepr_core::protocol::Response;
@@ -76,9 +93,14 @@ fn main() {
         if raw[pos + 1] == "hook" {
             std::process::exit(cli_hook::cmd_hook(&raw[pos + 2..]));
         }
-        if cli_extra::VERBS.contains(&raw[pos + 1].as_str()) {
+        let verb = raw[pos + 1].as_str();
+        if cli_extra::VERBS.contains(&verb) || cli_more::is_verb(verb) {
             cli_mode::init_from_argv(&raw);
-            let resp = cli_extra::dispatch(&raw[pos + 1], &raw[pos + 2..]);
+            let resp = if cli_more::is_verb(verb) {
+                cli_more::dispatch(verb, &raw[pos + 2..])
+            } else {
+                cli_extra::dispatch(verb, &raw[pos + 2..])
+            };
             // `init_from_argv` takes `--json` anywhere on the line, and the
             // handlers skip their human output in JSON mode: print it here
             // whatever its position (recovery shares, share envelopes).

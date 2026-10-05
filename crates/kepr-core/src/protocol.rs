@@ -254,6 +254,22 @@ pub enum Request {
         #[serde(default)]
         seal: bool,
     },
+    // ── P2–P11 ticket batches: one `#[serde(untagged)]` variant per batch,
+    // wrapping that batch's own `#[serde(tag = "cmd")]` enum in
+    // `protocol_<batch>.rs`. Untagged variants must stay last.
+    // batch: vault
+    // batch: seal
+    // batch: store
+    // batch: records
+    // batch: share
+    // batch: sync
+    // batch: policy
+    // batch: gate
+    // batch: aws
+    // batch: eco
+    // batch: platform
+    // batch: session
+    // end of batches
 }
 
 pub use crate::protocol_response::Response;
