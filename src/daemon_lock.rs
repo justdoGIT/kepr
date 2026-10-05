@@ -52,7 +52,8 @@ fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
 /// Recovery restore: make `envelope` the master key (passphrase-wrapped)
 /// and drop any unwrapped key file it replaces.
 pub fn install_protected_key(envelope: &[u8]) -> Result<(), String> {
-    let _ = fs::remove_file(protected_master_key_path());
+    // Temp file + rename: the old envelope stays until the new one is on
+    // disk, so a failed write never leaves the store without a key.
     write_protected_master_key(envelope)?;
     match fs::remove_file(master_key_path()) {
         Ok(()) => Ok(()),

@@ -10,7 +10,9 @@
 //   3. on success the daemon commits the pending password.
 //
 // A failure leaves the pending password in place, so running the command
-// again resumes safely; `--abort` drops it.
+// again resumes safely, whether or not the server already changed.
+// `--abort` drops the pending password, but only after a normal login
+// through the gate proves the server still takes the current one.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -42,10 +44,15 @@ fn message(kind: u8, body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// StartupMessage asking the gate to rotate.
-pub fn startup() -> Vec<u8> {
+/// StartupMessage for the gate; `rotate` adds `kepr_rotate=1`.
+pub fn startup(rotate: bool) -> Vec<u8> {
     let mut body = PROTOCOL_3.to_be_bytes().to_vec();
-    for kv in ["user", "kepr", "database", "kepr", "kepr_rotate", "1"] {
+    let kv: &[&str] = if rotate {
+        &["user", "kepr", "database", "kepr", "kepr_rotate", "1"]
+    } else {
+        &["user", "kepr", "database", "kepr"]
+    };
+    for kv in kv {
         body.extend_from_slice(kv.as_bytes());
         body.push(0);
     }
@@ -75,10 +82,11 @@ pub fn error_text(body: &[u8]) -> String {
         .unwrap_or_else(|| "the database refused".into())
 }
 
-/// Log in through the gate with `kepr_rotate=1`; Ok once the gate says
-/// the server has the pending password.
-pub fn drive(s: &mut (impl Read + Write), placeholder: &str) -> Result<(), String> {
-    s.write_all(&startup()).map_err(|e| e.to_string())?;
+/// Log in through the gate; Ok at ReadyForQuery. With `rotate`, that
+/// means the server now has the pending password; without, that the
+/// current password still works.
+pub fn drive(s: &mut (impl Read + Write), placeholder: &str, rotate: bool) -> Result<(), String> {
+    s.write_all(&startup(rotate)).map_err(|e| e.to_string())?;
     loop {
         match read_msg(s)? {
             (b'R', b) if b.get(..4) == Some(&3u32.to_be_bytes()[..]) => {
@@ -93,7 +101,8 @@ pub fn drive(s: &mut (impl Read + Write), placeholder: &str) -> Result<(), Strin
     }
 }
 
-fn rotate(name: &str) -> Result<(), String> {
+/// A gate for this one database: (placeholder, loopback port).
+fn start_gate(name: &str) -> Result<(String, u16), String> {
     let creds = crate::cli_agent_run::sealed_creds()?;
     let mine: Vec<_> = creds.into_iter().filter(|c| c.name == name).collect();
     let routes = crate::cli_agent_db::routes(&[], &mine);
@@ -102,7 +111,6 @@ fn rotate(name: &str) -> Result<(), String> {
             "{name} is not a sealed database login (kepr agent add-db)"
         ));
     }
-    phase(name, "begin")?;
     let key = db_route_key(name);
     let (ph, port) = match client::send_request(&Request::StartGate {
         routes,
@@ -121,16 +129,33 @@ fn rotate(name: &str) -> Result<(), String> {
         Response::Err { error } => return Err(error),
         _ => return Err("unexpected daemon response".into()),
     };
-    let (Some(ph), Some(port)) = (ph, port) else {
-        return Err("the gate did not open a database port".into());
-    };
+    ph.zip(port)
+        .ok_or_else(|| "the gate did not open a database port".into())
+}
+
+fn login(name: &str, rotate: bool) -> Result<(), String> {
+    let (ph, port) = start_gate(name)?;
     let mut s = TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(Duration::from_secs(60)))
         .map_err(|e| e.to_string())?;
-    drive(&mut s, &ph).map_err(|e| {
-        format!("{e}\nthe new password is kept pending: run the command again to finish, or add --abort")
+    drive(&mut s, &ph, rotate)
+}
+
+fn rotate(name: &str) -> Result<(), String> {
+    start_gate(name)?; // fail early, before a pending password exists
+    phase(name, "begin")?;
+    login(name, true).map_err(|e| {
+        format!("{e}\nthe new password is kept pending; run the command again to finish (safe whether or not the server already changed)")
     })?;
     phase(name, "commit")
+}
+
+/// Drop a pending password, but only while the current one still works.
+fn abort(name: &str) -> Result<(), String> {
+    login(name, false).map_err(|e| {
+        format!("{e}\nthe server no longer takes the current password, so the pending one is probably in effect: run `kepr agent rotate-db {name}` to finish instead")
+    })?;
+    phase(name, "abort")
 }
 
 pub fn cmd_rotate_db(args: &[String]) -> Response {
@@ -139,7 +164,7 @@ pub fn cmd_rotate_db(args: &[String]) -> Response {
     };
     let name = name.to_uppercase();
     if args.iter().any(|a| a == "--abort") {
-        return match phase(&name, "abort") {
+        return match abort(&name) {
             Ok(()) => {
                 cli_ui::ok(&format!("{name}: pending password dropped"));
                 Response::DbRotateOk {
@@ -190,13 +215,14 @@ mod tests {
 
     #[test]
     fn startup_carries_the_rotate_flag() {
-        let s = startup();
+        let s = startup(true);
         assert_eq!(
             u32::from_be_bytes(s[..4].try_into().unwrap()) as usize,
             s.len()
         );
         assert_eq!(&s[4..8], &PROTOCOL_3.to_be_bytes());
         assert!(s.windows(14).any(|w| w == b"kepr_rotate\x001\x00"));
+        assert!(!startup(false).windows(11).any(|w| w == b"kepr_rotate"));
     }
 
     #[test]
@@ -211,7 +237,7 @@ mod tests {
             input: Cursor::new(input),
             output: Vec::new(),
         };
-        drive(&mut d, "kepr-ph-1").unwrap();
+        drive(&mut d, "kepr-ph-1", true).unwrap();
         assert!(d.output.ends_with(&message(b'p', b"kepr-ph-1\0")));
     }
 
@@ -221,6 +247,6 @@ mod tests {
             input: Cursor::new(message(b'E', b"SFATAL\0C28000\0Mkepr rotate: nope\0\0")),
             output: Vec::new(),
         };
-        assert_eq!(drive(&mut d, "x").unwrap_err(), "kepr rotate: nope");
+        assert_eq!(drive(&mut d, "x", true).unwrap_err(), "kepr rotate: nope");
     }
 }

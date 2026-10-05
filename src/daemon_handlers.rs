@@ -54,6 +54,11 @@ pub fn handle_set(
 
     let upper = name.to_uppercase();
 
+    // The share private key is written only by `kepr share key`.
+    if upper == "KEPR_SHARE_KEY" && flags.share_key != Some(true) {
+        return Response::fail("KEPR_SHARE_KEY is reserved");
+    }
+
     // Validate every flag before touching the store, so a bad binding
     // never leaves a half-written credential behind.
     let meta = match expiry::CredMeta::from_flags(

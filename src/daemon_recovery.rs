@@ -173,8 +173,10 @@ pub fn handle_restore(
                  copy the old credential store into place first"
             ));
         }
-        // Never re-key a store whose current key still works: restore is
-        // for a lost key, not a passphrase reset.
+        // Never re-key a store whose loaded key still works: restore is
+        // for a lost key. A locked store (forgotten passphrase) has no
+        // loaded key, so restore goes ahead: k shares are the key itself,
+        // so this grants nothing the shares don't already.
         if let Ok(live) = crypto::snapshot_key() {
             if probe(&live).0 > 0 {
                 return Err("this store's current key still works; nothing to restore".into());
