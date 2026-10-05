@@ -1,6 +1,6 @@
 // protocol_store.rs — wire types of the `store` ticket batch: tags and
 // folders (T5.01), search (T11.1), trash (T11.2), aliases (T11.5),
-// delete-all (T11.9), duplicates (T11.4). Wrapped by `Request::Store` /
+// delete-all (T11.9), duplicates (T11.4), verify (T11.10). Wrapped by `Request::Store` /
 // `Response::Store`, which are `#[serde(untagged)]` and tried after every
 // tagged variant, so the `cmd` / `kind` names here must not repeat one in
 // protocol.rs.
@@ -49,6 +49,9 @@ pub enum StoreRequest {
     Dupes,
     /// T11.4: turn the rest of `keep`'s group into aliases of it.
     DupesMerge { keep: String },
+    /// T11.10: decrypt-check every value, parse every `.meta`, find
+    /// orphans. Answered with `Response::CheckOk`.
+    VerifyStore,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -238,6 +241,12 @@ mod tests {
             keep: "A".into(),
             aliased: vec!["B".into()],
         }));
+    }
+
+    #[test]
+    fn verify_round_trips() {
+        let v = req_round_trip(Request::Store(StoreRequest::VerifyStore));
+        assert_eq!(v["cmd"], json!("verify_store"));
     }
 
     #[test]

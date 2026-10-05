@@ -1,7 +1,7 @@
 // cli_store/ — the `store` ticket batch, CLI side: `kepr tag`, `kepr mv`
 // and `kepr ls --tag/--folder` (T5.01), `kepr search` (T11.1), `kepr trash`
 // and the `kepr rm` wrapper (T11.2), `kepr ln` (T11.5), `rm --all` (T11.9),
-// `kepr dupes` (T11.4).
+// `kepr dupes` (T11.4), `kepr doctor --verify` (T11.10).
 // Registered in cli_more.rs; flags on core verbs are parsed by
 // cli_args.rs through `FLAGS` / `StoreFlags`.
 
@@ -12,6 +12,7 @@ mod list;
 mod organize;
 mod search;
 mod trash;
+mod verify;
 mod wipe;
 
 use kepr_core::protocol::{Request, Response};
@@ -20,6 +21,7 @@ use kepr_core::protocol_store::StoreRequest;
 pub use flags::{StoreFlags, FLAGS};
 pub use list::{filter_list, list_tail};
 pub use trash::cmd_delete;
+pub use verify::cmd_verify;
 
 pub const VERBS: &[&str] = &["tag", "mv", "search", "trash", "ln", "dupes"];
 
@@ -36,6 +38,8 @@ pub const HELP: &str = "\
   delete --all --yes                   delete every key you own (sealed too), history, trash, aliases
   dupes [--merge KEEP]                 keys holding the same value (not sealed / gated ones);
                                        --merge: the others become aliases of KEEP (values to the trash)
+  doctor --verify                      decrypt-check every stored value, parse every .meta, find
+                                       orphaned history / metadata and dangling aliases
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {

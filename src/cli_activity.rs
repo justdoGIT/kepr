@@ -84,6 +84,7 @@ impl CliActivity {
                 Ok(vars) => cli_exec::cmd_exec(&vars, &args.memfd_vars, &args.exec_argv, args.mask),
                 Err(e) => Response::fail(e),
             },
+            "doctor" if args.store.verify => crate::cli_store::cmd_verify(args.json), // T11.10
             "doctor" => cli_doctor::cmd_doctor(args.json),
             "env" => match resolve_env_for(args) {
                 Ok(vars) => cli_envdump::cmd_env(&vars),

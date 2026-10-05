@@ -1,9 +1,9 @@
 // cli_store/flags.rs — flags this batch adds to core verbs, parsed by
 // cli_args.rs through one arm: `ls --tag T --folder F` (T5.01),
-// `delete --all --yes` (T11.9).
+// `delete --all --yes` (T11.9), `doctor --verify` (T11.10).
 
 /// The flags below, as `cli_args` sees them.
-pub const FLAGS: &[&str] = &["--tag", "--folder", "--all", "--yes", "-y"];
+pub const FLAGS: &[&str] = &["--tag", "--folder", "--all", "--yes", "-y", "--verify"];
 
 #[derive(Debug, Default)]
 pub struct StoreFlags {
@@ -15,6 +15,8 @@ pub struct StoreFlags {
     pub all: bool,
     /// `delete --all --yes`: the confirmation it requires.
     pub yes: bool,
+    /// `doctor --verify`: the daemon's deep store check.
+    pub verify: bool,
 }
 
 impl StoreFlags {
@@ -31,6 +33,7 @@ impl StoreFlags {
             "--folder" => self.folder = Some(value(i)?),
             "--all" => self.all = true,
             "--yes" | "-y" => self.yes = true,
+            "--verify" => self.verify = true,
             other => return Err(format!("unknown flag: {other}")),
         }
         Ok(if matches!(flag, "--tag" | "--folder") {

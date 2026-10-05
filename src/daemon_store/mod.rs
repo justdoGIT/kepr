@@ -1,6 +1,6 @@
 // daemon_store/ — the `store` ticket batch, daemon side: tags and folders
 // (T5.01), search (T11.1), trash (T11.2), aliases (T11.5), delete-all
-// (T11.9), duplicates (T11.4). Requests arrive as `Request::Store` via daemon_extra.rs;
+// (T11.9), duplicates (T11.4), verify (T11.10). Requests arrive as `Request::Store` via daemon_extra.rs;
 // `Request::Delete` comes to `handle_rm` from daemon_dispatch.rs.
 
 mod alias;
@@ -12,6 +12,7 @@ mod search;
 #[cfg(test)]
 pub mod testkit;
 mod trash;
+mod verify;
 mod wipe;
 
 use kepr_core::protocol::Response;
@@ -52,5 +53,6 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: StoreRequest) -> Re
         StoreRequest::DeleteAll { confirm } => wipe::handle_delete_all(uid, username, confirm),
         StoreRequest::Dupes => dupes::handle_dupes(uid, username),
         StoreRequest::DupesMerge { keep } => dupes::handle_merge(uid, username, &keep),
+        StoreRequest::VerifyStore => verify::handle_verify(uid, username),
     }
 }
