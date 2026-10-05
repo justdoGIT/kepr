@@ -446,27 +446,5 @@ pub fn cmd_unlock(a: &Args) -> Response {
     resp
 }
 
-pub fn cmd_status(a: &Args) -> Response {
-    let resp = dispatch(a, &Request::Status);
-    if !a.json {
-        match &resp {
-            Response::StatusOk {
-                locked,
-                password_protected,
-            } => info(&format!(
-                "Store: {} ({})",
-                if *locked { "locked" } else { "unlocked" },
-                if *password_protected {
-                    "password protected"
-                } else {
-                    "local key protection"
-                }
-            )),
-            Response::Err { error } => err(error),
-            _ => err("unexpected response"),
-        }
-    }
-    resp
-}
-
 pub use crate::cli_fido2::{cmd_fido2_list, cmd_fido2_register};
+pub use crate::cli_status::cmd_status;

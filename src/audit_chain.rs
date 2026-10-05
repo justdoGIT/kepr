@@ -42,7 +42,6 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// 32-byte zero hash, hex-encoded, used as `prev_hash` for the
 /// first entry in any chain. Distinct from any real SHA-256 output
@@ -307,10 +306,9 @@ impl AuditChain {
 
 fn compute_hash(prev_hash_hex: &str, canonical_bytes: &[u8]) -> Result<String, String> {
     let prev_bytes = hex_decode(prev_hash_hex)?;
-    let mut hasher = Sha256::new();
-    hasher.update(&prev_bytes);
-    hasher.update(canonical_bytes);
-    Ok(hex_encode(&hasher.finalize()))
+    // SHA-256 through the crypto seam (aws-lc-rs under the `fips` feature).
+    let digest = crate::daemon_eco::cipher::sha256(&[&prev_bytes, canonical_bytes]);
+    Ok(hex_encode(&digest))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

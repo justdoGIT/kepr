@@ -115,6 +115,15 @@ rsa = { version = "0.9", default-features = false, features = ["std", "u64_digit
 # T6.04 / T11.15: `--qr` prints share links and envelopes as terminal QR
 # codes (unicode renderer only; no image/svg features).
 qrcode = { version = "0.14", default-features = false }
+# T7.16 FIPS mode: the daemon's AES-256-GCM / SHA-256 / HMAC through AWS-LC.
+# Optional, off by default. `--features fips` links AWS-LC's ordinary build;
+# add `aws-lc-rs/fips` for the FIPS 140-3 validated module (needs Go + CMake).
+aws-lc-rs = { version = "1.18", optional = true }
+
+[features]
+default = []
+# T7.16: route the daemon's crypto through aws-lc-rs (src/daemon_eco/crypto_fips.rs).
+fips = ["dep:aws-lc-rs"]
 
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git
