@@ -258,6 +258,8 @@ pub enum Request {
     // wrapping that batch's own `#[serde(tag = "cmd")]` enum in
     // `protocol_<batch>.rs`. Untagged variants must stay last.
     // batch: vault
+    #[serde(untagged)]
+    Vault(crate::protocol_vault::VaultRequest),
     // batch: seal
     // batch: store
     // batch: records

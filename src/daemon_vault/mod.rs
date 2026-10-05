@@ -18,14 +18,20 @@
 //   records.rs per-record keys, put/read/remove, crypto-shred (T4.05)
 //   backend.rs the image as `crypto::Backend` + `expiry::MetaStore` (T4.06)
 //   sweep.rs   TTL expiry inside the image (T4.06)
+//   admin.rs   create / check / usage of the whole image (T4.07)
+//   migrate.rs move the per-file store into the image (T4.07)
+//   handlers.rs `kepr vault init|migrate|verify|status` (T4.07)
 
+pub mod admin;
 pub mod backend;
+mod handlers;
 pub mod header;
 pub mod image;
 pub mod index;
 pub mod journal;
 pub mod keys;
 pub mod merkle;
+pub mod migrate;
 pub mod place;
 pub mod records;
 pub mod slot;
@@ -38,13 +44,21 @@ use std::sync::{Arc, OnceLock};
 
 use backend::ImageBackend;
 
+pub use handlers::dispatch;
 pub use sweep::sweep_expired;
 
 static ACTIVE: OnceLock<ImageBackend> = OnceLock::new();
+/// The rollback state, kept in either mode so `kepr vault` commands run
+/// against the per-file store still record and check the image's epoch.
+static VERSIONS: OnceLock<Arc<crate::version_state::VersionState>> = OnceLock::new();
 
 /// The image backend, when `KEPR_STORE=image` selected it at start-up.
 pub fn active() -> Option<&'static ImageBackend> {
     ACTIVE.get()
+}
+
+fn versions() -> Option<Arc<crate::version_state::VersionState>> {
+    VERSIONS.get().cloned()
 }
 
 pub fn image_path() -> PathBuf {
@@ -54,6 +68,7 @@ pub fn image_path() -> PathBuf {
 /// Called once at start-up (from `crypto::initialize_inproc_backend`):
 /// `KEPR_STORE` unset or `file` keeps the per-file store.
 pub fn install_from_env(versions: Arc<crate::version_state::VersionState>) -> Result<(), String> {
+    let _ = VERSIONS.set(Arc::clone(&versions));
     match std::env::var("KEPR_STORE").as_deref() {
         Err(_) | Ok("") | Ok("file") => Ok(()),
         Ok("image") => {

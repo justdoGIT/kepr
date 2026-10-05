@@ -32,6 +32,7 @@ pub mod ssh_wire;
 // ── P2–P11 ticket batches (2026-10-05): `protocol_<batch>` and other
 // shared modules, declared under each batch's marker.
 // batch: vault
+pub mod protocol_vault;
 // batch: seal
 // batch: store
 // batch: records

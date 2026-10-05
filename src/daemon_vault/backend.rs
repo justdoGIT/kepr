@@ -35,9 +35,9 @@ pub type KeySource = fn() -> Result<Zeroizing<[u8; 32]>, String>;
 /// Size of an image created on first write (16 MiB = 4096 slots).
 pub const DEFAULT_MIB: u32 = 16;
 
-struct Open {
-    img: VaultImage,
-    index: Option<Index>,
+pub(super) struct Open {
+    pub(super) img: VaultImage,
+    pub(super) index: Option<Index>,
 }
 
 pub struct ImageBackend {
@@ -65,7 +65,7 @@ impl ImageBackend {
         self.path.parent().unwrap_or(Path::new("/"))
     }
 
-    fn lock(&self) -> MutexGuard<'_, Option<Open>> {
+    pub(super) fn lock(&self) -> MutexGuard<'_, Option<Open>> {
         // A panic mid-operation leaves at worst a stale cache: drop it.
         self.state.lock().unwrap_or_else(|p| {
             let mut g = p.into_inner();
@@ -74,11 +74,11 @@ impl ImageBackend {
         })
     }
 
-    fn key(&self, st: &mut Option<Open>) -> Result<Zeroizing<[u8; 32]>, String> {
+    pub(super) fn key(&self, st: &mut Option<Open>) -> Result<Zeroizing<[u8; 32]>, String> {
         (self.kek)().inspect_err(|_| *st = None)
     }
 
-    fn open(&self, kek: &[u8; 32]) -> Result<Open, String> {
+    pub(super) fn open(&self, kek: &[u8; 32]) -> Result<Open, String> {
         let img = VaultImage::open(&self.path, kek)?;
         if let Some(v) = &self.versions {
             v.verify(&epoch_key(&img.header.image_id), img.header.epoch)
@@ -88,7 +88,7 @@ impl ImageBackend {
         Ok(Open { img, index: None })
     }
 
-    fn record_epoch(&self, img: &VaultImage) {
+    pub(super) fn record_epoch(&self, img: &VaultImage) {
         if let Some(v) = &self.versions {
             if let Err(e) = v.raise(&epoch_key(&img.header.image_id), img.header.epoch) {
                 eprintln!("[kepr-daemon] vault: cannot record the image epoch: {e}");
@@ -156,7 +156,7 @@ impl ImageBackend {
         r
     }
 
-    fn record(&self, key: &str) -> Result<Option<Record>, String> {
+    pub(super) fn record(&self, key: &str) -> Result<Option<Record>, String> {
         Ok(self
             .with_index(|img, keys, ix| img.read_record(keys, ix, key))?
             .flatten())
