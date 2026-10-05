@@ -80,6 +80,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         // ── P2–P11 ticket batches: one arm per batch, e.g.
         // `Request::Vault(r) => crate::daemon_vault::dispatch(uid, peer_pid, username, r),`
         // batch: vault
+        Request::Vault(r) => crate::daemon_vault::dispatch(uid, peer_pid, username, r),
         // batch: seal
         // batch: store
         Request::Store(r) => crate::daemon_store::dispatch(uid, peer_pid, username, r),

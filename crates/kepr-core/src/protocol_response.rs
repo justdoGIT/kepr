@@ -167,6 +167,8 @@ pub enum Response {
     // ── P2–P11 ticket batches: one `#[serde(untagged)]` variant per batch
     // (that batch's `#[serde(tag = "kind")]` enum). Untagged variants last.
     // batch: vault
+    #[serde(untagged)]
+    Vault(crate::protocol_vault::VaultResponse),
     // batch: seal
     // batch: store
     #[serde(untagged)]

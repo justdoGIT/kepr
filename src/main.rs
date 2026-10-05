@@ -63,6 +63,7 @@ mod sync_vault;
 // ── P2–P11 ticket batches (2026-10-05): one `cli_<batch>` directory module
 // per batch, declared under its own marker (registered in cli_more.rs).
 // batch: vault
+mod cli_vault;
 // batch: seal
 // batch: store
 mod cli_store;
