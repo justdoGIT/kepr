@@ -53,6 +53,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: unittest
         run: python3 -m unittest discover -s sdk/python/tests -v
+      - name: Ansible lookup plugin
+        run: python3 -m unittest discover -s integrations/ansible/tests -v
 
   node-sdk:
     name: Node SDK
