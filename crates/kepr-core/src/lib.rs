@@ -32,10 +32,12 @@ pub mod ssh_wire;
 // ── P2–P11 ticket batches (2026-10-05): `protocol_<batch>` and other
 // shared modules, declared under each batch's marker.
 // batch: vault
+pub mod protocol_vault;
 // batch: seal
 // batch: store
 pub mod protocol_store;
 // batch: records
+pub mod protocol_records;
 // batch: share
 pub mod protocol_sharing;
 // batch: sync
@@ -47,6 +49,7 @@ pub mod mysql_wire;
 pub mod protocol_gatex;
 // batch: aws
 // batch: eco
+pub mod protocol_eco;
 // batch: platform
 // batch: session
 // end of batches

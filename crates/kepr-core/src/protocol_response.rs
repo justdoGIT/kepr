@@ -167,11 +167,15 @@ pub enum Response {
     // ── P2–P11 ticket batches: one `#[serde(untagged)]` variant per batch
     // (that batch's `#[serde(tag = "kind")]` enum). Untagged variants last.
     // batch: vault
+    #[serde(untagged)]
+    Vault(crate::protocol_vault::VaultResponse),
     // batch: seal
     // batch: store
     #[serde(untagged)]
     Store(crate::protocol_store::StoreResponse),
     // batch: records
+    #[serde(untagged)]
+    Records(crate::protocol_records::RecordsResponse),
     // batch: share
     #[serde(untagged)]
     Sharing(crate::protocol_sharing::SharingResponse),
@@ -182,6 +186,8 @@ pub enum Response {
     Gatex(crate::protocol_gatex::GatexResponse),
     // batch: aws
     // batch: eco
+    #[serde(untagged)]
+    Eco(crate::protocol_eco::EcoResponse),
     // batch: platform
     // batch: session
     // end of batches

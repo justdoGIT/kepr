@@ -3,6 +3,8 @@
 // are reached from cli_share.rs through `share_ext`.
 
 mod device;
+mod jwt;
+mod oidc;
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -13,9 +15,11 @@ use kepr_core::protocol_sharing::SharingRequest;
 pub const VERBS: &[&str] = &["device"];
 
 pub const HELP: &str =
-    "  device add LABEL                     single-use token (15 min) for enrolling another machine
+    "  device add LABEL [--oidc ISSUER]     single-use token (15 min) for enrolling another machine
   device enroll TOKEN [-o FILE]        (new machine) write its enrolment request for the token
   device enroll --from FILE            (first machine) check the request and pin the new device
+  device enroll … --oidc ISSUER --client-id ID [--subject WHO]
+                                       prove the user via the IdP (device-code login) first
   device ls | device rm ID|LABEL       enrolled devices (what sync encrypts to)
 ";
 
@@ -24,6 +28,12 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "device" => device::cmd_device(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
+}
+
+pub(crate) fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 pub(crate) fn send(req: SharingRequest) -> Response {

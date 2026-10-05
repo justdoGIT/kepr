@@ -28,6 +28,7 @@ mod routes;
 mod scram;
 mod service;
 mod session;
+mod tls_provider;
 mod tunnel;
 mod vault;
 

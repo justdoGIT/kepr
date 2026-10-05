@@ -19,6 +19,11 @@ type Group = (
 
 const GROUPS: &[Group] = &[
     // batch: vault
+    (
+        crate::cli_vault::VERBS,
+        crate::cli_vault::HELP,
+        crate::cli_vault::dispatch,
+    ),
     // batch: seal
     // batch: store
     (
@@ -27,6 +32,11 @@ const GROUPS: &[Group] = &[
         crate::cli_store::dispatch,
     ),
     // batch: records
+    (
+        crate::cli_recordsx::VERBS,
+        crate::cli_recordsx::HELP,
+        crate::cli_recordsx::dispatch,
+    ),
     // batch: share
     (
         crate::cli_sharing::VERBS,

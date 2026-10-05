@@ -57,6 +57,7 @@ mod daemon_vault;
 // batch: store
 mod daemon_store;
 // batch: records
+mod daemon_recordsx;
 // batch: share
 mod daemon_sharing;
 // batch: sync
@@ -65,8 +66,10 @@ mod daemon_sharing;
 mod daemon_gatex;
 // batch: aws
 // batch: eco
+mod daemon_eco;
 // batch: platform
 // batch: session
+mod daemon_session;
 // end of batches
 
 use std::fs;
@@ -291,6 +294,7 @@ fn main() {
     daemon_expiry::spawn_sweeper(versions_for_sweeper);
     if user {
         daemon_sleepwatch::spawn(effective_uid());
+        daemon_session::idle::spawn(effective_uid());
     }
 
     let chain = audit_chain::AuditChain::open(audit_chain_path()).unwrap_or_else(|e| {
@@ -373,6 +377,7 @@ fn handle_client(mut stream: UnixStream) {
         }
     };
 
+    daemon_session::idle::touch(&request);
     let username = username_for_uid(peer_uid);
     let response = daemon_dispatch::dispatch(peer_uid, peer_pid, &username, request);
     send_response(&mut stream, &response);

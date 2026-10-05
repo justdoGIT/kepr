@@ -81,10 +81,12 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         // ── P2–P11 ticket batches: one arm per batch, e.g.
         // `Request::Vault(r) => crate::daemon_vault::dispatch(uid, peer_pid, username, r),`
         // batch: vault
+        Request::Vault(r) => crate::daemon_vault::dispatch(uid, peer_pid, username, r),
         // batch: seal
         // batch: store
         Request::Store(r) => crate::daemon_store::dispatch(uid, peer_pid, username, r),
         // batch: records
+        Request::Records(r) => crate::daemon_recordsx::dispatch(uid, peer_pid, username, r),
         // batch: share
         Request::Sharing(r) => crate::daemon_sharing::dispatch(uid, peer_pid, username, r),
         // batch: sync
@@ -93,6 +95,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         Request::Gatex(r) => crate::daemon_gatex::dispatch(uid, peer_pid, username, r),
         // batch: aws
         // batch: eco
+        Request::Eco(r) => crate::daemon_eco::dispatch(uid, peer_pid, username, r),
         // batch: platform
         // batch: session
         // end of batches
