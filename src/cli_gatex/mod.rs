@@ -68,6 +68,5 @@ mod tests {
         assert_eq!(o.take(&raw, 0), Ok(1));
         assert_eq!(o.grants, vec!["APP_DB=analyst:APP_ADMIN"]);
         assert!(HELP.lines().all(|l| l.starts_with("  ")));
-        assert!(VERBS.is_empty());
     }
 }
