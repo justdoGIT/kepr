@@ -12,12 +12,16 @@
 //   merkle.rs  the header's Merkle root over used slots, verify (T4.02)
 //   place.rs   HMAC slot placement with probing, decoy rewrites (T4.03)
 //   journal.rs journal slot, two-phase commit, crash recovery (T4.04)
+//   index.rs   index entries and record payload encodings (T4.05)
+//   records.rs per-record keys, put/read/remove, crypto-shred (T4.05)
 
 // Only the tests use the image until T4.06 makes it a backend.
 #[allow(dead_code)]
 pub mod header;
 #[allow(dead_code)]
 pub mod image;
+#[allow(dead_code)]
+pub mod index;
 #[allow(dead_code)]
 pub mod journal;
 #[allow(dead_code)]
@@ -26,6 +30,8 @@ pub mod keys;
 pub mod merkle;
 #[allow(dead_code)]
 pub mod place;
+#[allow(dead_code)]
+pub mod records;
 #[allow(dead_code)]
 pub mod slot;
 #[cfg(test)]

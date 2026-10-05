@@ -21,20 +21,32 @@ pub struct Keys {
     pub header: Zeroizing<[u8; 32]>,
     /// Seals the journal slot (T4.04).
     pub journal: Zeroizing<[u8; 32]>,
+    /// HMAC key for slot placement (T4.03).
+    pub place: Zeroizing<[u8; 32]>,
+    /// Vault master key: wraps each record's own key (T4.05).
+    pub vmk: Zeroizing<[u8; 32]>,
+    /// HKDF(vmk, "index"): seals the index pages (T4.05).
+    pub index: Zeroizing<[u8; 32]>,
+}
+
+fn expand(hk: &Hkdf<Sha256>, info: &[u8]) -> Zeroizing<[u8; 32]> {
+    let mut out = Zeroizing::new([0u8; 32]);
+    hk.expand(info, out.as_mut())
+        .expect("32 bytes is a valid HKDF length");
+    out
 }
 
 impl Keys {
     pub fn derive(kek: &[u8; 32], salt: &[u8; SALT]) -> Self {
         let hk = Hkdf::<Sha256>::new(Some(salt), kek);
-        let k = |info: &[u8]| {
-            let mut out = Zeroizing::new([0u8; 32]);
-            hk.expand(info, out.as_mut())
-                .expect("32 bytes is a valid HKDF length");
-            out
-        };
+        let vmk = expand(&hk, b"kepr-vi1 vmk");
+        let index = expand(&Hkdf::<Sha256>::new(None, vmk.as_ref()), b"index");
         Self {
-            header: k(b"kepr-vi1 header"),
-            journal: k(b"kepr-vi1 journal"),
+            header: expand(&hk, b"kepr-vi1 header"),
+            journal: expand(&hk, b"kepr-vi1 journal"),
+            place: expand(&hk, b"kepr-vi1 place"),
+            vmk,
+            index,
         }
     }
 }
