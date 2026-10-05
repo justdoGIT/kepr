@@ -84,6 +84,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         // batch: store
         // batch: records
         // batch: share
+        Request::Sharing(r) => crate::daemon_sharing::dispatch(uid, peer_pid, username, r),
         // batch: sync
         // batch: policy
         // batch: gate
