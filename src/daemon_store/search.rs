@@ -40,13 +40,7 @@ impl Searchable {
 /// May search open this record's value? Only when `get` could, with
 /// no prompt.
 fn openable(meta: &CredMeta, now: u64) -> bool {
-    meta.record_type.is_some()
-        && meta.sealed != Some(true)
-        && meta.ssh.is_none()
-        && meta.share_key != Some(true)
-        && meta.requires_consent != Some(true)
-        && meta.requires_fido2 != Some(true)
-        && meta.expires_at_unix.is_none_or(|t| now < t)
+    meta.record_type.is_some() && super::files::readable_without_prompt(meta, now)
 }
 
 /// The sources of `name` / `meta` that match (empty = no hit).

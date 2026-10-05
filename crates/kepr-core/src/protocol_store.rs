@@ -1,6 +1,6 @@
 // protocol_store.rs — wire types of the `store` ticket batch: tags and
 // folders (T5.01), search (T11.1), trash (T11.2), aliases (T11.5),
-// delete-all (T11.9). Wrapped by `Request::Store` /
+// delete-all (T11.9), duplicates (T11.4). Wrapped by `Request::Store` /
 // `Response::Store`, which are `#[serde(untagged)]` and tried after every
 // tagged variant, so the `cmd` / `kind` names here must not repeat one in
 // protocol.rs.
@@ -45,6 +45,10 @@ pub enum StoreRequest {
         #[serde(default)]
         confirm: bool,
     },
+    /// T11.4: groups of credentials holding the same value.
+    Dupes,
+    /// T11.4: turn the rest of `keep`'s group into aliases of it.
+    DupesMerge { keep: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -75,6 +79,13 @@ pub enum StoreResponse {
     },
     DeleteAllOk {
         deleted: usize,
+    },
+    DupesOk {
+        groups: Vec<Vec<String>>,
+    },
+    DupesMergeOk {
+        keep: String,
+        aliased: Vec<String>,
     },
 }
 
@@ -210,6 +221,23 @@ mod tests {
             Request::Store(StoreRequest::DeleteAll { confirm: false })
         ));
         resp_round_trip(Response::Store(StoreResponse::DeleteAllOk { deleted: 3 }));
+    }
+
+    #[test]
+    fn dupes_round_trip() {
+        let v = req_round_trip(Request::Store(StoreRequest::Dupes));
+        assert_eq!(v["cmd"], json!("dupes"));
+        let v = req_round_trip(Request::Store(StoreRequest::DupesMerge {
+            keep: "A".into(),
+        }));
+        assert_eq!(v["cmd"], json!("dupes_merge"));
+        resp_round_trip(Response::Store(StoreResponse::DupesOk {
+            groups: vec![vec!["A".into(), "B".into()]],
+        }));
+        resp_round_trip(Response::Store(StoreResponse::DupesMergeOk {
+            keep: "A".into(),
+            aliased: vec!["B".into()],
+        }));
     }
 
     #[test]

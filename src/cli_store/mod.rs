@@ -1,10 +1,12 @@
 // cli_store/ — the `store` ticket batch, CLI side: `kepr tag`, `kepr mv`
 // and `kepr ls --tag/--folder` (T5.01), `kepr search` (T11.1), `kepr trash`
-// and the `kepr rm` wrapper (T11.2), `kepr ln` (T11.5), `rm --all` (T11.9).
+// and the `kepr rm` wrapper (T11.2), `kepr ln` (T11.5), `rm --all` (T11.9),
+// `kepr dupes` (T11.4).
 // Registered in cli_more.rs; flags on core verbs are parsed by
 // cli_args.rs through `FLAGS` / `StoreFlags`.
 
 mod alias;
+mod dupes;
 mod flags;
 mod list;
 mod organize;
@@ -19,7 +21,7 @@ pub use flags::{StoreFlags, FLAGS};
 pub use list::{filter_list, list_tail};
 pub use trash::cmd_delete;
 
-pub const VERBS: &[&str] = &["tag", "mv", "search", "trash", "ln"];
+pub const VERBS: &[&str] = &["tag", "mv", "search", "trash", "ln", "dupes"];
 
 pub const HELP: &str = "\
   tag KEY [+TAG|-TAG]...               add / remove tags (a-z 0-9 _ -, up to 16); no TAG: show
@@ -32,6 +34,8 @@ pub const HELP: &str = "\
   ln ALIAS KEY                         ALIAS reads KEY (get/exec/inject) under KEY's policy;
                                        `rm ALIAS` removes only the alias
   delete --all --yes                   delete every key you own (sealed too), history, trash, aliases
+  dupes [--merge KEEP]                 keys holding the same value (not sealed / gated ones);
+                                       --merge: the others become aliases of KEEP (values to the trash)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -41,6 +45,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "search" => search::cmd_search(args),
         "trash" => trash::cmd_trash(args),
         "ln" => alias::cmd_ln(args),
+        "dupes" => dupes::cmd_dupes(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

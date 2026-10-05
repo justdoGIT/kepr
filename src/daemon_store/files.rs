@@ -61,6 +61,19 @@ pub fn all_of(uid: u32) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+/// Would a plain `get` return this value with no prompt? Only such
+/// values may be opened for search or compared for duplicates: anything
+/// else (sealed, SSH, share key, consent / FIDO2, expired) would turn
+/// those features into an oracle on a value `get` protects.
+pub fn readable_without_prompt(meta: &crate::expiry::CredMeta, now: u64) -> bool {
+    meta.sealed != Some(true)
+        && meta.ssh.is_none()
+        && meta.share_key != Some(true)
+        && meta.requires_consent != Some(true)
+        && meta.requires_fido2 != Some(true)
+        && meta.expires_at_unix.is_none_or(|t| now < t)
+}
+
 /// Re-encrypt `from`'s value under `to` (the caller deletes `from`).
 pub fn copy_value(uid: u32, from: &str, to: &str) -> Result<(), String> {
     let v = crypto::default_backend().decrypt(uid, from)?;
