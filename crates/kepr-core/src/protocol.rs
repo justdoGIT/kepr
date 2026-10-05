@@ -260,6 +260,8 @@ pub enum Request {
     // batch: vault
     // batch: seal
     // batch: store
+    #[serde(untagged)]
+    Store(crate::protocol_store::StoreRequest),
     // batch: records
     // batch: share
     // batch: sync
@@ -486,6 +488,8 @@ mod tests {
                 sealed: None,
                 bound_hosts: None,
                 record_type: None,
+                tags: None,
+                folder: None,
             }],
             count: 1,
         };

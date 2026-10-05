@@ -102,6 +102,11 @@ pub struct CredInfo {
     // batch: vault
     // batch: seal
     // batch: store
+    /// T5.01: tags and folder (no secret material).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub folder: Option<String>,
     // batch: records
     // batch: share
     // batch: sync

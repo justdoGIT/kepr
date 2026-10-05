@@ -64,6 +64,7 @@ mod sync_vault;
 // batch: vault
 // batch: seal
 // batch: store
+mod cli_store;
 // batch: records
 // batch: share
 // batch: sync

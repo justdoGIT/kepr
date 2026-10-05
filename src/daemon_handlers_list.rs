@@ -48,6 +48,8 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                 sealed,
                 bound_hosts,
                 record_type: meta_opt.as_ref().and_then(|m| m.record_type.clone()),
+                tags: meta_opt.as_ref().and_then(|m| m.tags.clone()),
+                folder: meta_opt.as_ref().and_then(|m| m.folder.clone()),
             }
         })
         .collect();

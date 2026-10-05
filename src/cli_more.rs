@@ -21,6 +21,11 @@ const GROUPS: &[Group] = &[
     // batch: vault
     // batch: seal
     // batch: store
+    (
+        crate::cli_store::VERBS,
+        crate::cli_store::HELP,
+        crate::cli_store::dispatch,
+    ),
     // batch: records
     // batch: share
     // batch: sync

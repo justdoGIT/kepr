@@ -72,6 +72,7 @@ pub fn handle_set(
     .and_then(|m| m.with_seal(flags.sealed, flags.bindings))
     .map(|mut m| {
         (m.ssh, m.record_type, m.share_key) = (flags.ssh, flags.record_type, flags.share_key);
+        crate::daemon_store::carry_over(uid, &upper, &mut m); // T5.01: keep tags / folder
         m
     }) {
         Ok(m) => m,
