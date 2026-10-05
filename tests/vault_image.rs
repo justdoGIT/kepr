@@ -404,6 +404,41 @@ fn trash_aliases_verify_and_delete_all_work_on_the_image() {
     assert!(cred_files(&d).is_empty(), "{:?}", cred_files(&d));
 }
 
+/// T4.14: attachments (T5.03) are chunk records in the image; they go
+/// to the trash and back with their credential, are checked by doctor
+/// --verify and removed by delete --all.
+#[test]
+fn attachments_follow_their_credential_on_the_image() {
+    let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["set", "DOC", "--value", "v"]);
+    let src = d.home.path().join("notes.bin");
+    let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&src, &data).unwrap(); // three 45 KiB chunks
+    ok(&d, &["attach", "add", "DOC", src.to_str().unwrap()]);
+    let records = |d: &Daemon| json(d, &["vault", "verify"])["records"].clone();
+    assert_eq!(records(&d), 4, "DOC and three chunks");
+
+    json(&d, &["rm", "DOC"]);
+    assert!(!kepr(&d, &["attach", "ls", "DOC"]).status.success());
+    assert_eq!(records(&d), 4, "the chunks went to the trash with DOC");
+    ok(&d, &["trash", "restore", "DOC"]);
+    let ls = json(&d, &["attach", "ls", "DOC"]);
+    assert_eq!(ls["files"][0]["file"], "notes.bin", "{ls}");
+    let out = d.home.path().join("out.bin");
+    let out_s = out.to_str().unwrap();
+    ok(&d, &["attach", "get", "DOC", "notes.bin", "-o", out_s]);
+    assert_eq!(std::fs::read(&out).unwrap(), data);
+
+    let v = json(&d, &["doctor", "--verify"]);
+    assert_eq!(v["all_ok"], true, "{v}");
+    assert_eq!(v["count"], 4, "{v}");
+    assert_eq!(v["results"]["DOC~a0~2"], "ok", "{v}");
+
+    ok(&d, &["delete", "--all", "--yes"]);
+    assert_eq!(records(&d), 0);
+    assert!(cred_files(&d).is_empty(), "{:?}", cred_files(&d));
+}
+
 fn uid() -> String {
     // SAFETY: getuid(2) has no preconditions.
     unsafe { libc::getuid() }.to_string()

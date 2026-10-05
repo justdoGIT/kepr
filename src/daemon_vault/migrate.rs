@@ -1,7 +1,8 @@
 // daemon_vault/migrate.rs — `kepr vault migrate` (T4.07): move every
 // per-file credential (value, `.meta`, history slots `NAME~N`, and since
-// T4.14 trash entries `NAME~t<unix>[~N]` and aliases, which are `.meta`
-// only) into the vault image, one record at a time.
+// T4.14 trash entries `NAME~t<unix>[~N]`, attachment chunks `NAME~a<k>~<n>`
+// and aliases, which are `.meta` only) into the vault image, one record at
+// a time.
 //
 // Each move runs under the credential's lock: decrypt the file, write
 // value + meta as one record (a journaled, fsynced commit), read the
@@ -233,6 +234,7 @@ mod tests {
             "kepr-1000-plain~0",
             "kepr-1000-plain~t17",
             "kepr-1000-plain~t17~2",
+            "kepr-1000-plain~a3~1",
             "kepr-1000-plain~x",
             "kepr-1000-plain.tmp.12.3",
             "kepr-1000-bad..name",
@@ -249,6 +251,7 @@ mod tests {
             vec![
                 want("kepr-1000-plain", 1000, "PLAIN"),
                 want("kepr-1000-plain~0", 1000, "PLAIN~0"),
+                want("kepr-1000-plain~a3~1", 1000, "PLAIN~a3~1"),
                 want("kepr-1000-plain~t17", 1000, "PLAIN~t17"),
                 want("kepr-1000-plain~t17~2", 1000, "PLAIN~t17~2"),
                 want("kepr-1001-other-name", 1001, "OTHER_NAME"),
