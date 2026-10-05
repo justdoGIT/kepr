@@ -1,8 +1,10 @@
 // cli_recordsx/ — the `records` ticket batch, CLI side: `kepr attach`
-// (T5.03). Registered in cli_more.rs. (`cli_record.rs` already holds
-// `kepr record`, hence the x.)
+// (T5.03), `kepr://` notation (T5.05). Registered in cli_more.rs.
+// (`cli_record.rs` already holds `kepr record`, hence the x.)
 
 mod attach;
+pub mod notation;
+pub mod resolve;
 
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_records::RecordsRequest;

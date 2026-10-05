@@ -1,5 +1,5 @@
 // daemon_recordsx/ — the `records` ticket batch, daemon side: attachments
-// (T5.03). Requests arrive as `Request::Records` via daemon_extra.rs.
+// (T5.03), record field shapes (T5.05). Requests arrive as `Request::Records` via daemon_extra.rs.
 // (`daemon_records.rs` already holds the P5.1 typed records, hence the x.)
 //
 // Hooks other modules call:
@@ -9,13 +9,17 @@
 //   daemon_store trash                  move_attachments: into / out of
 //                                       the trash with the value
 //   daemon_store verify                 verify_attachments
+//   daemon_records::validate            check_field
 
 mod attach;
 mod attach_read;
 mod chunks;
+mod fields;
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_records::RecordsRequest;
+
+pub use fields::check_field;
 
 pub use chunks::{
     carry_over, move_all as move_attachments, purge as purge_attachments,
