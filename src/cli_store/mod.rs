@@ -1,6 +1,6 @@
 // cli_store/ — the `store` ticket batch, CLI side: `kepr tag`, `kepr mv`
 // and `kepr ls --tag/--folder` (T5.01), `kepr search` (T11.1), `kepr trash`
-// and the `kepr rm` wrapper (T11.2), `kepr ln` (T11.5).
+// and the `kepr rm` wrapper (T11.2), `kepr ln` (T11.5), `rm --all` (T11.9).
 // Registered in cli_more.rs; flags on core verbs are parsed by
 // cli_args.rs through `FLAGS` / `StoreFlags`.
 
@@ -10,6 +10,7 @@ mod list;
 mod organize;
 mod search;
 mod trash;
+mod wipe;
 
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_store::StoreRequest;
@@ -30,6 +31,7 @@ pub const HELP: &str = "\
   trash purge [KEY] [--yes]            `rm --force` skips it; purge empties it (all: --yes)
   ln ALIAS KEY                         ALIAS reads KEY (get/exec/inject) under KEY's policy;
                                        `rm ALIAS` removes only the alias
+  delete --all --yes                   delete every key you own (sealed too), history, trash, aliases
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {

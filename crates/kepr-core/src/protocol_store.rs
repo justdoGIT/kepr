@@ -1,5 +1,6 @@
 // protocol_store.rs — wire types of the `store` ticket batch: tags and
-// folders (T5.01), search (T11.1), trash (T11.2), aliases (T11.5). Wrapped by `Request::Store` /
+// folders (T5.01), search (T11.1), trash (T11.2), aliases (T11.5),
+// delete-all (T11.9). Wrapped by `Request::Store` /
 // `Response::Store`, which are `#[serde(untagged)]` and tried after every
 // tagged variant, so the `cmd` / `kind` names here must not repeat one in
 // protocol.rs.
@@ -38,6 +39,12 @@ pub enum StoreRequest {
     DeleteNow { name: String },
     /// T11.5: make `alias` resolve to `target` (one hop, no value copy).
     Link { alias: String, target: String },
+    /// T11.9: delete every credential of the caller, its history, trash
+    /// and aliases. `confirm` must be true (`--yes`).
+    DeleteAll {
+        #[serde(default)]
+        confirm: bool,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,6 +72,9 @@ pub enum StoreResponse {
     LinkOk {
         alias: String,
         target: String,
+    },
+    DeleteAllOk {
+        deleted: usize,
     },
 }
 
@@ -187,6 +197,19 @@ mod tests {
             target: "B".into(),
         }));
         assert_eq!(v["kind"], json!("link_ok"));
+    }
+
+    #[test]
+    fn delete_all_round_trips() {
+        let v = req_round_trip(Request::Store(StoreRequest::DeleteAll { confirm: true }));
+        assert_eq!(v["cmd"], json!("delete_all"));
+        // A request without the field is not a confirmation.
+        let back: Request = serde_json::from_value(json!({"cmd": "delete_all"})).unwrap();
+        assert!(matches!(
+            back,
+            Request::Store(StoreRequest::DeleteAll { confirm: false })
+        ));
+        resp_round_trip(Response::Store(StoreResponse::DeleteAllOk { deleted: 3 }));
     }
 
     #[test]

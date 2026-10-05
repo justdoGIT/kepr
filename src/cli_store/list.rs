@@ -92,6 +92,7 @@ mod tests {
         let f = StoreFlags {
             tag: Some("prod".into()),
             folder: Some("team".into()),
+            ..Default::default()
         };
         assert!(wanted(&f, &cred("A", &["prod"], Some("team/x"))));
         assert!(!wanted(&f, &cred("B", &["dev"], Some("team"))));

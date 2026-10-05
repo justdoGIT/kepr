@@ -80,8 +80,11 @@ fn show_list(r: Response) -> Response {
     r
 }
 
-/// `kepr rm NAME [--force]`: `--force` also skips the trash.
+/// `kepr rm NAME [--force]`: `--force` also skips the trash. `--all`: T11.9.
 pub fn cmd_delete(a: &Args) -> Response {
+    if a.store.all {
+        return super::wipe::cmd_delete_all(a);
+    }
     if let (false, Some(n)) = (a.json, &a.name) {
         super::alias::warn_aliases(n);
     }

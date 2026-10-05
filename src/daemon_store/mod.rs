@@ -1,7 +1,7 @@
 // daemon_store/ — the `store` ticket batch, daemon side: tags and folders
-// (T5.01), search (T11.1), trash (T11.2), aliases (T11.5). Requests arrive as
-// `Request::Store` via daemon_extra.rs; `Request::Delete` comes to
-// `handle_rm` from daemon_dispatch.rs.
+// (T5.01), search (T11.1), trash (T11.2), aliases (T11.5), delete-all
+// (T11.9). Requests arrive as `Request::Store` via daemon_extra.rs;
+// `Request::Delete` comes to `handle_rm` from daemon_dispatch.rs.
 
 mod alias;
 mod files;
@@ -11,6 +11,7 @@ mod search;
 #[cfg(test)]
 pub mod testkit;
 mod trash;
+mod wipe;
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_store::StoreRequest;
@@ -47,5 +48,6 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: StoreRequest) -> Re
         StoreRequest::DeleteNow { name } => alias::remove_if_alias(uid, username, &name)
             .unwrap_or_else(|| crate::daemon_handlers::handle_delete(uid, username, &name)),
         StoreRequest::Link { alias, target } => alias::handle_link(uid, username, &alias, &target),
+        StoreRequest::DeleteAll { confirm } => wipe::handle_delete_all(uid, username, confirm),
     }
 }
