@@ -1,7 +1,8 @@
 // protocol_store.rs — wire types of the `store` ticket batch: tags and
-// folders (T5.01). Wrapped by `Request::Store` / `Response::Store`, which
-// are `#[serde(untagged)]` and tried after every tagged variant, so the
-// `cmd` / `kind` names here must not repeat one in protocol.rs.
+// folders (T5.01), search (T11.1). Wrapped by `Request::Store` /
+// `Response::Store`, which are `#[serde(untagged)]` and tried after every
+// tagged variant, so the `cmd` / `kind` names here must not repeat one in
+// protocol.rs.
 //
 // Nothing here carries a secret value: names, tags and folder paths only.
 
@@ -20,6 +21,9 @@ pub enum StoreRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         folder: Option<String>,
     },
+    /// T11.1: substring or `/regex/` over names, tags, folders, record
+    /// types and non-secret record fields.
+    Search { pattern: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,6 +36,17 @@ pub enum StoreResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         folder: Option<String>,
     },
+    SearchOk {
+        hits: Vec<SearchHit>,
+    },
+}
+
+/// One `kepr search` result: the credential and what matched
+/// (`name`, `tag`, `folder`, `type` or a record field name).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchHit {
+    pub name: String,
+    pub matched: Vec<String>,
 }
 
 #[cfg(test)]
@@ -72,6 +87,20 @@ mod tests {
             folder: None,
         }));
         assert_eq!(v["kind"], json!("organize_ok"));
+    }
+
+    #[test]
+    fn search_round_trips() {
+        let v = req_round_trip(Request::Store(StoreRequest::Search {
+            pattern: "/^a/".into(),
+        }));
+        assert_eq!(v["cmd"], json!("search"));
+        resp_round_trip(Response::Store(StoreResponse::SearchOk {
+            hits: vec![SearchHit {
+                name: "A".into(),
+                matched: vec!["name".into()],
+            }],
+        }));
     }
 
     #[test]

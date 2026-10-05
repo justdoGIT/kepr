@@ -1,7 +1,10 @@
 // daemon_store/ — the `store` ticket batch, daemon side: tags and folders
-// (T5.01). Requests arrive as `Request::Store` via daemon_extra.rs.
+// (T5.01), search (T11.1). Requests arrive as `Request::Store` via
+// daemon_extra.rs.
 
 mod organize;
+mod pattern;
+mod search;
 #[cfg(test)]
 pub mod testkit;
 
@@ -25,5 +28,6 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: StoreRequest) -> Re
             (&add_tags, &remove_tags),
             folder.as_deref(),
         ),
+        StoreRequest::Search { pattern } => search::handle_search(uid, username, &pattern),
     }
 }
