@@ -109,6 +109,9 @@ ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # T6.01: ML-KEM-768 (FIPS 203, RustCrypto) for the hybrid X25519 + ML-KEM
 # share envelopes (`kepr-pk2-…` / `kepr-share2-…`).
 ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
+# T6.13: RS256 ID-token signatures (OIDC device enrolment). Verify only:
+# RUSTSEC-2023-0071 (Marvin) concerns private-key operations, see deny.toml.
+rsa = { version = "0.9", default-features = false, features = ["std", "u64_digit", "sha2"] }
 
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git
