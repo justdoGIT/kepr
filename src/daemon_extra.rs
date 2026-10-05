@@ -69,7 +69,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         ),
         Request::ShareKey { create } => crate::daemon_share::handle_key(uid, username, create),
         Request::ShareSend { name, to, ttl_secs } => {
-            crate::daemon_share::handle_send(uid, username, &name, &to, ttl_secs)
+            crate::daemon_share::handle_send((uid, peer_pid), username, &name, &to, ttl_secs)
         }
         Request::ShareReceive { envelope, name } => {
             crate::daemon_share::handle_receive(uid, username, &envelope, name.as_deref())

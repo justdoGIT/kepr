@@ -174,7 +174,7 @@ pub fn handle_breach_check(uid: u32, username: &str, name: &str, suffixes: &[Str
         )))
         .and_then(Result::ok)
         .unwrap_or_default();
-        if meta.sealed == Some(true) || meta.ssh.is_some() {
+        if meta.sealed == Some(true) || meta.ssh.is_some() || meta.share_key == Some(true) {
             return Err("credential unavailable".to_string());
         }
         let v = crypto::default_backend()

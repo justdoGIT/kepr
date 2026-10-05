@@ -12,14 +12,35 @@ fn path(uid: u32) -> std::path::PathBuf {
     crate::state_dir().join(format!("share-seen-{uid}.json"))
 }
 
+fn load(p: &std::path::Path) -> HashMap<String, u64> {
+    std::fs::read(p)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save(p: &std::path::Path, seen: &HashMap<String, u64>) -> Result<(), String> {
+    let tmp = p.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_vec(seen).map_err(|e| e.to_string())?)
+        .and_then(|_| std::fs::rename(&tmp, p))
+        .map_err(|e| format!("cannot record the share: {e}"))
+}
+
+/// Forget `id` again: the share was claimed but storing it failed.
+pub fn release(uid: u32, id: &str) {
+    let Ok(_g) = LOCK.lock() else { return };
+    let p = path(uid);
+    let mut seen = load(&p);
+    if seen.remove(id).is_some() {
+        let _ = save(&p, &seen);
+    }
+}
+
 /// Record `id` (valid until `expires`) as received, or refuse a repeat.
 pub fn claim(uid: u32, id: &str, expires: u64) -> Result<(), String> {
     let _g = LOCK.lock().map_err(|_| "share state lock poisoned")?;
     let p = path(uid);
-    let mut seen: HashMap<String, u64> = std::fs::read(&p)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    let mut seen = load(&p);
     let now = crate::expiry::now_unix();
     seen.retain(|_, exp| *exp > now);
     if seen.contains_key(id) {

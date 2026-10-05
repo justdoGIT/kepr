@@ -147,6 +147,7 @@ pub(crate) async fn login(
         .await
         .map_err(|e| fail(&e.to_string()))?;
     let mut scram: Option<Scram> = None;
+    let mut server_proved = false;
     loop {
         let (kind, body) = read_msg(up).await.map_err(|e| fail(&e.to_string()))?;
         if kind == b'E' {
@@ -158,7 +159,19 @@ pub(crate) async fn login(
         let code = u32::from_be_bytes(body[..4].try_into().expect("4 bytes"));
         let data = &body[4..];
         let reply = match code {
+            // A SCRAM login must end with the server's signature: a
+            // server that skips it never proved it knows the password.
+            0 if scram.is_some() && !server_proved => {
+                return Err(fail("the server skipped SCRAM's final proof"))
+            }
             0 => return Ok(message(b'R', &body)),
+            // Cleartext only inside TLS: on a plaintext connection the
+            // password would cross the network as is.
+            3 if l.sslmode == "disable" => {
+                return Err(fail(
+                    "the server asked for a cleartext password on an unencrypted connection; use TLS or scram-sha-256",
+                ))
+            }
             3 => {
                 let mut p = l.password.as_bytes().to_vec();
                 p.push(0);
@@ -192,6 +205,7 @@ pub(crate) async fn login(
                 let s = scram.as_ref().ok_or_else(|| fail("SCRAM out of order"))?;
                 s.verify_server(&String::from_utf8_lossy(data))
                     .map_err(|e| fail(&e))?;
+                server_proved = true;
                 continue;
             }
             5 => {
@@ -313,6 +327,51 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rec(sslmode: &str) -> Login {
+        serde_json::from_str(&format!(
+            r#"{{"user":"u","password":"pw","database":"d","sslmode":"{sslmode}"}}"#
+        ))
+        .unwrap()
+    }
+
+    /// Run `login` against a fake server that sends `replies` (after
+    /// reading the startup) and return the verdict.
+    async fn login_against(replies: Vec<Vec<u8>>, l: Login) -> Result<Vec<u8>, Vec<u8>> {
+        let (client, mut server) = tokio::io::duplex(1 << 16);
+        let srv = tokio::spawn(async move {
+            let _ = read_startup(&mut server).await;
+            for r in replies {
+                let _ = server.write_all(&r).await;
+                let _ = read_msg(&mut server).await;
+            }
+        });
+        let mut up: Box<dyn Io> = Box::new(client);
+        let r = login(&mut up, &[], &l).await;
+        srv.abort();
+        r
+    }
+
+    #[tokio::test]
+    async fn no_cleartext_password_without_tls() {
+        let ask = message(b'R', &3u32.to_be_bytes());
+        assert!(login_against(vec![ask.clone()], rec("disable"))
+            .await
+            .is_err());
+        // Inside TLS (verify-full) the cleartext request is answered.
+        let ok = message(b'R', &0u32.to_be_bytes());
+        assert!(login_against(vec![ask, ok], rec("verify-full"))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn scram_without_the_server_proof_is_refused() {
+        let mut sasl = 10u32.to_be_bytes().to_vec();
+        sasl.extend_from_slice(b"SCRAM-SHA-256\0\0");
+        let replies = vec![message(b'R', &sasl), message(b'R', &0u32.to_be_bytes())];
+        assert!(login_against(replies, rec("disable")).await.is_err());
+    }
 
     #[test]
     fn startup_replaces_user_and_database() {

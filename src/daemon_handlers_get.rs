@@ -27,7 +27,7 @@ use crate::store::{cred_path, validate_name};
 /// Codex P1 from PR #77 review: the polkit subject must be the
 /// CALLER's pid, not the daemon's, otherwise polkit evaluates
 /// root's authorisation rather than the user's.
-fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result<(), String> {
+pub(crate) fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result<(), String> {
     let mp = expiry::meta_path_for(&cred_path(uid, name_upper));
     let Some(meta_result) = expiry::read_meta(&mp) else {
         return Ok(()); // no meta = no flags = allow

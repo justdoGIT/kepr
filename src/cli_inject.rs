@@ -106,18 +106,40 @@ fn on_tmpfs(path: &std::path::Path) -> bool {
     }
 }
 
+/// Resolve `NAME` and `NAME/field` keys with one fetch per NAME, so a
+/// consent- or FIDO2-gated record prompts once however many of its
+/// fields the template uses. `NAME/rest` on a value that is not a record
+/// renders as the value followed by `/rest`, as before records existed.
+fn fields_of(src: &impl CredFetcher) -> impl Fn(&str) -> Result<ZeroString, String> + '_ {
+    let cache = std::cell::RefCell::new(std::collections::HashMap::<String, ZeroString>::new());
+    move |key: &str| {
+        let (name, field) = match key.split_once('/') {
+            Some((n, f)) => (n, Some(f)),
+            None => (key, None),
+        };
+        let mut cache = cache.borrow_mut();
+        if !cache.contains_key(name) {
+            cache.insert(name.to_string(), src.fetch(name)?);
+        }
+        let value = cache[name].as_str();
+        match field {
+            None => Ok(ZeroString::from_string(value.to_string())),
+            Some(f) => match crate::cli_record::field_of(value, f) {
+                Err(e) if e.starts_with("not a record") => {
+                    Ok(ZeroString::from_string(format!("{value}/{f}")))
+                }
+                r => r,
+            },
+        }
+    }
+}
+
 pub fn cmd_inject(input: &str, output: Option<&str>) -> Response {
     let tpl = match std::fs::read_to_string(input) {
         Ok(t) => t,
         Err(e) => return Response::fail(format!("{input}: {e}")),
     };
-    let fetch = |key: &str| match key.split_once('/') {
-        Some((name, field)) => DaemonFetcher
-            .fetch(name)
-            .and_then(|v| crate::cli_record::field_of(v.as_str(), field)),
-        None => DaemonFetcher.fetch(key),
-    };
-    let rendered = match render(&tpl, &fetch) {
+    let rendered = match render(&tpl, &fields_of(&DaemonFetcher)) {
         Ok(r) => r,
         Err(e) => return Response::fail(e),
     };
@@ -153,6 +175,30 @@ mod tests {
             "API" => Ok(ZeroString::from_string("k".into())),
             _ => Err("credential unavailable".into()),
         }
+    }
+
+    struct Counting(std::cell::Cell<u32>);
+    impl CredFetcher for Counting {
+        fn fetch(&self, name: &str) -> Result<ZeroString, String> {
+            self.0.set(self.0.get() + 1);
+            match name {
+                "DB" => Ok(ZeroString::from_string(
+                    r#"{"user":"u","password":"p"}"#.into(),
+                )),
+                "API_BASE" => Ok(ZeroString::from_string("https://x".into())),
+                _ => Err("credential unavailable".into()),
+            }
+        }
+    }
+
+    #[test]
+    fn one_fetch_per_record_and_old_path_templates_still_render() {
+        let src = Counting(std::cell::Cell::new(0));
+        let tpl = "kepr://DB/user:kepr://DB/password@h kepr://DB/user kepr://API_BASE/v1";
+        let out = render(tpl, &fields_of(&src)).unwrap();
+        assert_eq!(out.as_str(), "u:p@h u https://x/v1");
+        assert_eq!(src.0.get(), 2);
+        assert!(render("kepr://DB/nope", &fields_of(&src)).is_err());
     }
 
     #[test]
