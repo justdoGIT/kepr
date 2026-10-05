@@ -9,7 +9,8 @@
 //! the client's scramble against the route's placeholder (an auth switch
 //! first, for a client that answered with another plugin); only then
 //! resolve the login, log in upstream (mysql_auth.rs) and hand the
-//! server's OK to the client.
+//! server's OK to the client. User `kepr_rotate` on a rotate-db route
+//! changes the password instead (mysql_rotate.rs, T7.04).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -102,6 +103,12 @@ async fn session(state: &State, route: &DbRoute, client: &mut TcpStream) -> Resu
         return Err(refuse(client, seq, wire::ACCESS_DENIED, &msg, (401, None)).await);
     }
     drop(placeholder);
+    // T7.04: only `kepr agent rotate-db` starts a route with `rotate`.
+    let rotating = resp.user == wire::ROTATE_USER;
+    if rotating && !route.target.rotate {
+        let msg = "kepr: password rotation is only available to `kepr agent rotate-db`";
+        return Err(refuse(client, seq, 1227, msg, (403, None)).await);
+    }
     if let Err(msg) = db::admit(state) {
         return Err(refuse(client, seq, 1226, &msg, (403, Some("limit"))).await);
     }
@@ -109,9 +116,15 @@ async fn session(state: &State, route: &DbRoute, client: &mut TcpStream) -> Resu
         let msg = "kepr could not obtain the database login";
         return Err(refuse(client, seq, wire::ACCESS_DENIED, msg, (502, None)).await);
     };
-    let logged_in = mysql_auth::login(tcp, (&server, &resp), &route.target.host, &l).await;
+    let logged_in = if rotating {
+        let r = crate::mysql_rotate::session(tcp, (&server, &resp), &route.target, &l).await;
+        r.map(|ok| (None, ok))
+    } else {
+        let r = mysql_auth::login(tcp, (&server, &resp), &route.target.host, &l).await;
+        r.map(|(up, ok)| (Some(up), ok))
+    };
     drop(l);
-    let (mut up, ok) = match logged_in {
+    let (up, ok) = match logged_in {
         Ok(v) => v,
         Err(Refused::Server(err)) => {
             let _ = write_packet(client, seq, &err).await;
@@ -132,7 +145,10 @@ async fn session(state: &State, route: &DbRoute, client: &mut TcpStream) -> Resu
     write_packet(client, seq, &ok)
         .await
         .map_err(|_| (400, None))?;
-    let _ = tokio::io::copy_bidirectional(client, &mut up).await;
+    // A rotation login ends at its OK; there is nothing to relay.
+    if let Some(mut up) = up {
+        let _ = tokio::io::copy_bidirectional(client, &mut up).await;
+    }
     Ok(())
 }
 

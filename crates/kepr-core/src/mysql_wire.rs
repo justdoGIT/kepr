@@ -173,6 +173,39 @@ pub fn ok_packet(status: u16) -> Vec<u8> {
     out
 }
 
+/// The user name `kepr agent rotate-db` logs in through the gate with to
+/// ask for a password rotation (T7.04).
+pub const ROTATE_USER: &str = "kepr_rotate";
+
+/// Append `s` to `out` as a string literal: single quotes, `'` doubled.
+/// A backslash or NUL is refused (`false`, nothing appended): what a
+/// backslash means depends on the server's NO_BACKSLASH_ESCAPES mode.
+pub fn quote(out: &mut Vec<u8>, s: &str) -> bool {
+    if s.bytes().any(|b| b == b'\\' || b == 0) {
+        return false;
+    }
+    out.push(b'\'');
+    for b in s.bytes() {
+        if b == b'\'' {
+            out.push(b'\'');
+        }
+        out.push(b);
+    }
+    out.push(b'\'');
+    true
+}
+
+/// COM_QUERY payload `ALTER USER CURRENT_USER() IDENTIFIED BY '<pw>'`
+/// (T7.04), in a buffer wiped on drop (sized up front, so never moved);
+/// `None` if `pw` can't be quoted.
+pub fn alter_password(pw: &str) -> Option<zeroize::Zeroizing<Vec<u8>>> {
+    const SQL: &[u8] = b"ALTER USER CURRENT_USER() IDENTIFIED BY ";
+    let mut q = zeroize::Zeroizing::new(Vec::with_capacity(1 + SQL.len() + 2 * pw.len() + 2));
+    q.push(0x03);
+    q.extend_from_slice(SQL);
+    quote(&mut q, pw).then_some(q)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +247,41 @@ mod tests {
         let e = err_packet(ACCESS_DENIED, "28000", "no");
         assert_eq!(parse_err(&e), Some((ACCESS_DENIED, "no".into())));
         assert_eq!(ok_packet(2)[0], 0);
+    }
+
+    fn quoted(s: &str) -> Option<String> {
+        let mut out = b"x=".to_vec();
+        quote(&mut out, s).then(|| String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn string_literals_double_quotes_and_refuse_backslash_and_nul() {
+        assert_eq!(quoted("abc").as_deref(), Some("x='abc'"));
+        assert_eq!(quoted("it's").as_deref(), Some("x='it''s'"));
+        assert_eq!(
+            quoted("'; DROP USER x; --").as_deref(),
+            Some("x='''; DROP USER x; --'")
+        );
+        assert_eq!(quoted("").as_deref(), Some("x=''"));
+        // A backslash's meaning depends on NO_BACKSLASH_ESCAPES: refused.
+        assert_eq!(quoted("a\\' OR 1=1"), None);
+        assert_eq!(quoted("a\0b"), None);
+        let mut out = b"x=".to_vec();
+        assert!(!quote(&mut out, "\\"));
+        assert_eq!(out, b"x=", "nothing appended on refusal");
+    }
+
+    #[test]
+    fn alter_password_statement() {
+        let q = alter_password("Abc123xyz").unwrap();
+        assert_eq!(
+            &q[..],
+            b"\x03ALTER USER CURRENT_USER() IDENTIFIED BY 'Abc123xyz'"
+        );
+        assert_eq!(
+            &alter_password("o'k").unwrap()[1..],
+            b"ALTER USER CURRENT_USER() IDENTIFIED BY 'o''k'"
+        );
+        assert!(alter_password("bad\\").is_none());
     }
 }

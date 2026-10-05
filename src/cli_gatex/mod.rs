@@ -3,6 +3,7 @@
 // subcommands added by the batch. No top-level verbs of its own; the help
 // lines below are appended to `kepr --help`.
 
+pub mod mysql_login;
 pub mod tunnel;
 
 use kepr_core::protocol::Response;

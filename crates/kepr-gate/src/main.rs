@@ -14,6 +14,7 @@ mod journal;
 mod limits;
 mod mysql;
 mod mysql_auth;
+mod mysql_rotate;
 mod pg;
 mod pg_rotate;
 mod pg_tls;
