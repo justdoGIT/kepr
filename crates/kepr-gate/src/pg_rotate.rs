@@ -10,31 +10,18 @@
 //! the current password fails and the pending one logs in. The gate then
 //! reports success without another ALTER, and the CLI commits.
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
-use crate::pg::{error_response, login, message, DbRoute, Login};
+use crate::pg::{error_response, login, message, read_msg, DbRoute, Login};
 use crate::pg_tls::Io;
 use kepr_core::generate::ZeroString;
-
-fn msg(kind: u8, body: &[u8]) -> Vec<u8> {
-    let mut out = vec![kind];
-    out.extend_from_slice(&((body.len() + 4) as u32).to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
 
 /// Read server messages until ReadyForQuery; `Err` with the server's
 /// text if an ErrorResponse came first.
 async fn until_ready(up: &mut Box<dyn Io>) -> Result<(), String> {
     let mut error = None;
     loop {
-        let kind = up.read_u8().await.map_err(|e| e.to_string())?;
-        let len = up.read_u32().await.map_err(|e| e.to_string())? as usize;
-        if !(4..=1 << 20).contains(&len) {
-            return Err("malformed server message".into());
-        }
-        let mut body = vec![0u8; len - 4];
-        up.read_exact(&mut body).await.map_err(|e| e.to_string())?;
+        let (kind, body) = read_msg(up).await.map_err(|e| e.to_string())?;
         match kind {
             b'E' => {
                 let text = body
@@ -62,7 +49,7 @@ pub async fn rotate(up: &mut Box<dyn Io>, pending: &str) -> Result<(), String> {
     // The verifier is base64 and `$` / `:` only: safe inside quotes.
     let mut q = format!("ALTER ROLE CURRENT_USER PASSWORD '{v}'").into_bytes();
     q.push(0);
-    up.write_all(&msg(b'Q', &q))
+    up.write_all(&message(b'Q', &q))
         .await
         .map_err(|e| e.to_string())?;
     until_ready(up).await
@@ -93,8 +80,10 @@ pub async fn session(
                 user: rec.user.clone(),
                 password: ZeroString::from_string(pending.0.clone()),
                 database: rec.database.clone(),
-                sslmode: String::new(),
-                ca_pem: String::new(),
+                // Same TLS policy as the record: the cleartext-password
+                // guard in `login` depends on `sslmode`.
+                sslmode: rec.sslmode.clone(),
+                ca_pem: rec.ca_pem.clone(),
                 pending_password: None,
             };
             let up2 = crate::pg_tls::upstream(&route.target, &rec.sslmode, &rec.ca_pem).await;

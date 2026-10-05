@@ -132,13 +132,25 @@ fn session(mut conn: UnixStream) -> Result<(), String> {
 
     // The daemon closing the connection (panic, session end) stops the gate.
     let watch = conn.try_clone().map_err(|e| e.to_string())?;
-    let pid = child.id() as i32;
+    // A pidfd names this exact process: after `wait` reaps it, a kill by
+    // pid could hit another session's gate that reused the number.
+    let pidfd = crate::session::pidfd_open(child.id() as i32)?;
     std::thread::spawn(move || {
         let mut sink = [0u8; 64];
         let mut w = watch;
         while matches!(w.read(&mut sink), Ok(n) if n > 0) {}
-        // SAFETY: kill(2) on our own child; at worst ESRCH after exit.
-        unsafe { libc::kill(pid, libc::SIGKILL) };
+        use std::os::fd::AsRawFd;
+        // SAFETY: pidfd_send_signal on a pidfd we own; ESRCH once the
+        // gate has exited, never another process.
+        unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
     });
     let _ = child.wait();
     let _ = conn.shutdown(std::net::Shutdown::Both);

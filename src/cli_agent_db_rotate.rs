@@ -105,7 +105,12 @@ pub fn drive(s: &mut (impl Read + Write), placeholder: &str, rotate: bool) -> Re
 fn start_gate(name: &str) -> Result<(String, u16), String> {
     let creds = crate::cli_agent_run::sealed_creds()?;
     let mine: Vec<_> = creds.into_iter().filter(|c| c.name == name).collect();
-    let routes = crate::cli_agent_db::routes(&[], &mine);
+    let mut routes = crate::cli_agent_db::routes(&[], &mine);
+    for r in &mut routes {
+        if let Some(t) = &mut r.target {
+            t.rotate = true;
+        }
+    }
     if routes.is_empty() {
         return Err(format!(
             "{name} is not a sealed database login (kepr agent add-db)"

@@ -64,7 +64,7 @@ pub fn validate_config(cfg: &SessionConfig) -> Result<(), String> {
     kepr_core::gate_protocol::validate_routes(&cfg.routes)
 }
 
-fn pidfd_open(pid: i32) -> Result<OwnedFd, String> {
+pub(crate) fn pidfd_open(pid: i32) -> Result<OwnedFd, String> {
     // SAFETY: pidfd_open takes a pid and flags; it returns a new fd or -1.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
     if fd < 0 {
@@ -88,9 +88,12 @@ pub fn run() -> Result<(), String> {
         .take(MAX_CONFIG)
         .read_to_string(&mut raw)
         .map_err(|e| format!("reading config: {e}"))?;
-    let cfg: SessionConfig = serde_json::from_str(&raw).map_err(|_| "malformed session config")?;
+    let mut cfg: SessionConfig =
+        serde_json::from_str(&raw).map_err(|_| "malformed session config")?;
+    drop(raw); // wiped: it held the session key in hex
     validate_config(&cfg)?;
     let key = decode_key(cfg.session_key_hex.as_str())?;
+    cfg.session_key_hex = kepr_core::generate::ZeroString::from_string(String::new());
     if !fd3_is_open() {
         return Err("daemon channel (fd 3) missing".into());
     }
@@ -150,6 +153,9 @@ pub fn run() -> Result<(), String> {
         .with_egress(ca, cfg.tunnel)
         .validated()?,
     );
+    // From here on the key exists only as SplitKey shares in secret
+    // memory; the plain copy is wiped rather than kept for the session.
+    drop(key);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -106,7 +106,8 @@ pub struct Cache {
     resolver: Box<dyn Resolve>,
     ttl: Duration,
     entries: Mutex<HashMap<Key, (ZeroString, Inject, Instant)>>,
-    generation: Mutex<u64>,
+    /// (last generation seen, when it was checked).
+    generation: Mutex<(u64, Option<Instant>)>,
     /// Serialises cache misses (single-flight).
     resolving: Mutex<()>,
 }
@@ -121,7 +122,7 @@ impl Cache {
             resolver,
             ttl,
             entries: Mutex::new(HashMap::new()),
-            generation: Mutex::new(0),
+            generation: Mutex::new((0, None)),
             resolving: Mutex::new(()),
         }
     }
@@ -132,14 +133,20 @@ impl Cache {
         (at.elapsed() < self.ttl).then(|| (dup(v), i.clone()))
     }
 
-    /// Drop every cached value if the daemon's store changed.
+    /// Drop every cached value if the daemon's store changed. Asked at
+    /// most every GENERATION_EVERY: a busy session doesn't pay one daemon
+    /// round trip per request, and a revoked key stops within that time.
     fn check_generation(&self) -> Result<(), String> {
-        let now = self.resolver.generation()?;
+        const GENERATION_EVERY: Duration = Duration::from_millis(250);
         let mut seen = self.generation.lock().map_err(|_| "cache poisoned")?;
-        if *seen != now {
-            self.clear();
-            *seen = now;
+        if seen.1.is_some_and(|at| at.elapsed() < GENERATION_EVERY) {
+            return Ok(());
         }
+        let now = self.resolver.generation()?;
+        if seen.0 != now {
+            self.clear();
+        }
+        *seen = (now, Some(Instant::now()));
         Ok(())
     }
 
@@ -222,6 +229,11 @@ mod tests {
         let c = Cache::new(Box::new(n.clone()), DEFAULT_TTL);
         c.get("A", "h.example.com", 443).unwrap();
         n.generation.store(5, Ordering::SeqCst); // e.g. `kepr agent revoke`
+                                                 // Within the check interval the cached value may still serve...
+        c.get("A", "h.example.com", 443).unwrap();
+        assert_eq!(n.resolves.load(Ordering::SeqCst), 1);
+        // ...and once it has passed, the change drops the cache.
+        std::thread::sleep(Duration::from_millis(300));
         c.get("A", "h.example.com", 443).unwrap();
         assert_eq!(n.resolves.load(Ordering::SeqCst), 2);
     }

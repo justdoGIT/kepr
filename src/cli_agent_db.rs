@@ -118,7 +118,11 @@ pub fn routes(existing: &[GateRoute], sealed: &[CredInfo]) -> Vec<GateRoute> {
             provider: db_route_key(&c.name),
             cred: c.name.clone(),
             slot,
-            target: Some(DbTarget { host, port }),
+            target: Some(DbTarget {
+                host,
+                port,
+                rotate: false,
+            }),
         });
         slot += 1;
     }
