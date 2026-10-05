@@ -19,6 +19,20 @@ pub struct DbRoute {
     pub cred: String,
     pub slot: u16,
     pub target: DbTarget,
+    /// T7.18: the role this session granted on the route, if any.
+    pub jit: crate::pg_jit::Held,
+}
+
+impl DbRoute {
+    pub fn new(key: String, cred: String, slot: u16, target: DbTarget) -> Self {
+        DbRoute {
+            key,
+            cred,
+            slot,
+            target,
+            jit: Default::default(),
+        }
+    }
 }
 
 /// The sealed `database` record.
@@ -142,17 +156,18 @@ pub(crate) mod testkit {
     }
 
     pub fn route(kind: TargetKind, host: &str, port: u16) -> Arc<DbRoute> {
-        Arc::new(DbRoute {
-            key: "db:TEST_DB".into(),
-            cred: "TEST_DB".into(),
-            slot: 0,
-            target: DbTarget {
-                host: host.into(),
-                port,
-                kind,
-                ..Default::default()
-            },
-        })
+        let target = DbTarget {
+            host: host.into(),
+            port,
+            kind,
+            ..Default::default()
+        };
+        Arc::new(DbRoute::new(
+            "db:TEST_DB".into(),
+            "TEST_DB".into(),
+            0,
+            target,
+        ))
     }
 
     /// Serve `route` on a fresh loopback port; returns the port.
