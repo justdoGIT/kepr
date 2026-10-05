@@ -91,6 +91,7 @@ pub enum TargetKind {
     #[default]
     Postgres,
     Redis,
+    Mysql,
 }
 
 impl TargetKind {
@@ -102,12 +103,13 @@ impl TargetKind {
         match self {
             Self::Postgres => "postgres",
             Self::Redis => "redis",
+            Self::Mysql => "mysql",
         }
     }
 
     /// From a record's binding kind (`Inject::db_kind`).
     pub fn parse(s: &str) -> Option<Self> {
-        [Self::Postgres, Self::Redis]
+        [Self::Postgres, Self::Redis, Self::Mysql]
             .into_iter()
             .find(|k| k.name() == s)
     }
@@ -117,6 +119,7 @@ impl TargetKind {
         match self {
             Self::Postgres => Inject::Postgres,
             Self::Redis => Inject::Redis,
+            Self::Mysql => Inject::Mysql,
         }
     }
 }
@@ -281,7 +284,7 @@ mod tests {
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains(r#""kind":"redis""#), "{j}");
         assert_eq!(serde_json::from_str::<DbTarget>(&j).unwrap(), r);
-        for k in [TargetKind::Postgres, TargetKind::Redis] {
+        for k in [TargetKind::Postgres, TargetKind::Redis, TargetKind::Mysql] {
             assert_eq!(TargetKind::parse(k.inject().db_kind().unwrap()), Some(k));
         }
     }

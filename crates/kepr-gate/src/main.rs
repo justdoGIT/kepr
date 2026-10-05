@@ -12,6 +12,8 @@ mod dlp;
 mod egress;
 mod journal;
 mod limits;
+mod mysql;
+mod mysql_auth;
 mod pg;
 mod pg_rotate;
 mod pg_tls;

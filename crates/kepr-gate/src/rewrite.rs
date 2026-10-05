@@ -121,7 +121,9 @@ pub fn upstream_headers(
         }
         Inject::Query { .. } => {}
         // A database login is never sent as an HTTP header.
-        Inject::Postgres | Inject::Redis => return Err("not an HTTP credential".into()),
+        Inject::Postgres | Inject::Redis | Inject::Mysql => {
+            return Err("not an HTTP credential".into())
+        }
     }
     Ok(out)
 }

@@ -1,14 +1,15 @@
 // cli_agent_db.rs — database logins for agents (agent vault P7.1).
 //
 //   kepr agent add-db NAME --url postgres://USER@HOST[:PORT]/DB
-//                     [--kind postgres|redis] [--sslmode verify-full|disable]
+//                     [--kind postgres|mysql|redis] [--sslmode verify-full|disable]
 //                     [--ca FILE] [--stdin]
 //   kepr agent add-db NAME --url redis[s]://[USER@]HOST[:PORT][/DB]
+//   kepr agent add-db NAME --url mysql://USER@HOST[:PORT]/DB
 //
 // Stores a sealed `database` record (password asked for, hidden; `kind`
 // for anything but PostgreSQL). In `kepr agent run`, each one becomes a
 // gate route with its own loopback port; the harness gets DATABASE_URL /
-// PG* or REDIS_URL pointing there with the session placeholder as
+// PG*, MYSQL_* or REDIS_URL pointing there with the session placeholder as
 // password, and the gate logs in for it.
 
 use std::collections::HashMap;
@@ -21,7 +22,7 @@ use kepr_core::protocol::{CredInfo, Request, Response};
 use crate::cli_extra::flag;
 use crate::{cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add-db NAME --url postgres://USER@HOST[:PORT]/DB | redis[s]://[USER@]HOST[:PORT][/DB] [--kind postgres|redis] [--sslmode verify-full|disable] [--ca FILE] [--stdin]";
+const USAGE: &str = "usage: kepr agent add-db NAME --url postgres://USER@HOST[:PORT]/DB | mysql://USER@HOST[:PORT]/DB | redis[s]://[USER@]HOST[:PORT][/DB] [--kind postgres|mysql|redis] [--sslmode verify-full|disable] [--ca FILE] [--stdin]";
 
 /// A database URL as `kepr agent add-db` takes it (never with a password).
 #[derive(Debug, PartialEq)]
@@ -40,12 +41,17 @@ pub struct DbUrl {
 pub fn parse_url(url: &str) -> Result<DbUrl, String> {
     let (scheme, rest) = url
         .split_once("://")
-        .ok_or("the URL must start with postgres://, redis:// or rediss://")?;
+        .ok_or("the URL must start with postgres://, mysql://, redis:// or rediss://")?;
     let (kind, sslmode) = match scheme {
         "postgres" | "postgresql" => (TargetKind::Postgres, "verify-full"),
+        "mysql" => (TargetKind::Mysql, "verify-full"),
         "redis" => (TargetKind::Redis, "disable"),
         "rediss" => (TargetKind::Redis, "verify-full"),
-        _ => return Err("the URL must start with postgres://, redis:// or rediss://".into()),
+        _ => {
+            return Err(
+                "the URL must start with postgres://, mysql://, redis:// or rediss://".into(),
+            )
+        }
     };
     let (auth, rest) = rest.split_once('@').unwrap_or(("", rest));
     if auth.contains(':') {
@@ -91,6 +97,7 @@ fn label(kind: TargetKind) -> &'static str {
     match kind {
         TargetKind::Postgres => "PostgreSQL",
         TargetKind::Redis => "Redis",
+        TargetKind::Mysql => "MySQL",
     }
 }
 
@@ -206,6 +213,9 @@ pub const DB_VARS: &[&str] = &[
     "PGDATABASE",
     "PGSSLMODE",
     "REDIS_URL",
+    "MYSQL_HOST",
+    "MYSQL_TCP_PORT",
+    "MYSQL_PWD",
 ];
 
 /// The standard variables for the one database of a kind.
@@ -223,6 +233,11 @@ fn standard(kind: TargetKind, url: &str, ph: &str, port: u16) -> Vec<(String, St
             put("PGSSLMODE", "disable".into());
         }
         TargetKind::Redis => put("REDIS_URL", url.into()),
+        TargetKind::Mysql => {
+            put("MYSQL_HOST", "127.0.0.1".into());
+            put("MYSQL_TCP_PORT", port.to_string());
+            put("MYSQL_PWD", ph.into());
+        }
     }
     out
 }
@@ -250,6 +265,9 @@ pub fn env(
                 format!("postgres://kepr:{ph}@127.0.0.1:{port}/kepr?sslmode=disable")
             }
             TargetKind::Redis => format!("redis://kepr:{ph}@127.0.0.1:{port}"),
+            TargetKind::Mysql => {
+                format!("mysql://kepr:{ph}@127.0.0.1:{port}/kepr?ssl-mode=DISABLED")
+            }
         };
         out.push((format!("KEPR_DB_{name}_URL"), url.clone()));
         if dbs.iter().filter(|d| d.1 == *kind).count() == 1 {
@@ -297,6 +315,12 @@ mod tests {
             (s.user.as_str(), s.port, s.database.as_str(), s.sslmode),
             ("app", 6380, "3", "verify-full")
         );
+        let m = parse_url("mysql://app@MY.example.com/prod").unwrap();
+        assert_eq!(
+            (m.kind, m.port, m.database.as_str(), m.sslmode),
+            (TargetKind::Mysql, 3306, "prod", "verify-full")
+        );
+        assert!(parse_url("mysql://app@my.example.com").is_err());
         assert!(parse_url("redis://:pw@cache.example.com").is_err());
         assert!(parse_url("redis://cache.example.com/x").is_err());
     }

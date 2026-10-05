@@ -75,7 +75,7 @@ pub fn db_binding(fields: &str) -> Result<kepr_core::binding::Binding, String> {
         return Err("sslmode must be verify-full (default) or disable".into());
     }
     let (inject, default_port) = kepr_core::binding::Inject::for_db_kind(get("kind"))
-        .ok_or("kind must be postgres or redis")?;
+        .ok_or("kind must be postgres, mysql or redis")?;
     let port = match get("port") {
         "" => default_port,
         p => p.parse().map_err(|_| "port must be a number")?,

@@ -39,6 +39,8 @@ pub mod ssh_wire;
 // batch: sync
 // batch: policy
 // batch: gate
+pub mod mysql_handshake;
+pub mod mysql_wire;
 // batch: aws
 // batch: eco
 // batch: platform

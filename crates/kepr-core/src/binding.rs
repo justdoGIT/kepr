@@ -26,6 +26,9 @@ pub enum Inject {
     /// T7.01: a Redis login (`database` record with `kind: redis`); the
     /// gate sends `AUTH` upstream for the agent.
     Redis,
+    /// T7.02: a MySQL login (`kind: mysql`); the gate completes the
+    /// server handshake for the agent.
+    Mysql,
 }
 
 impl Inject {
@@ -34,6 +37,7 @@ impl Inject {
         match self {
             Self::Postgres => Some("postgres"),
             Self::Redis => Some("redis"),
+            Self::Mysql => Some("mysql"),
             _ => None,
         }
     }
@@ -44,6 +48,7 @@ impl Inject {
         match kind {
             "" | "postgres" => Some((Self::Postgres, 5432)),
             "redis" => Some((Self::Redis, 6379)),
+            "mysql" => Some((Self::Mysql, 3306)),
             _ => None,
         }
     }
@@ -181,6 +186,7 @@ mod tests {
                 param: "key".into(),
             },
             Inject::Redis,
+            Inject::Mysql,
         ] {
             let bb = b("api.example.com", 443, i);
             let json = serde_json::to_string(&bb).unwrap();
@@ -191,7 +197,7 @@ mod tests {
 
     #[test]
     fn db_kinds_map_to_injects() {
-        for kind in ["postgres", "redis"] {
+        for kind in ["postgres", "redis", "mysql"] {
             let (inject, _) = Inject::for_db_kind(kind).unwrap();
             assert_eq!(inject.db_kind(), Some(kind));
         }

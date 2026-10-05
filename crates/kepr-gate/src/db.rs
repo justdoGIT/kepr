@@ -44,6 +44,7 @@ pub async fn serve_conn(state: Arc<State>, route: Arc<DbRoute>, client: TcpStrea
     match route.target.kind {
         TargetKind::Postgres => crate::pg::serve_conn(state, route, client).await,
         TargetKind::Redis => crate::redis::serve_conn(state, route, client).await,
+        TargetKind::Mysql => crate::mysql::serve_conn(state, route, client).await,
     }
 }
 
@@ -53,6 +54,13 @@ pub(crate) fn admit(state: &State) -> Result<(), String> {
         Refusal::Cap(m) => format!("kepr stopped this login: {m}"),
         Refusal::Rate(s) => format!("kepr rate limit; retry in {s}s"),
     })
+}
+
+/// The placeholder a route's clients must present (for protocols where
+/// the gate checks a scramble of it rather than the placeholder itself).
+pub(crate) fn expected_placeholder(state: &State, slot: u16) -> zeroize::Zeroizing<String> {
+    let make = |k: &[u8; 32]| crate::placeholder::make(k, &state.session_id, slot);
+    zeroize::Zeroizing::new(state.session_key.with_key(make))
 }
 
 /// Resolve the route's sealed login. It must be a login of the route's
