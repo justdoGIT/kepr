@@ -3,7 +3,9 @@
 // An optional second credential store: one fixed-size file of 4 KiB
 // slots in which names, counts, sizes, policies and values are all
 // ciphertext, and free space looks exactly like data. The per-file store
-// stays the default; `KEPR_STORE=image` opts in.
+// stays the default; `KEPR_STORE=image` opts in (`store_dir()/vault.img`,
+// one image for every uid the daemon serves; records are keyed by the
+// per-file name `kepr-<uid>-<name>`, so the uid stays the boundary).
 //
 //   image.rs   the file: slots, noise fill, positioned IO (T4.01)
 //   header.rs  the encrypted, authenticated header in slot 0 (T4.01)
@@ -14,25 +16,80 @@
 //   journal.rs journal slot, two-phase commit, crash recovery (T4.04)
 //   index.rs   index entries and record payload encodings (T4.05)
 //   records.rs per-record keys, put/read/remove, crypto-shred (T4.05)
+//   backend.rs the image as `crypto::Backend` + `expiry::MetaStore` (T4.06)
+//   sweep.rs   TTL expiry inside the image (T4.06)
 
-// Only the tests use the image until T4.06 makes it a backend.
-#[allow(dead_code)]
+pub mod backend;
 pub mod header;
-#[allow(dead_code)]
 pub mod image;
-#[allow(dead_code)]
 pub mod index;
-#[allow(dead_code)]
 pub mod journal;
-#[allow(dead_code)]
 pub mod keys;
-#[allow(dead_code)]
 pub mod merkle;
-#[allow(dead_code)]
 pub mod place;
-#[allow(dead_code)]
 pub mod records;
-#[allow(dead_code)]
 pub mod slot;
+pub mod sweep;
 #[cfg(test)]
 mod testio;
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+
+use backend::ImageBackend;
+
+pub use sweep::sweep_expired;
+
+static ACTIVE: OnceLock<ImageBackend> = OnceLock::new();
+
+/// The image backend, when `KEPR_STORE=image` selected it at start-up.
+pub fn active() -> Option<&'static ImageBackend> {
+    ACTIVE.get()
+}
+
+pub fn image_path() -> PathBuf {
+    crate::store::store_dir().join("vault.img")
+}
+
+/// Called once at start-up (from `crypto::initialize_inproc_backend`):
+/// `KEPR_STORE` unset or `file` keeps the per-file store.
+pub fn install_from_env(versions: Arc<crate::version_state::VersionState>) -> Result<(), String> {
+    match std::env::var("KEPR_STORE").as_deref() {
+        Err(_) | Ok("") | Ok("file") => Ok(()),
+        Ok("image") => {
+            let b = ImageBackend::new(image_path(), crate::crypto::snapshot_key, Some(versions));
+            ACTIVE
+                .set(b)
+                .map_err(|_| "image backend already installed".to_string())?;
+            eprintln!("[kepr-daemon] credential store: vault image");
+            Ok(())
+        }
+        Ok(_) => Err("KEPR_STORE must be `file` or `image`".into()),
+    }
+}
+
+fn in_image_dir(path: &Path) -> Option<&'static ImageBackend> {
+    let b = active()?;
+    (path.parent() == b.path().parent()).then_some(b)
+}
+
+/// The image's meta store for a sidecar path in the store directory.
+pub fn meta_store_for(meta_path: &Path) -> Option<&'static dyn crate::expiry::MetaStore> {
+    in_image_dir(meta_path).map(|b| b as &dyn crate::expiry::MetaStore)
+}
+
+/// (size, last write) of the credential behind a per-file path.
+pub fn stat(cred_path: &Path) -> Option<(u64, u64)> {
+    let b = in_image_dir(cred_path)?;
+    b.stat(cred_path.file_name()?.to_str()?)
+}
+
+/// Recovery restore's proof: (1, 1) if `key` opens the image here,
+/// (0, 1) if it doesn't, (0, 0) if there is no image.
+pub fn probe_image(key: &[u8; 32]) -> (usize, usize) {
+    let path = image_path();
+    if !path.exists() {
+        return (0, 0);
+    }
+    (usize::from(image::key_opens(&path, key)), 1)
+}

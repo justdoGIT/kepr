@@ -51,6 +51,7 @@ pub fn merkle_root(leaves: &[Hash]) -> Hash {
 
 /// What `verify` found: slots whose bytes don't match what the index
 /// says they should be, and whether the header's root still matches.
+#[allow(dead_code)] // `kepr vault verify` (T4.07)
 #[derive(Debug, PartialEq, Eq)]
 pub struct Damage {
     pub slots: Vec<u32>,
@@ -59,6 +60,7 @@ pub struct Damage {
 
 impl<I: SlotIo> VaultImage<I> {
     /// Merkle root over `slots` as they are on disk (sorted by index).
+    #[cfg(test)]
     pub fn root_of(&self, slots: &[u32]) -> Result<Hash, String> {
         let mut sorted = slots.to_vec();
         sorted.sort_unstable();
@@ -71,6 +73,7 @@ impl<I: SlotIo> VaultImage<I> {
 
     /// Re-read every used slot, compare each with its expected leaf (if
     /// the caller has one) and recompute the root against the header.
+    #[allow(dead_code)] // `kepr vault verify` (T4.07)
     pub fn verify(&self, used: &[(u32, Option<Hash>)]) -> Result<(), Damage> {
         let mut sorted = used.to_vec();
         sorted.sort_unstable_by_key(|u| u.0);

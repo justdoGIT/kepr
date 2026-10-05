@@ -201,6 +201,7 @@ impl<I: SlotIo> VaultImage<I> {
 
     /// Check the index, every page's hash and the root. Returns
     /// (records, slots checked); an error names the damaged slots.
+    #[allow(dead_code)] // `kepr vault verify` (T4.07)
     pub fn verify_records(&self, keys: &Keys) -> Result<(usize, usize), String> {
         let ix = self.load_index(keys)?;
         let mut used: Vec<(u32, Option<Hash>)> = ix

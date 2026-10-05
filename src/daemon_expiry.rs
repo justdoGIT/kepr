@@ -273,6 +273,7 @@ fn spawn_sweeper_with_interval(versions: Arc<VersionState>, interval: Duration) 
             let now = expiry::now_unix();
             let dir = store::store_dir();
             let _ = sweep_once(&dir, now, Some(&versions));
+            crate::daemon_vault::sweep_expired(now); // T4.06: the image store
         })
         .expect("spawn kepr-expiry thread");
 }

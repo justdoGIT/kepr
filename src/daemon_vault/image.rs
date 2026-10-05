@@ -94,6 +94,19 @@ impl VaultImage<File> {
     }
 }
 
+/// Does `kek` open the image header at `path`? Read-only: no recovery.
+pub fn key_opens(path: &Path, kek: &[u8; 32]) -> bool {
+    let Ok(f) = File::open(path) else {
+        return false;
+    };
+    let mut slot0 = [0u8; SLOT];
+    if SlotIo::read_at(&f, &mut slot0, 0).is_err() || &slot0[..8] != MAGIC {
+        return false;
+    }
+    let salt: [u8; SALT] = slot0[8..SEALED_AT].try_into().expect("salt");
+    open_header(&Keys::derive(kek, &salt), &slot0).is_ok()
+}
+
 /// Reserve the space up front so a full disk fails now, not mid-commit.
 /// The noise is written either way: fallocate alone would leave zeros.
 fn reserve(file: &File, len: u64) -> Result<(), String> {
@@ -210,6 +223,7 @@ impl<I: SlotIo> VaultImage<I> {
         &self.salt
     }
 
+    #[cfg(test)]
     pub(super) fn io_ref(&self) -> &I {
         &self.io
     }
