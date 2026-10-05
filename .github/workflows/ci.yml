@@ -64,6 +64,9 @@ jobs:
       - name: node --test
         working-directory: sdk/node
         run: node --test test/*.test.js
+      - name: VS Code extension
+        working-directory: integrations/vscode
+        run: node --test test/*.test.js
 
   go-sdk:
     name: Go SDK
