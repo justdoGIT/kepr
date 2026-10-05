@@ -32,12 +32,15 @@ pub fn parse_range(body: &str) -> Vec<String> {
 }
 
 fn fetch_range(prefix: &str) -> Result<Vec<String>, String> {
-    let r = ureq::get(&format!("{RANGE_URL}{prefix}"))
+    let req = crate::sync_http::agent()
+        .get(&format!("{RANGE_URL}{prefix}"))
         .set("Add-Padding", "true")
-        .set("User-Agent", "kepr")
-        .call()
-        .map_err(|e| format!("breach list lookup failed: {e}"))?;
-    Ok(parse_range(&r.into_string().map_err(|e| e.to_string())?))
+        .set("User-Agent", "kepr");
+    match crate::sync_http::send(req, None) {
+        Ok((200, body)) => Ok(parse_range(&body)),
+        Ok((code, _)) => Err(format!("breach list lookup failed: HTTP {code}")),
+        Err(e) => Err(format!("breach list lookup failed: {e}")),
+    }
 }
 
 /// Append "found in a data breach" to each item whose value is listed.

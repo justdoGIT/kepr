@@ -41,15 +41,32 @@ pub trait CredFetcher {
 pub struct DaemonFetcher;
 
 impl CredFetcher for DaemonFetcher {
+    /// `Get`, running the FIDO2 touch when the credential asks for one,
+    /// so every command that reads a value (exec, env, inject, copy,
+    /// records, sync) honours `--requires-fido2` the way `kepr get` does.
     fn fetch(&self, name: &str) -> Result<ZeroString, String> {
-        match client::send_request(&Request::Get {
-            name: name.to_string(),
-            fido2_assertion: None,
-        }) {
-            Ok(Response::GetOk { value, .. }) => Ok(value),
-            Ok(Response::Err { error }) => Err(error),
-            Ok(other) => Err(format!("unexpected daemon response: {other:?}")),
-            Err(e) => Err(format!("daemon unreachable: {e}")),
+        let get = |fido2_assertion| {
+            client::send_request(&Request::Get {
+                name: name.to_string(),
+                fido2_assertion,
+            })
+            .map_err(|e| format!("daemon unreachable: {e}"))
+        };
+        let reply = match get(None)? {
+            Response::Fido2Needed {
+                challenge,
+                credential_ids,
+                ..
+            } => get(Some(crate::cli_fido2::run_fido2_ceremony(
+                &challenge,
+                &credential_ids,
+            )?))?,
+            other => other,
+        };
+        match reply {
+            Response::GetOk { value, .. } => Ok(value),
+            Response::Err { error } => Err(error),
+            _ => Err("unexpected daemon response".into()),
         }
     }
 }

@@ -63,6 +63,17 @@ pub struct DockerCred {
 /// daemon. A docker URL that reaches us with `:`, `.`, `/`, or
 /// alphabetic case would be rejected by the daemon if we passed it
 /// straight through.
+/// `host[:port]` of a registry URL, lower-cased: what two URLs must share
+/// for one's credential to be handed to the other.
+pub fn registry_host(url: &str) -> String {
+    let no_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    no_scheme
+        .split('/')
+        .next()
+        .unwrap_or(no_scheme)
+        .to_ascii_lowercase()
+}
+
 pub fn url_to_kepr_name(url: &str) -> String {
     // Strip the scheme so `https://ghcr.io/v2/` and `ghcr.io` map
     // to the same name. Anything before `://` is the scheme.
@@ -138,6 +149,13 @@ pub fn cmd_get() -> ExitCode {
     };
     // Docker only wants Username + Secret on the response — ServerURL
     // came from the request side.
+    // The credential name folds every non-alphanumeric character to `_`,
+    // so `registry-example.com` and `registry.example.com` share one name:
+    // only answer for the registry the credential was stored for.
+    if registry_host(&cred.server_url) != registry_host(&url) {
+        eprintln!("credentials not found in native keychain");
+        return ExitCode::from(1);
+    }
     let resp = serde_json::json!({
         "Username": cred.username,
         "Secret": cred.secret,
@@ -323,6 +341,22 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn lookalike_registries_share_a_name_but_not_a_host() {
+        assert_eq!(
+            url_to_kepr_name("registry-example.com"),
+            url_to_kepr_name("registry.example.com")
+        );
+        assert_ne!(
+            registry_host("https://registry-example.com/v2/"),
+            registry_host("registry.example.com")
+        );
+        assert_eq!(
+            registry_host("https://Registry.Example.com:5000/v2/"),
+            "registry.example.com:5000"
+        );
+    }
     use super::*;
 
     #[test]

@@ -89,12 +89,20 @@ fn run(cmd: &[&str], input: Option<&[u8]>) -> Option<Vec<u8>> {
         } else {
             Stdio::null()
         })
-        .stdout(Stdio::piped())
+        // Writing: no stdout pipe. xclip forks a child that keeps serving
+        // the selection and inherits stdout, so waiting for EOF on a pipe
+        // would block until another app took the clipboard.
+        .stdout(if input.is_some() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
     if let Some(data) = input {
-        child.stdin.take()?.write_all(data).ok()?;
+        child.stdin.take()?.write_all(data).ok()?; // stdin closes on drop
+        return child.wait().ok()?.success().then(Vec::new);
     }
     let out = child.wait_with_output().ok()?;
     out.status.success().then_some(out.stdout)

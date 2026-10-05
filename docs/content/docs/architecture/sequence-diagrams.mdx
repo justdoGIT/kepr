@@ -134,7 +134,7 @@ sequenceDiagram
     D->>CR: decrypt(uid, "CORRUPT")
     CR->>BE: spawn(decrypt ...)
     BE-->>CR: rc!=0, stderr leaks internal tool names + flags
-    CR->>CR: sanitize_error -> "credential backend: bad MAC#59; failed"
+    CR->>CR: AEAD tag check fails (bad MAC)
     CR-->>D: Err(sanitized)
     D-->>CLI: {"kind":"err","error":"decryption failed: credential backend: ..."}
 ```

@@ -74,7 +74,7 @@ The encryption backend persists its host-derived key under
 | `store.rs`             | both           | Naming, validation, path helpers.                        |
 | `client.rs`            | CLI            | `send_request` (connect → write_frame → read_frame).     |
 | `cli_*.rs`             | CLI            | Argv parsing, mode flags, terminal IO.                   |
-| `crypto.rs`            | daemon         | Encryption-backend wrapper; `sanitize_error`.            |
+| `crypto.rs`            | daemon         | Backend seam; fail-closed until start-up; lookup errors. |
 | `audit.rs`             | daemon         | Journal datagram (cached fd) with `KEPR_*` fields.    |
 | `daemon_*.rs`          | daemon         | Socket setup, peer creds, worker pool, dir cache, handlers. |
 
@@ -155,10 +155,13 @@ that scales with all users on the host.
 
 ### 2.8 Error sanitisation at the boundary
 
-`crypto::sanitize_error` strips internal tool names, the absolute path
-of the backend binary, and key-type flags from any stderr that escapes
-back to the user. The systemd unit uses a neutral `SyslogIdentifier` for
-the same reason. Treat any new error string as user-visible.
+Credential operations run in-process (AES-256-GCM), so no backend
+stderr reaches users at all; the one subprocess, the master-key sealer at
+start-up, reports only "seal failed" / "unseal failed".
+`crypto::sanitize_lookup_error` collapses "not found" and "cannot
+decrypt" into one message so names can't be probed. The systemd unit uses
+a neutral `SyslogIdentifier` for the same reason. Treat any new error
+string as user-visible.
 
 ### 2.9 Process-wide CLI mode via `OnceLock`
 
@@ -381,7 +384,7 @@ sequenceDiagram
     D->>CR: decrypt uid CORRUPT
     CR->>BE: spawn backend decrypt
     BE-->>CR: rc nonzero, stderr leaks internal names and flags
-    CR->>CR: sanitize_error returns credential backend bad MAC
+    CR->>CR: AEAD tag check fails (bad MAC)
     CR-->>D: Err sanitized
     D-->>CLI: kind=err, error=decryption failed credential backend
 ```

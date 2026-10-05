@@ -70,23 +70,16 @@ pub fn pick_syncer(url: &str) -> Result<Box<dyn Syncer>, String> {
 /// upstream cloud never sees the kepr master key. Both
 /// boundaries stay clean.
 pub fn cmd_sync_push(name: &str, url: &str) -> kepr_core::protocol::Response {
-    use kepr_core::protocol::{Request, Response};
+    use kepr_core::protocol::Response;
     let syncer = match pick_syncer(url) {
         Ok(s) => s,
         Err(e) => return Response::fail(e),
     };
     let upper = name.to_uppercase();
-    let resp = match crate::client::send_request(&Request::Get {
-        name: upper.clone(),
-        fido2_assertion: None,
-    }) {
-        Ok(r) => r,
-        Err(e) => return Response::fail(format!("daemon: {e}")),
-    };
-    let value = match resp {
-        Response::GetOk { value, .. } => value,
-        Response::Err { error } => return Response::fail(error),
-        other => return Response::fail(format!("unexpected response: {other:?}")),
+    use crate::cli_exec::CredFetcher;
+    let value = match crate::cli_exec::DaemonFetcher.fetch(&upper) {
+        Ok(v) => v,
+        Err(e) => return Response::fail(e),
     };
     if let Err(e) = syncer.push(value.as_str()) {
         return Response::fail(e);

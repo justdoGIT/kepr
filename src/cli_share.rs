@@ -14,32 +14,13 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use kepr_core::protocol::{Request, Response};
 
+use crate::cli_extra::{flag as value, positionals as positional};
 use crate::{cli_mode, cli_ui, client};
 
 const USAGE: &str = "usage: kepr share key | send NAME --to KEY [--ttl SECS] [-o FILE] | receive [FILE] [--as NAME]";
 
 fn send(req: &Request) -> Response {
     client::send_request(req).unwrap_or_else(Response::fail)
-}
-
-fn value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    let i = args.iter().position(|a| a == flag)?;
-    args.get(i + 1).map(String::as_str)
-}
-
-fn positional(args: &[String], value_flags: &[&str]) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut skip = false;
-    for a in args {
-        if skip {
-            skip = false;
-        } else if value_flags.contains(&a.as_str()) {
-            skip = true;
-        } else if !a.starts_with('-') || a == "-" {
-            out.push(a.clone());
-        }
-    }
-    out
 }
 
 fn cmd_send(args: &[String]) -> Response {

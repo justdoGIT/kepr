@@ -105,17 +105,22 @@ pub fn handle_health(uid: u32, username: &str, max_age_days: Option<u32>) -> Res
         }
         let mut issues = Vec::new();
         let mut hibp_prefix = None;
-        match crypto::default_backend().decrypt(uid, &name) {
-            Ok(v) => {
+        // Values the caller can't `Get` (sealed, consent or FIDO2 gated)
+        // are never analysed: "same value as SEALED_KEY" or "weak" would
+        // let a caller test guesses against them.
+        let gated = meta.sealed == Some(true)
+            || meta.requires_consent == Some(true)
+            || meta.requires_fido2 == Some(true);
+        match (!gated).then(|| crypto::default_backend().decrypt(uid, &name)) {
+            None => {}
+            Some(Ok(v)) => {
                 issues.extend(value_issues(v.as_str()));
                 seen.entry(Sha256::digest(v.as_bytes()).into())
                     .or_default()
                     .push(name.clone());
-                if meta.sealed != Some(true) {
-                    hibp_prefix = Some(sha1_hex(v.as_str())[..5].to_string());
-                }
+                hibp_prefix = Some(sha1_hex(v.as_str())[..5].to_string());
             }
-            Err(_) => issues.push("unreadable".to_string()),
+            Some(Err(_)) => issues.push("unreadable".to_string()),
         }
         let age_days = file_age_days(&path).unwrap_or(0);
         if age_days > max_age {
@@ -172,9 +177,17 @@ pub fn handle_breach_check(uid: u32, username: &str, name: &str, suffixes: &[Str
         let meta = expiry::read_meta(&expiry::meta_path_for(&crate::store::cred_path(
             uid, &upper,
         )))
-        .and_then(Result::ok)
+        .transpose()
+        .map_err(|_| "credential unavailable".to_string())?
         .unwrap_or_default();
-        if meta.sealed == Some(true) || meta.ssh.is_some() || meta.share_key == Some(true) {
+        // The caller picks the suffixes, so this is a guess oracle: only
+        // for values the caller could `Get` without a prompt anyway.
+        if meta.sealed == Some(true)
+            || meta.ssh.is_some()
+            || meta.share_key == Some(true)
+            || meta.requires_consent == Some(true)
+            || meta.requires_fido2 == Some(true)
+        {
             return Err("credential unavailable".to_string());
         }
         let v = crypto::default_backend()

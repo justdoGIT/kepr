@@ -171,13 +171,19 @@ pub fn cmd_run(
     // Egress proxy (P2.1): drop inherited proxy/CA settings and the real
     // tokens the egress placeholders replace, then add ours.
     let shadowed = crate::cli_agent_egress::shadowed(&placeholders);
-    let inherited = std::env::vars().filter(|(k, _)| {
+    let (inherited, withheld) = keep_safe_env(std::env::vars().filter(|(k, _)| {
         k != "KEPR_GATE_URL"
             && !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
             && !crate::cli_agent_db::DB_VARS.contains(&k.as_str())
             && !shadowed.contains(&k.as_str())
-    });
-    let mut env = build_env(adapter, gate_port, &placeholders, inherited);
+    }));
+    if !withheld.is_empty() {
+        crate::cli_ui::warn(&format!(
+            "not passed to the agent (they hold real keys): {}; store them with `kepr agent add`",
+            withheld.join(", ")
+        ));
+    }
+    let mut env = build_env(adapter, gate_port, &placeholders, inherited.into_iter());
     env.extend(crate::cli_agent_db::env(&placeholders, &db_ports));
     // Lets harness plugins (plugins/omp, plugins/grok) find the gate.
     env.push((
@@ -210,8 +216,48 @@ pub fn cmd_run(
     Response::fail(format!("exec {} failed: {err}", argv[0]))
 }
 
+/// Split inherited variables into those passed on and the names of those
+/// withheld because their value looks like a real API key or private key
+/// (an `OPENAI_API_KEY` exported in ~/.bashrc must not reach a Claude
+/// session just because Claude doesn't use it).
+pub fn keep_safe_env(
+    vars: impl Iterator<Item = (String, String)>,
+) -> (Vec<(String, String)>, Vec<String>) {
+    let (mut keep, mut withheld) = (Vec::new(), Vec::new());
+    for (k, v) in vars {
+        if kepr_core::leak::looks_like_key(v.as_bytes()) {
+            withheld.push(k);
+        } else {
+            keep.push((k, v));
+        }
+    }
+    withheld.sort();
+    (keep, withheld)
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn real_keys_in_the_environment_are_withheld() {
+        let vars = vec![
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            (
+                "OPENAI_API_KEY".to_string(),
+                "sk-proj-abcdefghijklmnopqrstuvwx".to_string(),
+            ),
+            (
+                "GH".to_string(),
+                "ghp_abcdefghijklmnopqrstuvwxyz0123456789".to_string(),
+            ),
+        ];
+        let (keep, withheld) = keep_safe_env(vars.into_iter());
+        assert_eq!(keep, vec![("PATH".to_string(), "/usr/bin".to_string())]);
+        assert_eq!(
+            withheld,
+            vec!["GH".to_string(), "OPENAI_API_KEY".to_string()]
+        );
+    }
     use super::*;
 
     fn claude() -> &'static Adapter {

@@ -20,6 +20,9 @@ use kepr_core::protocol::{Request, Response};
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct GitCred {
     pub host: String,
+    /// `https`, `http`, … (empty in credentials stored before it was kept).
+    #[serde(default)]
+    pub protocol: String,
     pub username: String,
     pub password: ZeroString,
 }
@@ -66,10 +69,18 @@ pub fn cmd_get() -> ExitCode {
         fido2_assertion: None,
     }) {
         Ok(Response::GetOk { value, .. }) => {
+            let protocol = input.get("protocol").map(String::as_str).unwrap_or("");
             if let Ok(cred) = serde_json::from_str::<GitCred>(value.as_str()) {
+                // The name folds `.` and `-` alike: answer only for the
+                // exact host, and never send an https password over http.
+                let same_host = cred.host.eq_ignore_ascii_case(host);
+                let same_proto = cred.protocol.is_empty() || cred.protocol == protocol;
+                if !same_host || !same_proto || (cred.protocol.is_empty() && protocol == "http") {
+                    return ExitCode::SUCCESS;
+                }
                 println!("username={}", cred.username);
                 println!("password={}", cred.password.as_str());
-            } else {
+            } else if protocol != "http" {
                 let username = input
                     .get("username")
                     .cloned()
@@ -101,6 +112,7 @@ pub fn cmd_store() -> ExitCode {
         .unwrap_or_else(|| "git".to_string());
     let cred = GitCred {
         host: host.to_string(),
+        protocol: input.get("protocol").cloned().unwrap_or_default(),
         username,
         password,
     };

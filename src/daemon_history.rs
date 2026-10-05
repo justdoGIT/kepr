@@ -7,8 +7,12 @@
 // bound to that exact name, same rollback counter. `~` fails
 // `validate_name`, so no request can name a slot directly and
 // `list_for_uid` never shows one. The slot plaintext starts with a
-// small header — `kh1:<flags>:<saved_unix_nanos>:` — so the save time
-// and whether the value was sealed are authenticated with it.
+// small header — `kh2:<flags>:<saved_unix_nanos>:<bindings>:` — so the
+// save time, whether the value was sealed, and a fingerprint of the
+// bindings it was sealed to are authenticated with it. A sealed version
+// restores only while the credential has those same bindings: otherwise
+// a same-uid caller could re-seal NAME to its own host, restore the old
+// value under that binding, and have a gate send it there.
 //
 // History never returns a value. `History` lists version numbers,
 // times and sizes; `Restore` puts an old value back as the current one,
@@ -29,23 +33,46 @@ use crate::{crypto, daemon_cache, expiry};
 
 /// Previous values kept per credential.
 pub const DEPTH: u32 = 5;
-const HEADER: &str = "kh1:";
+const HEADER: &str = "kh2:";
+const HEADER_V1: &str = "kh1:";
 const FLAG_SEALED: u8 = 1;
 
 fn slot_name(name: &str, slot: u32) -> String {
     format!("{name}~{slot}")
 }
 
-fn encode(flags: u8, saved_ns: u128, secret: &str) -> ZeroString {
-    ZeroString::from_string(format!("{HEADER}{flags}:{saved_ns}:{secret}"))
+/// A short fingerprint of a credential's bindings ("-" when none).
+fn bindings_fp(meta: &expiry::CredMeta) -> String {
+    use sha2::{Digest, Sha256};
+    match &meta.bindings {
+        None => "-".into(),
+        Some(b) => {
+            let json = serde_json::to_vec(b).unwrap_or_default();
+            hex::encode(&Sha256::digest(&json)[..12])
+        }
+    }
 }
 
-/// `(flags, saved_ns, secret)` from a slot plaintext.
-fn decode(plain: &str) -> Option<(u8, u128, &str)> {
-    let rest = plain.strip_prefix(HEADER)?;
+fn encode(flags: u8, saved_ns: u128, bindings: &str, secret: &str) -> ZeroString {
+    ZeroString::from_string(format!("{HEADER}{flags}:{saved_ns}:{bindings}:{secret}"))
+}
+
+/// `(flags, saved_ns, bindings fingerprint, secret)` from a slot
+/// plaintext; `kh1` slots (before fingerprints) have none.
+fn decode(plain: &str) -> Option<(u8, u128, Option<&str>, &str)> {
+    let (v2, rest) = match plain.strip_prefix(HEADER) {
+        Some(r) => (true, r),
+        None => (false, plain.strip_prefix(HEADER_V1)?),
+    };
     let (flags, rest) = rest.split_once(':')?;
-    let (ns, secret) = rest.split_once(':')?;
-    Some((flags.parse().ok()?, ns.parse().ok()?, secret))
+    let (ns, rest) = rest.split_once(':')?;
+    let (fp, secret) = if v2 {
+        let (fp, s) = rest.split_once(':')?;
+        (Some(fp), s)
+    } else {
+        (None, rest)
+    };
+    Some((flags.parse().ok()?, ns.parse().ok()?, fp, secret))
 }
 
 fn now_ns() -> u128 {
@@ -66,7 +93,7 @@ fn slots(uid: u32, name: &str) -> Vec<SlotInfo> {
         .filter(|s| cred_path(uid, &slot_name(name, *s)).exists())
         .map(|s| {
             match crypto::default_backend().decrypt(uid, &slot_name(name, s)) {
-                Ok(z) => decode(z.as_str()).map(|(f, ns, v)| (s, f, ns, v.len())),
+                Ok(z) => decode(z.as_str()).map(|(f, ns, _, v)| (s, f, ns, v.len())),
                 Err(_) => None,
             }
             .unwrap_or((s, 0, 0, 0))
@@ -106,13 +133,14 @@ pub fn save_current(uid: u32, name: &str) {
             return;
         }
     };
-    let flags = if meta.is_some_and(|m| m.sealed == Some(true)) {
+    let meta = meta.unwrap_or_default();
+    let flags = if meta.sealed == Some(true) {
         FLAG_SEALED
     } else {
         0
     };
     let slot = slot_name(name, next_slot(uid, name));
-    let plain = encode(flags, now_ns(), current.as_str());
+    let plain = encode(flags, now_ns(), &bindings_fp(&meta), current.as_str());
     if let Err(e) = crypto::default_backend().encrypt(uid, &slot, plain.as_bytes()) {
         eprintln!("[kepr-daemon] history: save failed: {e}");
     }
@@ -211,16 +239,22 @@ fn pick(uid: u32, upper: &str, version: u32) -> Result<ZeroString, String> {
     let plain = crypto::default_backend()
         .decrypt(uid, &slot_name(upper, slot.0))
         .map_err(|e| crypto::sanitize_lookup_error(&e))?;
-    let (flags, _, secret) = decode(plain.as_str()).ok_or("history entry is malformed")?;
-    if flags & FLAG_SEALED != 0 && meta.sealed != Some(true) {
-        return Err(
-            "that version was sealed; it can only be restored into a sealed credential".into(),
-        );
+    let (flags, _, fp, secret) = decode(plain.as_str()).ok_or("history entry is malformed")?;
+    if flags & FLAG_SEALED != 0 {
+        if meta.sealed != Some(true) {
+            return Err(
+                "that version was sealed; it can only be restored into a sealed credential".into(),
+            );
+        }
+        if fp != Some(bindings_fp(&meta).as_str()) {
+            return Err("that version was sealed to different hosts; restore refused".into());
+        }
     }
     Ok(ZeroString::from_string(secret.to_string()))
 }
 
 pub fn handle_restore(uid: u32, username: &str, name: &str, version: u32) -> Response {
+    let _lock = crate::daemon_credlock::lock(uid, name);
     let upper = name.to_uppercase();
     let r = pick(uid, &upper, version).and_then(|old| {
         // Read the old value first: saving the current one may reuse
@@ -248,13 +282,31 @@ mod tests {
 
     #[test]
     fn header_round_trip() {
-        let z = encode(1, 1_700_000_000_123_456_789, "a:b:c");
+        let z = encode(1, 1_700_000_000_123_456_789, "ab12", "a:b:c");
         assert_eq!(
             decode(z.as_str()),
-            Some((1, 1_700_000_000_123_456_789, "a:b:c"))
+            Some((1, 1_700_000_000_123_456_789, Some("ab12"), "a:b:c"))
         );
+        // Slots written before fingerprints still decode, without one.
+        assert_eq!(decode("kh1:0:5:a:b"), Some((0, 5, None, "a:b")));
         assert_eq!(decode("plain value"), None);
         assert_eq!(decode("kh1:x:1:v"), None);
+    }
+
+    #[test]
+    fn bindings_fingerprint_changes_with_the_hosts() {
+        let b = |h: &str| expiry::CredMeta {
+            sealed: Some(true),
+            bindings: Some(vec![kepr_core::binding::Binding {
+                host: h.into(),
+                port: 443,
+                inject: kepr_core::binding::Inject::Bearer,
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(bindings_fp(&b("api.x.ai")), bindings_fp(&b("api.x.ai")));
+        assert_ne!(bindings_fp(&b("api.x.ai")), bindings_fp(&b("evil.example")));
+        assert_eq!(bindings_fp(&expiry::CredMeta::default()), "-");
     }
 
     #[test]

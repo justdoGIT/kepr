@@ -54,6 +54,8 @@ pub fn handle_set(
 
     let upper = name.to_uppercase();
 
+    let _lock = crate::daemon_credlock::lock(uid, &upper);
+
     // The share private key is written only by `kepr share key`.
     if upper == "KEPR_SHARE_KEY" && flags.share_key != Some(true) {
         return Response::fail("KEPR_SHARE_KEY is reserved");
@@ -207,6 +209,7 @@ pub fn handle_delete(uid: u32, username: &str, name: &str) -> Response {
     }
 
     let upper = name.to_uppercase();
+    let _lock = crate::daemon_credlock::lock(uid, &upper);
 
     match crypto::default_backend().delete(uid, &upper) {
         Ok(()) => {

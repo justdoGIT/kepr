@@ -14,16 +14,12 @@ use std::os::unix::fs::OpenOptionsExt;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
 
+use crate::cli_extra::flag as flag_value;
 use crate::cli_input::read_masked;
 use crate::{cli_mode, cli_ui, client};
 
 const USAGE: &str =
     "usage: kepr recovery-kit create [--threshold K] [--shares N] [--out-dir DIR] | restore";
-
-fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    let i = args.iter().position(|a| a == flag)?;
-    args.get(i + 1).map(String::as_str)
-}
 
 fn number(args: &[String], flag: &str, default: u8) -> Result<u8, Response> {
     match flag_value(args, flag) {

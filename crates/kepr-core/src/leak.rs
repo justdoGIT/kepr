@@ -45,6 +45,20 @@ pub const PATTERNS: &[Pattern] = &[
         exact: false,
     },
     Pattern {
+        kind: "OpenAI service-account key",
+        prefix: b"sk-svcacct-",
+        body: key_char,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
+        kind: "OpenAI admin key",
+        prefix: b"sk-admin-",
+        body: key_char,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
         kind: "OpenRouter key",
         prefix: b"sk-or-",
         body: key_char,
@@ -89,6 +103,20 @@ pub const PATTERNS: &[Pattern] = &[
     Pattern {
         kind: "GitHub OAuth token",
         prefix: b"gho_",
+        body: alnum,
+        min: 36,
+        exact: true,
+    },
+    Pattern {
+        kind: "GitHub user-to-server token",
+        prefix: b"ghu_",
+        body: alnum,
+        min: 36,
+        exact: true,
+    },
+    Pattern {
+        kind: "GitHub app token",
+        prefix: b"ghs_",
         body: alnum,
         min: 36,
         exact: true,
@@ -182,6 +210,22 @@ pub fn looks_like_key(text: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every key prefix in the provider table has a leak shape, so the
+    /// gate's DLP, `kepr scan` and the harness hooks know every key kepr
+    /// can store.
+    #[test]
+    fn every_provider_prefix_has_a_pattern() {
+        for p in crate::providers::PROVIDERS {
+            for prefix in p.prefixes {
+                assert!(
+                    PATTERNS.iter().any(|pat| pat.prefix == prefix.as_bytes()),
+                    "{} prefix {prefix} has no leak pattern",
+                    p.name
+                );
+            }
+        }
+    }
     use super::*;
 
     #[test]

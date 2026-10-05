@@ -84,6 +84,36 @@ fn group_gid(name: &str) -> Option<u32> {
     None
 }
 
+/// A reader with one deadline for the whole request, not per `read`:
+/// the socket's own timeout restarts on every byte, so a client sending
+/// one byte every few seconds could hold a worker forever.
+pub struct Deadline<'a> {
+    stream: &'a std::os::unix::net::UnixStream,
+    until: std::time::Instant,
+}
+
+impl<'a> Deadline<'a> {
+    pub fn new(stream: &'a std::os::unix::net::UnixStream, limit: std::time::Duration) -> Self {
+        Self {
+            stream,
+            until: std::time::Instant::now() + limit,
+        }
+    }
+}
+
+impl std::io::Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self
+            .until
+            .saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        (&mut &*self.stream).read(buf)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

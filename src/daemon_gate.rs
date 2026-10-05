@@ -77,6 +77,9 @@ pub struct GateOwner {
     pub uid: u32,
     pub username: String,
     pub pid: i32,
+    /// The credentials this session's routes name; anything else a gate
+    /// asks for is refused, so a compromised gate stays confined.
+    pub creds: std::collections::HashSet<String>,
 }
 
 /// Bumped on every set, delete and expiry sweep; gates compare it
@@ -96,6 +99,9 @@ pub fn resolve_for_gate(
     port: u16,
 ) -> Result<(ZeroString, Inject), ()> {
     let (uid, username) = (owner.uid, owner.username.as_str());
+    if !owner.creds.contains(&name.to_uppercase()) {
+        return Err(());
+    }
     validate_name(name).map_err(|_| ())?;
     let upper = name.to_uppercase();
     let fail = |reason: String| {
@@ -298,6 +304,7 @@ fn start(
         uid,
         username: username.to_string(),
         pid: peer_pid,
+        creds: routes.iter().map(|r| r.cred.to_uppercase()).collect(),
     };
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
