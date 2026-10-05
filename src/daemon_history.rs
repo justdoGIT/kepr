@@ -218,6 +218,37 @@ pub fn handle_history(uid: u32, username: &str, name: &str) -> Response {
     }
 }
 
+/// The decrypted slot plaintext (header + value) of history `version`
+/// (1 = most recent).
+fn slot_plain(uid: u32, upper: &str, version: u32) -> Result<ZeroString, String> {
+    let readable: Vec<SlotInfo> = slots(uid, upper).into_iter().filter(|s| s.2 > 0).collect();
+    let slot = version
+        .checked_sub(1)
+        .and_then(|i| readable.get(i as usize))
+        .ok_or_else(|| format!("no version {version} of {upper} (see: kepr history {upper})"))?;
+    crypto::default_backend()
+        .decrypt(uid, &slot_name(upper, slot.0))
+        .map_err(|e| crypto::sanitize_lookup_error(&e))
+}
+
+/// T11.3: version `version` (0 = current, 1 = newest saved) and whether
+/// it was saved while sealed, for `kepr history --diff`. The value stays
+/// in the daemon; the caller checks the credential's policy first.
+pub fn version_value(uid: u32, upper: &str, version: u32) -> Result<(ZeroString, bool), String> {
+    if version == 0 {
+        return crypto::default_backend()
+            .decrypt(uid, upper)
+            .map(|v| (v, false))
+            .map_err(|e| crypto::sanitize_lookup_error(&e));
+    }
+    let plain = slot_plain(uid, upper, version)?;
+    let (flags, _, _, secret) = decode(plain.as_str()).ok_or("history entry is malformed")?;
+    Ok((
+        ZeroString::from_string(secret.to_string()),
+        flags & FLAG_SEALED != 0,
+    ))
+}
+
 /// Decrypt history version `version` (1 = most recent) and check it may
 /// go back under the current policy. The value stays in the daemon.
 fn pick(uid: u32, upper: &str, version: u32) -> Result<ZeroString, String> {
@@ -231,14 +262,7 @@ fn pick(uid: u32, upper: &str, version: u32) -> Result<ZeroString, String> {
     if meta.ssh.is_some() {
         return Err("SSH keys keep no history".into());
     }
-    let readable: Vec<SlotInfo> = slots(uid, upper).into_iter().filter(|s| s.2 > 0).collect();
-    let slot = version
-        .checked_sub(1)
-        .and_then(|i| readable.get(i as usize))
-        .ok_or_else(|| format!("no version {version} of {upper} (see: kepr history {upper})"))?;
-    let plain = crypto::default_backend()
-        .decrypt(uid, &slot_name(upper, slot.0))
-        .map_err(|e| crypto::sanitize_lookup_error(&e))?;
+    let plain = slot_plain(uid, upper, version)?;
     let (flags, _, fp, secret) = decode(plain.as_str()).ok_or("history entry is malformed")?;
     if flags & FLAG_SEALED != 0 {
         if meta.sealed != Some(true) {

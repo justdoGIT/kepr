@@ -1,0 +1,107 @@
+name: kepr secrets
+description: >-
+  Pull secrets from Vault, AWS Secrets Manager or GCP Secret Manager into a
+  job-local kepr vault using OIDC, mask every value, and export them only
+  when asked.
+author: kepr contributors
+branding:
+  icon: lock
+  color: gray-dark
+
+inputs:
+  secrets:
+    description: "Lines of NAME=SCHEME:PATH, e.g. DB_PASSWORD=aws-sm:prod/db/password (vault:, aws-sm:, gcp-sm:)"
+    required: true
+  cloud:
+    description: "OIDC login: aws, gcp, vault, or none (credentials already in the environment)"
+    required: false
+    default: none
+  export:
+    description: "true: also export the values to later steps through $GITHUB_ENV (they stay masked)"
+    required: false
+    default: "false"
+  version:
+    description: "kepr release tag, or latest"
+    required: false
+    default: latest
+  repository:
+    description: "Repository that publishes kepr releases"
+    required: false
+    default: justdoGIT/kepr
+  verify:
+    description: "Verify the release tarball's cosign signature (keep true)"
+    required: false
+    default: "true"
+  install:
+    description: "false: kepr is already on PATH"
+    required: false
+    default: "true"
+  audience:
+    description: "OIDC token audience (default: sts.amazonaws.com for aws, the provider for gcp, VAULT_ADDR for vault)"
+    required: false
+    default: ""
+  aws-role-arn:
+    description: "aws: role to assume with the job's OIDC token"
+    required: false
+    default: ""
+  aws-region:
+    description: "aws: region of the secrets"
+    required: false
+    default: ""
+  gcp-workload-identity-provider:
+    description: "gcp: projects/N/locations/global/workloadIdentityPools/POOL/providers/PROVIDER"
+    required: false
+    default: ""
+  gcp-service-account:
+    description: "gcp: service account to impersonate (optional)"
+    required: false
+    default: ""
+  vault-addr:
+    description: "vault: server URL"
+    required: false
+    default: ""
+  vault-role:
+    description: "vault: JWT auth role"
+    required: false
+    default: ""
+  vault-auth-path:
+    description: "vault: JWT auth mount"
+    required: false
+    default: jwt
+
+runs:
+  using: composite
+  steps:
+    - name: Install cosign
+      if: inputs.install == 'true' && inputs.verify == 'true'
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v2.6.3
+
+    - name: Install kepr
+      if: inputs.install == 'true'
+      shell: bash
+      env:
+        KEPR_VERSION: ${{ inputs.version }}
+        KEPR_REPO: ${{ inputs.repository }}
+        KEPR_VERIFY: ${{ inputs.verify }}
+        KEPR_GITHUB_TOKEN: ${{ github.token }}
+      run: bash "$GITHUB_ACTION_PATH/../ci/kepr-ci.sh" install
+
+    - name: Pull secrets
+      shell: bash
+      env:
+        KEPR_SECRETS: ${{ inputs.secrets }}
+        KEPR_CLOUD: ${{ inputs.cloud }}
+        KEPR_EXPORT: ${{ inputs.export }}
+        KEPR_OIDC_AUDIENCE: ${{ inputs.audience }}
+        KEPR_AWS_ROLE_ARN: ${{ inputs.aws-role-arn }}
+        AWS_REGION: ${{ inputs.aws-region || env.AWS_REGION }}
+        KEPR_GCP_WIF_PROVIDER: ${{ inputs.gcp-workload-identity-provider }}
+        KEPR_GCP_SERVICE_ACCOUNT: ${{ inputs.gcp-service-account }}
+        VAULT_ADDR: ${{ inputs.vault-addr || env.VAULT_ADDR }}
+        KEPR_VAULT_ROLE: ${{ inputs.vault-role }}
+        KEPR_VAULT_AUTH_PATH: ${{ inputs.vault-auth-path }}
+      run: |
+        export PATH="$HOME/.local/bin:$PATH"
+        bash "$GITHUB_ACTION_PATH/../ci/kepr-ci.sh" run

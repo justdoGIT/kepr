@@ -7,7 +7,7 @@ use kepr_core::protocol::{Request, Response};
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::daemon_audit::handle_audit_verify;
-use crate::daemon_handlers::{handle_check, handle_delete, handle_set, SetFlags};
+use crate::daemon_handlers::{handle_check, handle_set, SetFlags};
 use crate::daemon_handlers_list::handle_list;
 use crate::{
     audit_chain_path, crypto, daemon_extra, daemon_gate_registry, daemon_handlers_get, daemon_lock,
@@ -76,7 +76,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
             fido2_assertion.as_ref(),
         ),
         Request::List => handle_list(uid, username),
-        Request::Delete { name } => handle_delete(uid, username, &name),
+        Request::Delete { name } => crate::daemon_store::handle_rm(uid, username, &name),
         Request::Check => handle_check(uid, username),
         Request::AuditVerify => handle_audit_verify(uid, username, &audit_chain_path()),
         Request::Fido2Register {

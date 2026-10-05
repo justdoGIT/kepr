@@ -83,8 +83,10 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         Request::Vault(r) => crate::daemon_vault::dispatch(uid, peer_pid, username, r),
         // batch: seal
         // batch: store
+        Request::Store(r) => crate::daemon_store::dispatch(uid, peer_pid, username, r),
         // batch: records
         // batch: share
+        Request::Sharing(r) => crate::daemon_sharing::dispatch(uid, peer_pid, username, r),
         // batch: sync
         // batch: policy
         // batch: gate

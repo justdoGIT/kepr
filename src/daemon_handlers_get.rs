@@ -88,6 +88,8 @@ pub fn handle_get(
     }
 
     let upper = name.to_uppercase();
+    // T11.5: an alias reads its target, under the target's own policy.
+    let (upper, asked) = (crate::daemon_store::resolve_alias(uid, &upper), upper);
     // Check and decrypt under one lock: a sealed `set` can't slip between.
     let _lock = crate::daemon_credlock::lock(uid, &upper);
 
@@ -190,7 +192,7 @@ pub fn handle_get(
             // into a plain String that the serializer would then
             // walk; that String dropped without zeroizing.
             Response::GetOk {
-                name: upper,
+                name: asked,
                 value: secret,
             }
         }

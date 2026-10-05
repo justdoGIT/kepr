@@ -283,7 +283,7 @@ pub fn cmd_get(a: &Args) -> Response {
 }
 
 pub fn cmd_list(a: &Args) -> Response {
-    let resp = dispatch(a, &Request::List);
+    let resp = crate::cli_store::filter_list(a, dispatch(a, &Request::List));
     if a.json {
         return resp;
     }
@@ -308,6 +308,7 @@ pub fn cmd_list(a: &Args) -> Response {
                 if matches!(c.requires_consent, Some(true)) {
                     tail.push_str("  (consent required)");
                 }
+                tail.push_str(&crate::cli_store::list_tail(c));
                 println!("  {:<40} {}", color("1", &c.name), color("2", &tail));
             }
             println!();

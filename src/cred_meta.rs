@@ -45,6 +45,18 @@ pub struct CredMeta {
     // batch: vault
     // batch: seal
     // batch: store
+    /// T5.01: tags (`[a-z0-9_-]{1,32}`, at most 16) and a `/`-separated
+    /// folder. Organisation only; kept across `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub folder: Option<String>,
+    /// T11.2: on a trash entry (`NAME~t<unix>`): when it was deleted.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub trashed_at: Option<u64>,
+    /// T11.5: this name is an alias of that credential (no value file).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub alias_of: Option<String>,
     // batch: records
     // batch: share
     // batch: sync

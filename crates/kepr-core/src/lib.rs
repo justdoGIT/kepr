@@ -35,11 +35,15 @@ pub mod ssh_wire;
 pub mod protocol_vault;
 // batch: seal
 // batch: store
+pub mod protocol_store;
 // batch: records
 // batch: share
+pub mod protocol_sharing;
 // batch: sync
 // batch: policy
 // batch: gate
+pub mod mysql_handshake;
+pub mod mysql_wire;
 // batch: aws
 // batch: eco
 // batch: platform

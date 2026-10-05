@@ -55,8 +55,10 @@ mod version_state;
 mod daemon_vault;
 // batch: seal
 // batch: store
+mod daemon_store;
 // batch: records
 // batch: share
+mod daemon_sharing;
 // batch: sync
 // batch: policy
 // batch: gate

@@ -42,6 +42,8 @@ pub struct Args {
     pub fido2_credential_id: Option<String>,
     /// `kepr fido2-register` only: hex COSE_Key public key from authenticator.
     pub fido2_public_key_cose: Option<String>,
+    /// Flags of the `store` batch on core verbs (`ls --tag/--folder`, …).
+    pub store: crate::cli_store::StoreFlags,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -77,6 +79,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut requires_fido2 = false;
     let mut fido2_credential_id: Option<String> = None;
     let mut fido2_public_key_cose: Option<String> = None;
+    let mut store = crate::cli_store::StoreFlags::default();
 
     let mut i = 1usize;
 
@@ -247,6 +250,7 @@ pub fn parse_args() -> Result<Args, String> {
                 exec_argv = raw[i..].to_vec();
                 break;
             }
+            s if crate::cli_store::FLAGS.contains(&s) => i = store.take(&raw, i)?,
             s if !s.starts_with('-') => {
                 if name.is_none() {
                     name = Some(s.to_uppercase());
@@ -286,5 +290,6 @@ pub fn parse_args() -> Result<Args, String> {
         requires_fido2,
         fido2_credential_id,
         fido2_public_key_cose,
+        store,
     })
 }

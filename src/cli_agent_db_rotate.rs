@@ -1,12 +1,14 @@
 // cli_agent_db_rotate.rs — `kepr agent rotate-db NAME [--abort]` (agent
-// vault P7.2): change a sealed PostgreSQL login's password without anyone
-// seeing either the old or the new one.
+// vault P7.2): change a sealed PostgreSQL (or, T7.04, MySQL) login's
+// password without anyone seeing either the old or the new one.
 //
 //   1. the daemon adds a random `pending_password` to the record (or keeps
 //      the one an unfinished run left);
 //   2. a gate is started for this one database; we log in through it with
 //      the `kepr_rotate` startup parameter, and the gate runs
-//      `ALTER ROLE CURRENT_USER PASSWORD '<SCRAM verifier>'` upstream;
+//      `ALTER ROLE CURRENT_USER PASSWORD '<SCRAM verifier>'` upstream
+//      (MySQL: user `kepr_rotate`, cli_gatex/mysql_login.rs, and
+//      `ALTER USER CURRENT_USER() IDENTIFIED BY …`);
 //   3. on success the daemon commits the pending password.
 //
 // A failure leaves the pending password in place, so running the command
@@ -18,7 +20,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use kepr_core::gate_protocol::{db_route_key, GateLimits};
+use kepr_core::gate_protocol::{db_route_key, GateLimits, TargetKind};
 use kepr_core::protocol::{Request, Response};
 
 use crate::{cli_ui, client};
@@ -101,19 +103,26 @@ pub fn drive(s: &mut (impl Read + Write), placeholder: &str, rotate: bool) -> Re
     }
 }
 
-/// A gate for this one database: (placeholder, loopback port).
-fn start_gate(name: &str) -> Result<(String, u16), String> {
+/// A gate for this one database: (placeholder, loopback port, kind).
+fn start_gate(name: &str) -> Result<(String, u16, TargetKind), String> {
     let creds = crate::cli_agent_run::sealed_creds()?;
     let mine: Vec<_> = creds.into_iter().filter(|c| c.name == name).collect();
     let mut routes = crate::cli_agent_db::routes(&[], &mine);
+    let mut kind = TargetKind::Postgres;
     for r in &mut routes {
         if let Some(t) = &mut r.target {
             t.rotate = true;
+            kind = t.kind;
         }
     }
     if routes.is_empty() {
         return Err(format!(
             "{name} is not a sealed database login (kepr agent add-db)"
+        ));
+    }
+    if !matches!(kind, TargetKind::Postgres | TargetKind::Mysql) {
+        return Err(format!(
+            "{name}: only PostgreSQL and MySQL logins can be rotated"
         ));
     }
     let key = db_route_key(name);
@@ -135,15 +144,19 @@ fn start_gate(name: &str) -> Result<(String, u16), String> {
         _ => return Err("unexpected daemon response".into()),
     };
     ph.zip(port)
+        .map(|(ph, port)| (ph, port, kind))
         .ok_or_else(|| "the gate did not open a database port".into())
 }
 
 fn login(name: &str, rotate: bool) -> Result<(), String> {
-    let (ph, port) = start_gate(name)?;
+    let (ph, port, kind) = start_gate(name)?;
     let mut s = TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(Duration::from_secs(60)))
         .map_err(|e| e.to_string())?;
-    drive(&mut s, &ph, rotate)
+    match kind {
+        TargetKind::Mysql => crate::cli_gatex::mysql_login::drive(&mut s, &ph, rotate),
+        _ => drive(&mut s, &ph, rotate),
+    }
 }
 
 fn rotate(name: &str) -> Result<(), String> {
