@@ -109,7 +109,7 @@ pub fn move_to_trash(uid: u32, upper: &str, now: u64) -> Result<Option<String>, 
         // Never copy a policy this daemon can't read.
         Some(Err(_)) => return Ok(None),
     };
-    if !path.exists() {
+    if !crate::store::cred_exists(uid, upper) {
         return Ok(None);
     }
     if crypto::backend_is_locked() {
@@ -121,22 +121,25 @@ pub fn move_to_trash(uid: u32, upper: &str, now: u64) -> Result<Option<String>, 
         return Ok(None);
     };
     let mut ts = now;
-    while cred_path(uid, &format!("{upper}~t{ts}")).exists() {
+    while crate::store::cred_exists(uid, &format!("{upper}~t{ts}")) {
         ts += 1;
     }
+    drop(value);
     let entry = format!("{upper}~t{ts}");
-    let entry_meta_path = expiry::meta_path_for(&cred_path(uid, &entry));
-    let mut tmeta = meta;
-    tmeta.trashed_at = Some(now);
-    expiry::write_meta(&entry_meta_path, &tmeta)?;
-    let stored = crypto::default_backend()
-        .encrypt(uid, &entry, value.as_bytes())
-        .and_then(|()| crypto::default_backend().delete(uid, upper));
-    if let Err(e) = stored {
+    // `rename` moves the policy with the value (meta first, or in one
+    // image commit), so a sealed value is never readable without its
+    // seal; then the entry's meta gains `trashed_at`.
+    if let Err(e) = crypto::default_backend().rename(uid, upper, &entry) {
         purge_entry(uid, &entry);
         return Err(e);
     }
-    expiry::delete_meta(&expiry::meta_path_for(&path));
+    let mut tmeta = meta;
+    tmeta.trashed_at = Some(now);
+    let mp = expiry::meta_path_for(&cred_path(uid, &entry));
+    if let Err(e) = expiry::write_meta(&mp, &tmeta) {
+        // The entry keeps the credential's own meta; its name has the time.
+        eprintln!("[kepr-daemon] trash: trashed_at not recorded: {e}");
+    }
     files::move_history(uid, upper, &entry);
     crate::daemon_history::purge(uid, upper);
     Ok(Some(entry))
@@ -187,8 +190,7 @@ pub fn handle_restore(uid: u32, username: &str, name: &str) -> Response {
 
 fn restore(uid: u32, upper: &str) -> Result<(), String> {
     validate_name(upper)?;
-    let path = cred_path(uid, upper);
-    if path.exists() || super::alias::target_of(uid, upper).is_some() {
+    if crate::store::cred_exists(uid, upper) || super::alias::target_of(uid, upper).is_some() {
         return Err(format!(
             "{upper} exists again; rename or delete it before restoring"
         ));
@@ -199,20 +201,17 @@ fn restore(uid: u32, upper: &str) -> Result<(), String> {
         .ok_or_else(|| format!("{upper} is not in the trash"))?;
     let mut meta = entry_meta(uid, &entry).map_err(|_| "trash entry metadata unreadable")?;
     meta.trashed_at = None;
-    let value = crypto::default_backend()
-        .decrypt(uid, &entry)
-        .map_err(|e| crypto::sanitize_lookup_error(&e))?;
     // Policy first, as `set` does for sealed values: the value must never
-    // be readable without its seal, even for an instant.
-    let mp = expiry::meta_path_for(&path);
+    // be readable without its seal, even for an instant. `rename` carries
+    // the entry's meta over, so write the restored one after it.
+    let mp = expiry::meta_path_for(&cred_path(uid, upper));
+    crypto::default_backend()
+        .rename(uid, &entry, upper)
+        .map_err(|e| crypto::sanitize_lookup_error(&e))?;
     if meta.is_empty() {
         expiry::delete_meta(&mp);
     } else {
         expiry::write_meta(&mp, &meta)?;
-    }
-    if let Err(e) = crypto::default_backend().encrypt(uid, upper, value.as_bytes()) {
-        expiry::delete_meta(&mp);
-        return Err(e);
     }
     crate::daemon_history::purge(uid, upper);
     files::move_history(uid, &entry, upper);
@@ -241,7 +240,7 @@ pub fn handle_purge(uid: u32, username: &str, name: Option<&str>) -> Response {
 /// pass to one uid (tests); the sweeper passes `None`.
 pub fn sweep_in(only: Option<u32>, now: u64, days: u64) -> usize {
     let mut purged = 0;
-    for (uid, entry, _) in files::all_in(&crate::store::store_dir()) {
+    for (uid, entry, _) in files::all() {
         let Some((name, rest)) = entry.split_once("~t") else {
             continue;
         };
@@ -343,7 +342,10 @@ mod tests {
         let it = items(uid);
         assert_eq!(it[0].sealed, Some(true));
         let entry = &entries(uid)[0].1;
-        assert_eq!(entry_meta(uid, entry).unwrap().sealed, Some(true));
+        let tmeta = entry_meta(uid, entry).unwrap();
+        assert_eq!(tmeta.sealed, Some(true));
+        assert_eq!(tmeta.bindings, before.bindings);
+        assert_eq!(tmeta.trashed_at, Some(stamp(entry)));
         assert!(handle_restore(uid, "t", "TR_S").is_success());
         let after = testkit::meta(uid, "TR_S");
         assert_eq!(after.sealed, Some(true));

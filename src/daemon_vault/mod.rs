@@ -21,6 +21,7 @@
 //   admin.rs   create / check / usage of the whole image (T4.07)
 //   migrate.rs move the per-file store into the image (T4.07)
 //   handlers.rs `kepr vault init|migrate|verify|status` (T4.07)
+//   listing.rs every record, for the store features (T4.14)
 
 pub mod admin;
 pub mod backend;
@@ -30,6 +31,7 @@ pub mod image;
 pub mod index;
 pub mod journal;
 pub mod keys;
+pub mod listing;
 pub mod merkle;
 pub mod migrate;
 pub mod place;
@@ -93,10 +95,16 @@ pub fn meta_store_for(meta_path: &Path) -> Option<&'static dyn crate::expiry::Me
     in_image_dir(meta_path).map(|b| b as &dyn crate::expiry::MetaStore)
 }
 
-/// (size, last write) of the credential behind a per-file path.
-pub fn stat(cred_path: &Path) -> Option<(u64, u64)> {
-    let b = in_image_dir(cred_path)?;
-    b.stat(cred_path.file_name()?.to_str()?)
+/// (size, last write) of the credential behind a per-file path; for a
+/// `.meta` path, (0, last write) of its record, meta-only ones (aliases)
+/// included.
+pub fn stat(path: &Path) -> Option<(u64, u64)> {
+    let b = in_image_dir(path)?;
+    let file = path.file_name()?.to_str()?;
+    match file.strip_suffix(".meta") {
+        Some(record) => b.updated(record).map(|t| (0, t)),
+        None => b.stat(file),
+    }
 }
 
 /// Recovery restore's proof: (1, 1) if `key` opens the image here,

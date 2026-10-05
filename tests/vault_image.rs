@@ -152,6 +152,21 @@ fn json(d: &Daemon, args: &[&str]) -> serde_json::Value {
     serde_json::from_str(&ok(d, &all)).unwrap()
 }
 
+/// `kepr agent add NAME --stdin`: a sealed key bound to its provider.
+fn add_sealed(d: &Daemon, name: &str, value: &str) {
+    use std::io::Write;
+    let mut add = Command::new(env!("CARGO_BIN_EXE_kepr"));
+    env(&mut add, d.home.path());
+    let mut child = add
+        .args(["agent", "add", name, "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{value}").unwrap();
+    assert!(child.wait().unwrap().success(), "agent add");
+}
+
 fn fails_with(d: &Daemon, args: &[&str]) -> String {
     let o = kepr(d, args);
     assert!(!o.status.success(), "kepr {args:?} succeeded");
@@ -167,18 +182,8 @@ fn migrate_moves_the_file_store_into_the_image() {
         &d,
         &["set", "ROTATED", "--value", "second", "--ttl", "3600"],
     );
-    let mut add = Command::new(env!("CARGO_BIN_EXE_kepr"));
-    env(&mut add, d.home.path());
-    let mut child = add
-        .args(["agent", "add", "ANTHROPIC_API_KEY", "--stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    use std::io::Write;
     let sealed = "sk-ant-api03-VAULTMIGRATE0123456789SECRET";
-    writeln!(child.stdin.take().unwrap(), "{sealed}").unwrap();
-    assert!(child.wait().unwrap().success(), "agent add");
+    add_sealed(&d, "ANTHROPIC_API_KEY", sealed);
     ok(&d, &["ssh", "generate", "DEPLOY_KEY"]);
     let ssh_keys = json(&d, &["ssh", "list"])["keys"].clone();
     assert_eq!(ssh_keys.as_array().map(Vec::len), Some(1), "{ssh_keys}");
@@ -304,6 +309,99 @@ fn verify_names_each_damaged_slot_and_only_used_ones() {
     }
     assert_eq!(two_only, 1);
     assert_eq!(ok(&d, &["get", "TWO", "--quiet"]).trim(), "two");
+}
+
+/// T4.14: the store batch's features with the image as the store.
+#[test]
+fn trash_aliases_verify_and_delete_all_work_on_the_image() {
+    let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["set", "KEEP", "--value", "one"]);
+    ok(&d, &["set", "KEEP", "--value", "two"]);
+    ok(&d, &["tag", "KEEP", "+prod"]);
+    let sealed = "sk-ant-api03-VAULTTRASH0123456789SECRET";
+    add_sealed(&d, "ANTHROPIC_API_KEY", sealed);
+    let entry = |list: &serde_json::Value, n: &str| {
+        list["credentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == n)
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    // rm → the trash (history, tags and seal with it) → restore.
+    json(&d, &["rm", "KEEP"]);
+    json(&d, &["rm", "ANTHROPIC_API_KEY"]);
+    assert!(names(&d).is_empty());
+    assert!(!kepr(&d, &["get", "KEEP", "--quiet"]).status.success());
+    let trash = json(&d, &["trash"]);
+    let mut trashed: Vec<&str> = trash["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap())
+        .collect();
+    trashed.sort_unstable();
+    assert_eq!(trashed, ["ANTHROPIC_API_KEY", "KEEP"], "{trash}");
+    ok(&d, &["trash", "restore", "KEEP"]);
+    ok(&d, &["trash", "restore", "ANTHROPIC_API_KEY"]);
+    assert_eq!(json(&d, &["trash"])["items"], serde_json::json!([]));
+    assert_eq!(ok(&d, &["get", "KEEP", "--quiet"]).trim(), "two");
+    let hist = json(&d, &["history", "KEEP"]);
+    assert_eq!(hist["versions"].as_array().map(Vec::len), Some(1), "{hist}");
+    let list = json(&d, &["list"]);
+    assert_eq!(entry(&list, "KEEP")["tags"], serde_json::json!(["prod"]));
+    assert_eq!(entry(&list, "ANTHROPIC_API_KEY")["sealed"], true, "{list}");
+    let o = kepr(&d, &["get", "ANTHROPIC_API_KEY", "--quiet"]);
+    assert!(!o.status.success());
+    assert!(!String::from_utf8_lossy(&o.stdout).contains(sealed));
+
+    // An alias is a meta-only record: listed, resolved, removed alone.
+    ok(&d, &["ln", "SHORT", "KEEP"]);
+    assert_eq!(ok(&d, &["get", "SHORT", "--quiet"]).trim(), "two");
+    let list = json(&d, &["list"]);
+    assert_eq!(entry(&list, "SHORT")["alias_of"], "KEEP", "{list}");
+    ok(&d, &["ln", "GONE", "KEEP"]);
+    json(&d, &["rm", "GONE"]);
+    assert_eq!(ok(&d, &["get", "KEEP", "--quiet"]).trim(), "two");
+    assert!(!kepr(&d, &["get", "GONE", "--quiet"]).status.success());
+
+    // Folders, history diff and the duplicate finder read the image too.
+    ok(&d, &["mv", "KEEP", "team/app"]);
+    assert_eq!(entry(&json(&d, &["list"]), "KEEP")["folder"], "team/app");
+    let diff = json(&d, &["history", "KEEP", "--diff", "1", "0"]);
+    let changed = serde_json::json!([{"field": "value", "change": "changed"}]);
+    assert_eq!(diff["changes"], changed, "{diff}");
+    ok(&d, &["set", "COPY", "--value", "two"]);
+    let dupes = json(&d, &["dupes"]);
+    assert_eq!(
+        dupes["groups"],
+        serde_json::json!([["COPY", "KEEP"]]),
+        "{dupes}"
+    );
+    ok(&d, &["dupes", "--merge", "KEEP"]);
+    assert_eq!(entry(&json(&d, &["list"]), "COPY")["alias_of"], "KEEP");
+    assert_eq!(ok(&d, &["get", "COPY", "--quiet"]).trim(), "two");
+
+    // doctor --verify checks what the image holds.
+    let v = json(&d, &["doctor", "--verify"]);
+    assert_eq!(v["all_ok"], true, "{v}");
+    assert_eq!(v["results"]["SHORT"], "ok", "{v}");
+    assert_eq!(v["results"]["COPY"], "ok", "{v}");
+    assert_eq!(v["results"]["KEEP~0"], "ok", "{v}");
+    assert_eq!(v["count"], 6, "{v}"); // KEEP, KEEP~0, the key, 2 aliases, COPY's trash entry
+
+    // delete --all takes values, history, trash and aliases.
+    ok(&d, &["set", "BIN", "--value", "b"]);
+    json(&d, &["rm", "BIN"]);
+    ok(&d, &["delete", "--all", "--yes"]);
+    assert!(names(&d).is_empty());
+    assert_eq!(json(&d, &["trash"])["items"], serde_json::json!([]));
+    assert!(!kepr(&d, &["get", "SHORT", "--quiet"]).status.success());
+    assert_eq!(json(&d, &["vault", "verify"])["records"], 0);
+    // Nothing ever went to per-file storage.
+    assert!(cred_files(&d).is_empty(), "{:?}", cred_files(&d));
 }
 
 fn uid() -> String {
