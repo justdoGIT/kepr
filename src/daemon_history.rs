@@ -90,7 +90,13 @@ fn next_slot(uid: u32, name: &str) -> u32 {
 pub fn save_current(uid: u32, name: &str) {
     let meta =
         expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, name))).and_then(Result::ok);
-    if meta.as_ref().is_some_and(|m| m.ssh.is_some()) || !cred_path(uid, name).exists() {
+    // SSH and share private keys never go to history: a restored slot
+    // carries no meta, so `Get` would then return them.
+    if meta
+        .as_ref()
+        .is_some_and(|m| m.ssh.is_some() || m.share_key == Some(true))
+        || !cred_path(uid, name).exists()
+    {
         return;
     }
     let current = match crypto::default_backend().decrypt(uid, name) {

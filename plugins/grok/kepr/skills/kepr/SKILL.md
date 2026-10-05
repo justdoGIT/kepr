@@ -28,8 +28,8 @@ Rules:
 3. Never write a key into a file, a command line or a commit. Reference the
    environment variable (`$XAI_API_KEY`, `process.env.XAI_API_KEY`).
 4. `kepr get`, `kepr env`, `kepr exec`, `kepr totp`, `kepr inject`,
-   `kepr copy` and `kepr record get` are blocked in agent sessions because
-   they reveal values. `kepr list`, `kepr agent ls` and `kepr status` are
+   `kepr copy`, `kepr record get`, `kepr share` and `kepr sync-push` are
+   blocked in agent sessions because they reveal or move values. `kepr list`, `kepr agent ls` and `kepr status` are
    fine and show names only.
 5. To call a provider API without any key in the environment, use the
    `kepr` MCP server's `call_api` tool; `list_secrets` shows what exists.

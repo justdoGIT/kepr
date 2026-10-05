@@ -179,7 +179,13 @@ pub fn handle_key(uid: u32, username: &str, create: bool) -> Response {
     }
 }
 
-pub fn handle_send(uid: u32, username: &str, name: &str, to: &str, ttl: Option<u64>) -> Response {
+pub fn handle_send(
+    (uid, peer_pid): (u32, i32),
+    username: &str,
+    name: &str,
+    to: &str,
+    ttl: Option<u64>,
+) -> Response {
     let upper = name.to_uppercase();
     let mut out = (String::new(), 0u64);
     let r = (|| {
@@ -189,12 +195,14 @@ pub fn handle_send(uid: u32, username: &str, name: &str, to: &str, ttl: Option<u
         if ttl == 0 || ttl > MAX_TTL {
             return Err("--ttl must be 1 second to 30 days".into());
         }
+        // The same policy as Get, fail-closed: sealed, SSH and share
+        // keys, expired values, an unreadable .meta and FIDO2-gated
+        // values are refused; consent-gated ones ask first.
+        crate::daemon_handlers_get::precheck_meta(uid, peer_pid, &upper)
+            .map_err(|_| "this credential can't be shared".to_string())?;
         let meta = expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, &upper)))
             .and_then(Result::ok)
             .unwrap_or_default();
-        if meta.sealed == Some(true) || meta.ssh.is_some() || meta.share_key == Some(true) {
-            return Err("this credential can't be shared".into());
-        }
         let value = crypto::default_backend()
             .decrypt(uid, &upper)
             .map_err(|e| crypto::sanitize_lookup_error(&e))?;
@@ -230,22 +238,37 @@ pub fn handle_receive(uid: u32, username: &str, envelope: &str, rename: Option<&
         if expiry::now_unix() >= p.expires {
             return Err("this share has expired".to_string());
         }
-        crate::daemon_share_seen::claim(uid, &p.id, p.expires)?;
+        // Everything that can refuse runs before the share is used up.
         let name = rename.map(str::to_uppercase).unwrap_or(p.name);
         validate_name(&name)?;
         if name == KEY_NAME {
             return Err("this name is reserved".into());
         }
-        Ok((name, p.value, p.record_type))
+        // Never let a sender's choice of name replace an existing
+        // credential (a sealed key, an SSH key, …).
+        if cred_path(uid, &name).exists() {
+            return Err(format!(
+                "{name} already exists; receive it --as ANOTHER_NAME"
+            ));
+        }
+        crate::daemon_share_seen::claim(uid, &p.id, p.expires)?;
+        let flags = SetFlags {
+            record_type: p.record_type,
+            ..Default::default()
+        };
+        match handle_set(uid, username, &name, Some(p.value.as_str()), None, flags) {
+            r @ Response::SetOk { .. } => Ok((name, r)),
+            Response::Err { error } => {
+                crate::daemon_share_seen::release(uid, &p.id);
+                Err(error)
+            }
+            _ => Err("unexpected store reply".into()),
+        }
     })();
     match r {
-        Ok((name, value, record_type)) => {
+        Ok((name, resp)) => {
             audit_r("share-receive", uid, username, Some(&name), &Ok(()));
-            let flags = SetFlags {
-                record_type,
-                ..Default::default()
-            };
-            handle_set(uid, username, &name, Some(value.as_str()), None, flags)
+            resp
         }
         Err(e) => {
             audit_r("share-receive", uid, username, None, &Err(e.clone()));

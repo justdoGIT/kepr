@@ -74,7 +74,7 @@ itself keep secrets out of the conversation. Both plugins ask
 | What it does | omp | Grok Build |
 | --- | --- | --- |
 | Sends provider calls through the gate with the placeholder (no config edit needed) | yes (`anthropic`, `openai`, `xai`) | via `config.toml` |
-| Refuses tool calls that would print a stored value (`kepr get`, `env`, `exec`, `totp`, `inject`, `copy`, `record`, `recovery-kit`) | yes | yes |
+| Refuses tool calls that would print a stored value (`kepr get`, `env`, `exec`, `totp`, `inject`, `copy`, `record`, `recovery-kit`, `share`, `sync-push`) | yes | yes |
 | Refuses tool calls that contain a real key (a command, or file content) | yes | yes |
 | Refuses a prompt with a pasted key, before it reaches the model | interactive sessions | yes |
 | Removes keys from user messages before every model request | yes (covers `omp -p` and RPC) | – |

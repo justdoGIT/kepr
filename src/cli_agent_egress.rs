@@ -79,8 +79,15 @@ fn write_ca(ca_pem: &str) -> Result<(PathBuf, PathBuf), String> {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let dir = base.join(format!("kepr-agent-{}", std::process::id()));
-    let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    // An unpredictable name, created fresh: a directory someone else made
+    // in advance (in a shared /tmp) could hand the agent their own CA.
+    let mut rnd = [0u8; 8];
+    getrandom::fill(&mut rnd).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    let dir = base.join(format!("kepr-agent-{}", hex::encode(rnd)));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
     let (ca, bundle) = (dir.join("session-ca.pem"), dir.join("ca-bundle.pem"));
     write_private(&ca, ca_pem.as_bytes())?;
     let mut all = SYSTEM_BUNDLES
