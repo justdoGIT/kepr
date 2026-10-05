@@ -75,6 +75,18 @@ jobs:
           go vet ./...
           go test ./...
 
+  terraform-provider:
+    name: Terraform provider
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: go vet + test
+        working-directory: integrations/terraform-provider-kepr
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
   docs:
     name: Docs (Fumadocs)
     runs-on: ubuntu-latest
