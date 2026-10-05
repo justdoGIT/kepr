@@ -2,7 +2,7 @@
 //
 // Phase 2 ζ.2. Pushes / pulls a kepr credential to / from AWS
 // Secrets Manager via signed REST calls. No SDK — SigV4 signing
-// from `sync_aws_sigv4`, HTTP via `ureq`. Same lean-deps stance
+// from `kepr_core::sigv4`, HTTP via `ureq`. Same lean-deps stance
 // as the Vault backend.
 //
 // Auth: standard AWS env vars
@@ -38,8 +38,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::sync::Syncer;
-use crate::sync_aws_sigv4::{format_amz_date, sign, SigV4Input};
 use kepr_core::generate::ZeroString;
+use kepr_core::sigv4::{format_amz_date, sign, SigV4Input};
 
 pub struct AwsSmSyncer {
     secret_id: String,

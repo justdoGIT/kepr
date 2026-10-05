@@ -53,7 +53,6 @@ mod cli_ui;
 mod cli_usage;
 mod client;
 mod sync;
-mod sync_aws_sigv4;
 mod sync_aws_sm;
 mod sync_gcp_sm;
 mod sync_http;

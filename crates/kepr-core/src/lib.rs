@@ -26,4 +26,5 @@ pub mod protocol_types;
 pub mod providers;
 pub mod secmem;
 pub mod shamir;
+pub mod sigv4;
 pub mod ssh_wire;

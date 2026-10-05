@@ -1,5 +1,5 @@
-// sync_aws_sigv4.rs — AWS Signature V4 signing for the
-// AWS Secrets Manager sync backend.
+// sigv4.rs — AWS Signature V4 signing, shared by the sync backends and
+// the gate (moved from src/sync_aws_sigv4.rs, ticket T2.01).
 //
 // SigV4 is AWS's symmetric request-signing scheme: every API
 // request carries an `Authorization` header whose signature is
@@ -32,8 +32,8 @@
 // the auth header) DON'T contain the secret — they contain the
 // derived signature, which is one-way.
 
+use crate::generate::ZeroString;
 use hmac::{Hmac, KeyInit, Mac};
-use kepr_core::generate::ZeroString;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 type HmacSha256 = Hmac<Sha256>;
