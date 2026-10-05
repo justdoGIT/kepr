@@ -3,6 +3,12 @@
 
 [advisories]
 version = 2
+ignore = [
+    # rsa (Marvin timing attack) affects private-key decryption / signing.
+    # kepr uses rsa only to verify RS256 OIDC ID-token signatures with the
+    # IdP's public key (T6.13, src/cli_sharing/jwt.rs); no private-key op.
+    { id = "RUSTSEC-2023-0071", reason = "rsa is used for public-key signature verification only" },
+]
 
 [licenses]
 version = 2
