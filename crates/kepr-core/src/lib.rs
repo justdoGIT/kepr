@@ -37,6 +37,7 @@ pub mod ssh_wire;
 pub mod protocol_store;
 // batch: records
 // batch: share
+pub mod protocol_sharing;
 // batch: sync
 // batch: policy
 // batch: gate

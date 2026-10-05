@@ -68,6 +68,7 @@ mod sync_vault;
 mod cli_store;
 // batch: records
 // batch: share
+mod cli_sharing;
 // batch: sync
 // batch: policy
 // batch: gate

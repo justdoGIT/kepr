@@ -28,6 +28,11 @@ const GROUPS: &[Group] = &[
     ),
     // batch: records
     // batch: share
+    (
+        crate::cli_sharing::VERBS,
+        crate::cli_sharing::HELP,
+        crate::cli_sharing::dispatch,
+    ),
     // batch: sync
     // batch: policy
     // batch: gate

@@ -264,6 +264,8 @@ pub enum Request {
     Store(crate::protocol_store::StoreRequest),
     // batch: records
     // batch: share
+    #[serde(untagged)]
+    Sharing(crate::protocol_sharing::SharingRequest),
     // batch: sync
     // batch: policy
     // batch: gate
