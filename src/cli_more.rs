@@ -21,8 +21,18 @@ const GROUPS: &[Group] = &[
     // batch: vault
     // batch: seal
     // batch: store
+    (
+        crate::cli_store::VERBS,
+        crate::cli_store::HELP,
+        crate::cli_store::dispatch,
+    ),
     // batch: records
     // batch: share
+    (
+        crate::cli_sharing::VERBS,
+        crate::cli_sharing::HELP,
+        crate::cli_sharing::dispatch,
+    ),
     // batch: sync
     // batch: policy
     // batch: gate
@@ -33,6 +43,11 @@ const GROUPS: &[Group] = &[
     ),
     // batch: aws
     // batch: eco
+    (
+        crate::cli_eco::VERBS,
+        crate::cli_eco::HELP,
+        crate::cli_eco::dispatch,
+    ),
     // batch: platform
     // batch: session
     // end of batches

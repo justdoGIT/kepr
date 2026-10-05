@@ -77,16 +77,19 @@ DATABASE_URL=postgres://kepr://PROD_DB/user:kepr://PROD_DB/password@kepr://PROD_
 ## Sharing with another kepr user
 
 ```bash
-kepr share key                                    # bob: print his public key (kepr-pub1-…)
-kepr share send DB_PASS --to kepr-pub1-… -o db.share --ttl 3600   # alice
+kepr share key                                    # bob: print his public key (kepr-pk2-…)
+kepr share send DB_PASS --to kepr-pk2-… -o db.share --ttl 3600    # alice
 kepr share receive db.share                       # bob: stored as DB_PASS (or --as NAME)
 ```
 
 How it works:
 
 - **Encryption:** the sender's daemon encrypts the value to the recipient's
-  key with an ephemeral X25519 key, HKDF-SHA256 and AES-256-GCM. The
-  envelope is bound to that recipient and is tamper-evident.
+  key with a hybrid of an ephemeral X25519 key and ML-KEM-768 (post-quantum),
+  HKDF-SHA256 and AES-256-GCM: reading it needs both to be broken. The
+  envelope is bound to that recipient and is tamper-evident. Older
+  `kepr-pub1-…` keys still work (they get an X25519-only envelope);
+  `kepr share key` upgrades your own key in place.
 - **Decryption:** only the recipient's daemon can decrypt it, and it stores
   the value directly. Neither CLI sees the plaintext.
 - **Expiry:** shares expire after `--ttl` (default 24 h, at most 30 days).

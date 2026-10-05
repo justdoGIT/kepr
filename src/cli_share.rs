@@ -1,7 +1,8 @@
 // cli_share.rs — `kepr share` (agent vault P6.1 / P6.2): hand one
 // credential to another kepr user without a server.
 //
-//   kepr share key                                 your public key (made on first use)
+//   kepr share key                                 your public key (made on first use;
+//                                                  kepr-pk2-…, X25519 + ML-KEM-768)
 //   kepr share send NAME --to KEY [--ttl SECS] [-o FILE]
 //   kepr share receive [FILE] [--as NAME]          FILE or stdin
 //

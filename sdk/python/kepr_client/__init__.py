@@ -21,15 +21,48 @@ import os
 import socket
 import struct
 
-__all__ = ["Client", "KeprError", "socket_path"]
-__version__ = "0.1.0"
+__all__ = ["Client", "CredInfo", "KeprError", "socket_path", "GENERATE_KINDS"]
+__version__ = "0.2.0"
 
 MAX_MSG_BYTES = 65536
 _DEFAULT_TIMEOUT = 65.0  # covers the daemon's 60 s consent prompt
 
+GENERATE_KINDS = ("hex", "base62", "pass", "uuid", "words")
+# Pull-on-demand fd delivery (plan T3.06): request name and reply kind.
+FETCH_FD_CMD = "fetch_fd"
+_FD_OK = "fd_ok"
+
 
 class KeprError(Exception):
     """The daemon refused the request or could not be reached."""
+
+
+class CredInfo:
+    """One credential's metadata as ``list`` reports it. Never a value.
+
+    Known fields are attributes (``None`` / ``False`` when absent); fields
+    from newer daemons (e.g. ``tags``) are attributes too.
+    """
+
+    _FLAGS = ("requires_consent", "requires_fido2", "sealed")
+    _OPTIONAL = ("expires_at", "bound_hosts", "record_type")
+
+    def __init__(self, d):
+        self.name = d.get("name", "")
+        self.size = d.get("size", 0)
+        self.modified = d.get("modified", "")
+        for k in self._OPTIONAL:
+            setattr(self, k, d.get(k))
+        for k in self._FLAGS:
+            setattr(self, k, bool(d.get(k)))
+        for k, v in d.items():
+            if not hasattr(self, k):
+                setattr(self, k, v)
+        # The on-disk name carries the uid; it is not useful to callers.
+        self.__dict__.pop("cred_name", None)
+
+    def __repr__(self):
+        return "CredInfo(%r)" % (self.__dict__,)
 
 
 def socket_path():
@@ -110,25 +143,79 @@ class Client:
         """``{NAME: value}`` for each name (one request per name)."""
         return {_upper(n): self.get(n) for n in names}
 
-    def set(self, name, value=None, generate=None, ttl_secs=None, requires_consent=None):
-        """Store ``value``, or generate one (``"hex"|"base62"|"pass"|"uuid"|"words"``)."""
+    def set(self, name, value=None, generate=None, ttl_secs=None, requires_consent=None,
+            requires_fido2=None):
+        """Store ``value``, or have the daemon generate one (``generate`` =
+        ``"hex"|"base62"|"pass"|"uuid"|"words"``, default hex). A generated
+        value is never sent back; read it with ``get`` if you need it."""
         req = {"cmd": "set", "name": _upper(name)}
+        if value is not None and generate is not None:
+            raise KeprError("pass a value or generate, not both")
         if value is not None:
+            if not isinstance(value, str) or value == "":
+                raise KeprError("value must be a non-empty string")
             req["value"] = value
         else:
-            req["generate"] = generate or "hex"
+            kind = generate or "hex"
+            if kind not in GENERATE_KINDS:
+                raise KeprError("generate must be one of %s" % ", ".join(GENERATE_KINDS))
+            req["generate"] = kind
         if ttl_secs is not None:
             req["ttl_secs"] = int(ttl_secs)
         if requires_consent:
             req["requires_consent"] = True
+        if requires_fido2:
+            req["requires_fido2"] = True
         return self._expect(req, "set_ok")
 
     def delete(self, name):
         self._expect({"cmd": "delete", "name": _upper(name)}, "delete_ok")
 
     def list(self):
-        """Credential records (name, size, modified, flags) — no values."""
+        """Credential records (name, size, modified, flags) as dicts — no values."""
         return self._expect({"cmd": "list"}, "list_ok")["credentials"]
+
+    def credentials(self):
+        """``list`` as :class:`CredInfo` objects (expiry, consent, sealed, type…)."""
+        return [CredInfo(d) for d in self.list()]
+
+    def info(self, name):
+        """Metadata for one credential, or ``None`` if there is none by that name."""
+        n = _upper(name)
+        return next((c for c in self.credentials() if c.name == n), None)
+
+    def fetch_fd(self, name):
+        """Fetch ``name`` as a sealed in-memory file descriptor (plan T3.06).
+
+        Returns ``(fd, length)``. The daemon applies the same checks as
+        ``get``; the fd is close-on-exec, so children never inherit it.
+        The caller owns the fd: read it (``os.pread(fd, length, 0)``) and
+        ``os.close`` it. Needs a daemon with pull-on-demand fd delivery.
+        """
+        req = json.dumps({"cmd": FETCH_FD_CMD, "name": _upper(name)}).encode()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(self.timeout)
+                s.connect(self.path)
+                s.sendall(struct.pack(">I", len(req)) + req)
+                (n,) = struct.unpack(">I", _recv_exact(s, 4))
+                if n > MAX_MSG_BYTES:
+                    raise KeprError("reply too large")
+                resp = json.loads(_recv_exact(s, n))
+                if resp.get("kind") == "err":
+                    raise KeprError(resp.get("error", "request failed"))
+                if resp.get("kind") != _FD_OK:
+                    raise KeprError("unexpected reply: %s" % resp.get("kind"))
+                _, fds, _, _ = socket.recv_fds(s, 1, 1)
+        except OSError as e:
+            raise KeprError("cannot reach the credential service at %s (%s)" % (self.path, e)) \
+                from None
+        if len(fds) != 1:
+            for fd in fds:
+                os.close(fd)
+            raise KeprError("the credential service sent no descriptor")
+        os.set_inheritable(fds[0], False)
+        return fds[0], int(resp.get("len", 0))
 
     def history(self, name):
         """Saved previous versions of ``name`` (no values)."""

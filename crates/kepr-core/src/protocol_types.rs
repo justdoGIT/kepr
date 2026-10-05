@@ -65,7 +65,9 @@ pub struct GateExtras {
 
 // ── Credential info (for ListOk) ──────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// `Default` lets literals name only the fields they set (`..Default::default()`),
+/// so a batch adding an optional field doesn't touch every literal.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CredInfo {
     pub name: String,      // ENV_VAR_NAME
     pub cred_name: String, // kepr-<uid>-env-var-name
@@ -102,6 +104,14 @@ pub struct CredInfo {
     // batch: vault
     // batch: seal
     // batch: store
+    /// T5.01: tags and folder (no secret material).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub folder: Option<String>,
+    /// T11.5: this entry is an alias of that credential.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub alias_of: Option<String>,
     // batch: records
     // batch: share
     // batch: sync

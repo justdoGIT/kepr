@@ -65,14 +65,17 @@ mod sync_vault;
 // batch: vault
 // batch: seal
 // batch: store
+mod cli_store;
 // batch: records
 // batch: share
+mod cli_sharing;
 // batch: sync
 // batch: policy
 // batch: gate
 mod cli_gatex;
 // batch: aws
 // batch: eco
+mod cli_eco;
 // batch: platform
 // batch: session
 // end of batches

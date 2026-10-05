@@ -75,7 +75,7 @@ impl CliActivity {
             "set" => cli_cmds::cmd_set(args),
             "get" => cli_cmds::cmd_get(args),
             "list" => cli_cmds::cmd_list(args),
-            "delete" => cli_cmds::cmd_delete(args),
+            "delete" => crate::cli_store::cmd_delete(args), // T11.2: trash / --force
             "check" => cli_cmds::cmd_check(args),
             "lock" => cli_cmds::cmd_lock(args),
             "unlock" => cli_cmds::cmd_unlock(args),
@@ -84,6 +84,7 @@ impl CliActivity {
                 Ok(vars) => cli_exec::cmd_exec(&vars, &args.memfd_vars, &args.exec_argv, args.mask),
                 Err(e) => Response::fail(e),
             },
+            "doctor" if args.store.verify => crate::cli_store::cmd_verify(args.json), // T11.10
             "doctor" => cli_doctor::cmd_doctor(args.json),
             "env" => match resolve_env_for(args) {
                 Ok(vars) => cli_envdump::cmd_env(&vars),

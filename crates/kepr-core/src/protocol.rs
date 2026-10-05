@@ -260,8 +260,12 @@ pub enum Request {
     // batch: vault
     // batch: seal
     // batch: store
+    #[serde(untagged)]
+    Store(crate::protocol_store::StoreRequest),
     // batch: records
     // batch: share
+    #[serde(untagged)]
+    Sharing(crate::protocol_sharing::SharingRequest),
     // batch: sync
     // batch: policy
     // batch: gate
@@ -480,13 +484,7 @@ mod tests {
                 cred_name: "kepr-1000-x".into(),
                 size: 42,
                 modified: "2024-01-01 00:00".into(),
-                expires_at: None,
-                requires_consent: None,
-                requires_fido2: None,
-                sealed: None,
-                bound_hosts: None,
-                record_type: None,
-                db_kind: None,
+                ..Default::default()
             }],
             count: 1,
         };

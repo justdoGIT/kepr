@@ -23,6 +23,29 @@ function socketPath() {
   return path.join(runtime, 'kepr', 'kepr.sock');
 }
 
+const GENERATE_KINDS = ['hex', 'base62', 'pass', 'uuid', 'words'];
+
+/** One `list` record as metadata; the on-disk name is dropped. */
+function credInfo(d) {
+  const { name, size, modified, cred_name: _ignored, ...rest } = d;
+  const out = {
+    name,
+    size,
+    modified,
+    expiresAt: d.expires_at ?? null,
+    recordType: d.record_type ?? null,
+    boundHosts: d.bound_hosts ?? null,
+    sealed: d.sealed === true,
+    requiresConsent: d.requires_consent === true,
+    requiresFido2: d.requires_fido2 === true,
+  };
+  const known = ['expires_at', 'record_type', 'bound_hosts', 'sealed', 'requires_consent', 'requires_fido2'];
+  for (const [k, v] of Object.entries(rest)) {
+    if (!known.includes(k)) out[k] = v; // fields from newer daemons (tags, folder…)
+  }
+  return out;
+}
+
 function upper(name) {
   if (typeof name !== 'string' || name === '') {
     throw new KeprError('credential name must be a non-empty string');
@@ -93,21 +116,53 @@ class Client {
     return (await this.expect({ cmd: 'get', name: upper(name) }, 'get_ok')).value;
   }
 
-  async set(name, value, { generate, ttlSecs, requiresConsent } = {}) {
+  /**
+   * Store `value`, or (value null/undefined) have the daemon generate one
+   * of kind `generate` (default hex). A generated value is never sent back.
+   */
+  async set(name, value, { generate, ttlSecs, requiresConsent, requiresFido2 } = {}) {
     const req = { cmd: 'set', name: upper(name) };
-    if (value !== undefined && value !== null) req.value = value;
-    else req.generate = generate || 'hex';
+    const hasValue = value !== undefined && value !== null;
+    if (hasValue && generate !== undefined) throw new KeprError('pass a value or generate, not both');
+    if (hasValue) {
+      if (typeof value !== 'string' || value === '') throw new KeprError('value must be a non-empty string');
+      req.value = value;
+    } else {
+      const kind = generate || 'hex';
+      if (!GENERATE_KINDS.includes(kind)) {
+        throw new KeprError(`generate must be one of ${GENERATE_KINDS.join(', ')}`);
+      }
+      req.generate = kind;
+    }
     if (ttlSecs !== undefined) req.ttl_secs = ttlSecs;
     if (requiresConsent) req.requires_consent = true;
+    if (requiresFido2) req.requires_fido2 = true;
     return this.expect(req, 'set_ok');
+  }
+
+  /** Have the daemon generate and store a value of `kind`. */
+  async generate(name, kind = 'hex', opts = {}) {
+    return this.set(name, null, { ...opts, generate: kind });
   }
 
   async delete(name) {
     await this.expect({ cmd: 'delete', name: upper(name) }, 'delete_ok');
   }
 
+  /** Raw credential records (snake_case, as the daemon sends them). */
   async list() {
     return (await this.expect({ cmd: 'list' }, 'list_ok')).credentials;
+  }
+
+  /** `list` as camelCase metadata objects; never values. */
+  async credentials() {
+    return (await this.list()).map(credInfo);
+  }
+
+  /** Metadata for one credential, or null. */
+  async info(name) {
+    const n = upper(name);
+    return (await this.credentials()).find((c) => c.name === n) || null;
   }
 
   async history(name) {
@@ -148,4 +203,4 @@ class Client {
   }
 }
 
-module.exports = { Client, KeprError, socketPath };
+module.exports = { Client, KeprError, socketPath, credInfo, GENERATE_KINDS };

@@ -1,0 +1,42 @@
+name: kepr action example
+
+# Manual example of integrations/github-action (plan T8.07); CI lints it with
+# actionlint, which also checks its inputs against the action's metadata.
+# Needs a Vault server with a JWT auth role for this repository.
+on:
+  workflow_dispatch:
+    inputs:
+      vault-addr:
+        description: "Vault server URL"
+        required: true
+      vault-role:
+        description: "Vault JWT auth role"
+        required: true
+      secret:
+        description: "NAME=vault:PATH to pull"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Pull secrets with kepr
+        uses: ./integrations/github-action
+        with:
+          cloud: vault
+          vault-addr: ${{ inputs.vault-addr }}
+          vault-role: ${{ inputs.vault-role }}
+          audience: ${{ inputs.vault-addr }}
+          secrets: ${{ inputs.secret }}
+      - name: Use a value without exporting it
+        env:
+          SPEC: ${{ inputs.secret }}
+        run: |
+          # shellcheck disable=SC2016  # $0 is expanded by the inner sh
+          name="${SPEC%%=*}"
+          kepr exec --env "${name^^}" -- sh -c 'test -n "$(printenv "$0")" && echo "value present"' "${name^^}"

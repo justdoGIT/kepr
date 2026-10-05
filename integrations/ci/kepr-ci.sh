@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# kepr-ci.sh: shared steps of the kepr GitHub Action and GitLab CI template
+# (plan T8.07). One source; the GitLab template embeds a copy (kept in sync
+# by integrations/ci/test_kepr_ci.sh).
+#
+#   kepr-ci.sh install   download kepr, verify its signature, put it on PATH
+#   kepr-ci.sh run       OIDC login (KEPR_CLOUD), then pull every secret
+#   kepr-ci.sh names     the requested names as CSV (for `kepr env --env`)
+#
+# Inputs (environment):
+#   KEPR_SECRETS   lines of NAME=SCHEME:PATH (vault:|aws-sm:|gcp-sm:); # comments
+#   KEPR_CLOUD     aws | gcp | vault | none (credentials already in the env)
+#   KEPR_EXPORT    true: also export values to later steps ($GITHUB_ENV)
+#   KEPR_VERSION   release tag or "latest";  KEPR_REPO (default justdoGIT/kepr)
+#   KEPR_VERIFY    false skips the cosign check (not recommended)
+#   KEPR_ID_TOKEN  the CI's OIDC token (GitLab id_tokens); GitHub fetches its own
+#   aws: KEPR_AWS_ROLE_ARN, AWS_REGION
+#   gcp: KEPR_GCP_WIF_PROVIDER (projects/N/locations/global/workloadIdentityPools/P/providers/X),
+#        KEPR_GCP_SERVICE_ACCOUNT (optional, impersonated)
+#   vault: VAULT_ADDR, KEPR_VAULT_ROLE, KEPR_VAULT_AUTH_PATH (default jwt)
+#   KEPR_OIDC_AUDIENCE overrides the token audience.
+#
+# Secrets never go on a command line (argv is world-readable in /proc):
+# tokens reach curl through a config on a pipe, jq through its environment.
+# On GitHub every value (and every cloud credential) is masked line by line
+# before anything else can print it. Cloud credentials live only in this
+# process; values stay in the job's kepr daemon unless KEPR_EXPORT=true.
+set -euo pipefail
+
+kepr_ci_die() {
+	echo "kepr-ci: $*" >&2
+	exit 1
+}
+
+# Mask a value in GitHub's log, one line at a time (GitHub matches lines).
+kepr_ci_mask() {
+	[ "${GITHUB_ACTIONS:-}" = "true" ] || return 0
+	local line
+	printf '%s\n' "$1" | while IFS= read -r line; do
+		line="${line%$'\r'}"
+		[ -n "${line//[[:space:]]/}" ] || continue
+		printf '::add-mask::%s\n' "${line//%/%25}"
+	done
+}
+
+# curl with an Authorization header that is not in argv.
+kepr_ci_curl_auth() {
+	local auth="$1"
+	shift
+	curl -fsS -K <(printf 'header = "Authorization: %s"\n' "$auth") "$@"
+}
+
+kepr_ci_names() {
+	local line names=""
+	while IFS= read -r line; do
+		line="${line%%#*}"
+		line="${line//[[:space:]]/}"
+		[ -n "$line" ] || continue
+		names="${names:+$names,}${line%%=*}"
+	done <<<"${KEPR_SECRETS:-}"
+	printf '%s\n' "$names"
+}
+
+# ── install ──────────────────────────────────────────────────────────────────
+
+kepr_ci_install() {
+	local repo="${KEPR_REPO:-justdoGIT/kepr}" version="${KEPR_VERSION:-latest}"
+	local bin="${KEPR_BIN_DIR:-$HOME/.local/bin}" dir tar v
+	if [ "$version" = "latest" ]; then
+		local api="https://api.github.com/repos/$repo/releases/latest"
+		if [ -n "${KEPR_GITHUB_TOKEN:-}" ]; then
+			version="$(kepr_ci_curl_auth "Bearer $KEPR_GITHUB_TOKEN" "$api" | jq -r .tag_name)"
+		else
+			version="$(curl -fsS "$api" | jq -r .tag_name)"
+		fi
+	fi
+	v="${version#v}"
+	[[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || kepr_ci_die "bad version: $version"
+	tar="kepr-$v-x86_64-linux.tar.gz"
+	dir="$(mktemp -d)"
+	curl -fsSL -o "$dir/$tar" "https://github.com/$repo/releases/download/v$v/$tar"
+	if [ "${KEPR_VERIFY:-true}" != "false" ]; then
+		command -v cosign >/dev/null || kepr_ci_die "cosign is needed to verify kepr (or set KEPR_VERIFY=false)"
+		curl -fsSL -o "$dir/$tar.bundle" "https://github.com/$repo/releases/download/v$v/$tar.bundle"
+		cosign verify-blob --bundle "$dir/$tar.bundle" \
+			--certificate-identity-regexp "^https://github\\.com/${repo//./\\.}/\\.github/workflows/release\\.yml@refs/tags/v" \
+			--certificate-oidc-issuer https://token.actions.githubusercontent.com "$dir/$tar" >&2
+	fi
+	tar -xzf "$dir/$tar" -C "$dir"
+	mkdir -p "$bin"
+	install -m 0755 "$dir/kepr-$v-x86_64-linux/kepr" "$dir/kepr-$v-x86_64-linux/kepr-daemon" "$bin/"
+	rm -rf "$dir"
+	if [ -n "${GITHUB_PATH:-}" ]; then
+		echo "$bin" >>"$GITHUB_PATH"
+	fi
+	echo "kepr-ci: installed kepr $v to $bin" >&2
+}
+
+# ── OIDC login ───────────────────────────────────────────────────────────────
+
+# The CI's OIDC token for an audience, on stdout.
+kepr_ci_id_token() {
+	if [ -n "${KEPR_ID_TOKEN:-}" ]; then
+		printf '%s' "$KEPR_ID_TOKEN"
+		return
+	fi
+	[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] ||
+		kepr_ci_die "no OIDC token: grant 'id-token: write' (GitHub) or add id_tokens: KEPR_ID_TOKEN (GitLab)"
+	local aud
+	aud="$(jq -rn --arg a "$1" '$a|@uri')"
+	kepr_ci_curl_auth "bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$aud" | jq -r .value
+}
+
+kepr_ci_login_aws() {
+	[ -n "${KEPR_AWS_ROLE_ARN:-}" ] || kepr_ci_die "aws: set KEPR_AWS_ROLE_ARN"
+	[ -n "${AWS_REGION:-${AWS_DEFAULT_REGION:-}}" ] || kepr_ci_die "aws: set AWS_REGION"
+	local jwt resp
+	jwt="$(kepr_ci_id_token "${KEPR_OIDC_AUDIENCE:-sts.amazonaws.com}")"
+	resp="$(printf '%s' "$jwt" | curl -fsS -H 'Accept: application/json' https://sts.amazonaws.com/ \
+		--data-urlencode Action=AssumeRoleWithWebIdentity --data-urlencode Version=2011-06-15 \
+		--data-urlencode DurationSeconds=900 --data-urlencode "RoleArn=$KEPR_AWS_ROLE_ARN" \
+		--data-urlencode "RoleSessionName=kepr-ci-${GITHUB_RUN_ID:-${CI_JOB_ID:-run}}" \
+		--data-urlencode 'WebIdentityToken@-')"
+	local c='.AssumeRoleWithWebIdentityResponse.AssumeRoleWithWebIdentityResult.Credentials'
+	AWS_ACCESS_KEY_ID="$(printf '%s' "$resp" | jq -r "$c.AccessKeyId")"
+	AWS_SECRET_ACCESS_KEY="$(printf '%s' "$resp" | jq -r "$c.SecretAccessKey")"
+	AWS_SESSION_TOKEN="$(printf '%s' "$resp" | jq -r "$c.SessionToken")"
+	[ "$AWS_SECRET_ACCESS_KEY" != "null" ] || kepr_ci_die "aws: AssumeRoleWithWebIdentity returned no credentials"
+	kepr_ci_mask "$AWS_SECRET_ACCESS_KEY"
+	kepr_ci_mask "$AWS_SESSION_TOKEN"
+	export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+}
+
+kepr_ci_login_gcp() {
+	[ -n "${KEPR_GCP_WIF_PROVIDER:-}" ] || kepr_ci_die "gcp: set KEPR_GCP_WIF_PROVIDER"
+	local jwt fed
+	jwt="$(kepr_ci_id_token "${KEPR_OIDC_AUDIENCE:-https://iam.googleapis.com/$KEPR_GCP_WIF_PROVIDER}")"
+	fed="$(KEPR_JWT="$jwt" jq -n --arg aud "//iam.googleapis.com/$KEPR_GCP_WIF_PROVIDER" '{
+		grant_type: "urn:ietf:params:oauth:grant-type:token-exchange", audience: $aud,
+		scope: "https://www.googleapis.com/auth/cloud-platform",
+		requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+		subject_token_type: "urn:ietf:params:oauth:token-type:jwt", subject_token: env.KEPR_JWT}' |
+		curl -fsS -H 'Content-Type: application/json' -d @- https://sts.googleapis.com/v1/token | jq -r .access_token)"
+	[ -n "$fed" ] && [ "$fed" != "null" ] || kepr_ci_die "gcp: token exchange failed"
+	kepr_ci_mask "$fed"
+	GCP_ACCESS_TOKEN="$fed"
+	if [ -n "${KEPR_GCP_SERVICE_ACCOUNT:-}" ]; then
+		GCP_ACCESS_TOKEN="$(printf '{"scope":["https://www.googleapis.com/auth/cloud-platform"]}' |
+			kepr_ci_curl_auth "Bearer $fed" -H 'Content-Type: application/json' -d @- \
+				"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$KEPR_GCP_SERVICE_ACCOUNT:generateAccessToken" |
+			jq -r .accessToken)"
+		[ "$GCP_ACCESS_TOKEN" != "null" ] || kepr_ci_die "gcp: service account impersonation failed"
+		kepr_ci_mask "$GCP_ACCESS_TOKEN"
+	fi
+	export GCP_ACCESS_TOKEN
+}
+
+kepr_ci_login_vault() {
+	[ -n "${VAULT_ADDR:-}" ] && [ -n "${KEPR_VAULT_ROLE:-}" ] || kepr_ci_die "vault: set VAULT_ADDR and KEPR_VAULT_ROLE"
+	local jwt
+	jwt="$(kepr_ci_id_token "${KEPR_OIDC_AUDIENCE:-$VAULT_ADDR}")"
+	VAULT_TOKEN="$(KEPR_JWT="$jwt" jq -n --arg r "$KEPR_VAULT_ROLE" '{role: $r, jwt: env.KEPR_JWT}' |
+		curl -fsS -d @- "$VAULT_ADDR/v1/auth/${KEPR_VAULT_AUTH_PATH:-jwt}/login" | jq -r .auth.client_token)"
+	[ -n "$VAULT_TOKEN" ] && [ "$VAULT_TOKEN" != "null" ] || kepr_ci_die "vault: login failed"
+	kepr_ci_mask "$VAULT_TOKEN"
+	export VAULT_TOKEN
+}
+
+kepr_ci_login() {
+	case "${KEPR_CLOUD:-none}" in
+	aws) kepr_ci_login_aws ;;
+	gcp) kepr_ci_login_gcp ;;
+	vault) kepr_ci_login_vault ;;
+	none) ;;
+	*) kepr_ci_die "KEPR_CLOUD must be aws, gcp, vault or none" ;;
+	esac
+}
+
+# ── pull ─────────────────────────────────────────────────────────────────────
+
+kepr_ci_socket() {
+	printf '%s/kepr/kepr.sock' "${XDG_RUNTIME_DIR:-$HOME/.local/state/kepr/runtime}"
+}
+
+# A per-job user-mode daemon whose output does not hold the step's log open.
+kepr_ci_daemon() {
+	[ "${KEPR_CI_START_DAEMON:-true}" = "true" ] || return 0
+	[ -S "$(kepr_ci_socket)" ] && return 0
+	nohup kepr-daemon --user >>"${RUNNER_TEMP:-${TMPDIR:-/tmp}}/kepr-daemon.log" 2>&1 </dev/null &
+	local _i
+	for _i in $(seq 1 100); do
+		[ -S "$(kepr_ci_socket)" ] && return 0
+		sleep 0.05
+	done
+	kepr_ci_die "the kepr daemon did not start"
+}
+
+# NAME VALUE → later steps' environment (GitHub); multi-line safe.
+kepr_ci_export() {
+	[ -n "${GITHUB_ENV:-}" ] || return 0
+	local delim
+	delim="KEPR_EOF_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+	case "$2" in *"$delim"*) kepr_ci_die "delimiter collision" ;; esac
+	printf '%s<<%s\n%s\n%s\n' "$1" "$delim" "$2" "$delim" >>"$GITHUB_ENV"
+}
+
+kepr_ci_pull() {
+	local line name url value specs=()
+	while IFS= read -r line; do
+		line="${line%%#*}"
+		line="${line//[[:space:]]/}"
+		[ -n "$line" ] || continue
+		name="${line%%=*}"
+		url="${line#*=}"
+		[[ "$name" =~ ^[A-Za-z0-9_]{1,128}$ ]] || kepr_ci_die "invalid name in: $line"
+		[[ "$line" == *=* && "$url" =~ ^[a-z][a-z0-9-]*:.+ ]] || kepr_ci_die "expected NAME=SCHEME:PATH, got: $line"
+		specs+=("$name" "$url")
+	done <<<"${KEPR_SECRETS:-}"
+	[ "${#specs[@]}" -gt 0 ] || kepr_ci_die "no secrets requested"
+	kepr_ci_daemon
+	set -- "${specs[@]}"
+	while [ "$#" -gt 0 ]; do
+		name="${1^^}"
+		url="$2"
+		shift 2
+		kepr sync-pull "$name" --url "$url" >/dev/null
+		value="$(kepr get "$name" --quiet)"
+		kepr_ci_mask "$value"
+		if [ "${KEPR_EXPORT:-false}" = "true" ]; then
+			kepr_ci_export "$name" "$value"
+		fi
+		echo "kepr-ci: pulled $name" >&2
+	done
+}
+
+kepr_ci_main() {
+	case "${1:-}" in
+	install) kepr_ci_install ;;
+	run)
+		kepr_ci_login
+		kepr_ci_pull
+		;;
+	names) kepr_ci_names ;;
+	*) kepr_ci_die "usage: kepr-ci.sh install|run|names" ;;
+	esac
+}
+
+if [ "${KEPR_CI_LIB:-}" != "1" ]; then
+	kepr_ci_main "$@"
+fi
