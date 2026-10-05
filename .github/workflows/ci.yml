@@ -77,6 +77,26 @@ jobs:
           go vet ./...
           go test ./...
 
+  ci-templates:
+    name: GitHub Action + GitLab template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint (workflows, and the action's inputs via its example)
+        env:
+          SHELLCHECK_OPTS: --severity=warning
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint"
+      - name: shellcheck
+        run: shellcheck integrations/ci/*.sh
+      - name: kepr-ci.sh tests (masking, export, OIDC exchange, GitLab copy)
+        run: bash integrations/ci/test_kepr_ci.sh
+      - name: GitLab template parses
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 -c "import yaml; yaml.safe_load(open('integrations/gitlab/kepr.gitlab-ci.yml'))"
+
   terraform-provider:
     name: Terraform provider
     runs-on: ubuntu-latest
