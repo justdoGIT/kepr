@@ -155,7 +155,7 @@ fn audit_r(op: &'static str, uid: u32, username: &str, name: Option<&str>, r: &R
 }
 
 pub fn handle_key(uid: u32, username: &str, create: bool) -> Response {
-    if create && !cred_path(uid, KEY_NAME).exists() {
+    if create && !crate::store::cred_exists(uid, KEY_NAME) {
         let secret = match new_secret() {
             Ok(s) => s,
             Err(e) => return Response::fail(e),
@@ -247,7 +247,7 @@ pub fn handle_receive(uid: u32, username: &str, envelope: &str, rename: Option<&
         }
         // Never let a sender's choice of name replace an existing
         // credential (a sealed key, an SSH key, …).
-        if cred_path(uid, &name).exists() {
+        if crate::store::cred_exists(uid, &name) {
             return Err(format!(
                 "{name} already exists; receive it --as ANOTHER_NAME"
             ));

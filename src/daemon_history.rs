@@ -90,7 +90,7 @@ type SlotInfo = (u32, u8, u128, usize);
 /// last and is the first to be overwritten; `History` hides it.
 fn slots(uid: u32, name: &str) -> Vec<SlotInfo> {
     let mut out: Vec<SlotInfo> = (0..DEPTH)
-        .filter(|s| cred_path(uid, &slot_name(name, *s)).exists())
+        .filter(|s| crate::store::cred_exists(uid, &slot_name(name, *s)))
         .map(|s| {
             match crypto::default_backend().decrypt(uid, &slot_name(name, s)) {
                 Ok(z) => decode(z.as_str()).map(|(f, ns, _, v)| (s, f, ns, v.len())),
@@ -122,7 +122,7 @@ pub fn save_current(uid: u32, name: &str) {
     if meta
         .as_ref()
         .is_some_and(|m| m.ssh.is_some() || m.share_key == Some(true))
-        || !cred_path(uid, name).exists()
+        || !crate::store::cred_exists(uid, name)
     {
         return;
     }
@@ -150,7 +150,7 @@ pub fn save_current(uid: u32, name: &str) {
 pub fn purge(uid: u32, name: &str) {
     for s in 0..DEPTH {
         let slot = slot_name(name, s);
-        if cred_path(uid, &slot).exists() {
+        if crate::store::cred_exists(uid, &slot) {
             if let Err(e) = crypto::default_backend().delete(uid, &slot) {
                 eprintln!("[kepr-daemon] history: purge failed: {e}");
             }
@@ -191,7 +191,7 @@ fn audit_result(op: &'static str, uid: u32, username: &str, name: &str, r: &Resu
 pub fn handle_history(uid: u32, username: &str, name: &str) -> Response {
     let upper = name.to_uppercase();
     let checked = validate_name(name).and_then(|_| {
-        if cred_path(uid, &upper).exists() {
+        if crate::store::cred_exists(uid, &upper) {
             Ok(())
         } else {
             Err(format!("credential not found: {upper}"))
@@ -253,7 +253,7 @@ pub fn version_value(uid: u32, upper: &str, version: u32) -> Result<(ZeroString,
 /// go back under the current policy. The value stays in the daemon.
 fn pick(uid: u32, upper: &str, version: u32) -> Result<ZeroString, String> {
     validate_name(upper)?;
-    if !cred_path(uid, upper).exists() {
+    if !crate::store::cred_exists(uid, upper) {
         return Err(format!("credential not found: {upper}"));
     }
     let meta = expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, upper)))

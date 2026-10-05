@@ -274,6 +274,7 @@ fn spawn_sweeper_with_interval(versions: Arc<VersionState>, interval: Duration) 
             let dir = store::store_dir();
             crate::daemon_store::sweep_trash(now); // T11.2: before the TTL pass
             let _ = sweep_once(&dir, now, Some(&versions));
+            crate::daemon_vault::sweep_expired(now); // T4.06: the image store
         })
         .expect("spawn kepr-expiry thread");
 }

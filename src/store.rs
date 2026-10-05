@@ -76,9 +76,21 @@ pub fn cred_path(uid: u32, name: &str) -> PathBuf {
     store_dir().join(to_cred_name(uid, name))
 }
 
+/// Does `name` (history slots `NAME~N` included) hold a value? Asks the
+/// vault image when it is the active store (T4.06), else the file.
+pub fn cred_exists(uid: u32, name: &str) -> bool {
+    match crate::daemon_vault::active() {
+        Some(image) => image.exists(uid, name),
+        None => cred_path(uid, name).exists(),
+    }
+}
+
 // ── List creds for a specific uid ─────────────────────────────────────────────
 
 pub fn list_for_uid(uid: u32) -> Vec<(String, PathBuf)> {
+    if let Some(image) = crate::daemon_vault::active() {
+        return image.list(uid);
+    }
     let store = store_dir();
     let prefix = format!("{}-{}-", CRED_PREFIX, uid);
     let mut results = vec![];
@@ -104,12 +116,18 @@ pub fn list_for_uid(uid: u32) -> Vec<(String, PathBuf)> {
 // ── Timestamp helper ──────────────────────────────────────────────────────────
 
 pub fn file_mtime_str(path: &Path) -> String {
+    if let Some((_, updated)) = crate::daemon_vault::stat(path) {
+        return format_timestamp(updated as i64);
+    }
     fs::metadata(path)
         .map(|m| format_timestamp(m.mtime()))
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
 pub fn file_size(path: &Path) -> u64 {
+    if let Some((size, _)) = crate::daemon_vault::stat(path) {
+        return size;
+    }
     fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 

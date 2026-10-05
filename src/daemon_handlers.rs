@@ -112,7 +112,7 @@ pub fn handle_set(
     // `sealed`. (Other flags keep the write-after order with rollback.)
     let meta_path = expiry::meta_path_for(&cred_path(uid, &upper));
     let meta_first = meta.sealed == Some(true) || meta.ssh.is_some() || meta.share_key.is_some();
-    let cred_existed = cred_path(uid, &upper).exists();
+    let cred_existed = crate::store::cred_exists(uid, &upper);
     // P5.3: keep the value being replaced (before any meta rewrite).
     crate::daemon_history::save_current(uid, &upper);
     if meta_first {

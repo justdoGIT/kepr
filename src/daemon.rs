@@ -52,6 +52,7 @@ mod version_state;
 // ── P2–P11 ticket batches (2026-10-05): one directory module per batch,
 // declared under its own marker so parallel branches merge cleanly.
 // batch: vault
+mod daemon_vault;
 // batch: seal
 // batch: store
 mod daemon_store;

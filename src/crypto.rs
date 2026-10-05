@@ -77,8 +77,18 @@ pub fn initialize_inproc_backend(
     versions: Arc<VersionState>,
 ) -> Result<(), String> {
     INPROC_BACKEND
-        .set(InProcBackend::new(master_key, versions))
-        .map_err(|_| "InProc backend already initialised".to_string())
+        .set(InProcBackend::new(master_key, Arc::clone(&versions)))
+        .map_err(|_| "InProc backend already initialised".to_string())?;
+    // T4.06: `KEPR_STORE=image` puts the vault image in front of it (the
+    // in-process backend keeps holding the key and the lock state).
+    crate::daemon_vault::install_from_env(versions)
+}
+
+/// The per-file backend, whatever store is active (`kepr vault migrate`
+/// reads the files through it).
+#[allow(dead_code)] // `kepr vault migrate` (T4.07)
+pub fn file_backend() -> Option<&'static InProcBackend> {
+    INPROC_BACKEND.get()
 }
 pub fn lock_backend() -> Result<(), String> {
     INPROC_BACKEND
@@ -112,6 +122,9 @@ pub fn snapshot_key() -> Result<zeroize::Zeroizing<[u8; 32]>, String> {
 /// The daemon's credential backend (the in-process AEAD backend once
 /// `initialize_inproc_backend` has run; a fail-closed stub before).
 pub fn default_backend() -> &'static dyn Backend {
+    if let Some(image) = crate::daemon_vault::active() {
+        return image;
+    }
     match INPROC_BACKEND.get() {
         Some(b) => b as &dyn Backend,
         None => &Uninitialised,
