@@ -46,9 +46,12 @@ fn in_folder(have: Option<&str>, want: &str) -> bool {
     }
 }
 
-/// Extra `kepr ls` columns: `  work/ci/  #prod #team`.
+/// Extra `kepr ls` columns: `  -> TARGET  work/ci/  #prod #team`.
 pub fn list_tail(c: &CredInfo) -> String {
     let mut t = String::new();
+    if let Some(target) = &c.alias_of {
+        t.push_str(&format!("  -> {target}"));
+    }
     if let Some(f) = &c.folder {
         t.push_str(&format!("  {f}/"));
     }
@@ -103,5 +106,8 @@ mod tests {
             "  w/c/  #a #b"
         );
         assert_eq!(list_tail(&cred("A", &[], None)), "");
+        let mut a = cred("AL", &[], None);
+        a.alias_of = Some("A".into());
+        assert_eq!(list_tail(&a), "  -> A");
     }
 }

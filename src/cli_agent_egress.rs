@@ -167,6 +167,7 @@ mod tests {
             record_type: None,
             tags: None,
             folder: None,
+            alias_of: None,
         }
     }
 

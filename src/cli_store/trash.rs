@@ -82,6 +82,9 @@ fn show_list(r: Response) -> Response {
 
 /// `kepr rm NAME [--force]`: `--force` also skips the trash.
 pub fn cmd_delete(a: &Args) -> Response {
+    if let (false, Some(n)) = (a.json, &a.name) {
+        super::alias::warn_aliases(n);
+    }
     let Some(name) = a.name.clone().filter(|_| a.force) else {
         let r = crate::cli_cmds::cmd_delete(a);
         if let (false, Response::DeleteOk { name }) = (a.json, &r) {

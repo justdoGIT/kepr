@@ -107,6 +107,9 @@ pub struct CredInfo {
     pub tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub folder: Option<String>,
+    /// T11.5: this entry is an alias of that credential.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub alias_of: Option<String>,
     // batch: records
     // batch: share
     // batch: sync

@@ -1,5 +1,5 @@
 // protocol_store.rs — wire types of the `store` ticket batch: tags and
-// folders (T5.01), search (T11.1), trash (T11.2). Wrapped by `Request::Store` /
+// folders (T5.01), search (T11.1), trash (T11.2), aliases (T11.5). Wrapped by `Request::Store` /
 // `Response::Store`, which are `#[serde(untagged)]` and tried after every
 // tagged variant, so the `cmd` / `kind` names here must not repeat one in
 // protocol.rs.
@@ -36,6 +36,8 @@ pub enum StoreRequest {
     /// T11.2: `rm --force`: delete at once, skipping the trash. Answered
     /// with `Response::DeleteOk`.
     DeleteNow { name: String },
+    /// T11.5: make `alias` resolve to `target` (one hop, no value copy).
+    Link { alias: String, target: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -59,6 +61,10 @@ pub enum StoreResponse {
     },
     TrashPurgeOk {
         purged: usize,
+    },
+    LinkOk {
+        alias: String,
+        target: String,
     },
 }
 
@@ -167,6 +173,20 @@ mod tests {
         ] {
             resp_round_trip(Response::Store(r));
         }
+    }
+
+    #[test]
+    fn link_round_trips() {
+        let v = req_round_trip(Request::Store(StoreRequest::Link {
+            alias: "A".into(),
+            target: "B".into(),
+        }));
+        assert_eq!(v["cmd"], json!("link"));
+        let v = resp_round_trip(Response::Store(StoreResponse::LinkOk {
+            alias: "A".into(),
+            target: "B".into(),
+        }));
+        assert_eq!(v["kind"], json!("link_ok"));
     }
 
     #[test]

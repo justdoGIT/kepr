@@ -101,6 +101,14 @@ pub fn handle_search(uid: u32, username: &str, pattern: &str) -> Response {
             hits.push(SearchHit { name, matched });
         }
     }
+    // Aliases (T11.5) match on their own name, tags and folder.
+    for (name, meta, _) in super::alias::aliases_of_uid(uid) {
+        let matched = matched(&p, &name, &meta, &Searchable::default());
+        if !matched.is_empty() {
+            hits.push(SearchHit { name, matched });
+        }
+    }
+    hits.sort_by(|a, b| a.name.cmp(&b.name));
     audit::log(&AuditEvent {
         op: "search",
         name: None,
@@ -222,6 +230,14 @@ mod tests {
         assert!(hits(uid, "sk_").is_empty());
         // A consent-gated record is not opened; its name still matches.
         assert_eq!(hits(uid, "guarded").len(), 1);
+    }
+
+    #[test]
+    fn aliases_match_on_their_name() {
+        let uid = testkit::uid();
+        testkit::set(uid, "REAL", "v");
+        super::super::alias::handle_link(uid, "t", "SHORTCUT", "REAL");
+        assert_eq!(hits(uid, "shortcut")[0].name, "SHORTCUT");
     }
 
     #[test]

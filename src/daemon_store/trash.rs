@@ -72,6 +72,9 @@ fn log(op: &str, uid: u32, username: &str, name: Option<&str>, r: &Result<(), St
 /// `Request::Delete`: into the trash, or deleted at once when the trash
 /// is off or the value can't be kept (missing, unreadable).
 pub fn handle_rm(uid: u32, username: &str, name: &str) -> Response {
+    if let Some(r) = super::alias::remove_if_alias(uid, username, name) {
+        return r;
+    }
     rm(uid, username, name, days())
 }
 
@@ -185,7 +188,7 @@ pub fn handle_restore(uid: u32, username: &str, name: &str) -> Response {
 fn restore(uid: u32, upper: &str) -> Result<(), String> {
     validate_name(upper)?;
     let path = cred_path(uid, upper);
-    if path.exists() {
+    if path.exists() || super::alias::target_of(uid, upper).is_some() {
         return Err(format!(
             "{upper} exists again; rename or delete it before restoring"
         ));

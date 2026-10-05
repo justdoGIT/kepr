@@ -54,6 +54,9 @@ pub struct CredMeta {
     /// T11.2: on a trash entry (`NAME~t<unix>`): when it was deleted.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub trashed_at: Option<u64>,
+    /// T11.5: this name is an alias of that credential (no value file).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub alias_of: Option<String>,
     // batch: records
     // batch: share
     // batch: sync

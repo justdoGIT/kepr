@@ -50,8 +50,10 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                 record_type: meta_opt.as_ref().and_then(|m| m.record_type.clone()),
                 tags: meta_opt.as_ref().and_then(|m| m.tags.clone()),
                 folder: meta_opt.as_ref().and_then(|m| m.folder.clone()),
+                alias_of: None,
             }
         })
+        .chain(crate::daemon_store::alias_infos(uid)) // T11.5
         .collect();
 
     audit::log(&AuditEvent {

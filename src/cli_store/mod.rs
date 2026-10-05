@@ -1,9 +1,10 @@
 // cli_store/ — the `store` ticket batch, CLI side: `kepr tag`, `kepr mv`
 // and `kepr ls --tag/--folder` (T5.01), `kepr search` (T11.1), `kepr trash`
-// and the `kepr rm` wrapper (T11.2).
+// and the `kepr rm` wrapper (T11.2), `kepr ln` (T11.5).
 // Registered in cli_more.rs; flags on core verbs are parsed by
 // cli_args.rs through `FLAGS` / `StoreFlags`.
 
+mod alias;
 mod flags;
 mod list;
 mod organize;
@@ -17,7 +18,7 @@ pub use flags::{StoreFlags, FLAGS};
 pub use list::{filter_list, list_tail};
 pub use trash::cmd_delete;
 
-pub const VERBS: &[&str] = &["tag", "mv", "search", "trash"];
+pub const VERBS: &[&str] = &["tag", "mv", "search", "trash", "ln"];
 
 pub const HELP: &str = "\
   tag KEY [+TAG|-TAG]...               add / remove tags (a-z 0-9 _ -, up to 16); no TAG: show
@@ -27,6 +28,8 @@ pub const HELP: &str = "\
                                        (substring, or /regex/ with . * ^ $ [a-z]); never values
   trash [ls] | trash restore KEY       `rm` keeps keys in the trash for KEPR_TRASH_DAYS (30) days;
   trash purge [KEY] [--yes]            `rm --force` skips it; purge empties it (all: --yes)
+  ln ALIAS KEY                         ALIAS reads KEY (get/exec/inject) under KEY's policy;
+                                       `rm ALIAS` removes only the alias
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -35,6 +38,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "mv" => organize::cmd_mv(args),
         "search" => search::cmd_search(args),
         "trash" => trash::cmd_trash(args),
+        "ln" => alias::cmd_ln(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

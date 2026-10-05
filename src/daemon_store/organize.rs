@@ -128,7 +128,7 @@ fn organize(
         // seal written by a newer version.
         Some(Err(_)) => return Err("credential metadata unreadable".into()),
     };
-    if !path.exists() {
+    if !path.exists() && meta.alias_of.is_none() {
         return Err(crate::crypto::SANITIZED_LOOKUP_ERROR.into());
     }
     let mut new = meta.clone();
