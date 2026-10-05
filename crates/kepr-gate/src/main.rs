@@ -7,6 +7,7 @@
 //! placeholder with the real key. See docs/content/docs/agent-vault-plan.mdx.
 
 mod ca;
+mod db;
 mod dlp;
 mod egress;
 mod journal;
@@ -16,6 +17,7 @@ mod pg_rotate;
 mod pg_tls;
 mod placeholder;
 mod proxy;
+mod redis;
 mod rewrite;
 mod routes;
 mod scram;

@@ -48,6 +48,10 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                 sealed,
                 bound_hosts,
                 record_type: meta_opt.as_ref().and_then(|m| m.record_type.clone()),
+                db_kind: meta_opt
+                    .as_ref()
+                    .and_then(|m| m.bindings.as_ref()?.first()?.inject.db_kind())
+                    .map(str::to_string),
             }
         })
         .collect();

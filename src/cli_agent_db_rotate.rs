@@ -116,6 +116,12 @@ fn start_gate(name: &str) -> Result<(String, u16), String> {
             "{name} is not a sealed database login (kepr agent add-db)"
         ));
     }
+    if routes
+        .iter()
+        .any(|r| r.target.as_ref().is_some_and(|t| !t.kind.is_postgres()))
+    {
+        return Err(format!("{name}: only PostgreSQL logins can be rotated"));
+    }
     let key = db_route_key(name);
     let (ph, port) = match client::send_request(&Request::StartGate {
         routes,

@@ -69,7 +69,7 @@ pub struct GateRoute {
 }
 
 /// The database a `db:` route logs in to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DbTarget {
     pub host: String,
     pub port: u16,
@@ -78,6 +78,47 @@ pub struct DbTarget {
     /// agent can't change the database password.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rotate: bool,
+    /// Which protocol the gate speaks on this route's port (T7.01).
+    #[serde(default, skip_serializing_if = "TargetKind::is_postgres")]
+    pub kind: TargetKind,
+}
+
+/// The protocol of a database route; Postgres for routes written before
+/// the field existed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetKind {
+    #[default]
+    Postgres,
+    Redis,
+}
+
+impl TargetKind {
+    pub fn is_postgres(&self) -> bool {
+        *self == Self::Postgres
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Postgres => "postgres",
+            Self::Redis => "redis",
+        }
+    }
+
+    /// From a record's binding kind (`Inject::db_kind`).
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::Postgres, Self::Redis]
+            .into_iter()
+            .find(|k| k.name() == s)
+    }
+
+    /// The binding inject a sealed login of this kind carries.
+    pub fn inject(self) -> Inject {
+        match self {
+            Self::Postgres => Inject::Postgres,
+            Self::Redis => Inject::Redis,
+        }
+    }
 }
 
 /// Route key for a database credential.
@@ -226,6 +267,23 @@ mod tests {
         assert!(validate_routes(&[r("xai", 0), r("xai", 1)]).is_err());
         assert!(validate_routes(&[r("xai", 0), r("openai", 0)]).is_err());
         assert!(validate_routes(&(0..17).map(|i| r("xai", i)).collect::<Vec<_>>()).is_err());
+    }
+
+    #[test]
+    fn target_kind_defaults_to_postgres_and_round_trips() {
+        let t: DbTarget = serde_json::from_str(r#"{"host":"db.x.io","port":5432}"#).unwrap();
+        assert_eq!(t.kind, TargetKind::Postgres);
+        assert!(!serde_json::to_string(&t).unwrap().contains("kind"));
+        let r = DbTarget {
+            kind: TargetKind::Redis,
+            ..t
+        };
+        let j = serde_json::to_string(&r).unwrap();
+        assert!(j.contains(r#""kind":"redis""#), "{j}");
+        assert_eq!(serde_json::from_str::<DbTarget>(&j).unwrap(), r);
+        for k in [TargetKind::Postgres, TargetKind::Redis] {
+            assert_eq!(TargetKind::parse(k.inject().db_kind().unwrap()), Some(k));
+        }
     }
 
     #[test]

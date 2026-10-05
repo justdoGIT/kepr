@@ -151,6 +151,7 @@ pub fn cmd_run(
         Ok(r) => r,
         Err(e) => return Response::fail(e),
     };
+    let all_routes = routes.clone();
     let req = Request::StartGate {
         routes,
         port: port.or(adapter.port),
@@ -184,7 +185,11 @@ pub fn cmd_run(
         ));
     }
     let mut env = build_env(adapter, gate_port, &placeholders, inherited.into_iter());
-    env.extend(crate::cli_agent_db::env(&placeholders, &db_ports));
+    env.extend(crate::cli_agent_db::env(
+        &all_routes,
+        &placeholders,
+        &db_ports,
+    ));
     // Lets harness plugins (plugins/omp, plugins/grok) find the gate.
     env.push((
         "KEPR_GATE_URL".into(),

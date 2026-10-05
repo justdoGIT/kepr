@@ -165,6 +165,7 @@ mod tests {
             sealed: Some(true),
             bound_hosts: Some(hosts.iter().map(|h| h.to_string()).collect()),
             record_type: None,
+            db_kind: None,
         }
     }
 

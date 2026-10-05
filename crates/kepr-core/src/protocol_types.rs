@@ -107,6 +107,10 @@ pub struct CredInfo {
     // batch: sync
     // batch: policy
     // batch: gate
+    /// T7.01: protocol of a sealed database login (`postgres`, `redis`,
+    /// …), so `kepr agent run` opens the right proxy for it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub db_kind: Option<String>,
     // batch: aws
     // batch: eco
     // batch: platform

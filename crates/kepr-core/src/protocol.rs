@@ -486,6 +486,7 @@ mod tests {
                 sealed: None,
                 bound_hosts: None,
                 record_type: None,
+                db_kind: None,
             }],
             count: 1,
         };

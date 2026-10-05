@@ -23,6 +23,30 @@ pub enum Inject {
     /// user, password, database, sslmode, optional ca_pem); the gate logs
     /// in to host:port with it on the agent's behalf.
     Postgres,
+    /// T7.01: a Redis login (`database` record with `kind: redis`); the
+    /// gate sends `AUTH` upstream for the agent.
+    Redis,
+}
+
+impl Inject {
+    /// The database protocol of a database login, `None` for HTTP.
+    pub fn db_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::Postgres => Some("postgres"),
+            Self::Redis => Some("redis"),
+            _ => None,
+        }
+    }
+
+    /// Inject and default port for a `database` record's `kind` field
+    /// (empty = postgres, the P7.1 records written before `kind`).
+    pub fn for_db_kind(kind: &str) -> Option<(Self, u16)> {
+        match kind {
+            "" | "postgres" => Some((Self::Postgres, 5432)),
+            "redis" => Some((Self::Redis, 6379)),
+            _ => None,
+        }
+    }
 }
 
 /// One allowed destination for a sealed credential.
@@ -156,12 +180,25 @@ mod tests {
             Inject::Query {
                 param: "key".into(),
             },
+            Inject::Redis,
         ] {
             let bb = b("api.example.com", 443, i);
             let json = serde_json::to_string(&bb).unwrap();
             let back: Binding = serde_json::from_str(&json).unwrap();
             assert_eq!(bb, back);
         }
+    }
+
+    #[test]
+    fn db_kinds_map_to_injects() {
+        for kind in ["postgres", "redis"] {
+            let (inject, _) = Inject::for_db_kind(kind).unwrap();
+            assert_eq!(inject.db_kind(), Some(kind));
+        }
+        assert_eq!(Inject::for_db_kind(""), Some((Inject::Postgres, 5432)));
+        assert_eq!(Inject::for_db_kind("redis").unwrap().1, 6379);
+        assert!(Inject::for_db_kind("oracle").is_none());
+        assert_eq!(Inject::Bearer.db_kind(), None);
     }
 
     #[test]
