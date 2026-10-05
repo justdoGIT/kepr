@@ -128,7 +128,7 @@ impl<I: SlotIo> VaultImage<I> {
             image_id,
             slot_count,
             epoch: 0,
-            root: [0u8; 32],
+            root: super::merkle::merkle_root(&[]),
             index_len: 0,
             index_slots: Vec::new(),
         };

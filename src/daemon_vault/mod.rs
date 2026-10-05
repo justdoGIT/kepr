@@ -8,6 +8,8 @@
 //   image.rs   the file: slots, noise fill, positioned IO (T4.01)
 //   header.rs  the encrypted, authenticated header in slot 0 (T4.01)
 //   keys.rs    HKDF key schedule from the master key, AEAD helpers
+//   slot.rs    per-slot AES-256-GCM, AAD = image id ‖ slot ‖ epoch (T4.02)
+//   merkle.rs  the header's Merkle root over used slots, verify (T4.02)
 
 // Only the tests use the image until T4.06 makes it a backend.
 #[allow(dead_code)]
@@ -16,3 +18,7 @@ pub mod header;
 pub mod image;
 #[allow(dead_code)]
 pub mod keys;
+#[allow(dead_code)]
+pub mod merkle;
+#[allow(dead_code)]
+pub mod slot;
