@@ -5,12 +5,10 @@
 //! It deliberately does not replace the random master key with a password:
 //! password entropy is only used to wrap that key.
 
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm,
-};
 use argon2::{Algorithm, Argon2, Params, Version};
 use zeroize::Zeroizing;
+
+use crate::daemon_eco::cipher;
 
 const MAGIC: &[u8; 9] = b"kepr_pw1\n";
 const SALT_LEN: usize = 16;
@@ -40,11 +38,9 @@ pub fn wrap(master_key: &[u8; KEY_LEN], password: &[u8]) -> Result<Vec<u8>, Stri
     let mut salt = [0u8; SALT_LEN];
     getrandom::fill(&mut salt).map_err(|e| format!("CSPRNG failure: {e}"))?;
     let key = derive_key(password, &salt)?;
-    let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "invalid key".to_string())?;
     let mut nonce = [0u8; NONCE_LEN];
     getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG failure: {e}"))?;
-    let ciphertext = cipher
-        .encrypt(&nonce.into(), master_key.as_ref())
+    let ciphertext = cipher::seal(key.as_ref(), &nonce, b"", master_key.as_ref())
         .map_err(|_| "master-key wrapping failed".to_string())?;
 
     let mut out = Vec::with_capacity(MAGIC.len() + SALT_LEN + NONCE_LEN + KEY_LEN + TAG_LEN);
@@ -72,12 +68,8 @@ pub fn unwrap(envelope: &[u8], password: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN
     nonce.copy_from_slice(&envelope[nonce_start..nonce_start + NONCE_LEN]);
     let ciphertext = &envelope[nonce_start + NONCE_LEN..];
     let key = derive_key(password, &salt)?;
-    let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "invalid key".to_string())?;
-    let plaintext = Zeroizing::new(
-        cipher
-            .decrypt(&nonce.into(), ciphertext)
-            .map_err(|_| "invalid password or protected master-key envelope".to_string())?,
-    );
+    let plaintext = cipher::open(key.as_ref(), &nonce, b"", ciphertext)
+        .map_err(|_| "invalid password or protected master-key envelope".to_string())?;
     if plaintext.len() != KEY_LEN {
         return Err("invalid protected master-key plaintext".to_string());
     }

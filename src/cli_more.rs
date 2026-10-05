@@ -19,6 +19,11 @@ type Group = (
 
 const GROUPS: &[Group] = &[
     // batch: vault
+    (
+        crate::cli_vault::VERBS,
+        crate::cli_vault::HELP,
+        crate::cli_vault::dispatch,
+    ),
     // batch: seal
     // batch: store
     (

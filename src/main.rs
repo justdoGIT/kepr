@@ -50,6 +50,7 @@ mod cli_scan;
 mod cli_share;
 mod cli_ssh;
 mod cli_ssh_agent;
+mod cli_status;
 mod cli_totp;
 mod cli_ui;
 mod cli_usage;
@@ -63,6 +64,7 @@ mod sync_vault;
 // ── P2–P11 ticket batches (2026-10-05): one `cli_<batch>` directory module
 // per batch, declared under its own marker (registered in cli_more.rs).
 // batch: vault
+mod cli_vault;
 // batch: seal
 // batch: store
 mod cli_store;

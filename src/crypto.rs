@@ -86,10 +86,10 @@ pub fn initialize_inproc_backend(
 
 /// The per-file backend, whatever store is active (`kepr vault migrate`
 /// reads the files through it).
-#[allow(dead_code)] // `kepr vault migrate` (T4.07)
 pub fn file_backend() -> Option<&'static InProcBackend> {
     INPROC_BACKEND.get()
 }
+
 pub fn lock_backend() -> Result<(), String> {
     INPROC_BACKEND
         .get()

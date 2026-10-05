@@ -2,11 +2,14 @@
 //
 //   kepr shell        interactive prompt that runs kepr verbs (shell.rs)
 //   kepr ui           full-screen credential list (tui.rs + tui_term.rs)
+//   kepr status       its `Crypto:` line (crypto.rs, T7.16)
 
+mod crypto;
 mod shell;
 mod tui;
 mod tui_term;
 
+pub use crypto::print_status_crypto;
 use kepr_core::protocol::Response;
 
 pub const VERBS: &[&str] = &["shell", "ui"];

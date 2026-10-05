@@ -271,6 +271,12 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
         let _ = client.write_all(&reply).await;
         return Ok(());
     }
+    // T7.18: the route's role is granted before its first login.
+    if let Err(e) = crate::pg_jit::ensure(state, route, &login_rec.user).await {
+        let msg = format!("kepr: role elevation failed: {e}");
+        let _ = client.write_all(&error_response("42501", &msg)).await;
+        return Err((502, Some("grant")));
+    }
     match login(&mut up, &params, &login_rec).await {
         Ok(ok) => client.write_all(&ok).await.map_err(io)?,
         Err(err) => {

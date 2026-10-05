@@ -81,6 +81,41 @@ pub struct DbTarget {
     /// Which protocol the gate speaks on this route's port (T7.01).
     #[serde(default, skip_serializing_if = "TargetKind::is_postgres")]
     pub kind: TargetKind,
+    /// T7.18 (PostgreSQL): a role granted to this route's login for the
+    /// session, by the gate, with another sealed record's admin login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<RoleGrant>,
+}
+
+/// `kepr agent run --grant NAME=ROLE:ADMIN` (T7.18).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleGrant {
+    /// The PostgreSQL role, as named in the database (case kept).
+    pub role: String,
+    /// The sealed database record (NAME) whose login may grant `role`.
+    pub admin: String,
+}
+
+impl RoleGrant {
+    /// Role: 1-63 bytes (PostgreSQL truncates longer names), no NUL or
+    /// backslash. Admin: a credential NAME other than the route's own.
+    fn validate(&self, cred: &str, kind: TargetKind) -> Result<(), String> {
+        let role_ok = (1..=63).contains(&self.role.len()) && !self.role.contains(['\0', '\\']);
+        let admin_ok = (1..=128).contains(&self.admin.len())
+            && self
+                .admin
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && !self.admin.eq_ignore_ascii_case(cred);
+        match (kind, role_ok, admin_ok) {
+            (TargetKind::Postgres, true, true) => Ok(()),
+            (TargetKind::Postgres, false, _) => Err("--grant: invalid role name".into()),
+            (TargetKind::Postgres, _, false) => {
+                Err("--grant: the admin must be another sealed database login".into())
+            }
+            _ => Err("--grant: role elevation is for PostgreSQL logins only".into()),
+        }
+    }
 }
 
 /// The protocol of a database route (Postgres for routes written before
@@ -148,12 +183,18 @@ impl GateRoute {
 }
 
 /// The credential NAMEs a session's gate may ask the daemon for: every
-/// route's credential except a tunnel's (its "cred" is only its name).
+/// route's credential except a tunnel's (its "cred" is only its name),
+/// plus the admin logins of role grants (T7.18).
 pub fn resolvable_creds(routes: &[GateRoute]) -> std::collections::HashSet<String> {
+    let admins = routes
+        .iter()
+        .filter_map(|r| r.target.as_ref()?.grant.as_ref())
+        .map(|g| g.admin.to_uppercase());
     routes
         .iter()
         .filter(|r| !r.is_tunnel())
         .map(|r| r.cred.to_uppercase())
+        .chain(admins)
         .collect()
 }
 
@@ -250,6 +291,16 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
         });
         if !db_ok && (r.target.is_some() || crate::providers::lookup(&r.provider).is_none()) {
             return Err(format!("unknown provider {}", r.provider));
+        }
+        if let Some((t, g)) = r.target.as_ref().and_then(|t| Some((t, t.grant.as_ref()?))) {
+            g.validate(&r.cred, t.kind)?;
+            // The agent would hold the admin login itself.
+            if routes.iter().any(|o| o.cred.eq_ignore_ascii_case(&g.admin)) {
+                return Err(format!(
+                    "--grant: {} grants roles, so it can't also be a route of the session",
+                    g.admin
+                ));
+            }
         }
         if routes[..i]
             .iter()
@@ -357,6 +408,64 @@ mod tests {
             vec!["ANTHROPIC_API_KEY"]
         );
         assert_eq!(TargetKind::parse("tcp"), None);
+    }
+
+    #[test]
+    fn role_grants_are_postgres_only_and_make_the_admin_resolvable() {
+        let db = |kind, role: &str, admin: &str| GateRoute {
+            provider: "db:APP_DB".into(),
+            cred: "APP_DB".into(),
+            slot: 0,
+            target: Some(DbTarget {
+                host: "db.example.com".into(),
+                port: 5432,
+                kind,
+                grant: Some(RoleGrant {
+                    role: role.into(),
+                    admin: admin.into(),
+                }),
+                ..Default::default()
+            }),
+        };
+        let ok = db(TargetKind::Postgres, "Analyst \"rw\"", "APP_ADMIN");
+        assert!(validate_routes(std::slice::from_ref(&ok)).is_ok());
+        let j = serde_json::to_string(&ok).unwrap();
+        assert!(j.contains(r#""grant":{"role":"#), "{j}");
+        assert_eq!(serde_json::from_str::<GateRoute>(&j).unwrap(), ok);
+        let plain: DbTarget = serde_json::from_str(r#"{"host":"db.x.io","port":5432}"#).unwrap();
+        assert!(plain.grant.is_none());
+        assert!(!serde_json::to_string(&plain).unwrap().contains("grant"));
+        for bad in [
+            db(TargetKind::Mysql, "analyst", "APP_ADMIN"),
+            db(TargetKind::Postgres, "", "APP_ADMIN"),
+            db(TargetKind::Postgres, &"r".repeat(64), "APP_ADMIN"),
+            db(TargetKind::Postgres, "a\0b", "APP_ADMIN"),
+            db(TargetKind::Postgres, "a\\b", "APP_ADMIN"),
+            db(TargetKind::Postgres, "analyst", "../x"),
+            db(TargetKind::Postgres, "analyst", ""),
+            db(TargetKind::Postgres, "analyst", "app_db"),
+        ] {
+            assert!(
+                validate_routes(std::slice::from_ref(&bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+        // The admin login must not be reachable by the agent itself.
+        let admin_route = GateRoute {
+            provider: "db:APP_ADMIN".into(),
+            cred: "APP_ADMIN".into(),
+            slot: 1,
+            target: Some(DbTarget {
+                host: "db.example.com".into(),
+                port: 5432,
+                ..Default::default()
+            }),
+        };
+        let both = [ok.clone(), admin_route];
+        assert!(validate_routes(&both).unwrap_err().contains("APP_ADMIN"));
+        let mut creds: Vec<_> = resolvable_creds(&[ok]).into_iter().collect();
+        creds.sort();
+        assert_eq!(creds, vec!["APP_ADMIN", "APP_DB"]);
     }
 
     #[test]

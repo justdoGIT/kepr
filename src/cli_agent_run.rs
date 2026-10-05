@@ -148,6 +148,7 @@ pub fn cmd_run(
         routes.extend(db);
         let tunnels = crate::cli_gatex::tunnel::routes(&routes, &session.tunnels)?;
         routes.extend(tunnels);
+        crate::cli_gatex::grant::apply(&mut routes, &session.grants)?;
         Ok(routes)
     });
     let routes = match routes {

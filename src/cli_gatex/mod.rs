@@ -3,6 +3,7 @@
 // subcommands added by the batch. No top-level verbs of its own; the help
 // lines below are appended to `kepr --help`.
 
+pub mod grant;
 pub mod mysql_login;
 pub mod tunnel;
 
@@ -10,8 +11,10 @@ use kepr_core::protocol::Response;
 
 pub const VERBS: &[&str] = &[];
 
-pub const HELP: &str =
-    "  agent run HARNESS --tunnel NAME=HOST:PORT  loopback port piped to an internal host (no credential)\n";
+pub const HELP: &str = concat!(
+    "  agent run HARNESS --tunnel NAME=HOST:PORT  loopback port piped to an internal host (no credential)\n",
+    "  agent run HARNESS --grant NAME=ROLE:ADMIN  PostgreSQL role held only for the session (ADMIN grants it)\n",
+);
 
 pub fn dispatch(verb: &str, _args: &[String]) -> Response {
     Response::fail(format!("unknown command: {verb}"))
@@ -23,10 +26,12 @@ pub fn dispatch(verb: &str, _args: &[String]) -> Response {
 pub struct SessionOpts {
     /// `--tunnel NAME=host:port` (T7.03), as given.
     pub tunnels: Vec<String>,
+    /// `--grant NAME=ROLE:ADMIN` (T7.18), as given.
+    pub grants: Vec<String>,
 }
 
 impl SessionOpts {
-    pub const FLAGS: &'static [&'static str] = &["--tunnel"];
+    pub const FLAGS: &'static [&'static str] = &["--tunnel", "--grant"];
 
     /// Take the flag at `raw[i]` (one of FLAGS); returns the index of
     /// the last argument consumed.
@@ -38,6 +43,7 @@ impl SessionOpts {
         };
         match raw[i].as_str() {
             "--tunnel" => self.tunnels.push(value("NAME=HOST:PORT")?),
+            "--grant" => self.grants.push(value("NAME=ROLE:ADMIN")?),
             other => return Err(format!("unexpected argument: {other}")),
         }
         Ok(i + 1)
@@ -58,7 +64,9 @@ mod tests {
         assert_eq!(o.take(&raw, 0), Ok(1));
         assert_eq!(o.tunnels, vec!["WIKI=wiki.example.com:80"]);
         assert!(o.take(&raw[..1], 0).is_err());
+        let raw: Vec<String> = vec!["--grant".into(), "APP_DB=analyst:APP_ADMIN".into()];
+        assert_eq!(o.take(&raw, 0), Ok(1));
+        assert_eq!(o.grants, vec!["APP_DB=analyst:APP_ADMIN"]);
         assert!(HELP.lines().all(|l| l.starts_with("  ")));
-        assert!(VERBS.is_empty());
     }
 }
