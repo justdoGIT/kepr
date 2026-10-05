@@ -50,6 +50,7 @@ mod cli_scan;
 mod cli_share;
 mod cli_ssh;
 mod cli_ssh_agent;
+mod cli_status;
 mod cli_totp;
 mod cli_ui;
 mod cli_usage;
@@ -68,6 +69,7 @@ mod cli_vault;
 // batch: store
 mod cli_store;
 // batch: records
+mod cli_recordsx;
 // batch: share
 mod cli_sharing;
 // batch: sync

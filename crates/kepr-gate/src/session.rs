@@ -111,12 +111,12 @@ pub fn run() -> Result<(), String> {
             );
         }
         if let Some(target) = &r.target {
-            db_routes.push(Arc::new(crate::db::DbRoute {
-                key: r.provider.clone(),
-                cred: r.cred.clone(),
-                slot: r.slot,
-                target: target.clone(),
-            }));
+            db_routes.push(Arc::new(crate::db::DbRoute::new(
+                r.provider.clone(),
+                r.cred.clone(),
+                r.slot,
+                target.clone(),
+            )));
             continue;
         }
         table.insert(
@@ -171,6 +171,7 @@ pub fn run() -> Result<(), String> {
             .port();
         // P7.1: one loopback listener per database route.
         let mut db_ports = HashMap::new();
+        let jit_routes = db_routes.clone();
         for route in db_routes {
             let l = tokio::net::TcpListener::bind(("127.0.0.1", 0))
                 .await
@@ -200,10 +201,13 @@ pub fn run() -> Result<(), String> {
         .and_then(|_| out.flush())
         .map_err(|e| format!("stdout: {e}"))?;
 
+        let st = state.clone();
         tokio::spawn(async move {
             if let Ok(afd) = tokio::io::unix::AsyncFd::new(owner) {
                 let _ = afd.readable().await;
             }
+            // T7.18: take back the roles this session granted.
+            crate::pg_jit::revoke_all(&st, &jit_routes).await;
             cache.clear();
             std::process::exit(0);
         });

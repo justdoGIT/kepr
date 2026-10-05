@@ -32,6 +32,11 @@ const GROUPS: &[Group] = &[
         crate::cli_store::dispatch,
     ),
     // batch: records
+    (
+        crate::cli_recordsx::VERBS,
+        crate::cli_recordsx::HELP,
+        crate::cli_recordsx::dispatch,
+    ),
     // batch: share
     (
         crate::cli_sharing::VERBS,

@@ -7,8 +7,9 @@
 // (name → "ok" or the problems), so `all_ok` drives the exit code. With
 // `KEPR_STORE=image` the same checks run over the image's records (T4.14).
 //
-// Attachment manifests (T5.03) are not checked: attachments are not part
-// of this tree yet.
+// Attachment manifests (T5.03) must match their chunks (size, SHA-256),
+// and every chunk must belong to a listed attachment of a stored value
+// (daemon_recordsx::verify_attachments).
 
 use std::collections::HashMap;
 
@@ -31,10 +32,14 @@ fn check(uid: u32) -> HashMap<String, Vec<String>> {
         }
         // `X~3` belongs to `X`; `X~t17~3` to the trash entry `X~t17`.
         if let Some((owner, slot)) = name.rsplit_once('~') {
-            if !slot.starts_with('t') && !values.iter().any(|v| v == owner) {
+            let history = !slot.starts_with('t') && !name.contains("~a");
+            if history && !values.iter().any(|v| v == owner) {
                 problems.push("orphan history slot".into());
             }
         }
+    }
+    for (name, problem) in crate::daemon_recordsx::verify_attachments(uid, &values) {
+        out.entry(name).or_default().push(problem);
     }
     for p in files::meta_paths_of(uid) {
         let f = p

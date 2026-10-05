@@ -861,7 +861,7 @@ feature is built into kepr.
 P1:  T1.23 (independent)
 P2:  T2.01 ─▶ T2.02 ; T7.06 ─▶ T2.03 ; T2.04 (independent)
 P3:  T3.06 (independent)
-P4:  T4.01 ─▶ T4.02 ─▶ T4.03 ─▶ T4.04 ─▶ T4.05 ─▶ T4.06 ─▶ T4.07
+P4:  T4.01 ─▶ T4.02 ─▶ T4.03 ─▶ T4.04 ─▶ T4.05 ─▶ T4.06 ─▶ T4.07 ─▶ T4.14
      T4.08, T4.09, T4.10 (independent) ; T4.11 ─▶ T4.12, T4.13
 P5:  T5.01 ─▶ T11.1 ; T5.02 ; T5.03 ; T5.04 ; T5.05 ─▶ T5.06
 P6:  T6.01 ─▶ T6.02 ─▶ T6.03 ; T6.04 ─▶ T6.05 ; T6.06 ; T6.07 ; T6.08
@@ -1162,6 +1162,21 @@ Goal: `pkcs11:<module>:<key-label>` wraps the master key through
 Depends on: T4.11.
 Tests: command lines built correctly (fake runner); PIN read from
 `KEPR_PKCS11_PIN_FILE`, never argv.
+
+### T4.14 Every store feature on the image backend (M) 🔒
+
+Goal: trash, aliases, folders/tags, duplicates, `delete --all`, history
+diff, `doctor --verify`, attachments and shares behave the same with
+`KEPR_STORE=image` as with the per-file store.
+Depends on: T4.06, T11.2, T11.5, T5.03.
+Files: the `src/daemon_store/` and `src/daemon_recordsx/` paths that call
+`cred_path(..).exists()`, `read_dir(store_dir())` or rename files go through
+`store::cred_exists`, `store::list_for_uid` and a backend `rename` (record
+re-keyed under the new name, meta moved with it); meta-only entries
+(aliases) are allowed in the image.
+Tests: `tests/vault_image.rs` runs set → rm (to trash) → trash restore,
+alias resolve, `delete --all` and `doctor --verify` against a daemon using
+the image.
 
 ---
 

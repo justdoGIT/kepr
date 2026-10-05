@@ -37,6 +37,7 @@ pub mod protocol_vault;
 // batch: store
 pub mod protocol_store;
 // batch: records
+pub mod protocol_records;
 // batch: share
 pub mod protocol_sharing;
 // batch: sync
@@ -46,6 +47,7 @@ pub mod mysql_handshake;
 pub mod mysql_wire;
 // batch: aws
 // batch: eco
+pub mod protocol_eco;
 // batch: platform
 // batch: session
 // end of batches

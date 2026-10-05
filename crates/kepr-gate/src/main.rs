@@ -16,6 +16,7 @@ mod mysql;
 mod mysql_auth;
 mod mysql_rotate;
 mod pg;
+mod pg_jit;
 mod pg_rotate;
 mod pg_tls;
 mod placeholder;
@@ -26,6 +27,7 @@ mod routes;
 mod scram;
 mod service;
 mod session;
+mod tls_provider;
 mod tunnel;
 mod vault;
 

@@ -265,6 +265,8 @@ pub enum Request {
     #[serde(untagged)]
     Store(crate::protocol_store::StoreRequest),
     // batch: records
+    #[serde(untagged)]
+    Records(crate::protocol_records::RecordsRequest),
     // batch: share
     #[serde(untagged)]
     Sharing(crate::protocol_sharing::SharingRequest),
@@ -273,6 +275,8 @@ pub enum Request {
     // batch: gate
     // batch: aws
     // batch: eco
+    #[serde(untagged)]
+    Eco(crate::protocol_eco::EcoRequest),
     // batch: platform
     // batch: session
     // end of batches
