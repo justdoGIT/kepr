@@ -184,7 +184,11 @@ pub(crate) fn store_payload(
         ..Default::default()
     };
     match handle_set(uid, username, &name, Some(p.value.as_str()), None, flags) {
-        r @ Response::SetOk { .. } => Ok((name, r)),
+        r @ Response::SetOk { .. } => {
+            // T6.05: the sender's ledger row (and a self-destruct).
+            crate::daemon_sharing::sent::on_received(&p.id, expiry::now_unix());
+            Ok((name, r))
+        }
         Response::Err { error } => {
             crate::daemon_share_seen::release(uid, &p.id);
             Err(error)

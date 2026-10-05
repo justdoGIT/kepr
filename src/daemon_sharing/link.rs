@@ -8,16 +8,19 @@
 //   ShareLinkOpen    blob + key → the payload, stored like a received
 //                    share (expiry, single use by id, no overwrite).
 //
+// T6.05: each link is a row in the sent-share ledger (sent.rs); with
+// `self_destruct` the record is marked to be deleted once it is opened.
+//
 // The relay sees the blob and its id, never the key.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::Aes256Gcm;
 use base64::Engine;
 use kepr_core::protocol::Response;
-use kepr_core::protocol_sharing::SharingResponse;
+use kepr_core::protocol_sharing::{SentShare, SharingResponse};
 use zeroize::Zeroizing;
 
-use super::audit_r;
+use super::{audit_r, sent};
 use crate::daemon_share::{new_payload, received, store_payload, Payload1};
 use crate::expiry;
 
@@ -79,13 +82,40 @@ pub fn handle_create(
     username: &str,
     name: &str,
     ttl: Option<u64>,
+    self_destruct: bool,
+    relay: Option<String>,
 ) -> Response {
     let upper = name.to_uppercase();
     let r = (|| {
+        if relay
+            .as_ref()
+            .is_some_and(|r| r.len() > 256 || r.chars().any(char::is_control))
+        {
+            return Err("not a relay URL".to_string());
+        }
+        // One lock over read + mark: a value set in between is never
+        // the one that self-destructs.
+        let _lock = crate::daemon_credlock::lock(uid, &upper);
         let p = new_payload((uid, peer_pid), name, ttl)?;
         let json = Zeroizing::new(serde_json::to_vec(&p).map_err(|e| e.to_string())?);
         let (key, blob) = seal(&json)?;
         let now = expiry::now_unix();
+        let row = SentShare {
+            id: p.id.clone(),
+            name: upper.clone(),
+            kind: "link".into(),
+            to: None,
+            relay,
+            sent_unix: now,
+            expires_unix: p.expires,
+            opened_unix: None,
+            self_destruct,
+            settled: false,
+        };
+        sent::record(uid, row, now)?;
+        if self_destruct {
+            sent::mark(uid, &upper, &p.id)?;
+        }
         Ok(SharingResponse::ShareLink {
             id: p.id,
             key: key_text(&key).into(),
@@ -124,7 +154,7 @@ mod tests {
     use kepr_core::protocol_sharing::SharingResponse as S;
 
     fn link(uid: u32, name: &str) -> (String, String) {
-        match handle_create((uid, 0), "t", name, Some(60)) {
+        match handle_create((uid, 0), "t", name, Some(60), false, None) {
             Response::Sharing(S::ShareLink { key, blob, id, .. }) => {
                 assert_eq!(id.len(), 32);
                 (key.as_str().to_string(), blob)
@@ -182,7 +212,7 @@ mod tests {
     fn sealed_values_never_go_into_a_link() {
         let uid = testkit::uid();
         testkit::set_sealed(uid, "LINK_SEALED", "v");
-        let r = handle_create((uid, 0), "t", "LINK_SEALED", None);
+        let r = handle_create((uid, 0), "t", "LINK_SEALED", None, true, None);
         assert!(matches!(r, Response::Err { error } if error.contains("can't be shared")));
     }
 }

@@ -1,8 +1,11 @@
 // cli_sharing/once.rs — one-time share links (T6.04).
 //
 //   kepr share send NAME --once [--ttl 1h] [--relay URL | -o FILE] [--qr]
+//                    [--self-destruct]
 //       → kepr://share/<id>[?relay=URL]#<key>
 //   kepr share open LINK [--from FILE] [--as NAME]
+//   kepr share check   asks each relay whether the caller's links were
+//                      opened (HEAD → 410), so self-destructs run now
 //
 // The daemon makes the blob and its key. With --relay the blob is PUT to
 // `<relay>/b/<id>`; without, it goes to a file to pass on some other way
@@ -20,7 +23,7 @@ use crate::{cli_mode, cli_ui};
 
 const SCHEME: &str = "kepr://share/";
 const USAGE: &str = "usage: kepr share send NAME --once [--ttl 1h] [--relay URL | -o FILE] [--qr] \
-                     | kepr share open LINK [--from FILE] [--as NAME]";
+                     [--self-destruct] | kepr share open LINK [--from FILE] [--as NAME]";
 
 pub struct Link {
     pub id: String,
@@ -135,9 +138,12 @@ pub fn send_once(args: &[String]) -> Response {
         if relay.is_some() && flag(args, "-o").is_some() {
             return Err(Response::fail("--relay and -o don't go together"));
         }
+        let self_destruct = args.iter().any(|a| a == "--self-destruct");
         let r = send(SharingRequest::ShareLinkCreate {
             name: name.to_uppercase(),
             ttl_secs: ttl_arg(args)?,
+            self_destruct: self_destruct.then_some(true),
+            relay: relay.clone(),
         });
         let Response::Sharing(SharingResponse::ShareLink {
             id,
@@ -177,6 +183,13 @@ pub fn send_once(args: &[String]) -> Response {
         cli_ui::einfo(&format!(
             "single use, expires {expires_at} UTC; {where_}. Anyone with the link can open it once."
         ));
+        if self_destruct {
+            cli_ui::einfo(&format!(
+                "{} will be deleted once the link is opened or expires \
+                 (`kepr share check` asks the relay)",
+                name.to_uppercase()
+            ));
+        }
         Ok(Response::Pong)
     })();
     r.unwrap_or_else(|e| e)
@@ -190,26 +203,70 @@ pub fn open(args: &[String]) -> Response {
             None => qr::join(&read_input(None)?).map_err(Response::fail)?,
         };
         let link = parse_link(&text).map_err(Response::fail)?;
-        let blob = match (flag(args, "--from"), flag(args, "--relay"), &link.relay) {
-            (Some(path), _, _) => read_input(Some(path))?.trim().to_string(),
-            (None, Some(r), _) => fetch_blob(&relay_base(r).map_err(Response::fail)?, &link.id)
-                .map_err(Response::fail)?,
-            (None, None, Some(r)) => fetch_blob(r, &link.id).map_err(Response::fail)?,
-            (None, None, None) => return Err(Response::fail(
+        let relay = match (flag(args, "--relay"), &link.relay) {
+            (Some(r), _) => Some(relay_base(r).map_err(Response::fail)?),
+            (None, r) => r.clone(),
+        };
+        let (blob, fetched) = match (flag(args, "--from"), relay) {
+            (Some(path), _) => (read_input(Some(path))?.trim().to_string(), false),
+            (None, Some(r)) => (fetch_blob(&r, &link.id).map_err(Response::fail)?, true),
+            (None, None) => return Err(Response::fail(
                 "this link has no relay: open it with --from FILE (the blob file you were sent)",
             )),
         };
         let r = send(SharingRequest::ShareLinkOpen {
-            blob,
+            blob: blob.clone(),
             key: link.key,
             name: flag(args, "--as").map(str::to_uppercase),
         });
+        // The relay deleted the blob on fetch: keep it so a refusal
+        // (name taken, …) can be retried with --from.
+        if let (Response::Err { error }, true) = (&r, fetched) {
+            let path = format!("kepr-share-{}.txt", &link.id[..8]);
+            if write_new(&path, &blob).is_ok() {
+                return Err(Response::fail(format!(
+                    "{error} (the blob is saved in {path}: retry with --from {path})"
+                )));
+            }
+        }
         if let (Response::SetOk { name, .. }, false) = (&r, cli_mode::json_mode()) {
             cli_ui::ok(&format!("opened and stored as {name}"));
         }
         Ok(r)
     })();
     r.unwrap_or_else(|e| e)
+}
+
+/// `kepr share check`: report relay-opened links to the daemon.
+pub fn check() -> Response {
+    let Response::Sharing(SharingResponse::ShareSent { shares }) =
+        send(SharingRequest::ShareSentList)
+    else {
+        return Response::fail("unexpected reply");
+    };
+    let now = super::now();
+    let mut opened = 0;
+    for s in shares
+        .iter()
+        .filter(|s| s.opened_unix.is_none() && s.expires_unix > now)
+    {
+        let Some(relay) = s.relay.as_deref().and_then(|r| relay_base(r).ok()) else {
+            continue;
+        };
+        let gone = matches!(
+            http(agent().head(&format!("{relay}/b/{}", s.id)), None),
+            Ok((410, _))
+        );
+        if gone && send(SharingRequest::ShareLinkOpened { id: s.id.clone() }).is_success() {
+            opened += 1;
+            cli_ui::einfo(&format!("{}: the link was opened", s.name));
+        }
+    }
+    let message = format!("{opened} newly opened link(s)");
+    if !cli_mode::json_mode() {
+        cli_ui::ok(&message);
+    }
+    SharingResponse::SharingDone { message }.into()
 }
 
 #[cfg(test)]

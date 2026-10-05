@@ -23,8 +23,10 @@ pub const HELP: &str =
   device enroll … --oidc ISSUER --client-id ID [--subject WHO]
                                        prove the user via the IdP (device-code login) first
   device ls | device rm ID|LABEL       enrolled devices (what sync encrypts to)
-  share send KEY --once [--ttl 1h] [--relay URL | -o FILE] [--qr]
-                                       one-time link kepr://share/…#key (key only in the #fragment)
+  share send KEY --once [--ttl 1h] [--relay URL | -o FILE] [--qr] [--self-destruct]
+                                       one-time link kepr://share/…#key (key only in the #fragment);
+                                       --self-destruct deletes KEY once the link is opened or expires
+  share check                          ask the relays which of your links were opened
   share open LINK [--from FILE] [--as KEY]
                                        fetch (relay) or read (file) a one-time link and store it
 ";
@@ -43,6 +45,7 @@ pub fn share_ext(args: &[String]) -> Option<Response> {
     match args.first().map(String::as_str) {
         Some("send") if rest.iter().any(|a| a == "--once") => Some(once::send_once(rest)),
         Some("open") => Some(once::open(rest)),
+        Some("check") => Some(once::check()),
         _ => None,
     }
 }
