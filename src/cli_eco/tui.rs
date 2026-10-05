@@ -284,12 +284,7 @@ mod tests {
             cred_name: format!("kepr-1000-{}", name.to_lowercase()),
             size: 40,
             modified: "2026-10-01 12:00".into(),
-            expires_at: None,
-            requires_consent: None,
-            requires_fido2: None,
-            sealed: None,
-            bound_hosts: None,
-            record_type: None,
+            ..Default::default()
         }
     }
 

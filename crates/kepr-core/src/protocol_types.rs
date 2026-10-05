@@ -65,7 +65,9 @@ pub struct GateExtras {
 
 // ── Credential info (for ListOk) ──────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// `Default` lets literals name only the fields they set (`..Default::default()`),
+/// so a batch adding an optional field doesn't touch every literal.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CredInfo {
     pub name: String,      // ENV_VAR_NAME
     pub cred_name: String, // kepr-<uid>-env-var-name

@@ -159,16 +159,9 @@ mod tests {
             cred_name: String::new(),
             size: 0,
             modified: String::new(),
-            expires_at: None,
-            requires_consent: None,
-            requires_fido2: None,
             sealed: Some(true),
             bound_hosts: Some(hosts.iter().map(|h| h.to_string()).collect()),
-            record_type: None,
-            tags: None,
-            folder: None,
-            alias_of: None,
-            db_kind: None,
+            ..Default::default()
         }
     }
 
