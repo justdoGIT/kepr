@@ -71,6 +71,7 @@ mod sync_vault;
 // batch: gate
 // batch: aws
 // batch: eco
+mod cli_eco;
 // batch: platform
 // batch: session
 // end of batches

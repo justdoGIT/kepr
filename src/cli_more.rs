@@ -28,6 +28,11 @@ const GROUPS: &[Group] = &[
     // batch: gate
     // batch: aws
     // batch: eco
+    (
+        crate::cli_eco::VERBS,
+        crate::cli_eco::HELP,
+        crate::cli_eco::dispatch,
+    ),
     // batch: platform
     // batch: session
     // end of batches
