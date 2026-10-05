@@ -30,6 +30,20 @@ pub enum SharingRequest {
     DeviceRemove {
         device: String,
     },
+    /// T6.04: a one-time link for `name`: an encrypted blob plus its key.
+    ShareLinkCreate {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        ttl_secs: Option<u64>,
+    },
+    /// T6.04: open a link's blob with the key from its #fragment and
+    /// store the value (as `name`, or the sender's name).
+    ShareLinkOpen {
+        blob: String,
+        key: ZeroString,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +61,19 @@ pub enum SharingResponse {
     },
     /// A request that needs no other reply than a line for the user.
     SharingDone { message: String },
+    /// T6.04: the key goes only into the link's #fragment, never to a relay.
+    ShareLink {
+        id: String,
+        key: ZeroString,
+        blob: String,
+        expires_at: String,
+        ttl_secs: u64,
+    },
+    /// T6.04, CLI output only (`--json`): the finished link.
+    ShareLinkReady {
+        link: ZeroString,
+        expires_at: String,
+    },
 }
 
 impl From<SharingResponse> for crate::protocol::Response {
@@ -180,6 +207,15 @@ mod tests {
             },
             SharingRequest::DeviceList,
             SharingRequest::DeviceRemove { device: "x".into() },
+            SharingRequest::ShareLinkCreate {
+                name: "A".into(),
+                ttl_secs: Some(60),
+            },
+            SharingRequest::ShareLinkOpen {
+                blob: "kepr-link1-x".into(),
+                key: "k".into(),
+                name: None,
+            },
         ];
         for r in reqs {
             let json = serde_json::to_string(&Request::Sharing(r)).unwrap();
@@ -199,6 +235,13 @@ mod tests {
             },
             SharingResponse::SharingDone {
                 message: "ok".into(),
+            },
+            SharingResponse::ShareLink {
+                id: "i".into(),
+                key: "k".into(),
+                blob: "b".into(),
+                expires_at: "t".into(),
+                ttl_secs: 60,
             },
         ];
         for r in resps {

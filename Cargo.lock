@@ -968,10 +968,12 @@ dependencies = [
  "hkdf",
  "hmac 0.13.0",
  "kepr-core",
+ "kepr-relay",
  "libc",
  "ml-kem",
  "p256",
  "proptest",
+ "qrcode",
  "rsa",
  "serde",
  "serde_json",
@@ -1036,6 +1038,10 @@ dependencies = [
  "webpki-roots 1.0.7",
  "zeroize",
 ]
+
+[[package]]
+name = "kepr-relay"
+version = "0.4.0"
 
 [[package]]
 name = "lazy_static"
@@ -1376,6 +1382,12 @@ dependencies = [
  "tempfile",
  "unarray",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"

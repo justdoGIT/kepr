@@ -9,6 +9,7 @@
 
 pub mod devices;
 pub mod kem;
+pub mod link;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -21,8 +22,20 @@ use crate::audit::{self, AuditEvent, AuditResult};
 /// Serialises read-modify-write of the per-uid state files below.
 pub(crate) static LOCK: Mutex<()> = Mutex::new(());
 
+/// The daemon's state directory (a per-process temp dir under test).
+pub(crate) fn state_root() -> PathBuf {
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join(format!("kepr-sharing-tests-{}", std::process::id()))
+    }
+    #[cfg(not(test))]
+    {
+        crate::state_dir()
+    }
+}
+
 pub(crate) fn state_path(kind: &str, uid: u32) -> PathBuf {
-    crate::state_dir().join(format!("{kind}-{uid}.json"))
+    state_root().join(format!("{kind}-{uid}.json"))
 }
 
 /// A missing or unreadable file is the empty state.
@@ -67,7 +80,7 @@ pub(crate) fn done(message: impl Into<String>) -> Response {
     .into()
 }
 
-pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: SharingRequest) -> Response {
+pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SharingRequest) -> Response {
     match request {
         SharingRequest::DeviceAdd { label, oidc_issuer } => {
             devices::handle_add(uid, username, &label, oidc_issuer)
@@ -77,5 +90,11 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: SharingReques
         }
         SharingRequest::DeviceList => devices::handle_list(uid),
         SharingRequest::DeviceRemove { device } => devices::handle_remove(uid, username, &device),
+        SharingRequest::ShareLinkCreate { name, ttl_secs } => {
+            link::handle_create((uid, peer_pid), username, &name, ttl_secs)
+        }
+        SharingRequest::ShareLinkOpen { blob, key, name } => {
+            link::handle_open(uid, username, &blob, key.as_str(), name.as_deref())
+        }
     }
 }

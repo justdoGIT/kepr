@@ -95,6 +95,10 @@ fn cmd_receive(args: &[String]) -> Response {
 }
 
 pub fn cmd_share(args: &[String]) -> Response {
+    // batch: share — one-time links and the other new subcommands.
+    if let Some(r) = crate::cli_sharing::share_ext(args) {
+        return r;
+    }
     let rest = args.get(1..).unwrap_or_default();
     match args.first().map(String::as_str) {
         Some("key") => {
