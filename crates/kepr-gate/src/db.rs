@@ -45,6 +45,7 @@ pub async fn serve_conn(state: Arc<State>, route: Arc<DbRoute>, client: TcpStrea
         TargetKind::Postgres => crate::pg::serve_conn(state, route, client).await,
         TargetKind::Redis => crate::redis::serve_conn(state, route, client).await,
         TargetKind::Mysql => crate::mysql::serve_conn(state, route, client).await,
+        TargetKind::Tcp => crate::tunnel::serve_conn(state, route, client).await,
     }
 }
 
@@ -72,7 +73,7 @@ pub(crate) async fn resolve_login(state: &State, route: &DbRoute) -> Result<Logi
         route.cred.clone(),
         route.target.clone(),
     );
-    let want = t.kind.inject();
+    let want = t.kind.inject().ok_or(())?;
     match tokio::task::spawn_blocking(move || cache.get(&cred, &t.host, t.port)).await {
         Ok(Ok((value, inject))) if inject == want => {
             serde_json::from_str(value.as_str()).map_err(|_| ())

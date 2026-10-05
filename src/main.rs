@@ -43,6 +43,7 @@ mod cli_more;
 mod cli_record;
 mod cli_recovery;
 mod cli_rotate;
+mod cli_sandbox_relay;
 mod cli_sandbox_seccomp;
 mod cli_sandbox_sys;
 mod cli_scan;
@@ -69,6 +70,7 @@ mod sync_vault;
 // batch: sync
 // batch: policy
 // batch: gate
+mod cli_gatex;
 // batch: aws
 // batch: eco
 // batch: platform

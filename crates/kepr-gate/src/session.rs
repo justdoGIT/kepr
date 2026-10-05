@@ -103,11 +103,14 @@ pub fn run() -> Result<(), String> {
     let mut table = HashMap::new();
     let mut db_routes = Vec::new();
     for r in &cfg.routes {
-        if let Some(target) = &r.target {
+        // A raw tunnel (T7.03) takes no credential, hence no placeholder.
+        if !r.is_tunnel() {
             placeholders.insert(
                 r.provider.clone(),
                 placeholder::make(&key, &cfg.session_id, r.slot),
             );
+        }
+        if let Some(target) = &r.target {
             db_routes.push(Arc::new(crate::db::DbRoute {
                 key: r.provider.clone(),
                 cred: r.cred.clone(),
@@ -116,10 +119,6 @@ pub fn run() -> Result<(), String> {
             }));
             continue;
         }
-        placeholders.insert(
-            r.provider.clone(),
-            placeholder::make(&key, &cfg.session_id, r.slot),
-        );
         table.insert(
             r.provider.clone(),
             Route {
@@ -151,6 +150,7 @@ pub fn run() -> Result<(), String> {
         )
         .with_limits(cfg.limits)
         .with_egress(ca, cfg.tunnel)
+        .with_tunnels(&cfg.routes)
         .validated()?,
     );
     // From here on the key exists only as SplitKey shares in secret

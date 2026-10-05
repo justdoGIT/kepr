@@ -26,6 +26,11 @@ const GROUPS: &[Group] = &[
     // batch: sync
     // batch: policy
     // batch: gate
+    (
+        crate::cli_gatex::VERBS,
+        crate::cli_gatex::HELP,
+        crate::cli_gatex::dispatch,
+    ),
     // batch: aws
     // batch: eco
     // batch: platform

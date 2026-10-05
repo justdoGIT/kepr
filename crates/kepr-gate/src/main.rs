@@ -25,6 +25,7 @@ mod routes;
 mod scram;
 mod service;
 mod session;
+mod tunnel;
 mod vault;
 
 use std::process::ExitCode;
