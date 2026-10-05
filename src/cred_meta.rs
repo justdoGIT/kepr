@@ -58,6 +58,9 @@ pub struct CredMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub alias_of: Option<String>,
     // batch: records
+    /// T5.03: attachment manifest; chunks are `NAME~a<id>~<n>` values.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub attachments: Option<Vec<kepr_core::protocol_records::AttachInfo>>,
     // batch: share
     // batch: sync
     // batch: policy

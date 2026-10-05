@@ -57,6 +57,7 @@ mod daemon_vault;
 // batch: store
 mod daemon_store;
 // batch: records
+mod daemon_recordsx;
 // batch: share
 mod daemon_sharing;
 // batch: sync

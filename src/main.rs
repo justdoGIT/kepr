@@ -67,6 +67,7 @@ mod sync_vault;
 // batch: store
 mod cli_store;
 // batch: records
+mod cli_recordsx;
 // batch: share
 mod cli_sharing;
 // batch: sync

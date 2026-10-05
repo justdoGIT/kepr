@@ -5,9 +5,9 @@
 // validate_name: no request can name it and listings never show it), with
 // the credential's whole `.meta` plus `trashed_at`, so a sealed credential
 // stays sealed to the same bindings while in the trash and after restore.
-// Its history slots move along (`NAME~t<unix>~N`). The expiry sweeper
-// calls `sweep` to purge old entries. `rm --force` (DeleteNow) and the
-// leak response skip the trash.
+// Its history slots (`NAME~t<unix>~N`) and attachment chunks (T5.03) move
+// along. The expiry sweeper calls `sweep` to purge old entries.
+// `rm --force` (DeleteNow) and the leak response skip the trash.
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_store::{StoreResponse, TrashItem};
@@ -138,6 +138,7 @@ pub fn move_to_trash(uid: u32, upper: &str, now: u64) -> Result<Option<String>, 
     }
     expiry::delete_meta(&expiry::meta_path_for(&path));
     files::move_history(uid, upper, &entry);
+    crate::daemon_recordsx::move_attachments(uid, upper, &entry); // T5.03
     crate::daemon_history::purge(uid, upper);
     Ok(Some(entry))
 }
@@ -216,6 +217,7 @@ fn restore(uid: u32, upper: &str) -> Result<(), String> {
     }
     crate::daemon_history::purge(uid, upper);
     files::move_history(uid, &entry, upper);
+    crate::daemon_recordsx::move_attachments(uid, &entry, upper); // T5.03
     purge_entry(uid, &entry);
     Ok(())
 }
