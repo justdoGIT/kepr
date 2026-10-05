@@ -19,6 +19,8 @@ pub const TAG: usize = 16;
 /// image's salt. Wiped on drop.
 pub struct Keys {
     pub header: Zeroizing<[u8; 32]>,
+    /// Seals the journal slot (T4.04).
+    pub journal: Zeroizing<[u8; 32]>,
 }
 
 impl Keys {
@@ -32,6 +34,7 @@ impl Keys {
         };
         Self {
             header: k(b"kepr-vi1 header"),
+            journal: k(b"kepr-vi1 journal"),
         }
     }
 }

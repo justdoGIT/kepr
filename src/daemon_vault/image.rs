@@ -152,11 +152,23 @@ impl<I: SlotIo> VaultImage<I> {
             return Err("not a vault image".into());
         }
         let salt: [u8; SALT] = slot0[8..SEALED_AT].try_into().expect("salt");
-        let header = open_header(&Keys::derive(kek, &salt), &slot0)?;
-        if u64::from(header.slot_count) * SLOT as u64 != len {
+        let keys = Keys::derive(kek, &salt);
+        let current = open_header(&keys, &slot0);
+        // Until recovery settles the real header, size reads by the file.
+        let header = Header {
+            image_id: [0u8; 16],
+            slot_count: (len / SLOT as u64).min(u64::from(u32::MAX)) as u32,
+            epoch: 0,
+            root: [0u8; 32],
+            index_len: 0,
+            index_slots: Vec::new(),
+        };
+        let mut img = Self { io, salt, header };
+        img.recover(&keys, current)?;
+        if u64::from(img.header.slot_count) * SLOT as u64 != len {
             return Err("vault image size does not match its header".into());
         }
-        Ok(Self { io, salt, header })
+        Ok(img)
     }
 
     pub fn keys(&self, kek: &[u8; 32]) -> Keys {
@@ -196,6 +208,10 @@ impl<I: SlotIo> VaultImage<I> {
 
     pub(super) fn salt(&self) -> &[u8; SALT] {
         &self.salt
+    }
+
+    pub(super) fn io_ref(&self) -> &I {
+        &self.io
     }
 
     fn check(&self, idx: u32) -> Result<(), String> {
