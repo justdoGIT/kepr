@@ -1,7 +1,8 @@
 // daemon_store/files.rs — raw store helpers shared by the trash, delete-
 // all and verify: every file a uid owns (including the unnameable `~`
 // entries: history slots `NAME~3`, trash entries `NAME~t<unix>` and their
-// slots `NAME~t<unix>~3`), and moving a value from one name to another.
+// slots `NAME~t<unix>~3`, attachment chunks `NAME~a<k>~<n>`), and moving a
+// value from one name to another.
 //
 // A value's AEAD tag is bound to its exact name, so a "move" is decrypt +
 // encrypt under the new name; the plaintext stays in a ZeroString.
@@ -26,8 +27,17 @@ pub fn parse_file_name(file: &str) -> Option<(u32, String)> {
     store::validate_name(&name).ok()?;
     let mut canonical = name;
     for p in parts {
-        let ok = p.strip_prefix('t').unwrap_or(p);
-        if ok.is_empty() || !ok.bytes().all(|b| b.is_ascii_digit()) {
+        // `t<unix>` trash, `a<hex id>` attachment (T5.03), `<n>` slot.
+        let ok = match p.strip_prefix('a') {
+            Some(id) => {
+                !id.is_empty() && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            }
+            None => {
+                let d = p.strip_prefix('t').unwrap_or(p);
+                !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())
+            }
+        };
+        if !ok {
             return None;
         }
         canonical.push('~');
@@ -109,6 +119,13 @@ mod tests {
             Some((7, "FOO~t1700000000".into()))
         );
         assert_eq!(p("kepr-7-foo~t17~2"), Some((7, "FOO~t17~2".into())));
+        assert_eq!(p("kepr-7-foo~a0f9~2"), Some((7, "FOO~a0f9~2".into())));
+        assert_eq!(
+            p("kepr-7-foo~t17~a0f9~0"),
+            Some((7, "FOO~t17~a0f9~0".into()))
+        );
+        assert_eq!(p("kepr-7-foo~a~0"), None);
+        assert_eq!(p("kepr-7-foo~ax~0"), None);
         for bad in [
             "kepr-1000-foo.meta",
             "kepr-1000-foo~3.meta",

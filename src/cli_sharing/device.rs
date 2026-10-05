@@ -10,15 +10,15 @@
 
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_sharing::{
-    normalize_token, DeviceInfo, EnrolRequest, SharingRequest, SharingResponse,
+    normalize_token, DeviceInfo, EnrolRequest, OidcIdentity, SharingRequest, SharingResponse,
 };
 
-use super::{read_input, send, write_new};
+use super::{oidc, read_input, send, write_new};
 use crate::cli_extra::{flag, positionals};
 use crate::{cli_mode, cli_ui, client};
 
-const USAGE: &str =
-    "usage: kepr device add LABEL | enroll TOKEN [-o FILE] | enroll --from FILE | ls | rm ID|LABEL";
+const USAGE: &str = "usage: kepr device add LABEL [--oidc ISSUER] | enroll TOKEN [-o FILE] \
+     | enroll --from FILE | ls | rm ID|LABEL  (enroll takes --oidc ISSUER --client-id ID)";
 
 fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -29,13 +29,15 @@ fn hostname() -> String {
 }
 
 fn add(args: &[String]) -> Response {
-    let [label] = positionals(args, &[]).try_into().unwrap_or_default();
+    let [label] = positionals(args, &["--oidc"])
+        .try_into()
+        .unwrap_or_default();
     if label.is_empty() {
         return Response::fail(USAGE);
     }
     let r = send(SharingRequest::DeviceAdd {
         label,
-        oidc_issuer: None,
+        oidc_issuer: flag(args, "--oidc").map(str::to_string),
     });
     if let (
         Response::Sharing(SharingResponse::DeviceToken {
@@ -67,15 +69,57 @@ pub(crate) fn request_for(token: &str, id_token: Option<String>) -> Result<Enrol
     }
 }
 
+/// `--oidc ISSUER --client-id ID`: both or neither.
+fn oidc_flags(args: &[String]) -> Result<Option<(&str, &str)>, Response> {
+    match (flag(args, "--oidc"), flag(args, "--client-id")) {
+        (Some(i), Some(c)) => Ok(Some((i, c))),
+        (None, None) => Ok(None),
+        _ => Err(Response::fail(
+            "--oidc ISSUER and --client-id ID go together",
+        )),
+    }
+}
+
+/// The first machine: re-check the ID token in the request against the
+/// issuer's JWKS and say who logged in.
+fn verified_identity(
+    request: &str,
+    (issuer, client): (&str, &str),
+    subject: Option<&str>,
+) -> Result<OidcIdentity, Response> {
+    let id = oidc::verify_request(request, issuer, client, subject).map_err(Response::fail)?;
+    cli_ui::einfo(&format!(
+        "IdP login verified: {} @ {}",
+        id.subject, id.issuer
+    ));
+    Ok(id)
+}
+
 fn enroll(args: &[String]) -> Response {
     let r = (|| -> Result<Response, Response> {
+        let oidc = oidc_flags(args)?;
         if let Some(path) = flag(args, "--from") {
             let request = read_input(Some(path))?;
-            return Ok(accept(request.trim(), None));
+            let id = match oidc {
+                Some(o) => Some(verified_identity(
+                    request.trim(),
+                    o,
+                    flag(args, "--subject"),
+                )?),
+                None => None,
+            };
+            return Ok(accept(request.trim(), id));
         }
-        let pos = positionals(args, &["-o"]);
+        let pos = positionals(args, &["-o", "--oidc", "--client-id", "--subject"]);
         let token = pos.first().ok_or_else(|| Response::fail(USAGE))?;
-        let req = request_for(token, None)?;
+        normalize_token(token).ok_or_else(|| Response::fail("not a device token (KD1-…)"))?;
+        let id_token = match oidc {
+            Some((issuer, client)) => {
+                Some(oidc::device_login(issuer, client).map_err(Response::fail)?)
+            }
+            None => None,
+        };
+        let req = request_for(token, id_token)?;
         let text = serde_json::to_string(&req).map_err(|e| Response::fail(e.to_string()))?;
         match flag(args, "-o") {
             Some(path) => {
@@ -93,10 +137,7 @@ fn enroll(args: &[String]) -> Response {
 }
 
 /// The first machine: hand the request to the daemon.
-pub(crate) fn accept(
-    request: &str,
-    oidc: Option<kepr_core::protocol_sharing::OidcIdentity>,
-) -> Response {
+pub(crate) fn accept(request: &str, oidc: Option<OidcIdentity>) -> Response {
     let r = send(SharingRequest::DeviceEnroll {
         request: request.to_string(),
         oidc,
@@ -176,5 +217,7 @@ mod tests {
         }
         let r = cmd_device(&v(&["enroll", "not-a-token"]));
         assert!(matches!(r, Response::Err { error } if error.contains("KD1")));
+        let r = cmd_device(&v(&["enroll", "--from", "x", "--oidc", "https://idp"]));
+        assert!(matches!(r, Response::Err { error } if error.contains("--client-id")));
     }
 }

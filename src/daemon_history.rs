@@ -146,8 +146,10 @@ pub fn save_current(uid: u32, name: &str) {
     }
 }
 
-/// Drop every history slot of `name` (on delete).
+/// Drop every history slot of `name` (on delete), and its attachment
+/// chunks (T5.03): every path that deletes a value comes through here.
 pub fn purge(uid: u32, name: &str) {
+    crate::daemon_recordsx::purge_attachments(uid, name);
     for s in 0..DEPTH {
         let slot = slot_name(name, s);
         if crate::store::cred_exists(uid, &slot) {
@@ -161,6 +163,7 @@ pub fn purge(uid: u32, name: &str) {
 /// Drop every history slot of `name` under `dir` (the TTL sweeper,
 /// which works on a directory + version state, not the backend).
 pub fn purge_in(dir: &Path, versions: Option<&VersionState>, uid: u32, name: &str) {
+    crate::daemon_recordsx::purge_attachments_in(dir, versions, uid, name);
     for s in 0..DEPTH {
         let file = to_cred_name(uid, &slot_name(name, s));
         let path = dir.join(&file);

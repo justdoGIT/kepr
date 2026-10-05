@@ -258,11 +258,15 @@ pub enum Request {
     // wrapping that batch's own `#[serde(tag = "cmd")]` enum in
     // `protocol_<batch>.rs`. Untagged variants must stay last.
     // batch: vault
+    #[serde(untagged)]
+    Vault(crate::protocol_vault::VaultRequest),
     // batch: seal
     // batch: store
     #[serde(untagged)]
     Store(crate::protocol_store::StoreRequest),
     // batch: records
+    #[serde(untagged)]
+    Records(crate::protocol_records::RecordsRequest),
     // batch: share
     #[serde(untagged)]
     Sharing(crate::protocol_sharing::SharingRequest),
@@ -271,6 +275,8 @@ pub enum Request {
     // batch: gate
     // batch: aws
     // batch: eco
+    #[serde(untagged)]
+    Eco(crate::protocol_eco::EcoRequest),
     // batch: platform
     // batch: session
     // end of batches

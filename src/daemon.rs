@@ -57,6 +57,7 @@ mod daemon_vault;
 // batch: store
 mod daemon_store;
 // batch: records
+mod daemon_recordsx;
 // batch: share
 mod daemon_sharing;
 // batch: sync
@@ -64,6 +65,7 @@ mod daemon_sharing;
 // batch: gate
 // batch: aws
 // batch: eco
+mod daemon_eco;
 // batch: platform
 // batch: session
 mod daemon_session;

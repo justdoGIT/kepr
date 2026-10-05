@@ -126,8 +126,13 @@ impl Devices {
             );
         }
         let token = self.tokens[pos].clone();
+        // The ID token rides inside the HMAC'd request, so it came from
+        // the token holder; the CLI verified its signature (no network
+        // here) and names the identity.
         let identity = match (&token.oidc_issuer, oidc) {
-            (Some(iss), Some(id)) if same_issuer(iss, &id.issuer) => Some(id.clone()),
+            (Some(iss), Some(id)) if same_issuer(iss, &id.issuer) && req.id_token.is_some() => {
+                Some(id.clone())
+            }
             (Some(iss), _) => {
                 return Err(format!(
                     "this enrolment needs an IdP login: kepr device enroll --from FILE --oidc {iss} --client-id ID"
@@ -334,6 +339,34 @@ mod tests {
         assert_eq!(d.remove(&a_id).unwrap(), "a");
         assert_eq!(d.recipients(), vec![b_key]);
         assert!(d.remove("a").is_err());
+    }
+
+    #[test]
+    fn an_oidc_token_needs_an_identity_from_its_issuer() {
+        let mut d = Devices::default();
+        let t = d
+            .add_token("laptop", Some("https://idp.example".into()), 1)
+            .unwrap();
+        let req = EnrolRequest::new(&t, "h", &public(), Some("a.b.c".into()));
+        let other = OidcIdentity {
+            issuer: "https://evil.example".into(),
+            subject: "ana".into(),
+        };
+        assert!(d.enroll(&req, None, 2).unwrap_err().contains("--oidc"));
+        assert!(d.enroll(&req, Some(&other), 2).is_err());
+        let ok = OidcIdentity {
+            issuer: "https://idp.example/".into(),
+            subject: "ana@example.com".into(),
+        };
+        // A request made without an IdP login can't borrow an identity.
+        let bare = EnrolRequest::new(&t, "h", &public(), None);
+        assert!(d.enroll(&bare, Some(&ok), 2).is_err());
+        // The failed attempts didn't burn the token.
+        let dev = d.enroll(&req, Some(&ok), 2).unwrap();
+        assert_eq!(
+            dev.identity.as_deref(),
+            Some("ana@example.com @ https://idp.example/")
+        );
     }
 
     #[test]

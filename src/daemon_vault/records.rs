@@ -50,7 +50,7 @@ impl<I: SlotIo> VaultImage<I> {
         for &s in &h.index_slots {
             let page = self.read_slot(s)?;
             let part = open_slot(&keys.index, &h.image_id, s, h.epoch, &page)
-                .map_err(|_| format!("vault index slot {s} does not authenticate"))?;
+                .map_err(|_| format!("decryption failed: vault index slot {s} is damaged"))?;
             blob.extend_from_slice(&part);
         }
         if h.index_slots.is_empty() {
@@ -201,7 +201,6 @@ impl<I: SlotIo> VaultImage<I> {
 
     /// Check the index, every page's hash and the root. Returns
     /// (records, slots checked); an error names the damaged slots.
-    #[allow(dead_code)] // `kepr vault verify` (T4.07)
     pub fn verify_records(&self, keys: &Keys) -> Result<(usize, usize), String> {
         let ix = self.load_index(keys)?;
         let mut used: Vec<(u32, Option<Hash>)> = ix

@@ -169,12 +169,12 @@ mod tests {
         let base = testkit::route(TargetKind::Mysql, "127.0.0.1", port);
         let mut target = base.target.clone();
         target.rotate = rotate;
-        let route = Arc::new(DbRoute {
-            key: base.key.clone(),
-            cred: base.cred.clone(),
-            slot: base.slot,
+        let route = Arc::new(DbRoute::new(
+            base.key.clone(),
+            base.cred.clone(),
+            base.slot,
             target,
-        });
+        ));
         testkit::listen(state, route).await
     }
 

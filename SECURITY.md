@@ -52,8 +52,42 @@ Settings → Code security.
   `actions/attest-build-provenance` when GitHub's attestation API is
   available; private repositories without that capability use cosign
   provenance instead.
+- **SLSA provenance** (`kepr-<version>.intoto.jsonl`, SLSA Build L3) from
+  `slsa-framework/slsa-github-generator`'s generic generator for the
+  `.deb`, `.rpm` and tarball of every release.
 - **Branch protection** on `main`: required CI + security checks,
   linear history.
+
+## Verifying a release
+
+Every release page lists these files next to the packages, and its notes
+repeat the commands with the version filled in. `REPO` is the repository
+that published the release (`OWNER/kepr`), `V` the version without the `v`.
+
+SLSA provenance, checked with
+[`slsa-verifier`](https://github.com/slsa-framework/slsa-verifier):
+
+```sh
+slsa-verifier verify-artifact kepr-$V-x86_64-linux.tar.gz \
+  --provenance-path kepr-$V.intoto.jsonl \
+  --source-uri github.com/$REPO --source-tag v$V
+```
+
+The same provenance covers `kepr_${V}_amd64.deb` and
+`kepr-$V-1.x86_64.rpm`. It proves the file was built by this repository's
+`release.yml` from that tag.
+
+Cosign keyless signature (every artefact, including the SBOM):
+
+```sh
+cosign verify-blob kepr-$V-x86_64-linux.tar.gz \
+  --bundle kepr-$V-x86_64-linux.tar.gz.bundle \
+  --certificate-identity-regexp "^https://github.com/$REPO/[.]github/workflows/release[.]yml@" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+GitHub build attestations, while the repository is public:
+`gh attestation verify kepr-$V-x86_64-linux.tar.gz --repo $REPO`.
 
 ## Runtime security properties
 
