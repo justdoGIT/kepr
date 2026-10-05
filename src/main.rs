@@ -74,6 +74,7 @@ mod cli_recordsx;
 mod cli_sharing;
 // batch: sync
 // batch: policy
+mod cli_policy;
 // batch: gate
 mod cli_gatex;
 // batch: aws

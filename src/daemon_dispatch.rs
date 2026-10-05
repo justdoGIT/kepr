@@ -15,6 +15,9 @@ use crate::{
 };
 
 pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
+    if let Some(denied) = crate::daemon_policy::enforce(uid, peer_pid, username, &request) {
+        return denied; // T6.11 policy.toml
+    }
     match request {
         Request::Lock { password } => {
             daemon_lock::handle_lock_gated(uid, username, password.as_bytes())

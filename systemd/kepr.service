@@ -33,6 +33,8 @@ StateDirectory=kepr
 StateDirectoryMode=0700
 
 ExecStart=/usr/local/bin/kepr-daemon
+# Re-read /etc/kepr/policy.toml (T6.11) without a restart.
+ExecReload=/bin/kill -HUP $MAINPID
 
 # Neutral identifier — never expose internal tool names in the
 # service description or the journal tag.

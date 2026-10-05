@@ -178,6 +178,7 @@ pub fn cmd_run(
     let shadowed = crate::cli_agent_egress::shadowed(&placeholders);
     let (inherited, withheld) = keep_safe_env(std::env::vars().filter(|(k, _)| {
         k != "KEPR_GATE_URL"
+            && k != "KEPR_AGENT_HARNESS"
             && !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
             && !crate::cli_agent_db::DB_VARS.contains(&k.as_str())
             && !shadowed.contains(&k.as_str())
@@ -200,6 +201,8 @@ pub fn cmd_run(
         "KEPR_GATE_URL".into(),
         format!("http://127.0.0.1:{gate_port}"),
     ));
+    // T6.11: policy.toml `agent` / `harness` rules match on this.
+    env.push(("KEPR_AGENT_HARNESS".into(), harness.to_string()));
     if let Some(pem) = ca_pem {
         match crate::cli_agent_egress::env(gate_port, &pem, &placeholders) {
             Ok(e) => env.extend(e),
