@@ -1,6 +1,7 @@
 // protocol_store.rs — wire types of the `store` ticket batch: tags and
 // folders (T5.01), search (T11.1), trash (T11.2), aliases (T11.5),
-// delete-all (T11.9), duplicates (T11.4), verify (T11.10). Wrapped by `Request::Store` /
+// delete-all (T11.9), duplicates (T11.4), verify (T11.10), history diff
+// (T11.3). Wrapped by `Request::Store` /
 // `Response::Store`, which are `#[serde(untagged)]` and tried after every
 // tagged variant, so the `cmd` / `kind` names here must not repeat one in
 // protocol.rs.
@@ -52,6 +53,9 @@ pub enum StoreRequest {
     /// T11.10: decrypt-check every value, parse every `.meta`, find
     /// orphans. Answered with `Response::CheckOk`.
     VerifyStore,
+    /// T11.3: which fields changed from version `from` to `to`
+    /// (0 = current, 1 = newest saved). Names only.
+    HistoryDiff { name: String, from: u32, to: u32 },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -90,6 +94,20 @@ pub enum StoreResponse {
         keep: String,
         aliased: Vec<String>,
     },
+    HistoryDiffOk {
+        name: String,
+        from: u32,
+        to: u32,
+        changes: Vec<FieldChange>,
+    },
+}
+
+/// One change in a history diff: a record field name (or `value` for a
+/// plain value) and `added`, `removed` or `changed`. Never a value.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FieldChange {
+    pub field: String,
+    pub change: String,
 }
 
 /// One trash entry (no value).
@@ -247,6 +265,25 @@ mod tests {
     fn verify_round_trips() {
         let v = req_round_trip(Request::Store(StoreRequest::VerifyStore));
         assert_eq!(v["cmd"], json!("verify_store"));
+    }
+
+    #[test]
+    fn history_diff_round_trips() {
+        let v = req_round_trip(Request::Store(StoreRequest::HistoryDiff {
+            name: "A".into(),
+            from: 2,
+            to: 0,
+        }));
+        assert_eq!(v["cmd"], json!("history_diff"));
+        resp_round_trip(Response::Store(StoreResponse::HistoryDiffOk {
+            name: "A".into(),
+            from: 2,
+            to: 0,
+            changes: vec![FieldChange {
+                field: "password".into(),
+                change: "changed".into(),
+            }],
+        }));
     }
 
     #[test]

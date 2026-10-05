@@ -1,11 +1,13 @@
 // cli_store/ — the `store` ticket batch, CLI side: `kepr tag`, `kepr mv`
 // and `kepr ls --tag/--folder` (T5.01), `kepr search` (T11.1), `kepr trash`
 // and the `kepr rm` wrapper (T11.2), `kepr ln` (T11.5), `rm --all` (T11.9),
-// `kepr dupes` (T11.4), `kepr doctor --verify` (T11.10).
+// `kepr dupes` (T11.4), `kepr doctor --verify` (T11.10), `kepr history
+// --diff` (T11.3, routed from cli_extra.rs).
 // Registered in cli_more.rs; flags on core verbs are parsed by
 // cli_args.rs through `FLAGS` / `StoreFlags`.
 
 mod alias;
+mod diff;
 mod dupes;
 mod flags;
 mod list;
@@ -18,6 +20,7 @@ mod wipe;
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_store::StoreRequest;
 
+pub use diff::cmd_history_diff;
 pub use flags::{StoreFlags, FLAGS};
 pub use list::{filter_list, list_tail};
 pub use trash::cmd_delete;
@@ -40,6 +43,8 @@ pub const HELP: &str = "\
                                        --merge: the others become aliases of KEEP (values to the trash)
   doctor --verify                      decrypt-check every stored value, parse every .meta, find
                                        orphaned history / metadata and dangling aliases
+  history KEY --diff A B               record fields added / removed / changed from version A to B
+                                       (0 = current); names only, never values
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
