@@ -174,6 +174,8 @@ pub enum Response {
     #[serde(untagged)]
     Store(crate::protocol_store::StoreResponse),
     // batch: records
+    #[serde(untagged)]
+    Records(crate::protocol_records::RecordsResponse),
     // batch: share
     #[serde(untagged)]
     Sharing(crate::protocol_sharing::SharingResponse),
