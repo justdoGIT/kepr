@@ -169,6 +169,8 @@ pub enum Response {
     // batch: vault
     // batch: seal
     // batch: store
+    #[serde(untagged)]
+    Store(crate::protocol_store::StoreResponse),
     // batch: records
     // batch: share
     #[serde(untagged)]

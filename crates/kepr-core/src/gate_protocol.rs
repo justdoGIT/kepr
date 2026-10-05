@@ -69,7 +69,7 @@ pub struct GateRoute {
 }
 
 /// The database a `db:` route logs in to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DbTarget {
     pub host: String,
     pub port: u16,
@@ -78,11 +78,83 @@ pub struct DbTarget {
     /// agent can't change the database password.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rotate: bool,
+    /// Which protocol the gate speaks on this route's port (T7.01).
+    #[serde(default, skip_serializing_if = "TargetKind::is_postgres")]
+    pub kind: TargetKind,
+}
+
+/// The protocol of a database route (Postgres for routes written before
+/// the field existed), or `Tcp` for a raw tunnel (T7.03).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetKind {
+    #[default]
+    Postgres,
+    Redis,
+    Mysql,
+    /// A raw TCP tunnel: bytes are piped, no credential is involved.
+    Tcp,
+}
+
+impl TargetKind {
+    pub fn is_postgres(&self) -> bool {
+        *self == Self::Postgres
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Postgres => "postgres",
+            Self::Redis => "redis",
+            Self::Mysql => "mysql",
+            Self::Tcp => "tcp",
+        }
+    }
+
+    /// From a record's binding kind (`Inject::db_kind`).
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::Postgres, Self::Redis, Self::Mysql]
+            .into_iter()
+            .find(|k| k.name() == s)
+    }
+
+    /// The binding inject a sealed login of this kind carries (`None` for
+    /// a tunnel, which has no login).
+    pub fn inject(self) -> Option<Inject> {
+        match self {
+            Self::Postgres => Some(Inject::Postgres),
+            Self::Redis => Some(Inject::Redis),
+            Self::Mysql => Some(Inject::Mysql),
+            Self::Tcp => None,
+        }
+    }
 }
 
 /// Route key for a database credential.
 pub fn db_route_key(cred: &str) -> String {
     format!("db:{cred}")
+}
+
+/// Route key for a raw TCP tunnel named `name` (T7.03).
+pub fn tunnel_route_key(name: &str) -> String {
+    format!("tcp:{name}")
+}
+
+impl GateRoute {
+    pub fn is_tunnel(&self) -> bool {
+        self.target
+            .as_ref()
+            .is_some_and(|t| t.kind == TargetKind::Tcp)
+    }
+}
+
+/// The credential NAMEs a session's gate may ask the daemon for: every
+/// route's credential except a tunnel's (its "cred" is only its name).
+pub fn resolvable_creds(routes: &[GateRoute]) -> std::collections::HashSet<String> {
+    routes
+        .iter()
+        .filter(|r| !r.is_tunnel())
+        .map(|r| r.cred.to_uppercase())
+        .collect()
 }
 
 /// What the daemon writes to a freshly spawned gate's stdin.
@@ -170,9 +242,11 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
     }
     for (i, r) in routes.iter().enumerate() {
         let db_ok = r.target.as_ref().is_some_and(|t| {
-            r.provider == db_route_key(&r.cred)
-                && t.port != 0
-                && crate::binding::validate_host(&t.host).is_ok()
+            let key = match t.kind {
+                TargetKind::Tcp => tunnel_route_key(&r.cred),
+                _ => db_route_key(&r.cred),
+            };
+            r.provider == key && t.port != 0 && crate::binding::validate_host(&t.host).is_ok()
         });
         if !db_ok && (r.target.is_some() || crate::providers::lookup(&r.provider).is_none()) {
             return Err(format!("unknown provider {}", r.provider));
@@ -226,6 +300,63 @@ mod tests {
         assert!(validate_routes(&[r("xai", 0), r("xai", 1)]).is_err());
         assert!(validate_routes(&[r("xai", 0), r("openai", 0)]).is_err());
         assert!(validate_routes(&(0..17).map(|i| r("xai", i)).collect::<Vec<_>>()).is_err());
+    }
+
+    #[test]
+    fn target_kind_defaults_to_postgres_and_round_trips() {
+        let t: DbTarget = serde_json::from_str(r#"{"host":"db.x.io","port":5432}"#).unwrap();
+        assert_eq!(t.kind, TargetKind::Postgres);
+        assert!(!serde_json::to_string(&t).unwrap().contains("kind"));
+        let r = DbTarget {
+            kind: TargetKind::Redis,
+            ..t
+        };
+        let j = serde_json::to_string(&r).unwrap();
+        assert!(j.contains(r#""kind":"redis""#), "{j}");
+        assert_eq!(serde_json::from_str::<DbTarget>(&j).unwrap(), r);
+        for k in [TargetKind::Postgres, TargetKind::Redis, TargetKind::Mysql] {
+            assert_eq!(
+                TargetKind::parse(k.inject().unwrap().db_kind().unwrap()),
+                Some(k)
+            );
+        }
+    }
+
+    #[test]
+    fn tunnel_routes_need_their_own_key_and_are_never_resolved() {
+        let tunnel = |provider: &str, slot| GateRoute {
+            provider: provider.into(),
+            cred: "WIKI".into(),
+            slot,
+            target: Some(DbTarget {
+                host: "wiki.internal.example".into(),
+                port: 8080,
+                kind: TargetKind::Tcp,
+                ..Default::default()
+            }),
+        };
+        let api = GateRoute {
+            provider: "anthropic".into(),
+            cred: "ANTHROPIC_API_KEY".into(),
+            slot: 0,
+            target: None,
+        };
+        assert!(validate_routes(&[api.clone(), tunnel("tcp:WIKI", 1)]).is_ok());
+        assert!(validate_routes(&[tunnel("db:WIKI", 1)]).is_err());
+        let as_db = GateRoute {
+            target: Some(DbTarget {
+                kind: TargetKind::Postgres,
+                ..tunnel("", 0).target.unwrap()
+            }),
+            ..tunnel("tcp:WIKI", 1)
+        };
+        assert!(validate_routes(&[as_db]).is_err());
+        let creds = resolvable_creds(&[api, tunnel("tcp:WIKI", 1)]);
+        assert_eq!(
+            creds.into_iter().collect::<Vec<_>>(),
+            vec!["ANTHROPIC_API_KEY"]
+        );
+        assert_eq!(TargetKind::parse("tcp"), None);
     }
 
     #[test]

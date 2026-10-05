@@ -42,7 +42,7 @@ cleanup() {
             | jq -r --arg p "$PREFIX" '.credentials[]?.name | select(startswith($p))' \
             2>/dev/null || true)
     for n in $names; do
-        kepr --json delete "$n" >/dev/null 2>&1 || true
+        kepr --json delete "$n" --force >/dev/null 2>&1 || true
     done
 }
 trap cleanup EXIT
@@ -257,7 +257,7 @@ if [ "$can_root" = 1 ]; then
     # tests (e.g. `kepr check` in test 10) exit 1 under -o pipefail
     # because one cred no longer decrypts. Remove it here so each test
     # stays isolated.
-    kepr --json delete "$NAME" >/dev/null 2>&1 || true
+    kepr --json delete "$NAME" --force >/dev/null 2>&1 || true
 else
     skip "no root/sudo — cannot corrupt a cred file to force a decrypt failure"
 fi
@@ -516,7 +516,7 @@ if [ "$can_root" = 1 ]; then
             fail "on-disk magic mismatch (got: $head, expected: kepr_v2\\n)"
         fi
     fi
-    kepr --json delete "$NAME" >/dev/null 2>&1 || true
+    kepr --json delete "$NAME" --force >/dev/null 2>&1 || true
 else
     skip "no root/sudo — cannot read /etc/credstore.encrypted/ to inspect on-disk magic"
 fi

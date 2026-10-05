@@ -7,20 +7,26 @@
 //! placeholder with the real key. See docs/content/docs/agent-vault-plan.mdx.
 
 mod ca;
+mod db;
 mod dlp;
 mod egress;
 mod journal;
 mod limits;
+mod mysql;
+mod mysql_auth;
+mod mysql_rotate;
 mod pg;
 mod pg_rotate;
 mod pg_tls;
 mod placeholder;
 mod proxy;
+mod redis;
 mod rewrite;
 mod routes;
 mod scram;
 mod service;
 mod session;
+mod tunnel;
 mod vault;
 
 use std::process::ExitCode;

@@ -107,6 +107,9 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 };
                 crate::cli_copy::cmd_copy(&name, secs)
             }
+            "history" if args.iter().any(|a| a == "--diff") => {
+                crate::cli_store::cmd_history_diff(args) // T11.3
+            }
             "history" => crate::cli_history::cmd_history(&one_name(args, verb, &[])?),
             "restore" => {
                 let name = one_name(args, verb, &["--version"])?;

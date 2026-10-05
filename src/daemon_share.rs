@@ -76,7 +76,7 @@ pub fn handle_key(uid: u32, username: &str, create: bool) -> Response {
     // T6.01: a missing key is made as v2 (X25519 + ML-KEM-768); a v1 key
     // is upgraded in place, keeping its X25519 half (old shares still open).
     let r = (|| -> Result<String, String> {
-        if create && !cred_path(uid, KEY_NAME).exists() {
+        if create && !crate::store::cred_exists(uid, KEY_NAME) {
             store_secret(uid, username, &ShareSecret::generate()?)?;
         }
         let mut secret = load_secret(uid)?;
@@ -159,7 +159,7 @@ pub fn handle_receive(uid: u32, username: &str, envelope: &str, rename: Option<&
         }
         // Never let a sender's choice of name replace an existing
         // credential (a sealed key, an SSH key, …).
-        if cred_path(uid, &name).exists() {
+        if crate::store::cred_exists(uid, &name) {
             return Err(format!(
                 "{name} already exists; receive it --as ANOTHER_NAME"
             ));

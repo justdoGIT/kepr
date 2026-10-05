@@ -35,6 +35,8 @@ pub struct AgentArgs {
     pub strict_sandbox: bool,
     pub isolate_net: bool,
     pub limits: GateLimits,
+    /// Gate-batch session flags (`--tunnel`, …), see cli_gatex.
+    pub session: crate::cli_gatex::SessionOpts,
     pub argv: Vec<String>,
 }
 
@@ -82,6 +84,7 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
                 i += 1;
                 a.limits.per_minute = Some(number(raw, i, "--rate")?);
             }
+            f if crate::cli_gatex::SessionOpts::FLAGS.contains(&f) => i = a.session.take(raw, i)?,
             "--stdin" => a.stdin = true,
             "--force" | "-f" => a.force = true,
             "--requires-consent" => a.requires_consent = true,
@@ -290,7 +293,8 @@ pub fn main(raw: &[String]) -> Response {
                     (false, true) => cli_agent_run::SandboxMode::Required,
                     (false, false) => cli_agent_run::SandboxMode::Auto,
                 };
-                cli_agent_run::cmd_run(h, a.port, &a.argv, mode, a.isolate_net, a.limits)
+                let (net, s) = (a.isolate_net, &a.session);
+                cli_agent_run::cmd_run(h, a.port, &a.argv, mode, net, a.limits, s)
             }
             None => Response::fail("kepr agent run needs a HARNESS, e.g. kepr agent run claude"),
         },

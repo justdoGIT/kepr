@@ -74,14 +74,16 @@ pub fn db_binding(fields: &str) -> Result<kepr_core::binding::Binding, String> {
     if !matches!(get("sslmode"), "" | "verify-full" | "disable") {
         return Err("sslmode must be verify-full (default) or disable".into());
     }
+    let (inject, default_port) = kepr_core::binding::Inject::for_db_kind(get("kind"))
+        .ok_or("kind must be postgres, mysql or redis")?;
     let port = match get("port") {
-        "" => 5432,
+        "" => default_port,
         p => p.parse().map_err(|_| "port must be a number")?,
     };
     let b = kepr_core::binding::Binding {
         host: get("host").to_ascii_lowercase(),
         port,
-        inject: kepr_core::binding::Inject::Postgres,
+        inject,
     };
     kepr_core::binding::validate_binding(&b)?;
     Ok(b)
@@ -207,6 +209,20 @@ mod tests {
         .is_err());
         assert!(db_binding(
             r#"{"host":"db.example.com","user":"u","password":"p","database":"d","sslmode":"prefer"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn database_kind_picks_the_proxy_and_default_port() {
+        let b = db_binding(
+            r#"{"kind":"redis","host":"cache.example.com","user":"default","password":"p","database":"0"}"#,
+        )
+        .unwrap();
+        assert_eq!(b.port, 6379);
+        assert_eq!(b.inject, kepr_core::binding::Inject::Redis);
+        assert!(db_binding(
+            r#"{"kind":"oracle","host":"db.example.com","user":"u","password":"p","database":"d"}"#
         )
         .is_err());
     }

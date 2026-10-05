@@ -24,6 +24,8 @@ function fakeDaemon(reply) {
       c.end(Buffer.concat([len, out]));
     });
   });
+  // unref: a failed assertion that skips close() must not hang the run.
+  srv.unref();
   return new Promise((r) => srv.listen(sockPath, () => r({ sockPath, seen, close: () => srv.close() })));
 }
 
@@ -44,6 +46,46 @@ test('set builds generate and flag fields', async () => {
   const d = await fakeDaemon((r) => ({ kind: 'set_ok', name: r.name, cred_name: 'x', password_protected: false }));
   await new Client({ path: d.sockPath }).set('k', null, { ttlSecs: 60, requiresConsent: true });
   assert.deepStrictEqual(d.seen[0], { cmd: 'set', name: 'K', generate: 'hex', ttl_secs: 60, requires_consent: true });
+  d.close();
+});
+
+test('set sends a value or a generate kind, and validates first', async () => {
+  const d = await fakeDaemon((r) => ({ kind: 'set_ok', name: r.name, cred_name: 'x', password_protected: false }));
+  const c = new Client({ path: d.sockPath });
+  await c.set('a', 'v', { requiresFido2: true });
+  await c.generate('b', 'words');
+  assert.deepStrictEqual(d.seen, [
+    { cmd: 'set', name: 'A', value: 'v', requires_fido2: true },
+    { cmd: 'set', name: 'B', generate: 'words' },
+  ]);
+  await assert.rejects(c.generate('c', 'rot13'), /generate must be one of/);
+  await assert.rejects(c.set('c', 'v', { generate: 'hex' }), /not both/);
+  await assert.rejects(c.set('c', ''), /non-empty/);
+  assert.strictEqual(d.seen.length, 2, 'invalid calls never reach the daemon');
+  d.close();
+});
+
+test('delete, list with metadata and info', async () => {
+  const creds = [
+    { name: 'GH', cred_name: 'kepr-1-gh', size: 40, modified: '2026-10-01 12:00', expires_at: '2026-12-01 00:00', requires_consent: true },
+    { name: 'OA', cred_name: 'kepr-1-oa', size: 9, modified: '2026-10-02 08:00', sealed: true, tags: ['work'] },
+  ];
+  const d = await fakeDaemon((r) =>
+    r.cmd === 'delete' ? { kind: 'delete_ok', name: r.name } : { kind: 'list_ok', credentials: creds, count: 2 },
+  );
+  const c = new Client({ path: d.sockPath });
+  await c.delete('gh');
+  assert.deepStrictEqual(d.seen[0], { cmd: 'delete', name: 'GH' });
+  const infos = await c.credentials();
+  assert.strictEqual(infos[0].expiresAt, '2026-12-01 00:00');
+  assert.strictEqual(infos[0].requiresConsent, true);
+  assert.strictEqual(infos[0].sealed, false);
+  assert.strictEqual(infos[1].sealed, true);
+  assert.deepStrictEqual(infos[1].tags, ['work']);
+  assert.strictEqual(infos[1].recordType, null);
+  assert.ok(!('cred_name' in infos[0]) && !('value' in infos[0]));
+  assert.strictEqual((await c.info('oa')).name, 'OA');
+  assert.strictEqual(await c.info('missing'), null);
   d.close();
 });
 

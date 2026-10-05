@@ -40,6 +40,8 @@ pub struct State {
     /// P2.1 egress proxy: the session CA and whether unbound hosts tunnel.
     pub ca: Option<Arc<crate::ca::SessionCa>>,
     pub tunnel: bool,
+    /// T7.03: host:port of the session's raw tunnels (tunnel.rs).
+    pub tunnels: Vec<(String, u16)>,
     pub(crate) client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     pub(crate) base_override: Option<String>,
 }
@@ -79,6 +81,7 @@ impl State {
             base_override: None,
             ca: None,
             tunnel: false,
+            tunnels: Vec::new(),
         }
     }
 

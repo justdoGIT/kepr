@@ -304,7 +304,7 @@ fn start(
         uid,
         username: username.to_string(),
         pid: peer_pid,
-        creds: routes.iter().map(|r| r.cred.to_uppercase()).collect(),
+        creds: kepr_core::gate_protocol::resolvable_creds(routes),
     };
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
