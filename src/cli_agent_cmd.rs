@@ -277,6 +277,9 @@ pub fn main(raw: &[String]) -> Response {
     if raw.first().map(String::as_str) == Some("rotate-db") {
         return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]);
     }
+    if let Some(r) = crate::cli_gatex::agent_verb(raw) {
+        return r;
+    }
     let a = match parse(raw) {
         Ok(a) => a,
         Err(e) => return Response::fail(e),

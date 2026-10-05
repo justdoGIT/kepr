@@ -62,6 +62,7 @@ mod daemon_sharing;
 // batch: sync
 // batch: policy
 // batch: gate
+mod daemon_gatex;
 // batch: aws
 // batch: eco
 // batch: platform

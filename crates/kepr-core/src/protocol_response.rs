@@ -178,6 +178,8 @@ pub enum Response {
     // batch: sync
     // batch: policy
     // batch: gate
+    #[serde(untagged)]
+    Gatex(crate::protocol_gatex::GatexResponse),
     // batch: aws
     // batch: eco
     // batch: platform

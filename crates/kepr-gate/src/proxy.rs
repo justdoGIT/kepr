@@ -16,7 +16,7 @@ use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use kepr_core::secmem::SplitKey;
 
 use crate::dlp;
-use crate::journal;
+use crate::journal::Log;
 use crate::limits::{Limiter, Refusal, UsageMeter};
 use crate::placeholder;
 use crate::rewrite::{placeholders_in, upstream_headers, upstream_query};
@@ -42,6 +42,8 @@ pub struct State {
     pub tunnel: bool,
     /// T7.03: host:port of the session's raw tunnels (tunnel.rs).
     pub tunnels: Vec<(String, u16)>,
+    /// T7.09: what the agent sends and receives (`--record`).
+    pub recorder: Arc<crate::recording::Recorder>,
     pub(crate) client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     pub(crate) base_override: Option<String>,
 }
@@ -82,6 +84,7 @@ impl State {
             ca: None,
             tunnel: false,
             tunnels: Vec::new(),
+            recorder: Arc::new(crate::recording::Recorder::new(false)),
         }
     }
 
@@ -145,34 +148,6 @@ fn limit_response(refusal: Refusal) -> Response<Body> {
                 .insert("retry-after", HeaderValue::from(secs));
             r
         }
-    }
-}
-
-struct Log<'a> {
-    state: &'a State,
-    provider: &'a str,
-    method: &'a str,
-    path: &'a str,
-    start: Instant,
-}
-
-impl Log<'_> {
-    fn emit(&self, status: StatusCode, bytes_out: usize, blocked: Option<&str>) {
-        journal::emit(&journal::Entry {
-            session: &self.state.session_id,
-            provider: self.provider,
-            method: self.method,
-            path: self.path,
-            status: status.as_u16(),
-            bytes_out,
-            ms: self.start.elapsed().as_millis(),
-            blocked,
-        });
-    }
-
-    fn reply(&self, r: Response<Body>, bytes_out: usize, blocked: Option<&str>) -> Response<Body> {
-        self.emit(r.status(), bytes_out, blocked);
-        r
     }
 }
 
@@ -267,6 +242,7 @@ pub async fn proxy_request(
         return Ok(log.reply(r, bytes.len(), Some("dlp")));
     }
 
+    let conn = state.recorder.http_request(pname, &method, rest, &bytes);
     let base = state
         .base_override
         .clone()
@@ -303,8 +279,10 @@ pub async fn proxy_request(
             let (mut p, b) = resp.into_parts();
             crate::rewrite::clean_response(&mut p.headers, &inject);
             log.emit(p.status, bytes.len(), None);
+            let status = p.status.as_u16();
+            let b = (state.recorder).http_response(conn, pname, status, b.boxed(), &state.cache);
             if !state.limiter.meters_tokens() {
-                return Ok(Response::from_parts(p, b.boxed()));
+                return Ok(Response::from_parts(p, b));
             }
             let mut meter = UsageMeter::new(state.limiter.clone());
             let b = b.map_frame(move |f| {
@@ -445,6 +423,19 @@ mod tests {
         upstream: String,
         limits: kepr_core::gate_protocol::GateLimits,
     ) -> String {
+        start_gate_full(
+            upstream,
+            limits,
+            Arc::new(crate::recording::Recorder::new(false)),
+        )
+        .await
+    }
+
+    async fn start_gate_full(
+        upstream: String,
+        limits: kepr_core::gate_protocol::GateLimits,
+        recorder: Arc<crate::recording::Recorder>,
+    ) -> String {
         let cache = Arc::new(Cache::new(Box::new(Fixed), DEFAULT_TTL));
         let mut routes = HashMap::new();
         routes.insert(
@@ -456,7 +447,8 @@ mod tests {
         );
         let state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
             .with_test_upstream(upstream)
-            .with_limits(limits);
+            .with_limits(limits)
+            .with_recorder(recorder);
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://{}", l.local_addr().unwrap());
         tokio::spawn(serve(l, Arc::new(state)));
@@ -500,6 +492,58 @@ mod tests {
         );
         let rest = body.collect().await.unwrap().to_bytes();
         assert_eq!(&rest[..], b"second");
+    }
+
+    #[tokio::test]
+    async fn recording_keeps_what_the_agent_sent_and_received_never_the_key() {
+        let (up, mut rx) = fake_upstream().await;
+        let rec = Arc::new(crate::recording::Recorder::new(true));
+        let gate = start_gate_full(up, Default::default(), rec.clone()).await;
+        let ph = placeholder::make(&KEY, SID, 0);
+        let body = format!(r#"{{"model":"x","note":"{ph}"}}"#);
+        let resp = send(&gate, &ph, &body).await;
+        let got = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&got[..], b"firstsecond");
+        assert!(
+            rx.recv().await.unwrap().contains(REAL),
+            "upstream got the key"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let chunks: Vec<_> = rec.take().into_iter().flat_map(|b| b.chunks).collect();
+        let side = |dir: &str| {
+            let b: Vec<u8> = chunks
+                .iter()
+                .filter(|c| c.dir == dir)
+                .flat_map(|c| c.bytes())
+                .collect();
+            String::from_utf8(b).unwrap()
+        };
+        assert_eq!(side("i"), format!("POST /v1/messages\n\n{body}"));
+        assert_eq!(side("o"), "HTTP 200\n\nfirstsecond");
+        assert!(!side("i").contains(REAL) && !side("o").contains(REAL));
+        assert!(chunks.iter().all(|c| c.conn == chunks[0].conn));
+    }
+
+    #[tokio::test]
+    async fn an_upstream_echoing_the_key_does_not_put_it_in_the_recording() {
+        const ECHO: &[u8] = b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 39\r\n\r\n{\"error\":\"bad key real-key-1234567890\"}";
+        let (up, _rx) = fake_upstream_with(Some(ECHO)).await;
+        let rec = Arc::new(crate::recording::Recorder::new(true));
+        let gate = start_gate_full(up, Default::default(), rec.clone()).await;
+        let ph = placeholder::make(&KEY, SID, 0);
+        let resp = send(&gate, &ph, "{}").await;
+        let got = resp.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&got).contains(REAL), "agent view");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let recorded: Vec<u8> = rec
+            .take()
+            .into_iter()
+            .flat_map(|b| b.chunks)
+            .flat_map(|c| c.bytes())
+            .collect();
+        let text = String::from_utf8(recorded).unwrap();
+        assert!(!text.contains(REAL), "{text}");
+        assert!(text.contains("bad key *******************"), "{text}");
     }
 
     #[tokio::test]

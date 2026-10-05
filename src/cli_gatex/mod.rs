@@ -5,6 +5,8 @@
 
 pub mod grant;
 pub mod mysql_login;
+pub mod pg_script;
+pub mod replay;
 pub mod tunnel;
 
 use kepr_core::protocol::Response;
@@ -14,10 +16,21 @@ pub const VERBS: &[&str] = &[];
 pub const HELP: &str = concat!(
     "  agent run HARNESS --tunnel NAME=HOST:PORT  loopback port piped to an internal host (no credential)\n",
     "  agent run HARNESS --grant NAME=ROLE:ADMIN  PostgreSQL role held only for the session (ADMIN grants it)\n",
+    "  agent run HARNESS --record      keep what the agent sends and receives, encrypted (never keys)\n",
+    "  agent replay [SESSION]          list recorded sessions, or print one\n",
+    "  agent replay SESSION --typescript FILE --timing FILE  its PostgreSQL traffic for scriptreplay\n",
 );
 
 pub fn dispatch(verb: &str, _args: &[String]) -> Response {
     Response::fail(format!("unknown command: {verb}"))
+}
+
+/// The batch's own `kepr agent` subcommands, or `None` for the others.
+pub fn agent_verb(raw: &[String]) -> Option<Response> {
+    match raw.first()?.as_str() {
+        "replay" => Some(replay::main(&raw[1..])),
+        _ => None,
+    }
 }
 
 /// `kepr agent run` flags handled here (kept out of cli_agent_cmd.rs,
@@ -28,10 +41,12 @@ pub struct SessionOpts {
     pub tunnels: Vec<String>,
     /// `--grant NAME=ROLE:ADMIN` (T7.18), as given.
     pub grants: Vec<String>,
+    /// `--record` (T7.09).
+    pub record: bool,
 }
 
 impl SessionOpts {
-    pub const FLAGS: &'static [&'static str] = &["--tunnel", "--grant"];
+    pub const FLAGS: &'static [&'static str] = &["--tunnel", "--grant", "--record"];
 
     /// Take the flag at `raw[i]` (one of FLAGS); returns the index of
     /// the last argument consumed.
@@ -44,9 +59,22 @@ impl SessionOpts {
         match raw[i].as_str() {
             "--tunnel" => self.tunnels.push(value("NAME=HOST:PORT")?),
             "--grant" => self.grants.push(value("NAME=ROLE:ADMIN")?),
+            "--record" => {
+                self.record = true;
+                return Ok(i);
+            }
             other => return Err(format!("unexpected argument: {other}")),
         }
         Ok(i + 1)
+    }
+
+    /// Tell the user, on stderr, what `kepr agent run` set up for them.
+    pub fn announce(&self, session: Option<&str>) {
+        if let (true, Some(id)) = (self.record, session) {
+            crate::cli_ui::einfo(&format!(
+                "recording this session (encrypted); replay it with: kepr agent replay {id}"
+            ));
+        }
     }
 }
 
@@ -67,7 +95,9 @@ mod tests {
         let raw: Vec<String> = vec!["--grant".into(), "APP_DB=analyst:APP_ADMIN".into()];
         assert_eq!(o.take(&raw, 0), Ok(1));
         assert_eq!(o.grants, vec!["APP_DB=analyst:APP_ADMIN"]);
+        let raw: Vec<String> = vec!["--record".into(), "--tunnel".into()];
+        assert_eq!(o.take(&raw, 0), Ok(0), "--record takes no value");
+        assert!(o.record);
         assert!(HELP.lines().all(|l| l.starts_with("  ")));
-        assert!(VERBS.is_empty());
     }
 }

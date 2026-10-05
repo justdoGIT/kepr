@@ -161,6 +161,7 @@ pub fn cmd_run(
         port: port.or(adapter.port),
         limits,
         tunnel: !isolate_net,
+        record: session.record,
     };
     let (gate_port, placeholders, ca_pem, db_ports) = match client::send_request(&req) {
         Ok(Response::GateStarted {
@@ -168,7 +169,10 @@ pub fn cmd_run(
             placeholders,
             extras,
             ..
-        }) => (port, placeholders, extras.ca_pem, extras.db_ports),
+        }) => {
+            session.announce(extras.session.as_deref());
+            (port, placeholders, extras.ca_pem, extras.db_ports)
+        }
         Ok(Response::Err { error }) => return Response::fail(error),
         Ok(_) => return Response::fail("unexpected daemon response"),
         Err(e) => return Response::fail(e),

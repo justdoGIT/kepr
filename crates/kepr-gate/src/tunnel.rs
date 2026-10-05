@@ -41,7 +41,7 @@ pub async fn serve_conn(state: Arc<State>, route: Arc<DbRoute>, mut client: TcpS
     let start = Instant::now();
     let result = match crate::pg_tls::connect(&route.target).await {
         Ok(mut up) => {
-            let _ = tokio::io::copy_bidirectional(&mut client, &mut up).await;
+            crate::recording::relay(&state, &route, &mut client, &mut up).await;
             Ok(())
         }
         Err(_) => Err((502, None)),

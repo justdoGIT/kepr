@@ -21,6 +21,7 @@ mod pg_rotate;
 mod pg_tls;
 mod placeholder;
 mod proxy;
+mod recording;
 mod redis;
 mod rewrite;
 mod routes;
