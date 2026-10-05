@@ -43,7 +43,7 @@ the exact commands that prove it's done.
 | T1.19 gate as a system service (`kepr-gate.service`, `kepr-gate --serve`) | shipped |
 | P2.1 egress proxy (CONNECT, per-session name-constrained CA, `gh`/`curl` via GH_TOKEN placeholder) | shipped |
 | P4.1 / P4.2 vault image: plan and tickets in `architecture/vault-image-plan` | planned |
-| P2.2 SigV4 re-sign; rest of P5–P10 | open (L: split before starting) |
+| P2.2 SigV4 re-sign; rest of P2–P11 | split into S/M tickets below (*Open work*) |
 
 **Where the code differs from the ticket text** (the code is authoritative):
 
@@ -833,25 +833,1247 @@ Split first, following plan P3.5.
 
 ---
 
-## Later phases
+## Open work, split into tickets (2026-10-05)
 
-These need splitting (by a strong model or a human, using the template
-below) before a small model starts on them. Size shown is for the whole
-item.
+Everything the plan still lists as open, plus what the 2026-10-05 Keeper
+re-check found (plan section 2.7, phase P11), split into S/M tickets with
+the template at the bottom of this page. Nothing here talks to Keeper: every
+feature is built into kepr.
 
-| Item | Size | Notes |
-| --- | --- | --- |
-| P2.1 egress `CONNECT` proxy with per-session CA | L | needs `rcgen`; decide CA lifetime and trust-store env vars |
-| P2.2 SigV4 verify-and-re-sign | M | reuse `src/sync_aws_sigv4.rs` functions; move shared parts to a crate |
-| P2.3 placeholder presets (gh, git, aws, gcloud, stripe, npm, docker) | M | one adapter row per tool |
-| P3.3 pull-on-demand fd delivery | M | replaces inherited memfds |
-| P4.x vault image, BYOK | L | each sub-item is its own ticket set (TPM2 sealing shipped) |
-| P5.x typed records, attachments | M each | protocol changes in every one (history, TOTP, `inject` shipped) |
-| P6.x sharing, one-time share, emergency access, health, sync, policy | L | team mode design first |
-| P7.x DB proxies, rotators, journal, JIT, anomaly rules, SIEM, FIPS | L | |
-| P8 ecosystem: Node / Go clients, `kepr shell`, TUI, Terraform | M each | follow `sdk/python` |
-| P9.4–P9.8 | M–L | |
-| P10.x | S–L | P10.2 importers and P10.9 clipboard are S/M and good first tickets |
+**Shared wiring.** Unless a ticket says otherwise:
+
+- A new daemon request is a variant in `crates/kepr-core/src/protocol.rs`
+  (response variants in `protocol_response.rs`), routed from
+  `src/daemon_extra.rs::dispatch` to a handler in a new `src/daemon_*.rs`
+  file that calls `audit::log` with op and name only.
+- A new CLI verb is added to `VERBS` and `dispatch` in `src/cli_extra.rs`
+  (or a new `src/cli_*.rs` with its own small parser) and to the help text in
+  `src/cli_help.rs`.
+- New `.meta` fields go on `CredMeta` in `src/expiry.rs` with
+  `#[serde(skip_serializing_if = "Option::is_none", default)]`, so older
+  daemons and older files keep working.
+- "Done when" is always the four standard commands from *How to work a
+  ticket*, plus anything extra the ticket names.
+
+### Dependency order
+
+```text
+P1:  T1.23 (independent)
+P2:  T2.01 ─▶ T2.02 ; T7.06 ─▶ T2.03 ; T2.04 (independent)
+P3:  T3.06 (independent)
+P4:  T4.01 ─▶ T4.02 ─▶ T4.03 ─▶ T4.04 ─▶ T4.05 ─▶ T4.06 ─▶ T4.07
+     T4.08, T4.09, T4.10 (independent) ; T4.11 ─▶ T4.12, T4.13
+P5:  T5.01 ─▶ T11.1 ; T5.02 ; T5.03 ; T5.04 ; T5.05 ─▶ T5.06
+P6:  T6.01 ─▶ T6.02 ─▶ T6.03 ; T6.04 ─▶ T6.05 ; T6.06 ; T6.07 ; T6.08
+     T6.09 ─▶ T6.10 ; T6.11 ─▶ T6.12 ; T6.13 (needs T6.03) ; T6.14
+P7:  T7.01, T7.02, T7.03 ; T7.04 (needs T7.02) ; T7.06 ─▶ T7.05 ; T7.07
+     T7.08 ; T7.09 ; T7.10 ─▶ T7.11 ─▶ T7.12 ; T7.14 ─▶ T7.15 ─▶ T7.13
+     T7.16 ; T7.17 ; T7.18
+P8:  all independent (T8.09 before T8.03, T8.04, T8.08)
+P9:  T9.04 ; T9.05 (needs T7.01) ; T9.06 ; T9.07 ; T9.08 ; T9.09 (needs T7.05)
+P10: all independent except T10.11 (needs T10.10)
+P11: all independent except T11.1 (needs T5.01), T11.15 (needs T6.04)
+```
+
+---
+
+## P1 (remaining)
+
+### T1.23 Landlock rules in the agent sandbox (M) 🔒
+
+Goal: on kernels with Landlock, the harness cannot open the vault, the
+daemon socket or the gate's files even if a hiding mount is undone.
+Depends on: nothing (T1.18 shipped).
+Files: create `src/cli_sandbox_landlock.rs`; call it from
+`src/cli_agent_sandbox.rs` in the child after the mounts, before `execvp`.
+Add: `pub fn restrict(deny: &[PathBuf]) -> Result<LandlockStatus, String>`
+using raw syscalls (`landlock_create_ruleset`, `landlock_add_rule`,
+`landlock_restrict_self` via `libc::syscall`; no new crate). Rule set:
+handle all filesystem access rights of the running ABI; allow read+exec on
+`/`, read+write on `$HOME`, `/tmp`, `/dev`, `/proc`, `$PWD`; leave the deny
+paths (store dir, `$XDG_RUNTIME_DIR/kepr`, `/run/kepr`) without a rule
+**below** an allowed parent by opening the allowed parents one level at a
+time (Landlock is allow-only, so `$HOME` is granted per child entry, skipping
+`~/.local/share/kepr` and `~/.local/state/kepr`). ABI below 1 → `Unsupported`
+(not an error; the mounts still apply).
+Tests: `ruleset_attr_for_abi` returns the documented access masks for ABI
+1, 2, 3; `children_except` lists a temp dir's entries minus the denied one;
+`restrict` in a forked child on a Landlock kernel makes opening a denied
+temp file fail with `EACCES` (skip when the probe says unsupported).
+Out of scope: network rules (Landlock ABI 4); the net namespace already
+handles those.
+
+---
+
+## P2: egress and non-HTTP consumers
+
+### T2.01 Move the SigV4 primitives into kepr-core (S)
+
+Goal: the gate can sign AWS requests with the same pinned code as `sync`.
+Depends on: nothing.
+Files: move `src/sync_aws_sigv4.rs` to `crates/kepr-core/src/sigv4.rs`
+(`pub mod sigv4` in `lib.rs`); `src/sync_aws_sm.rs` imports it from there;
+add `sha2` and `hmac` to `kepr-core`'s `Cargo.toml` (already in the tree).
+Tests: the existing AWS test vectors move with the file and still pass.
+Out of scope: any behaviour change.
+
+### T2.02 Gate SigV4 verify-and-re-sign (M) 🔒
+
+Goal: `aws` CLI and SDKs inside an agent session sign requests with a
+placeholder secret; the gate checks that signature and re-signs with the
+real key, only toward a bound `*.amazonaws.com` host.
+Depends on: T2.01.
+Files: `crates/kepr-core/src/binding.rs` (new `Inject::Sigv4`, value stored
+as JSON `{"access_key_id","secret_access_key","session_token"?}`);
+create `crates/kepr-gate/src/sigv4_resign.rs`; call it from
+`crates/kepr-gate/src/egress.rs` for routes whose binding is `Sigv4`.
+Add: `parse_authorization(h) -> Option<SigV4Auth>`;
+`verify(req, placeholder_secret) -> bool` (recompute with the placeholder
+secret, constant-time compare); `resign(req, real) -> HeaderMap` (new
+`x-amz-date`, `Authorization`, `x-amz-security-token` when present; drops
+the placeholder's). The placeholder access key id is `KEPRPH` + 14 base32
+chars so it is shaped like an AWS key id.
+Tests: a request signed with the placeholder verifies; tampering with the
+path or a signed header fails verification; `resign` output verifies under
+the real secret (reuse the AWS test vector date and region); unsigned
+payload (`UNSIGNED-PAYLOAD`) is supported; a non-`amazonaws.com` host is
+refused at binding validation.
+Out of scope: SigV4a, presigned URLs (refuse them with 403).
+
+### T2.03 `kepr aws credential-process` (M) 🔒
+
+Goal: `~/.aws/config` can say `credential_process = kepr aws
+credential-process NAME` and get short-lived credentials, never the
+long-lived key.
+Depends on: T7.06 (STS client).
+Files: create `src/cli_aws.rs` (verb `aws`); reuse `src/sts.rs` from T7.06.
+Behaviour: inside an agent session (`KEPR_SESSION` set by `kepr agent run`)
+print the session's SigV4 placeholder pair (T2.02) in the
+`credential_process` JSON shape (`Version: 1`, `AccessKeyId`,
+`SecretAccessKey`, `Expiration`); outside a session call STS
+`GetSessionToken` (900–3600 s, `--duration`) with the stored key and print
+the temporary credentials. A sealed key is never printed in either case.
+Tests: JSON shape matches the AWS spec; inside-session path never calls the
+daemon `Get`; STS XML response parsing (fixture) extracts the three values
+and the expiry; refuses a duration outside 900..=43200.
+
+### T2.04 Placeholder presets for common CLIs (M)
+
+Goal: `gh`, `git`, `aws`, `gcloud`, `stripe`, `npm` and `docker` work inside
+an agent session with no manual setup.
+Depends on: nothing.
+Files: `crates/kepr-core/src/providers.rs` (rows for `stripe`
+(`api.stripe.com`, Bearer, `STRIPE_API_KEY`, prefix `sk_live_`/`sk_test_`),
+`npm` (`registry.npmjs.org`, Bearer, `NPM_TOKEN`, prefix `npm_`), `gcloud`
+(`*.googleapis.com` via `CLOUDSDK_AUTH_ACCESS_TOKEN`), `docker`
+(`registry-1.docker.io`, Basic)); `src/cli_agent_egress.rs` writes the
+per-tool files a tool needs (an `.npmrc` with `//registry.npmjs.org/:_authToken=${NPM_TOKEN}`
+and a `docker` `config.json` with a placeholder `auth`) into the session's
+private temp dir and points the tool at them (`NPM_CONFIG_USERCONFIG`,
+`DOCKER_CONFIG`).
+Tests: `detect` maps each new prefix to its provider; the generated
+`.npmrc` and docker config contain only placeholders; the env for a session
+with an npm key sets `NPM_CONFIG_USERCONFIG`.
+
+---
+
+## P3 (remaining)
+
+### T3.06 Pull-on-demand fd delivery (M) 🔒
+
+Goal: a cooperating process fetches a secret as a sealed fd over the daemon
+socket instead of inheriting one, so nothing leaks to its children.
+Depends on: nothing.
+Files: protocol `Request::FetchFd { name }` / `Response::FdOk { len }`;
+create `src/daemon_fetchfd.rs` (after the normal `Get` policy checks, create
+a sealed memfd with `FD_CLOEXEC` **set** and send it with
+`kepr_core::fdpass::send_fd` after the `FdOk` frame); client helper
+`kepr_core::fdfetch::fetch(name) -> Result<OwnedFd, String>`;
+`kepr exec --pull NAME` sets `KEPR_PULL=NAME,…` instead of passing fds.
+SDKs get `fetch_fd` in T8.09.
+Tests: the received fd has `FD_CLOEXEC` set and is sealed
+(`F_GET_SEALS` includes `F_SEAL_WRITE`); a sealed / ssh / share-key
+credential is refused exactly like `Get`; a child spawned after the fetch
+cannot read `/proc/self/fd/N` for it.
+
+---
+
+## P4: vault image and hardware-bound keys
+
+The image is an optional second store (`KEPR_STORE=image`). The per-file
+store stays the default (decision 4).
+
+### T4.01 Vault image: header, slots and noise fill (M) 🔒
+
+Goal: `VaultImage::create(path, size)` writes a fixed-size file of CSPRNG
+noise with an authenticated header, in 4 KiB slots.
+Depends on: nothing.
+Files: create `src/vault_image.rs` (daemon only; `mod` it from
+`src/daemon.rs`).
+Add: header in slot 0 = magic `kepr_vi1`, version, image id (16 random
+bytes), slot count, epoch (u64), KDF salt, Merkle root (32 bytes), header
+MAC. `create(path, size_mib)` uses `fallocate` (fallback: write noise in
+1 MiB chunks), `O_EXCL`, mode 0600, fsync. `open(path)` reads the header and
+checks magic and size. Size must be a multiple of 1 MiB, 1..=4096 MiB.
+Tests: created file has exactly the requested size; two images differ
+everywhere except the magic; `open` refuses a wrong magic, a truncated file
+and a size that doesn't match the slot count.
+
+### T4.02 Per-slot AEAD and the Merkle root (M) 🔒
+
+Goal: each slot is sealed with AES-256-GCM under AAD = `image_id ‖ slot ‖
+epoch`; a Merkle tree over slot ciphertext hashes is stored in the header.
+Depends on: T4.01.
+Files: `src/vault_image.rs`; create `src/vault_merkle.rs`.
+Add: `seal_slot(key, idx, epoch, plaintext<=4064) -> [u8; 4096]`,
+`open_slot(...)`; `merkle_root(hashes)` (SHA-256, duplicate last on odd
+levels); `VaultImage::verify()` recomputes the root.
+Tests: moving a sealed slot to another index fails to open; flipping one
+ciphertext bit changes the root and `verify` reports the slot; a slot from
+an older epoch fails.
+
+### T4.03 Slot placement and decoy rewrites (S)
+
+Goal: a record's slot index is `HMAC(slot_key, record_id ‖ attempt) mod N`
+with probing; every write also rewrites k random decoy slots with fresh
+noise.
+Depends on: T4.02.
+Files: `src/vault_image.rs` (or `src/vault_place.rs` if over the limit).
+Tests: placement is deterministic for a key; two records never share a slot
+(probing); a write changes exactly 1 + k slots (k = 3).
+
+### T4.04 Journal slot and two-phase commit (M) 🔒
+
+Goal: a crash at any point leaves either the old or the new image state.
+Depends on: T4.03.
+Files: `src/vault_image.rs` / `src/vault_journal.rs`.
+Add: slot 1 is the journal: write new slots' (index, ciphertext) list
+sealed under the next epoch, fsync, then the slots, fsync, then the header
+with the new epoch and root, fsync, then clear the journal. `open` replays a
+complete journal and discards a torn one.
+Tests (fault injection through a `Writer` trait that fails after N bytes):
+for every N, reopening yields the old or the new state, never a mix, and
+`verify` passes.
+
+### T4.05 Record keys and crypto-shred delete (M) 🔒
+
+Goal: every record has its own random AES-256 key wrapped under the vault
+master key; delete destroys the wrapped key and bumps the epoch.
+Depends on: T4.04.
+Files: `src/vault_image.rs`, create `src/vault_records.rs`.
+Add: an index record (name → record id, wrapped record key, slot list)
+sealed under `index_key = HKDF(vmk, "index")`; record payload = value +
+`.meta` JSON sealed under its record key.
+Tests: deleting a record makes its old slot bytes undecryptable even with
+the VMK (key gone); renaming the index entry to another name fails AAD.
+
+### T4.06 Image as a credential backend (M) 🔒
+
+Goal: with `KEPR_STORE=image` the daemon stores credentials and metadata in
+the image instead of per-file.
+Depends on: T4.05.
+Files: create `src/crypto_image.rs` implementing `crypto::Backend`; meta
+read/write in `src/expiry.rs` go through a small `MetaStore` trait with the
+file implementation as today and an image one; `src/daemon.rs` start-up
+picks the backend.
+Tests: the backend passes the same round-trip / wrong-uid / wrong-name tests
+as `crypto_inproc`; set → list → delete through the handlers works with the
+image backend in a temp dir.
+
+### T4.07 `kepr vault init | migrate | verify | status` (M)
+
+Goal: users can create an image, move the per-file store into it, and check
+it.
+Depends on: T4.06.
+Files: protocol `VaultInit { size_mib }`, `VaultMigrate`, `VaultVerify`,
+`VaultStatus`; create `src/daemon_vault.rs`, `src/cli_vault.rs`.
+Behaviour: `migrate` copies every credential (with meta and history),
+verifies each by decrypting from the image, then deletes the per-file
+copies; it refuses while a gate runs. `status` prints backend, size, used
+slots (approximate: never exact counts to non-owners), epoch.
+Tests: migrate of three creds (one sealed, one with history) round-trips;
+verify after a bit flip fails naming the slot.
+
+### T4.08 TPM2 PIN and anti-rollback counter (M) 🔒
+
+Goal: the TPM2 seal can require a PIN, and an NV counter rejects an older
+copy of the sealed master key or vault image.
+Depends on: nothing (TPM2 sealing shipped).
+Files: `src/master_key.rs`, create `src/master_key_tpm.rs`.
+Add: `KEPR_TPM2_PIN=1` seals with `systemd-creds --tpm2-with-pin`-equivalent
+(`tpm2_create` policy `PolicyAuthValue`, through `tpm2-tools` when present);
+`KEPR_TPM2_NV_INDEX` (default `0x01800A11`) is created with
+`tpm2_nvdefine -a "nt=counter"` on first seal, incremented on every master-
+key change, and its value is written next to the sealed blob; unseal refuses
+when the stored value is lower than the TPM's.
+Tests (a `TpmRunner` trait with a fake): first seal defines the index;
+rotation increments; an old blob with a lower counter is refused; a missing
+TPM tool gives a clear error naming the package `tpm2-tools`.
+
+### T4.09 FIDO2 `hmac-secret` second factor for the master key (M) 🔒
+
+Goal: unlocking needs the passphrase **and** a touch of a registered
+security key.
+Depends on: nothing.
+Files: `src/key_unlock.rs`, create `src/key_fido2.rs`.
+Add: `kepr lock --fido2` runs `fido2-cred -M -h` to make a credential with
+`hmac-secret`, stores the credential id and salt next to the wrapped key;
+the KEK becomes `HKDF(argon2id(passphrase) ‖ hmac_secret_output)`;
+`kepr unlock` runs `fido2-assert -G -h` with the stored salt. Tool access
+goes through a runner trait.
+Tests: KEK derivation is deterministic and differs from passphrase-only;
+unlock without the factor fails; parsing of `fido2-assert` output (fixture).
+
+### T4.10 Recovery key: words and a terminal QR code (S)
+
+Goal: `kepr recovery-kit create --words` prints a 24-word key (EFF list,
+~310 bits) and a QR code of it on the terminal.
+Depends on: nothing.
+Files: `src/cli_recovery.rs`, create `src/cli_qr.rs`; add `qrcode = { version
+= "0.14", default-features = false }`.
+Tests: words ↔ bytes round trip; the QR renders with half-block characters
+and a quiet zone; a wrong word reports its position.
+
+### T4.11 Bring your own key: sealer trait and AWS KMS (M) 🔒
+
+Goal: `KEPR_MASTER_KEY_SEAL=aws-kms:<key-arn>` wraps the master key with
+AWS KMS `Encrypt` / `Decrypt` (SigV4, T2.01).
+Depends on: T2.01.
+Files: create `src/master_key_kms.rs` with `trait KekSealer { seal, unseal }`
+and `AwsKms`; `src/master_key.rs` dispatches on the prefix.
+Tests: request bodies and headers for Encrypt/Decrypt match the AWS JSON
+1.1 shape (`X-Amz-Target: TrentService.Encrypt`); response parsing; an
+encryption context `{"kepr":"master-key"}` is always sent.
+
+### T4.12 GCP KMS and Azure Key Vault sealers (M) 🔒
+
+Goal: `gcp-kms:projects/…/cryptoKeys/…` and
+`azure-kv:https://NAME.vault.azure.net/keys/KEY/VERSION` sealers.
+Depends on: T4.11.
+Files: `src/master_key_kms.rs` (or `master_key_kms_cloud.rs`).
+Auth: `GCP_ACCESS_TOKEN`, `AZURE_ACCESS_TOKEN` (bearer, like `sync`).
+Tests: request JSON and URLs for encrypt/decrypt (GCP `:encrypt`,
+Azure `/wrapkey` with `RSA-OAEP-256`), response parsing, base64url handling.
+
+### T4.13 PKCS#11 / YubiHSM sealer (S) 🔒
+
+Goal: `pkcs11:<module>:<key-label>` wraps the master key through
+`pkcs11-tool --encrypt/--decrypt` (RSA-OAEP).
+Depends on: T4.11.
+Tests: command lines built correctly (fake runner); PIN read from
+`KEPR_PKCS11_PIN_FILE`, never argv.
+
+---
+
+## P5: data model
+
+### T5.01 Tags and folders (M)
+
+Goal: `kepr tag NAME +work -old`, `kepr mv NAME FOLDER`, `kepr ls --tag t
+--folder f`.
+Depends on: nothing.
+Files: `CredMeta` gains `tags: Option<Vec<String>>`, `folder:
+Option<String>`; protocol `Request::Organize { name, add_tags, remove_tags,
+folder }`; `CredInfo` gains the same two fields; create
+`src/daemon_organize.rs`, `src/cli_organize.rs`; list filtering is
+client-side.
+Validation: tags `[a-z0-9_-]{1,32}`, ≤ 16 per credential; folder is
+`/`-separated segments of the same alphabet, ≤ 128 chars.
+Tests: add/remove tags is idempotent; invalid tag refused; `mv` sets and
+`mv NAME /` clears the folder; history slots and sealed creds keep their
+tags across `set`.
+
+### T5.02 Per-project environments in `.kepr.toml` (S)
+
+Goal: one manifest serves several environments.
+Depends on: nothing.
+Files: `src/cli_manifest.rs`, `src/cli_exec.rs`.
+Schema: `[env] required = [...]` stays; new `[env.<stage>] required = [...]`
+and `[env.<stage>.map] VAR = "kepr://NAME/field"`. `kepr exec --stage dev`
+picks one (default stage from `KEPR_STAGE`).
+Tests: stage list merges with base `required`; unknown stage errors and
+lists the known ones; `map` entries resolve through `kepr inject`'s
+resolver.
+
+### T5.03 Attachments (M) 🔒
+
+Goal: `kepr attach add NAME FILE`, `attach get NAME FILE -o OUT`,
+`attach ls NAME`, `attach rm NAME FILE`; up to 16 MiB per file, 64 MiB per
+record.
+Depends on: nothing.
+Files: protocol `AttachPut { name, file, chunk, index, last }`,
+`AttachGet { name, file, index }`, `AttachList`, `AttachRemove`; create
+`src/daemon_attach.rs`, `src/cli_attach.rs`.
+Storage: chunks of 48 KiB as credentials named `NAME~a<file-id>~<n>` (the
+`~` keeps them out of listings, like history), a manifest in `.meta`
+`attachments: [{id, file, size, sha256}]`. Sealed records refuse
+attachments. Delete of the record removes them. `get` writes with mode 0600
+and refuses to overwrite without `--force`.
+Tests: 200 KiB file round-trips byte-exact; sha256 mismatch on a tampered
+chunk is reported; cap enforced; names with `/` or `..` refused.
+
+### T5.04 Generator profiles and a strength estimate (S)
+
+Goal: `kepr set NAME --generate --profile bank`, profiles in
+`~/.config/kepr/generate.toml` (length, classes, symbols, words,
+separator); `kepr strength` estimates bits for a typed value.
+Depends on: nothing.
+Files: `crates/kepr-core/src/generate.rs` (or `generate_profile.rs`),
+`src/cli_args.rs` (`--profile`).
+Profiles can be keyed by host (`[host."example.com"]`) and by record type.
+Strength = min(charset entropy, pattern penalties for repeats, sequences,
+dictionary words from the EFF list, years).
+Tests: profile parsing; generated values satisfy each class constraint;
+`Password1` scores below 30 bits, a 6-word passphrase above 70.
+
+### T5.05 Notation: indexes, custom fields and files (M)
+
+Goal: `kepr://NAME/field[i]`, `[]` (all, JSON array), `[i][sub]` for
+structured fields, `kepr://NAME/custom_field/LABEL`,
+`kepr://NAME/file/FILENAME`, and `\/` `\[` escapes in labels.
+Depends on: T5.03 for `file/` (the rest doesn't need it).
+Files: create `src/notation.rs` (parser + resolver), used by
+`src/cli_inject.rs`.
+Tests: table of notations → parsed form; resolution against a fixture
+record with array fields and a custom field containing `/`; `file/` returns
+the attachment bytes; malformed notation error names the column.
+
+### T5.06 References in exec, manifests and `kepr resolve` (S)
+
+Goal: `kepr exec --env DB_URL=kepr://DB/url`, manifest `map`, and
+`kepr resolve kepr://…` (prints, for checking a notation like `ksm secret
+notation`).
+Depends on: T5.05.
+Files: `src/cli_args.rs`, `src/cli_exec.rs`, `src/cli_extra.rs`.
+Tests: `--env VAR=kepr://…` resolves; a plain `--env NAME` still works;
+`resolve` on a sealed credential is refused.
+
+---
+
+## P6: sharing, recovery, hygiene, sync, policy
+
+### T6.01 ML-KEM-768 hybrid share envelopes (M) 🔒
+
+Goal: share envelopes resist a future quantum attacker: the content key is
+derived from both an X25519 and an ML-KEM-768 shared secret.
+Depends on: nothing (P6.1/P6.2 shipped).
+Files: `src/daemon_share.rs` (or a new `src/share_kem.rs`); add `ml-kem`
+(RustCrypto) to the root crate.
+Add: the share key record stores both secret keys; `kepr share key` prints
+`kepr-pk2-<base64(x25519_pub ‖ mlkem_ek)>`; envelope v2 = ephemeral X25519
+pub ‖ ML-KEM ciphertext ‖ AES-GCM body; key = `HKDF-SHA256(x25519_ss ‖
+mlkem_ss, info="kepr-share-v2" ‖ both public keys)`. v1 envelopes and v1
+public keys keep working (receive both; send v2 only to v2 keys).
+Tests: v2 round trip; v1 still received; a v2 envelope with the ML-KEM
+ciphertext swapped fails; a v1-only recipient gets v1.
+
+### T6.02 Shared folders (M) 🔒
+
+Goal: `kepr folder share FOLDER --to KEY…` makes a folder bundle other
+users can open with their share keys, on any shared path (a git repo, a
+network drive).
+Depends on: T6.01, T5.01.
+Files: create `src/daemon_folder.rs`, `src/cli_folder.rs`; protocol
+`FolderExport { folder, recipients }`, `FolderImport { bundle }`.
+Format: one random folder key; each credential in the folder sealed under
+it (AES-256-GCM, AAD = folder id ‖ name); the folder key wrapped per
+recipient with the v2 envelope; a signed manifest (Ed25519 key of the
+exporter, stored like an SSH key). Import verifies the signature against a
+pinned contact (T11.15) and writes credentials as plain or sealed per the
+bundle flag. Sealed / ssh / share-key values never go into a bundle.
+Tests: export → import round trip for two recipients; a third key can't
+open it; a modified bundle fails the signature; re-import updates only
+changed values.
+
+### T6.03 Devices and single-use enrolment tokens (M) 🔒
+
+Goal: `kepr device add LABEL` prints a single-use token (`KD1-…`, 15 min)
+for another machine; `kepr device enroll TOKEN --from PATH` on the new
+machine registers its share key with the first one; `kepr device ls|rm`.
+Depends on: T6.01.
+Files: create `src/daemon_device.rs`, `src/cli_device.rs`; protocol
+`DeviceAdd`, `DeviceEnroll`, `DeviceList`, `DeviceRemove`.
+The token is a random 128-bit secret; the daemon stores only its SHA-256 and
+expiry. Enrolment exchanges a file (or a relay blob, T6.04) carrying the
+new device's public key and an HMAC under the token; the first device pins
+it. Devices are what sync (T6.10) encrypts to.
+Tests: token works once; expired token refused; HMAC mismatch refused;
+`rm` drops the device from future sync bundles.
+
+### T6.04 One-time share links and a relay (M) 🔒
+
+Goal: `kepr share send NAME --once [--ttl 1h] [--relay URL]` writes a
+single-use blob and prints `kepr://share/<id>#<key>` (key only in the
+fragment), plus a QR code with `--qr`; `kepr share open LINK` fetches and
+decrypts. `kepr-relay` is a tiny optional HTTP server that stores blobs and
+deletes each on first fetch or expiry.
+Depends on: nothing (T4.10 for the QR helper, or inline it).
+Files: create `src/cli_share_once.rs`; create `crates/kepr-relay/`
+(std `TcpListener`, no async runtime, 1 MiB blob cap, `PUT /b/<id>`,
+`GET /b/<id>` = fetch-and-delete, per-IP rate limit). Without `--relay`
+the blob is a local file to pass on by other means.
+Tests: link → open round trip through a relay on 127.0.0.1; second open
+fails; the relay never receives the key (assert on the request bytes);
+expired blob gone.
+
+### T6.05 Self-destructing records (S)
+
+Goal: `kepr share send NAME --once --self-destruct` deletes the record
+(and its history) once the share is opened or expires.
+Depends on: T6.04.
+Files: `src/daemon_share.rs`, `src/daemon_expiry.rs` (sweeper checks a
+`self_destruct_share` meta field).
+Tests: after open (simulated by the receive path) the record is gone;
+after expiry the sweeper deletes it; audit shows `self-destruct`.
+
+### T6.06 Emergency access with a time delay (M) 🔒
+
+Goal: `kepr emergency add CONTACT_KEY --delay 7d` lets a contact request
+access; if the owner doesn't deny within the delay, the daemon releases an
+envelope of the chosen records to them.
+Depends on: T6.01.
+Files: create `src/daemon_emergency.rs`, `src/cli_emergency.rs`; protocol
+`EmergencyAdd`, `EmergencyList`, `EmergencyRequest { from, proof }`,
+`EmergencyDeny`, `EmergencyRelease`.
+The request is a file or relay blob signed by the contact's key. The sweeper
+(`daemon_expiry.rs`) releases when `now ≥ requested_at + delay` and no
+denial; release writes envelopes (never sealed creds) and audits loudly.
+Max delay 90 days, up to 5 contacts (Keeper's limits).
+Tests: request then wait (injected clock) releases; deny cancels; a forged
+request (wrong key) is refused; sealed creds are never included.
+
+### T6.07 Break-glass reveal of a sealed credential (M) 🔒
+
+Goal: the only way to read a sealed value back: present k recovery shares
+(P6.3), the value is printed once, the event is audited as `break-glass`,
+and the credential is marked `must_rotate`.
+Depends on: nothing (recovery kit shipped).
+Files: create `src/daemon_breakglass.rs`; protocol `BreakGlass { name,
+shares }`; `kepr break-glass NAME`; `AGENTS.md` documents it next to the
+recovery-kit exception.
+Rationale: anyone holding k shares can already rebuild the master key and
+decrypt the files offline, so this adds no new capability; it makes the
+access loud instead. Refused while any gate runs.
+Tests: correct shares reveal and set `must_rotate`; wrong shares refused
+without revealing which share was wrong; `kepr list` flags `must_rotate`;
+the next `set` clears it.
+
+### T6.08 Webhook alerts for health and breach findings (S)
+
+Goal: `kepr health --breach --notify URL` posts a JSON summary (names and
+flags only) to a webhook (Slack / Teams / Discord / ntfy formats picked by
+`--format`).
+Depends on: nothing.
+Files: create `src/notify.rs` (shared by T7.15, T9.04); `src/cli_health.rs`.
+Tests: body for each format; no value or hash prefix ever in the body;
+non-2xx reported.
+
+### T6.09 Encrypted bundle export and import (M) 🔒
+
+Goal: `kepr export --encrypted -o FILE` writes every non-sealed credential
+(values, meta, history, attachments) to a passphrase-protected bundle;
+`kepr import FILE` detects and opens it.
+Depends on: nothing.
+Files: create `src/bundle.rs` (format shared with sync, T6.10),
+`src/daemon_export.rs`; protocol `ExportBundle { passphrase }` returning
+the bundle in chunks.
+Format: `kepr_bundle1` magic, Argon2id params + salt, AES-256-GCM over a
+JSON body; sealed / ssh / share-key items are listed by name with
+`"omitted":"sealed"`.
+Tests: round trip; wrong passphrase refused; sealed values absent from the
+plaintext body; import reports omitted items.
+
+### T6.10 Multi-device sync (M)
+
+Goal: `kepr sync remote add dir:PATH|git:URL|s3:BUCKET/PREFIX`, `kepr sync
+now`: each device pushes a bundle encrypted to every enrolled device's key
+(T6.03) and merges others' bundles last-writer-wins per credential.
+Depends on: T6.09, T6.03.
+Files: create `src/sync_devices.rs`, `src/sync_transport.rs` (dir, git via
+`git` CLI, S3 via SigV4 from T2.01).
+Merge: each credential carries `updated_at` and `origin`; ties broken by
+device id; deletes are tombstones kept 30 days.
+Tests: two simulated devices converge; delete propagates; a bundle from an
+unknown device is ignored; a bundle encrypted to a removed device can't be
+opened by it after re-key.
+
+### T6.11 `policy.toml` and `kepr policy test` (M) 🔒
+
+Goal: a deny-by-default policy file the daemon enforces: who (exe path,
+agent harness) may `get`, `exec`, `share`, `export`; max TTLs; which
+credentials may be sealed to which hosts.
+Depends on: nothing.
+Files: create `src/policy.rs` (parser + evaluator, pure), `src/cli_policy.rs`;
+the daemon loads `~/.config/kepr/policy.toml` (or `/etc/kepr/policy.toml`
+in system mode) at start and on `SIGHUP`; handlers call
+`policy::check(op, ctx)`.
+`kepr policy test FILE` runs `[[test]]` cases in the file (`op`, `name`,
+`exe`, expected `allow|deny`).
+Tests: deny by default when the file exists; first-match rules; glob names;
+test cases pass/fail with readable output; a missing file means "no policy"
+(today's behaviour).
+
+### T6.12 Access reports (S)
+
+Goal: `kepr report access NAME` lists every path a credential can take:
+gate bindings, shares sent (from the audit chain), agent sessions that
+resolved it, devices it syncs to, folders it's in.
+Depends on: T6.11 optional.
+Files: create `src/daemon_report.rs`, `src/cli_report.rs`.
+Tests: a fixture audit chain with a share, a gate resolve and a get gives
+the three rows.
+
+### T6.13 OIDC device enrolment (M) 🔒
+
+Goal: `kepr device enroll --oidc ISSUER --client-id ID` proves the user
+through their IdP (device-code flow) before a device is accepted.
+Depends on: T6.03.
+Files: create `src/oidc.rs` (discovery, device code, token poll, ID-token
+verification with JWKS: RS256 and ES256); add `rsa` with `sha2`.
+Tests: JWT verification against fixture JWKS (RS256, ES256); expired,
+wrong-audience and wrong-issuer tokens refused; device-code polling
+handles `authorization_pending` and `slow_down`.
+
+### T6.14 Account-transfer escrow (S) 🔒
+
+Goal: opt-in `kepr escrow enable ADMIN_KEY` wraps the master key to an
+administrator's share key in `escrow.bin`; `kepr escrow open` on the admin's
+machine recovers it. Audited; `kepr status` shows that escrow is on.
+Depends on: T6.01.
+Tests: wrap/unwrap round trip; disabling deletes the file; a different key
+can't open it.
+
+---
+
+## P7: PAM-lite
+
+### T7.01 Redis proxy in the gate (M) 🔒
+
+Goal: an agent connects to `127.0.0.1:<port>` with the placeholder as the
+password; the gate sends `AUTH user pass` upstream with the sealed value.
+Depends on: nothing (P7.1 pattern shipped for Postgres).
+Files: `Inject::Redis` in `binding.rs`; create `crates/kepr-gate/src/redis.rs`
+(RESP2 parser for the first command only, then a byte pipe); `kepr agent
+add-db --kind redis`.
+Tests: `AUTH placeholder` is replaced; wrong placeholder → `-ERR` and
+close; `HELLO 3 AUTH …` is handled; TLS upstream when `rediss`.
+
+### T7.02 MySQL proxy in the gate (M) 🔒
+
+Goal: same for MySQL: the gate completes the server handshake itself
+(`mysql_native_password` and `caching_sha2_password` over TLS), then pipes.
+Depends on: nothing.
+Files: `Inject::Mysql`; create `crates/kepr-gate/src/mysql.rs`,
+`crates/kepr-gate/src/mysql_auth.rs`.
+Tests: native password scramble matches the reference vector;
+caching_sha2 fast-auth scramble matches; client sees an OK packet with the
+placeholder; wrong placeholder gets ER_ACCESS_DENIED.
+
+### T7.03 Raw TCP tunnels (S)
+
+Goal: `kepr agent run --tunnel NAME=host:port` exposes a loopback port in
+the session that the gate pipes to an allowed host (no credential
+injection), so agents reach e.g. an internal service without network
+access.
+Depends on: nothing.
+Files: `crates/kepr-gate/src/tunnel.rs`; route type in `gate_protocol.rs`.
+Tests: bytes round trip through a local echo server; a host not in the
+session's tunnel list is refused.
+
+### T7.04 MySQL rotator (S)
+
+Goal: `kepr agent rotate-db NAME` also works for MySQL records
+(`ALTER USER CURRENT_USER() IDENTIFIED BY …`).
+Depends on: T7.02.
+Tests: statement escaping; resumable pending/commit like Postgres.
+
+### T7.05 AWS IAM access-key rotator (M) 🔒
+
+Goal: `kepr rotate NAME --aws-iam` creates a new access key, stores it,
+verifies it with `sts:GetCallerIdentity`, then deletes the old key.
+Depends on: T7.06, T2.01.
+Files: create `src/rotate_aws_iam.rs`; `src/cli_rotate.rs` flag.
+Tests: Query-API request shapes (`CreateAccessKey`, `DeleteAccessKey`,
+`ListAccessKeys`); refuses when the user already has 2 keys; old key kept
+if verification fails.
+
+### T7.06 STS client (S)
+
+Goal: a small STS client (`GetSessionToken`, `AssumeRole`,
+`GetCallerIdentity`) on the SigV4 code.
+Depends on: T2.01.
+Files: create `src/sts.rs`.
+Tests: request signing against a fixed date; XML response parsing.
+
+### T7.07 Scheduled rotation (M)
+
+Goal: `kepr rotate NAME --every 30d [--hook CMD | --aws-iam | --db]`; the
+daemon's sweeper runs due rotations (user-mode daemon) and audits them.
+Depends on: nothing (uses the existing rotate paths).
+Files: `CredMeta.rotate_every_secs`, `rotate_via`; create
+`src/daemon_rotate_sched.rs`; the sweeper asks the CLI-side rotator by
+spawning `kepr rotate NAME --scheduled` (keeps network code out of the
+daemon).
+Tests: due computation; a failed rotation keeps the old value and retries
+with backoff; `kepr list` shows the next rotation.
+
+### T7.08 GitHub App installation tokens (M) 🔒
+
+Goal: store a GitHub App private key sealed; `kepr agent run` mints a
+1-hour installation token per session for the egress `gh` route.
+Depends on: nothing.
+Files: create `src/github_app.rs` (RS256 JWT with `rsa`, `POST
+/app/installations/{id}/access_tokens`).
+Tests: JWT header/claims/signature against a fixture key; token response
+parsing; expiry honoured.
+
+### T7.09 Session journal: encrypted bodies and scriptreplay export (M)
+
+Goal: `kepr agent run --record` stores request/response bodies of a session
+encrypted under a per-session key wrapped by the master key;
+`kepr agent replay SESSION` prints them; Postgres sessions export as
+`scriptreplay` typescript + timing files.
+Depends on: nothing.
+Files: `crates/kepr-gate/src/journal.rs`, create
+`crates/kepr-gate/src/recording.rs`, `src/cli_agent_replay.rs`.
+Tests: recording round trip; bodies never written in plaintext; timing file
+format matches `scriptreplay`'s.
+
+### T7.10 JIT grants (M) 🔒
+
+Goal: `kepr grant NAME --to HARNESS --for 2h` lets a sealed credential be
+used by a harness for a time window; outside a grant the gate can't resolve
+it.
+Depends on: nothing.
+Files: `CredMeta.grants: [{harness, until}]`; create `src/daemon_grant.rs`;
+`daemon_gate.rs` checks grants at resolve time when the credential has
+`jit: true`.
+Tests: resolve allowed inside the window, refused after; revoke ends it.
+
+### T7.11 Check-out / check-in (S)
+
+Goal: `kepr checkout NAME` gives one user exclusive use (others refused);
+`kepr checkin NAME` releases it and rotates the value if `--rotate`.
+Depends on: T7.10.
+Tests: second checkout refused; checkin by a different session refused;
+rotate hook called.
+
+### T7.12 M-of-N approvals (M) 🔒
+
+Goal: a credential with `approvals = 2` needs two approvals (polkit on the
+owner's machine or signed approvals from enrolled devices) before a grant
+starts.
+Depends on: T7.10, T6.03.
+Tests: one approval is not enough; duplicate approver refused; expired
+approval request refused.
+
+### T7.13 Anomaly rules (M)
+
+Goal: rules over gate journal events: new destination path, volume spike
+(× baseline), off-hours use, error bursts. A hit raises an alert (T7.15)
+and can auto-revoke (`kepr panic` for that credential).
+Depends on: T7.14, T7.15.
+Files: create `src/anomaly.rs` (pure evaluator over event slices),
+`~/.config/kepr/rules.toml`.
+Tests: each rule kind on fixture events; baseline needs N days of data.
+
+### T7.14 SIEM forwarders (M)
+
+Goal: `kepr audit forward --to jsonl:PATH|syslog:udp://host:514|otlp:URL`
+streams audit-chain events (op, name, uid, result, time; never values).
+Depends on: nothing.
+Files: create `src/audit_forward.rs`.
+Tests: RFC 5424 line format; OTLP/HTTP JSON log body; resume from the last
+forwarded hash after restart.
+
+### T7.15 Alert rules and webhooks (M)
+
+Goal: `alerts.toml` maps audit ops/results to webhooks (Slack, Teams,
+Discord, ntfy) with throttling ("once per 10 min per rule").
+Depends on: T7.14, T6.08 (`notify.rs`).
+Tests: matching, throttling with an injected clock, body per format.
+
+### T7.16 FIPS mode (M) 🔒
+
+Goal: a `fips` cargo feature routes AES-GCM, SHA-2 and HMAC through
+`aws-lc-rs` (FIPS provider) and the gate's rustls through its FIPS
+provider; `kepr status` reports it.
+Depends on: nothing.
+Files: create `src/crypto_fips.rs` behind `#[cfg(feature = "fips")]`; gate
+`Cargo.toml` feature.
+Tests: ciphertext from the default build decrypts in the FIPS build (same
+format); feature off builds unchanged. CI: a separate job builds
+`--features fips` (needs Go + cmake on the runner).
+
+### T7.17 SLSA build provenance (S)
+
+Goal: release artefacts carry SLSA provenance generated by
+`slsa-framework/slsa-github-generator` (generic generator) and the
+existing build attestations; the release notes say how to verify.
+Depends on: nothing.
+Files: `.github/workflows/release.yml`, `SECURITY.md`.
+
+### T7.18 Postgres JIT privilege elevation (S) 🔒
+
+Goal: a `db:` route can carry `grant_role`: the gate runs `GRANT role TO
+CURRENT_USER` at session start (with the sealed admin record) and `REVOKE`
+at session end.
+Depends on: nothing.
+Files: `crates/kepr-gate/src/pg_rotate.rs` (or `pg_jit.rs`),
+`gate_protocol::DbTarget`.
+Tests: identifier quoting; revoke runs on session drop; failure to grant
+refuses the session.
+
+---
+
+## P8: ecosystem
+
+### T8.01 `kepr shell` (S)
+
+Goal: an interactive prompt that keeps one daemon connection and runs kepr
+verbs (`set`, `ls`, `get --copy`…) without re-typing `kepr`; history kept
+in memory only.
+Depends on: nothing.
+Files: create `src/cli_shell.rs` (line reader on std, shell-style word
+splitting with quotes).
+Tests: word splitting (quotes, escapes); `exit` / EOF end it; values typed
+for `set` go through masked entry, never the line history.
+
+### T8.02 `kepr ui` terminal UI (M)
+
+Goal: a full-screen list of credentials (name, type, tags, expiry, sealed)
+with search, copy-to-clipboard and delete confirmation; never draws a
+value.
+Depends on: nothing.
+Files: create `src/cli_ui_tui.rs` (raw mode via `libc::termios`, ANSI
+drawing, no new crate).
+Tests: pure layout function renders a fixture list into a fixed-size buffer
+(snapshot); key handling state machine (up/down/`/`/enter/`d`/`q`).
+
+### T8.03 Terraform provider (M)
+
+Goal: `integrations/terraform-provider-kepr` (Go, terraform-plugin-framework)
+with a `kepr_secret` data source and resource talking to the local daemon
+socket.
+Depends on: T8.09 (Go SDK writes).
+Tests: `go vet` and unit tests of the schema and read/create with a fake
+client; acceptance tests skipped without a daemon.
+
+### T8.04 Ansible lookup plugin (S)
+
+Goal: `lookup('kepr', 'NAME')` and `lookup('kepr', 'kepr://NAME/field')`.
+Depends on: T8.09.
+Files: `integrations/ansible/lookup_plugins/kepr.py` using the Python SDK.
+Tests: `python3 -m unittest` with a fake client.
+
+### T8.05 Azure Key Vault sync target (S)
+
+Goal: `kepr sync-push NAME --url azure-kv:VAULT/SECRET` and pull.
+Files: create `src/sync_azure_kv.rs`; `pick_syncer` arm.
+Auth: `AZURE_ACCESS_TOKEN` (bearer).
+Tests: URL and body shapes (`PUT /secrets/{name}?api-version=7.4`,
+`GET`), error summary keeps only the provider's error code.
+
+### T8.06 JSON file sync target (S)
+
+Goal: `--url json:PATH#KEY` pushes/pulls one key of a JSON object file
+(mode 0600, atomic write).
+Files: create `src/sync_json.rs`.
+Tests: push creates the file with 0600; pull reads nested `a.b` keys;
+other keys untouched.
+
+### T8.07 GitHub Action and GitLab CI template (S)
+
+Goal: `integrations/github-action/action.yml` (composite: install kepr,
+`kepr sync-pull` from a cloud store using OIDC-federated cloud credentials,
+mask every value with `::add-mask::`, export to `$GITHUB_ENV` only when
+asked); `integrations/gitlab/kepr.gitlab-ci.yml` with the same steps using
+`id_tokens`.
+Tests: `actionlint`-clean YAML (CI job), a shell test of the masking step.
+
+### T8.08 VS Code extension (M)
+
+Goal: `integrations/vscode`: hover over `kepr://NAME/field` shows the
+record's type, tags and expiry (never the value); a command lists
+credentials; a status-bar item shows lock state.
+Depends on: T8.09 (Node SDK).
+Tests: `npm test` on the notation matcher and hover text with a fake
+client.
+
+### T8.09 SDK writes (M)
+
+Goal: the Python, Node and Go clients can `set` (value or generate),
+`delete`, `list` with metadata, and `fetch_fd` (T3.06 when present).
+Files: `sdk/python/kepr_client/*`, `sdk/node/index.js` + `index.d.ts`,
+`sdk/go/kepr.go`.
+Tests: each SDK's test suite against its fake socket server.
+
+---
+
+## P9: agent safety (remaining)
+
+### T9.04 Approval notifications (M)
+
+Goal: approvals for consent-gated credentials can also be answered from a
+desktop notification (`notify-send` with actions via `gdbus`) or a phone
+(ntfy topic with action buttons posting back to a local one-shot URL).
+Depends on: nothing (polkit consent shipped).
+Files: create `src/approve_notify.rs`; `CredMeta.approve_via`.
+Tests: ntfy message body with action URLs; the local callback accepts only
+its one-time token; timeout = deny.
+
+### T9.05 MCP database and SSH tools through the gate (M) 🔒
+
+Goal: `kepr mcp` exposes `db_query(target, sql)` and `ssh_run(host, cmd)`
+that run through gate routes (P7.1, P2.4), with `--read-only` (Postgres
+`SET default_transaction_read_only = on`) and an `ai_context` note per
+target returned with results.
+Depends on: T7.01 optional.
+Files: `src/cli_mcp.rs`, create `src/cli_mcp_tools.rs`.
+Tests: tool schema; read-only flag forwarded; no tool returns a credential.
+
+### T9.06 Per-day caps across sessions (S)
+
+Goal: `kepr agent run --max-tokens-day N --max-requests-day N`; the daemon
+keeps per-credential daily counters that every gate session reports to.
+Files: `crates/kepr-core/src/gate_protocol.rs` (usage report message),
+create `src/daemon_daily_caps.rs`.
+Tests: counters reset at local midnight; a second session sees the first's
+usage; cap → gate refuses with `kepr_limit`.
+
+### T9.07 Governance report (S)
+
+Goal: `kepr usage --report` adds per harness × credential × host counts,
+estimated cost (token counts × a price table in config), and flags
+over-scoped bindings (bound hosts never used in N days).
+Files: `src/daemon_usage.rs`, `src/cli_usage.rs`.
+Tests: fixture journal → expected table; unused binding flagged.
+
+### T9.08 Honeytokens (M)
+
+Goal: `kepr canary plant [--in .env|~/.bashrc|DIR]` writes decoy keys that
+look real for a provider; any use through the gate, or a provider-side
+canary webhook, raises an alert and an audit `canary-tripped`.
+Files: create `src/cli_canary.rs`, `src/daemon_canary.rs`;
+`kepr_core::leak` detects canary prefixes in DLP.
+Tests: planted keys pass the provider's format check; the gate blocks and
+alerts on a canary value; `kepr canary ls|rm` round trip.
+
+### T9.09 Provider-API rotation for leaked keys (M) 🔒
+
+Goal: `kepr leaked NAME --rotate` rotates through the provider API where
+one exists (AWS IAM via T7.05, GitHub App tokens expire by design), and
+otherwise opens the revocation URL as today.
+Depends on: T7.05.
+Tests: provider dispatch table; AWS path calls the rotator; unknown
+provider falls back to the URL.
+
+---
+
+## P10: platform extras
+
+### T10.01 `kepr mount` (M) 🔒
+
+Goal: `kepr mount DIR --file .env=NAME1,NAME2 --file config.json=…` serves
+read-only files over FUSE; each `open` is checked against the caller's uid
+and (optionally) exe digest, and can require consent.
+Files: create `src/cli_mount.rs` speaking the FUSE kernel protocol
+directly on `/dev/fuse` (mounted with `fusermount3` when present, else
+`mount(2)` as root); no new crate.
+Tests: pure FUSE message encoding/decoding (INIT, LOOKUP, GETATTR, OPEN,
+READ) against fixtures; rendering of `.env` and JSON files; denied open
+returns `EACCES`.
+
+### T10.02 KeePass KDBX 4 import (M)
+
+Goal: `kepr import vault.kdbx` asks for the database password and imports
+entries.
+Files: create `src/cli_import_kdbx.rs` (outer header, Argon2d/id KDF,
+AES-256-CBC or ChaCha20 payload, HMAC block stream, gzip, inner XML with
+protected values via ChaCha20).
+Deps: `cbc`, `chacha20`, `flate2`.
+Tests: a fixture `.kdbx` created with KeePassXC imports three entries;
+wrong password refused; KDBX 3.1 reports "unsupported version".
+
+### T10.03 Fingerprint unlock (S)
+
+Goal: `kepr unlock --fingerprint` and consent prompts accept fprintd
+through polkit (`auth_self` with `pam_fprintd`); `kepr doctor` checks fprintd
+and enrolled fingers.
+Files: `systemd/polkit/io.kepr.policy` (new action `io.kepr.unlock`),
+`src/cli_doctor.rs`.
+Tests: policy XML validates; doctor check parses `fprintd-list` output.
+
+### T10.04 macOS Keychain sealer (M) 🔒
+
+Goal: on macOS `KEPR_MASTER_KEY_SEAL=keychain` stores the master key as a
+generic password in the login keychain (`security add-generic-password -U`
+with `-T` limited to the daemon binary) and reads it back.
+Files: create `src/master_key_keychain.rs` (`#[cfg(target_os = "macos")]`
+plus a runner trait so tests run on Linux).
+Tests: command lines; the key is passed on stdin, never argv.
+
+### T10.05 Kernel `logon` keyring export (S)
+
+Goal: `kepr keyring add NAME --desc fscrypt:… [--keyring @u]` adds the value
+as a `logon` key (unreadable from userspace) with `add_key(2)`.
+Files: create `src/cli_keyring.rs`.
+Tests: description validation (`type:prefix:` form); on Linux CI, adding a
+logon key then `keyctl_read` returns `EOPNOTSUPP`.
+
+### T10.06 `systemd-creds` export (S)
+
+Goal: `kepr systemd-cred NAME [--name CRED] [--tpm2]` prints a
+`SetCredentialEncrypted=` line (value piped to `systemd-creds encrypt` on
+stdin) for a unit file.
+Files: create `src/cli_systemd_cred.rs`.
+Tests: argument building; output line format; refuses sealed credentials.
+
+### T10.07 Podman secret driver (S)
+
+Goal: `podman secret create --driver shell --driver-opts
+list=…,lookup="kepr get --quiet $SECRET_ID"` works via
+`integrations/podman/kepr-podman-driver` plus docs.
+Tests: shellcheck; a dry run of the lookup command with a fake `kepr`.
+
+### T10.08 Secrets Store CSI provider (M)
+
+Goal: `integrations/csi-provider` (Go) implements the
+`v1alpha1.CSIDriverProvider` gRPC service and mounts secrets fetched from
+`kepr-eso-provider`'s HTTP API.
+Tests: Mount request → files written with the right modes (fake HTTP).
+
+### T10.09 Binary-identity bindings (M) 🔒
+
+Goal: `kepr set NAME --exe /usr/bin/psql` records the SHA-256 (or
+fs-verity digest when enabled) of allowed executables; `Get` checks the
+peer's `/proc/<pid>/exe` digest before decrypting.
+Files: `CredMeta.exe_digests`; create `src/daemon_exe.rs`.
+Tests: matching digest allowed; different binary refused; deleted exe
+(`(deleted)` suffix) refused; fs-verity read falls back to SHA-256.
+
+### T10.10 Local PKI (M)
+
+Goal: `kepr pki init` makes a local CA (key sealed in the vault);
+`kepr pki issue DNS… [--days 30]` writes a cert + key; `kepr pki ls` tracks
+expiry and `kepr health` warns 14 days ahead.
+Files: create `src/cli_pki.rs`, `src/daemon_pki.rs`; `rcgen` in the root
+crate.
+Tests: issued cert chains to the CA; SANs; expiry tracking.
+
+### T10.11 SPIFFE SVIDs (M) 🔒
+
+Goal: `kepr pki svid spiffe://TRUST/path --ttl 1h` issues an X.509 SVID
+(URI SAN, short TTL) from the local CA, optionally only after a TPM2 quote
+(`tpm2_quote`) over PCR 7 matches the enrolled value.
+Depends on: T10.10.
+Tests: URI SAN form; TTL cap; quote verification with fixture data.
+
+---
+
+## P11: Keeper re-check (2026-10-05)
+
+### T11.1 `kepr search` (S)
+
+Goal: `kepr search PATTERN [--json]` matches names, tags, folders, record
+types and non-secret record fields (`username`, `url`, `host`, `holder`).
+Depends on: T5.01.
+Files: protocol `Search { pattern }` (the daemon searches field names it
+may reveal; secret fields are never matched); create `src/daemon_search.rs`.
+Pattern: case-insensitive substring, or `/regex/` with a tiny matcher (`.`,
+`*`, `^`, `$`, classes) — no regex crate.
+Tests: matches on each source; a password field value never matches.
+
+### T11.2 Trash (M)
+
+Goal: `kepr rm NAME` moves the credential to the trash for 30 days
+(`KEPR_TRASH_DAYS`, 0 = off); `kepr trash ls|restore NAME|purge [NAME]`.
+Files: create `src/daemon_trash.rs`; the trash is credentials renamed to
+`NAME~t<unix>` (unlisted, like history), meta `trashed_at`; the sweeper
+purges old ones; `--force` skips the trash.
+Tests: rm → ls shows it; restore; purge; restore refuses when the name
+exists again; sealed creds keep their seal and bindings.
+
+### T11.3 History diff (S)
+
+Goal: `kepr history NAME --diff A B` shows which record fields changed
+between versions (field names, never values; for plain values just
+"changed").
+Files: `src/daemon_history.rs` (new `HistoryDiff` request).
+Tests: field added / removed / changed; values never in the response.
+
+### T11.4 Duplicate finder (S)
+
+Goal: `kepr dupes` groups credentials with the same value (daemon-side
+comparison of hashes, sealed values excluded) and `--merge KEEP` turns the
+others into aliases (T11.5).
+Tests: groups; sealed excluded; merge leaves aliases resolving to KEEP.
+
+### T11.5 Aliases (S)
+
+Goal: `kepr ln ALIAS NAME` makes ALIAS resolve to NAME for `get`, `exec`,
+`inject`; `kepr ls` shows `ALIAS -> NAME`; deleting NAME warns about
+aliases.
+Files: `CredMeta.alias_of`; alias creds have no value file.
+Tests: get via alias; alias of alias refused; alias to a sealed cred obeys
+the seal.
+
+### T11.6 Linked records (S)
+
+Goal: a record field of type `ref` (`"billing": {"ref": "HOME_ADDRESS"}`)
+resolves through `kepr://CARD/billing/city` to the linked record's field.
+Tests: one-hop resolution; cycles refused; ref to a sealed record refused.
+
+### T11.7 Custom record types and convert (M)
+
+Goal: types from `~/.config/kepr/types/*.toml` (`name`, `fields = [{name,
+type, required, masked}]`) next to the built-ins; `kepr record types
+--export DIR`; `kepr record convert NAME TYPE` maps same-named fields and
+keeps the rest as custom fields.
+Files: `src/daemon_records.rs` (or `src/record_types.rs`).
+Tests: user type loads; a duplicate built-in name refused; convert keeps
+unmatched fields.
+
+### T11.8 Field options, templates, add from file or clone (S)
+
+Goal: `required` fields are enforced on add; `masked` fields are hidden in
+`record show` unless `--reveal`; `kepr record template TYPE` prints a JSON
+skeleton; `record add NAME --from-file F` and `--clone OTHER`.
+Tests: missing required field refused; template matches the type;
+`--clone` copies fields but not attachments or history.
+
+### T11.9 `kepr delete --all` (S)
+
+Goal: delete every credential of the caller (`--yes` required, sealed
+included, history and trash purged), audited as one `delete-all` event.
+Tests: refuses without `--yes`; leaves other users' creds alone.
+
+### T11.10 `kepr doctor --verify` (S)
+
+Goal: decrypt every credential (not sealed values' contents: decrypt to
+check the tag, then drop), check every `.meta` parses, history slots belong
+to an existing credential, attachment manifests match chunks.
+Files: protocol `Verify`; create `src/daemon_verify.rs`.
+Tests: orphan history slot and a corrupt meta are both reported.
+
+### T11.11 Aging and policy reports (S)
+
+Goal: `kepr health --period 90` (old = unchanged for N days) and
+`kepr health --policy FILE` (min length, classes, max age per tag).
+Files: `src/daemon_health.rs`, `src/cli_health.rs`.
+Tests: period flag; each policy rule.
+
+### T11.12 Idle auto-lock (S)
+
+Goal: `KEPR_IDLE_LOCK=15m` locks a passphrase-protected user-mode store
+after no requests for that long.
+Files: create `src/daemon_idle.rs`; `daemon.rs` touches the timestamp per
+request.
+Tests: timer logic with an injected clock; no lock while a gate runs.
+
+### T11.13 Unlock backoff and opt-in wipe (S) 🔒
+
+Goal: failed unlocks back off exponentially (1 s → 5 min); with
+`KEPR_WIPE_AFTER=N` the wrapped master key file is removed after N
+consecutive failures (recovery kit still works).
+Files: `src/key_unlock.rs`, create `src/daemon_unlock_guard.rs`.
+Tests: backoff schedule; counter resets on success; wipe only when
+configured and audited.
+
+### T11.14 Re-authentication before reveal (M) 🔒
+
+Goal: `kepr set NAME --reauth` makes `get` / `copy` / `record show
+--reveal` ask for the store passphrase again (checked by the daemon,
+rate-limited), valid for 60 s per credential.
+Files: `CredMeta.requires_reauth`; `Request::Get` gains an optional
+`reauth` passphrase; create `src/daemon_reauth.rs`.
+Tests: missing passphrase → `reauth needed`; wrong passphrase refused and
+counted; correct one opens a 60 s window.
+
+### T11.15 Share contacts, QR, view window and report (M)
+
+Goal: `kepr share contact add NAME KEY` pins a contact; `share send --to
+NAME`; `--qr` prints the envelope as QR codes (chunked); received shares
+with `--view-window 5m` delete themselves 5 minutes after first `get`;
+`kepr share report` lists sent shares from the audit chain (to, when,
+expires, opened?).
+Depends on: T6.04 for links.
+Files: create `src/cli_share_contacts.rs`; `src/daemon_share.rs`.
+Tests: contact add/list/rm; sending to an unpinned name refused; view window
+expiry; report rows from a fixture chain.
+
+### T11.16 Profiles (S)
+
+Goal: `kepr --profile work …` or `KEPR_PROFILE=work` uses a separate store,
+state dir and socket (`$XDG_RUNTIME_DIR/kepr-work/`), with its own daemon.
+Files: `crates/kepr-core/src/protocol.rs` (`socket_path` honours the
+profile), `src/store.rs`, `src/daemon.rs` state dir, `src/main.rs` flag.
+Tests: paths per profile; profile name validation (`[a-z0-9_-]{1,32}`).
+
+### T11.17 Sync maps, dry run and bulk import (M)
+
+Goal: `kepr sync push --map sync.toml [--dry-run]` pushes many credentials
+(`NAME = "aws-sm:prod/db"`), `--dry-run` prints create / update / unchanged
+(compares remote and local by hash only); `kepr sync import --from aws-sm
+--prefix prod/` lists and imports remote secrets.
+Files: create `src/sync_map.rs`; list calls in `sync_aws_sm.rs`
+(`ListSecrets`), `sync_gcp_sm.rs`, `sync_vault.rs` (`LIST`).
+Tests: map parsing; dry-run classification; list response parsing per
+backend.
+
+### T11.18 `kepr batch` (S)
+
+Goal: `kepr batch FILE` runs one kepr command per line (comments, quotes),
+stops at the first error unless `--keep-going`; values never on the line
+(use `--generate` or `kepr://` references).
+Tests: parsing; a line with `--value` is refused.
+
+### T11.19 `kepr serve` local REST API (M) 🔒
+
+Goal: `kepr serve --socket PATH | --listen 127.0.0.1:PORT --allow
+list,get` serves `GET /v1/secrets`, `GET /v1/secrets/NAME` for an
+allowlist of operations, with a bearer token from `KEPR_SERVE_TOKEN_FILE`,
+per-token rate limit, and sealed creds always refused.
+Files: reuse `kepr-eso-provider`'s HTTP parsing (move shared parts into
+`kepr-core` if needed); create `src/cli_serve.rs`.
+Tests: missing token 401; op not in allowlist 403; rate limit 429; listen on
+a non-loopback address refused unless `--insecure-network`.
+
+### T11.20 Discovery rules (S)
+
+Goal: `~/.config/kepr/discover.toml` with `[[rule]] match = "aws:*prod*"
+action = "add"|"ignore"|"ask"`; `kepr discover` applies them.
+Tests: first-match rules; ignore never prompts.
+
+### T11.21 `kepr ssh rotate` (S)
+
+Goal: `kepr ssh rotate NAME --host user@host` generates a new key, adds its
+public key to the host's `authorized_keys` using the old key (through
+`ssh` with the kepr agent), verifies login with the new key, removes the
+old line, and replaces the key in the vault.
+Tests: `authorized_keys` edit function (add, remove exact line, keep
+others); command construction.
+
+### T11.22 `kepr agent logs` (S)
+
+Goal: `kepr agent logs [--follow] [SESSION]` prints the gate request
+journal (method, host, path template, status, bytes, blocked reason).
+Tests: journal line parsing and formatting; follow handles rotation.
+
+### T11.23 Ignore health findings (S)
+
+Goal: `kepr health --ignore NAME:weak` records an ignore in `.meta`
+(`health_ignore`), shown as ignored instead of failing.
+Tests: ignored flag suppressed; ignore cleared when the value changes.
+
+### T11.24 Richer `kepr status` (S)
+
+Goal: `kepr status` prints mode (user/system), profile, lock state, store
+backend, master-key sealer, running gates, escrow and FIPS flags.
+Files: `Response::StatusOk` gains optional fields; `src/cli_cmds.rs`
+printing moves to `src/cli_status.rs`.
+Tests: JSON output contains every field; old daemons (fields absent) still
+print.
 
 ---
 

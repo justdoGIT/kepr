@@ -82,6 +82,27 @@ Keeper sources:
 [Emergency access](https://docs.keeper.io/en/user-guides/emergency-access),
 [Offline access](https://docs.keeper.io/en/enterprise-guide/vault-offline-access).
 
+Re-checked 2026-10-05 against these further `docs.keeper.io` pages; what
+they added is in section 2.7:
+[Commander record commands](https://docs.keeper.io/keeperpam/commander-cli/command-reference/record-commands),
+[Commander reporting commands](https://docs.keeper.io/keeperpam/commander-cli/command-reference/reporting-commands),
+[Commander command reference](https://docs.keeper.io/keeperpam/commander-cli/command-reference),
+[Commander service mode](https://docs.keeper.io/keeperpam/commander-cli/service-mode-rest-api),
+[Record types](https://docs.keeper.io/enterprise-guide/record-types),
+[Enforcement policies](https://docs.keeper.io/enterprise-guide/roles/enforcement-policies),
+[Record and file sharing](https://docs.keeper.io/enterprise-guide/sharing/record-and-file-sharing),
+[KSM `secret` command](https://docs.keeper.io/keeperpam/secrets-manager/secrets-manager-command-line-interface/secret-command),
+[KSM `profile` command](https://docs.keeper.io/keeperpam/secrets-manager/secrets-manager-command-line-interface/profile-command),
+[KSM `sync` command](https://docs.keeper.io/keeperpam/secrets-manager/secrets-manager-command-line-interface/sync-command),
+[Python SDK](https://docs.keeper.io/keeperpam/secrets-manager/developer-sdk-library/python-sdk),
+[Session recording](https://docs.keeper.io/keeperpam/privileged-access-manager/session-recording-and-playback),
+[KeeperAI](https://docs.keeper.io/keeperpam/privileged-access-manager/keeperai),
+[JIT access](https://docs.keeper.io/keeperpam/privileged-access-manager/just-in-time-access-jit),
+[Discovery](https://docs.keeper.io/keeperpam/privileged-access-manager/discovery),
+[Event reporting](https://docs.keeper.io/enterprise-guide/event-reporting),
+[Compliance reports](https://docs.keeper.io/enterprise-guide/compliance-reports),
+[Stay logged in](https://docs.keeper.io/user-guides/tips-and-tricks/stay-logged-in).
+
 Harness sources:
 [oh-my-pi provider config](https://docs.llmgateway.io/guides/oh-my-pi),
 [Grok Build config](https://docs.orq.ai/docs/ai-studio/integrations/code-assistants/grok-build),
@@ -240,6 +261,45 @@ nice to have.
 | A15 | **Unused / stale key report**: last used, age, never-used, over-scoped bindings | Least privilege over time | M | P9.6 |
 | A16 | **Local PKI and certificate tracking**: issue dev certs, track expiry | Keeper stores certs; Vault issues them | L | P10.10 |
 | A17 | **Workload identity for servers/CI**: TPM-attested machine enrolment, SPIFFE SVIDs | Solves "secret zero" without a bootstrap token in env | L | P10.11 |
+
+### 2.7 Found on the 2026-10-05 re-check
+
+Keeper features the tables above did not list. Everything here is built into
+kepr itself; none of it talks to Keeper. Rows marked ⛔ don't fit a
+local-first, single-user vault.
+
+| Keeper feature | kepr today | Plan |
+| --- | --- | --- |
+| Commander `search` (regex over titles and fields, JSON output) | ❌ `kepr list` only | P11.1 `kepr search` |
+| Deleted Items / `trash` (list, restore, purge) and a retention policy | ❌ delete is final | P11.2 soft delete + `kepr trash` |
+| `record-history` diff between revisions | 🟡 history lists versions | P11.3 field-level diff (names only, never values) |
+| `find-duplicate --merge` | 🟡 health flags reuse | P11.4 `kepr dupes [--merge]` |
+| Shortcuts / `ln` (one record under several names) | ❌ | P11.5 `kepr ln ALIAS NAME` |
+| Linked records (card ↔ address, PAM credential links) | ❌ | P11.6 `ref` fields resolved in the daemon |
+| Custom record types, `record-type-info`, load/download types, change type / `convert` | 🟡 7 built-in types | P11.7 user type files + `kepr record convert` |
+| Field options: required, masked text, hidden, multi-line; `ksm secret template`, add from file / clone | 🟡 | P11.8 field flags, `kepr record template`, `--from-file`, `--clone` |
+| `delete-all` | ❌ | P11.9 `kepr delete --all --yes` |
+| `verify-records`, `verify-shared-folders` | ❌ | P11.10 `kepr doctor --verify` |
+| `aging-report`, `password-report` (configurable complexity rules) | 🟡 health's fixed "old" flag | P11.11 `kepr health --period`, `--policy` |
+| Domain-specific generator rules (Record Passwords policy) | ❌ | P5.6 generator profiles keyed by host or record type |
+| Logout timer / auto-lock on inactivity | 🟡 lock on sleep and screen lock | P11.12 idle lock |
+| Self-destruct after failed logins | ❌ | P11.13 unlock backoff + opt-in wipe |
+| Re-authentication before revealing or copying | 🟡 polkit consent, FIDO2 | P11.14 `requires_reauth` (passphrase) |
+| Share requests / contacts, QR delivery, view-window self-destruct, share reports | 🟡 `kepr share` | P11.15 contacts with pinned keys, `--qr`, view window, `kepr share report` |
+| Granular share permissions, Share Admin role | ❌ | ⛔ until team mode (P6.1) |
+| KSM profiles (`ksm profile`, several configs) | ❌ one store per user | P11.16 `kepr --profile NAME` |
+| `ksm sync --dry-run`, mapping file, `--preserve-missing`; `aws/azure/gcp-secrets-import` | 🟡 one key per sync call | P11.17 sync map files, dry-run diff, bulk import |
+| `run-batch` | ❌ | P11.18 `kepr batch FILE` |
+| Commander service mode (REST, command allowlist, API key, rate limits) | 🟡 ESO provider only | P11.19 `kepr serve` on a Unix socket or loopback, allowlist + token |
+| `whoami` / `login-status` | 🟡 `kepr status` | P11.24 richer `kepr status` |
+| Discovery rules (add / ignore / prompt) | 🟡 `kepr discover` asks once | P11.20 `discover.toml` rules |
+| SSH key rotation (push new key to `authorized_keys`) | ❌ | P11.21 `kepr ssh rotate` |
+| `pam tunnel tail` (watch a live session's log) | ❌ | P11.22 `kepr agent logs` |
+| BreachWatch ignore status | ❌ | P11.23 `kepr health --ignore` |
+| Text session recordings replayable with `scriptreplay`; KeeperAI summaries | ❌ | P7.3 journal export; summaries ⛔ (needs an LLM) |
+| JIT privilege elevation (add to a group or role for the session) | ❌ | P7.4 Postgres `GRANT`/`REVOKE` around a gate session |
+| ARAM alert throttling, saved report filters | ❌ | P7.6 |
+| Email delivery of shares, SCIM, MSP, `credential-provision`, `user-report` | ❌ | ⛔ enterprise tenancy or a mail service |
 
 ---
 
@@ -664,6 +724,8 @@ small model can implement them one at a time, are in
 - P1.7 systemd units: `kepr-gate.service` with its own `DynamicUser`-style
   system user, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, no access
   to the vault directory.
+- P1.8 Landlock rules in the agent sandbox on top of the hiding mounts
+  (the shipped sandbox uses namespaces, mounts and seccomp only).
 - Acceptance: an e2e test runs a scripted "malicious agent" in a session that
   tries `env`, `/proc/*/environ`, `/proc/*/fd/*`, reading the vault dir,
   `ptrace` on the gate, a direct TCP connection to the upstream, and sending
@@ -809,6 +871,37 @@ can't misuse it quietly either". P9.1–P9.3 should ship right after P1.
 - P10.9 Clipboard hygiene (A10).
 - P10.10 Local PKI: issue development certificates, track expiry (A16).
 - P10.11 Workload identity: TPM-attested machine enrolment, SPIFFE SVIDs (A17).
+
+### P11: Keeper re-check (2026-10-05)
+
+From section 2.7. All local, all inside kepr.
+
+- P11.1 `kepr search` over names, tags, folders and non-secret fields.
+- P11.2 Soft delete into a trash with a retention period; `kepr trash`.
+- P11.3 `kepr history NAME --diff` (which fields changed, never values).
+- P11.4 `kepr dupes [--merge]`.
+- P11.5 Aliases: `kepr ln ALIAS NAME`.
+- P11.6 Linked records: `ref` fields that point at another record.
+- P11.7 User-defined record types and `kepr record convert`.
+- P11.8 Field options, `kepr record template`, `record add --from-file|--clone`.
+- P11.9 `kepr delete --all --yes`.
+- P11.10 `kepr doctor --verify`: decrypt every credential, check meta and
+  history consistency.
+- P11.11 `kepr health --period DAYS` and `--policy` complexity rules.
+- P11.12 Idle auto-lock of a passphrase-protected store.
+- P11.13 Unlock backoff and an opt-in wipe after N failed unlocks.
+- P11.14 `requires_reauth`: the passphrase again before a reveal.
+- P11.15 Share contacts with pinned keys, QR output, a view window on
+  received shares, and `kepr share report`.
+- P11.16 Profiles: `kepr --profile NAME` selects a separate store and socket.
+- P11.17 Sync map files, `--dry-run` diffs and bulk import from cloud stores.
+- P11.18 `kepr batch FILE`.
+- P11.19 `kepr serve`: a local REST API with a command allowlist and a token.
+- P11.20 `discover.toml` rules (add / ignore / ask).
+- P11.21 `kepr ssh rotate`.
+- P11.22 `kepr agent logs`.
+- P11.23 Persistent ignores for health and breach findings.
+- P11.24 `kepr status` reports lock state, mode, profile and running gates.
 
 ---
 
