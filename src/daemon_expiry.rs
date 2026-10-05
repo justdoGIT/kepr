@@ -272,6 +272,7 @@ fn spawn_sweeper_with_interval(versions: Arc<VersionState>, interval: Duration) 
             thread::sleep(interval);
             let now = expiry::now_unix();
             let dir = store::store_dir();
+            crate::daemon_store::sweep_trash(now); // T11.2: before the TTL pass
             let _ = sweep_once(&dir, now, Some(&versions));
         })
         .expect("spawn kepr-expiry thread");

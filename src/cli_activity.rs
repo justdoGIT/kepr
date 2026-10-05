@@ -75,7 +75,7 @@ impl CliActivity {
             "set" => cli_cmds::cmd_set(args),
             "get" => cli_cmds::cmd_get(args),
             "list" => cli_cmds::cmd_list(args),
-            "delete" => cli_cmds::cmd_delete(args),
+            "delete" => crate::cli_store::cmd_delete(args), // T11.2: trash / --force
             "check" => cli_cmds::cmd_check(args),
             "lock" => cli_cmds::cmd_lock(args),
             "unlock" => cli_cmds::cmd_unlock(args),

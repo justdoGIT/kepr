@@ -51,6 +51,9 @@ pub struct CredMeta {
     pub tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub folder: Option<String>,
+    /// T11.2: on a trash entry (`NAME~t<unix>`): when it was deleted.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub trashed_at: Option<u64>,
     // batch: records
     // batch: share
     // batch: sync

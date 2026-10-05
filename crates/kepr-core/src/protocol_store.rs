@@ -1,5 +1,5 @@
 // protocol_store.rs — wire types of the `store` ticket batch: tags and
-// folders (T5.01), search (T11.1). Wrapped by `Request::Store` /
+// folders (T5.01), search (T11.1), trash (T11.2). Wrapped by `Request::Store` /
 // `Response::Store`, which are `#[serde(untagged)]` and tried after every
 // tagged variant, so the `cmd` / `kind` names here must not repeat one in
 // protocol.rs.
@@ -24,6 +24,18 @@ pub enum StoreRequest {
     /// T11.1: substring or `/regex/` over names, tags, folders, record
     /// types and non-secret record fields.
     Search { pattern: String },
+    /// T11.2: the caller's trash.
+    TrashList,
+    /// T11.2: put the newest trashed `name` back (refused if it exists).
+    TrashRestore { name: String },
+    /// T11.2: drop `name`'s trash entries, or every entry.
+    TrashPurge {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// T11.2: `rm --force`: delete at once, skipping the trash. Answered
+    /// with `Response::DeleteOk`.
+    DeleteNow { name: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,6 +51,30 @@ pub enum StoreResponse {
     SearchOk {
         hits: Vec<SearchHit>,
     },
+    TrashListOk {
+        items: Vec<TrashItem>,
+    },
+    TrashRestoreOk {
+        name: String,
+    },
+    TrashPurgeOk {
+        purged: usize,
+    },
+}
+
+/// One trash entry (no value).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrashItem {
+    pub name: String,
+    /// `YYYY-MM-DD HH:MM` UTC.
+    pub trashed_at: String,
+    /// When the sweeper deletes it for good.
+    pub purge_at: String,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_type: Option<String>,
 }
 
 /// One `kepr search` result: the credential and what matched
@@ -101,6 +137,36 @@ mod tests {
                 matched: vec!["name".into()],
             }],
         }));
+    }
+
+    #[test]
+    fn trash_round_trips() {
+        for (r, cmd) in [
+            (StoreRequest::TrashList, "trash_list"),
+            (
+                StoreRequest::TrashRestore { name: "A".into() },
+                "trash_restore",
+            ),
+            (StoreRequest::TrashPurge { name: None }, "trash_purge"),
+            (StoreRequest::DeleteNow { name: "A".into() }, "delete_now"),
+        ] {
+            assert_eq!(req_round_trip(Request::Store(r))["cmd"], json!(cmd));
+        }
+        let item = TrashItem {
+            name: "A".into(),
+            trashed_at: "2026-01-01 00:00".into(),
+            purge_at: "2026-01-31 00:00".into(),
+            size: 40,
+            sealed: Some(true),
+            record_type: None,
+        };
+        for r in [
+            StoreResponse::TrashListOk { items: vec![item] },
+            StoreResponse::TrashRestoreOk { name: "A".into() },
+            StoreResponse::TrashPurgeOk { purged: 2 },
+        ] {
+            resp_round_trip(Response::Store(r));
+        }
     }
 
     #[test]
