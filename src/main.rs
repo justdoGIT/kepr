@@ -74,6 +74,7 @@ mod cli_store;
 mod cli_gatex;
 // batch: aws
 // batch: eco
+mod cli_eco;
 // batch: platform
 // batch: session
 // end of batches

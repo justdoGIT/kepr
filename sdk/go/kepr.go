@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -145,21 +146,34 @@ type SetOptions struct {
 	Generate        string // hex | base62 | pass | uuid | words (when value is empty)
 	TTLSecs         uint64
 	RequiresConsent bool
+	RequiresFIDO2   bool
 }
 
-// Set stores value (or generates one when value is empty).
+// GenerateKinds are the value shapes the daemon can generate.
+var GenerateKinds = []string{"hex", "base62", "pass", "uuid", "words"}
+
+// Set stores value, or has the daemon generate one (kind o.Generate,
+// default hex) when value is empty. A generated value is never sent back.
 func (c *Client) Set(name, value string, o SetOptions) error {
 	n, err := upper(name)
 	if err != nil {
 		return err
 	}
 	req := map[string]any{"cmd": "set", "name": n}
-	if value != "" {
+	switch {
+	case value != "" && o.Generate != "":
+		return &Error{"pass a value or Generate, not both"}
+	case value != "":
 		req["value"] = value
-	} else if o.Generate != "" {
-		req["generate"] = o.Generate
-	} else {
-		req["generate"] = "hex"
+	default:
+		kind := o.Generate
+		if kind == "" {
+			kind = "hex"
+		}
+		if !slices.Contains(GenerateKinds, kind) {
+			return &Error{"Generate must be one of " + strings.Join(GenerateKinds, ", ")}
+		}
+		req["generate"] = kind
 	}
 	if o.TTLSecs > 0 {
 		req["ttl_secs"] = o.TTLSecs
@@ -167,8 +181,17 @@ func (c *Client) Set(name, value string, o SetOptions) error {
 	if o.RequiresConsent {
 		req["requires_consent"] = true
 	}
+	if o.RequiresFIDO2 {
+		req["requires_fido2"] = true
+	}
 	_, err = c.expect(req, "set_ok")
 	return err
+}
+
+// Generate has the daemon generate and store a value of kind.
+func (c *Client) Generate(name, kind string, o SetOptions) error {
+	o.Generate = kind
+	return c.Set(name, "", o)
 }
 
 // Delete removes name.
