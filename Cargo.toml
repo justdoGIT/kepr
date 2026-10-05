@@ -109,6 +109,15 @@ ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # T6.01: ML-KEM-768 (FIPS 203, RustCrypto) for the hybrid X25519 + ML-KEM
 # share envelopes (`kepr-pk2-…` / `kepr-share2-…`).
 ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
+# T7.16 FIPS mode: the daemon's AES-256-GCM / SHA-256 / HMAC through AWS-LC.
+# Optional, off by default. `--features fips` links AWS-LC's ordinary build;
+# add `aws-lc-rs/fips` for the FIPS 140-3 validated module (needs Go + CMake).
+aws-lc-rs = { version = "1.18", optional = true }
+
+[features]
+default = []
+# T7.16: route the daemon's crypto through aws-lc-rs (src/daemon_eco/crypto_fips.rs).
+fips = ["dep:aws-lc-rs"]
 
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git

@@ -180,6 +180,8 @@ pub enum Response {
     // batch: gate
     // batch: aws
     // batch: eco
+    #[serde(untagged)]
+    Eco(crate::protocol_eco::EcoResponse),
     // batch: platform
     // batch: session
     // end of batches

@@ -64,6 +64,7 @@ mod daemon_sharing;
 // batch: gate
 // batch: aws
 // batch: eco
+mod daemon_eco;
 // batch: platform
 // batch: session
 // end of batches

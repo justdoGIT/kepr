@@ -465,6 +465,7 @@ pub fn cmd_status(a: &Args) -> Response {
             Response::Err { error } => err(error),
             _ => err("unexpected response"),
         }
+        crate::cli_eco::print_status_crypto(&resp); // T7.16
     }
     resp
 }

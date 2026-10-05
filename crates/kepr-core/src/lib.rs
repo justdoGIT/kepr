@@ -45,6 +45,7 @@ pub mod mysql_handshake;
 pub mod mysql_wire;
 // batch: aws
 // batch: eco
+pub mod protocol_eco;
 // batch: platform
 // batch: session
 // end of batches

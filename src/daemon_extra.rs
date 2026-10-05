@@ -91,6 +91,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         // batch: gate
         // batch: aws
         // batch: eco
+        Request::Eco(r) => crate::daemon_eco::dispatch(uid, peer_pid, username, r),
         // batch: platform
         // batch: session
         // end of batches
