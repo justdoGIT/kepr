@@ -762,6 +762,8 @@ small model can implement them one at a time, are in
 - P4.1 Vault image format (slots, noise fill, AEAD, Merkle root, journal),
   with proptests for crash safety and tamper detection.
 - P4.2 Record keys + crypto-shred delete; `kepr vault init | migrate | verify`.
+  Every store feature (trash, aliases, folders, attachments) works on the
+  image as on the per-file store.
 - P4.3 TPM2 sealer (feature `tpm2`, `tss-esapi`): PCR policy + PIN, salted
   sessions, NV monotonic counter for anti-rollback.
 - P4.4 FIDO2 `hmac-secret` as an optional second factor for the KEK.
