@@ -56,6 +56,7 @@ mod version_state;
 // batch: store
 // batch: records
 // batch: share
+mod daemon_sharing;
 // batch: sync
 // batch: policy
 // batch: gate
