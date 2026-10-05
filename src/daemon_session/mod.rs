@@ -1,7 +1,8 @@
 // daemon_session/ — the `session` ticket batch, daemon side: idle
-// auto-lock (T11.12).
+// auto-lock (T11.12), unlock backoff and opt-in wipe (T11.13).
 
 pub mod idle;
+pub mod unlock_guard;
 
 use crate::audit::{self, AuditEvent, AuditResult};
 

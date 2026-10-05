@@ -13,6 +13,9 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use zeroize::Zeroizing;
 
 const MAGIC: &[u8; 9] = b"kepr_pw1\n";
+/// T11.13: what replaces the envelope after an opt-in wipe. Never a valid
+/// envelope; a restarted daemon stays locked until a recovery restore.
+pub const WIPED: &[u8] = b"kepr_pw_wiped\n";
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
