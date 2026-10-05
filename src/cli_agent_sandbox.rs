@@ -17,11 +17,11 @@
 
 use std::ffi::CString;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::net::TcpListener;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
+use crate::cli_sandbox_relay as relay;
 use crate::cli_sandbox_seccomp as seccomp;
 use crate::cli_sandbox_sys as sys;
 
@@ -30,6 +30,8 @@ pub struct Plan {
     pub envp: Vec<CString>,
     pub hide: Vec<CString>,
     pub gate_port: u16,
+    /// Database and tunnel ports (T7.03), relayed like the gate's port.
+    pub extra_ports: Vec<u16>,
     pub isolate_net: bool,
     filter: Vec<libc::sock_filter>,
 }
@@ -85,9 +87,19 @@ impl Plan {
             envp: cstrings(env.into_iter().map(|(k, v)| format!("{k}={v}")))?,
             hide,
             gate_port,
+            extra_ports: Vec::new(),
             isolate_net,
             filter: seccomp::program(),
         })
+    }
+}
+
+impl Plan {
+    /// The gate's port, then the database and tunnel ports.
+    fn relay_ports(&self) -> Vec<u16> {
+        std::iter::once(self.gate_port)
+            .chain(self.extra_ports.iter().copied())
+            .collect()
     }
 }
 
@@ -214,41 +226,28 @@ fn exec_harness(plan: &Plan) -> ! {
     ))
 }
 
-fn acceptor(listener: TcpListener, relay: UnixStream) -> ! {
-    // SAFETY: prctl with a signal number; die with our parent (pid 1).
-    unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) };
-    for conn in listener.incoming().flatten() {
-        if sys::send_fd(&relay, conn.as_raw_fd()).is_err() {
-            break;
-        }
-    }
-    // SAFETY: _exit after fork.
-    unsafe { libc::_exit(0) }
-}
-
 /// pid 1 of the sandbox: set up mounts, start the acceptor, run and reap.
 fn init(plan: &Plan, relay: Option<UnixStream>) -> ! {
     if let Err(e) = sys::setup_mounts(&plan.hide) {
         die(&e);
     }
-    let listener = if plan.isolate_net {
-        match TcpListener::bind(("127.0.0.1", plan.gate_port)) {
-            Ok(l) => Some(l),
-            Err(e) => die(&format!("listen inside the sandbox: {e}")),
-        }
+    // One acceptor per relayed port; each hands connections to the relay.
+    let ports = if plan.isolate_net {
+        plan.relay_ports()
     } else {
-        None
+        Vec::new()
     };
-    if let (Some(l), Some(r)) = (listener.as_ref(), relay.as_ref()) {
-        let (l, r) = (
-            l.try_clone().unwrap_or_else(|e| die(&e.to_string())),
-            r.try_clone().unwrap_or_else(|e| die(&e.to_string())),
-        );
+    for port in ports {
+        let l = TcpListener::bind(("127.0.0.1", port))
+            .unwrap_or_else(|e| die(&format!("listen inside the sandbox: {e}")));
+        let r = relay.as_ref().map(|r| r.try_clone());
+        let Some(Ok(r)) = r else {
+            die("sandbox relay missing")
+        };
         if fork() == 0 {
-            acceptor(l, r);
+            relay::acceptor(l, r);
         }
     }
-    drop(listener);
     drop(relay);
     let harness = fork();
     if harness == 0 {
@@ -258,30 +257,6 @@ fn init(plan: &Plan, relay: Option<UnixStream>) -> ! {
     let code = wait_code(harness);
     // SAFETY: _exit; the kernel kills the rest of the PID namespace.
     unsafe { libc::_exit(code) }
-}
-
-fn relay_loop(relay: UnixStream, gate_port: u16) {
-    while let Ok(Some(fd)) = sys::recv_fd(&relay) {
-        // SAFETY: recv_fd handed us ownership of a connected TCP socket.
-        let inner = unsafe { TcpStream::from_raw_fd(fd) };
-        std::thread::spawn(move || {
-            let Ok(mut outer) = TcpStream::connect(("127.0.0.1", gate_port)) else {
-                return;
-            };
-            let (Ok(mut from_sandbox), Ok(mut from_gate)) = (inner.try_clone(), outer.try_clone())
-            else {
-                return;
-            };
-            let up = std::thread::spawn(move || {
-                let _ = std::io::copy(&mut from_sandbox, &mut outer);
-                let _ = outer.shutdown(std::net::Shutdown::Write);
-            });
-            let mut inner = inner;
-            let _ = std::io::copy(&mut from_gate, &mut inner);
-            let _ = inner.shutdown(std::net::Shutdown::Write);
-            let _ = up.join();
-        });
-    }
 }
 
 /// Run the harness sandboxed; exits the process with its status.
@@ -327,8 +302,8 @@ pub fn run(plan: Plan) -> ! {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
     if let Some(r) = relay_host {
-        let port = plan.gate_port;
-        std::thread::spawn(move || relay_loop(r, port));
+        let ports = plan.relay_ports();
+        std::thread::spawn(move || relay::relay_loop(r, ports));
     }
     std::process::exit(wait_code(child))
 }
@@ -342,6 +317,14 @@ mod tests {
         for d in hide_dirs() {
             assert!(d.is_dir(), "{}", d.display());
         }
+    }
+
+    #[test]
+    fn relays_the_gate_port_then_database_and_tunnel_ports() {
+        let mut plan = Plan::new(&["true".into()], vec![], 7000, true).unwrap();
+        assert_eq!(plan.relay_ports(), vec![7000]);
+        plan.extra_ports = vec![7001, 7002];
+        assert_eq!(plan.relay_ports(), vec![7000, 7001, 7002]);
     }
 
     #[test]

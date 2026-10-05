@@ -1,7 +1,7 @@
-//! Connection from the gate to the PostgreSQL server (P7.1): plain TCP
-//! only when the record says `sslmode=disable`; otherwise TLS after an
-//! SSLRequest, verified against the compiled-in roots plus the record's
-//! optional `ca_pem` (managed databases often use their own CA).
+//! Connections from the gate to database servers (P7.1): plain TCP only
+//! when the record says `sslmode=disable`; otherwise TLS (for PostgreSQL
+//! after an SSLRequest), verified against the compiled-in roots plus the
+//! record's optional `ca_pem` (managed databases often use their own CA).
 
 use std::sync::Arc;
 
@@ -14,10 +14,14 @@ use kepr_core::gate_protocol::DbTarget;
 pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
-pub async fn upstream(t: &DbTarget, sslmode: &str, ca_pem: &str) -> Result<Box<dyn Io>, String> {
-    let mut tcp = TcpStream::connect((t.host.as_str(), t.port))
+pub async fn connect(t: &DbTarget) -> Result<TcpStream, String> {
+    TcpStream::connect((t.host.as_str(), t.port))
         .await
-        .map_err(|e| format!("cannot reach the database: {e}"))?;
+        .map_err(|e| format!("cannot reach the database: {e}"))
+}
+
+pub async fn upstream(t: &DbTarget, sslmode: &str, ca_pem: &str) -> Result<Box<dyn Io>, String> {
+    let mut tcp = connect(t).await?;
     if sslmode == "disable" {
         return Ok(Box::new(tcp));
     }
@@ -29,6 +33,12 @@ pub async fn upstream(t: &DbTarget, sslmode: &str, ca_pem: &str) -> Result<Box<d
             "the database does not offer TLS (set sslmode=disable to allow plaintext)".into(),
         );
     }
+    tls_client(tcp, &t.host, ca_pem).await
+}
+
+/// TLS over an open connection, verifying `host` against the compiled-in
+/// roots plus `ca_pem`.
+pub async fn tls_client(tcp: TcpStream, host: &str, ca_pem: &str) -> Result<Box<dyn Io>, String> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     for der in pem_certs(ca_pem) {
@@ -43,7 +53,7 @@ pub async fn upstream(t: &DbTarget, sslmode: &str, ca_pem: &str) -> Result<Box<d
     .map_err(|e| e.to_string())?
     .with_root_certificates(roots)
     .with_no_client_auth();
-    let name = rustls::pki_types::ServerName::try_from(t.host.clone())
+    let name = rustls::pki_types::ServerName::try_from(host.to_string())
         .map_err(|_| "invalid database host name")?;
     let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg))
         .connect(name, tcp)

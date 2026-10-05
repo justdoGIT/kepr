@@ -130,6 +130,7 @@ pub fn cmd_run(
     mode: SandboxMode,
     isolate_net: bool,
     limits: GateLimits,
+    session: &crate::cli_gatex::SessionOpts,
 ) -> Response {
     let adapter = match cli_agent_adapters::lookup(harness) {
         Ok(a) => a,
@@ -145,12 +146,15 @@ pub fn cmd_run(
         routes.extend(crate::cli_agent_egress::extra_routes(&routes, &creds));
         let db = crate::cli_agent_db::routes(&routes, &creds);
         routes.extend(db);
+        let tunnels = crate::cli_gatex::tunnel::routes(&routes, &session.tunnels)?;
+        routes.extend(tunnels);
         Ok(routes)
     });
     let routes = match routes {
         Ok(r) => r,
         Err(e) => return Response::fail(e),
     };
+    let all_routes = routes.clone();
     let req = Request::StartGate {
         routes,
         port: port.or(adapter.port),
@@ -184,7 +188,12 @@ pub fn cmd_run(
         ));
     }
     let mut env = build_env(adapter, gate_port, &placeholders, inherited.into_iter());
-    env.extend(crate::cli_agent_db::env(&placeholders, &db_ports));
+    env.extend(crate::cli_agent_db::env(
+        &all_routes,
+        &placeholders,
+        &db_ports,
+    ));
+    env.extend(crate::cli_gatex::tunnel::env(&db_ports));
     // Lets harness plugins (plugins/omp, plugins/grok) find the gate.
     env.push((
         "KEPR_GATE_URL".into(),
@@ -204,7 +213,11 @@ pub fn cmd_run(
     };
     if sandbox {
         match crate::cli_agent_sandbox::Plan::new(argv, env, gate_port, isolate_net) {
-            Ok(plan) => crate::cli_agent_sandbox::run(plan),
+            Ok(mut plan) => {
+                // Database and tunnel ports are relayed into an isolated netns too.
+                plan.extra_ports = db_ports.values().copied().collect();
+                crate::cli_agent_sandbox::run(plan)
+            }
             Err(e) => return Response::fail(e),
         }
     }

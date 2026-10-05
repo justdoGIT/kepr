@@ -6,7 +6,8 @@
 //! placeholder must be valid, limits and DLP apply, and the real key is
 //! added toward the real host over TLS with the gate's compiled-in roots.
 //! Other hosts are tunnelled byte-for-byte when the session allows it,
-//! and refused under `--isolate-net`.
+//! and refused under `--isolate-net` unless they are one of the
+//! session's `--tunnel` targets (T7.03).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -81,7 +82,7 @@ pub async fn connect(state: Arc<State>, req: Request<Incoming>) -> Response<Body
         return ok();
     }
 
-    if !state.tunnel {
+    if !state.tunnel && !crate::tunnel::allowed(&state, &host, port) {
         log(
             &state,
             &target,

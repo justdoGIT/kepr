@@ -491,6 +491,7 @@ mod tests {
                 tags: None,
                 folder: None,
                 alias_of: None,
+                db_kind: None,
             }],
             count: 1,
         };
