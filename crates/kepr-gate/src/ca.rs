@@ -100,7 +100,7 @@ impl SessionCa {
         let leaf = p.signed_by(&key, &self.issuer).map_err(err)?;
         let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
         let mut cfg =
-            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            ServerConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
                 .with_safe_default_protocol_versions()
                 .map_err(err)?
                 .with_no_client_auth()
@@ -132,7 +132,7 @@ mod tests {
         let mut roots = RootCertStore::empty();
         roots.add(ca.ca_der.clone()).unwrap();
         Arc::new(
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            ClientConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
                 .with_safe_default_protocol_versions()
                 .unwrap()
                 .with_root_certificates(roots)
@@ -185,16 +185,15 @@ mod tests {
         // Forge a leaf for another host with the CA key itself: clients
         // must still reject it, because the CA is constrained.
         let (leaf, key) = ca.leaf_for_any("evil.example");
-        let cfg =
-            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_no_client_auth()
-                .with_single_cert(
-                    vec![leaf, ca.ca_der.clone()],
-                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
-                )
-                .unwrap();
+        let cfg = ServerConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf, ca.ca_der.clone()],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+            )
+            .unwrap();
         assert!(!handshake(Arc::new(cfg), client(&ca), "evil.example").await);
     }
 }

@@ -41,6 +41,7 @@ pub mod ssh_wire;
 // batch: gate
 // batch: aws
 // batch: eco
+pub mod protocol_eco;
 // batch: platform
 // batch: session
 // end of batches

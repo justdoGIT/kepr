@@ -21,6 +21,7 @@ mod routes;
 mod scram;
 mod service;
 mod session;
+mod tls_provider;
 mod vault;
 
 use std::process::ExitCode;

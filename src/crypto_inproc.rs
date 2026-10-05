@@ -48,13 +48,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::Aes256Gcm;
 use zeroize::Zeroizing;
 
 use kepr_core::generate::ZeroString;
 
 use crate::crypto::Backend;
+use crate::daemon_eco::cipher;
 use crate::store;
 use crate::version_state::VersionState;
 
@@ -144,22 +143,23 @@ impl InProcBackend {
         out
     }
 
-    fn cipher(&self) -> Result<Aes256Gcm, String> {
+    /// A wiped-on-drop copy of the master key; AEAD runs through the
+    /// `daemon_eco::cipher` seam (RustCrypto, or aws-lc-rs with `fips`).
+    fn key(&self) -> Result<Zeroizing<[u8; 32]>, String> {
         let key = self
             .master_key
             .read()
             .map_err(|_| "master-key lock poisoned".to_string())?;
-        let key = key
-            .as_ref()
-            .ok_or_else(|| "credential store is locked".to_string())?;
-        Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "invalid master key".to_string())
+        key.as_ref()
+            .map(|k| Zeroizing::new(**k))
+            .ok_or_else(|| "credential store is locked".to_string())
     }
 }
 
 impl Backend for InProcBackend {
     fn encrypt(&self, uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
         let cred_name = store::to_cred_name(uid, name);
-        let cipher = self.cipher()?;
+        let key = self.key()?;
         let aad = Self::aad(uid, name);
         let cred_path = self.cred_path(uid, name);
 
@@ -183,14 +183,7 @@ impl Backend for InProcBackend {
                 plaintext.extend_from_slice(&counter.to_le_bytes());
                 plaintext.extend_from_slice(value);
 
-                let ciphertext = cipher
-                    .encrypt(
-                        &nonce_bytes.into(),
-                        Payload {
-                            msg: &plaintext,
-                            aad: &aad,
-                        },
-                    )
+                let ciphertext = cipher::seal(&key[..], &nonce_bytes, &aad, &plaintext)
                     .map_err(|_| "encryption failed".to_string())?;
 
                 let mut out = Vec::with_capacity(MAGIC_LEN + NONCE_LEN + ciphertext.len());
@@ -232,19 +225,10 @@ impl Backend for InProcBackend {
         let ciphertext = &blob[header_len..];
         let aad = Self::aad(uid, name);
 
-        let cipher = self.cipher()?;
+        let key = self.key()?;
         // Zeroizing: the decrypted secret must not linger in freed heap.
-        let plaintext = Zeroizing::new(
-            cipher
-                .decrypt(
-                    &nonce_bytes.into(),
-                    Payload {
-                        msg: ciphertext,
-                        aad: &aad,
-                    },
-                )
-                .map_err(|_| "decryption failed: authentication".to_string())?,
-        );
+        let plaintext = cipher::open(&key[..], &nonce_bytes, &aad, ciphertext)
+            .map_err(|_| "decryption failed: authentication".to_string())?;
 
         // Split off the counter (v2) or treat as 0 (v1) BEFORE
         // building the ZeroString, so the secret bytes never share a
@@ -351,6 +335,35 @@ mod tests {
         let versions = Arc::new(VersionState::load(state_path).expect("load fresh state"));
         let backend = InProcBackend::with_store_dir([0xAB; 32], dir.path().to_owned(), versions);
         (backend, dir)
+    }
+
+    /// T7.16: the file format is the same whichever suite is active. A v2
+    /// file written by the default build's RustCrypto opens through the
+    /// backend (aws-lc-rs under `--features fips`), and the backend's own
+    /// files open with RustCrypto.
+    #[test]
+    fn files_cross_between_default_and_fips_builds() {
+        use crate::daemon_eco::cipher::{CipherSuite, RustCrypto};
+        let (b, dir) = fresh_backend();
+        let key = [0xAB; 32];
+        let aad = InProcBackend::aad(TEST_UID, "CROSS");
+        let nonce = [3u8; NONCE_LEN];
+        let mut plain = 1u64.to_le_bytes().to_vec();
+        plain.extend_from_slice(b"from-default-build");
+        let ct = RustCrypto::seal(&key, &nonce, &aad, &plain).unwrap();
+        let blob = [MAGIC_V2, &nonce, &ct].concat();
+        let path = dir.path().join(store::to_cred_name(TEST_UID, "CROSS"));
+        fs::write(&path, &blob).unwrap();
+        assert_eq!(
+            b.decrypt(TEST_UID, "CROSS").unwrap().as_str(),
+            "from-default-build"
+        );
+
+        b.encrypt(TEST_UID, "CROSS", b"from-active-suite").unwrap();
+        let blob = fs::read(&path).unwrap();
+        let nonce: [u8; NONCE_LEN] = blob[MAGIC_LEN..MAGIC_LEN + NONCE_LEN].try_into().unwrap();
+        let plain = RustCrypto::open(&key, &nonce, &aad, &blob[MAGIC_LEN + NONCE_LEN..]).unwrap();
+        assert_eq!(&plain[COUNTER_LEN..], b"from-active-suite");
     }
 
     #[test]
@@ -516,19 +529,11 @@ mod tests {
 
         // Manually craft a v1 file: kepr_v1 magic + nonce + AES-GCM
         // ciphertext over the plaintext bytes (no counter prefix).
-        let cipher = b.cipher().unwrap();
+        let key = b.key().unwrap();
         let mut nonce_bytes = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce_bytes).unwrap();
         let aad = InProcBackend::aad(TEST_UID, "LEGACY");
-        let ciphertext = cipher
-            .encrypt(
-                &nonce_bytes.into(),
-                Payload {
-                    msg: b"legacy-value",
-                    aad: &aad,
-                },
-            )
-            .unwrap();
+        let ciphertext = cipher::seal(&key[..], &nonce_bytes, &aad, b"legacy-value").unwrap();
         let mut blob = Vec::new();
         blob.extend_from_slice(MAGIC_V1);
         blob.extend_from_slice(&nonce_bytes);
@@ -554,19 +559,11 @@ mod tests {
         b.encrypt(TEST_UID, "DOWNGRADE", b"v2-secret").unwrap(); // state=1
 
         // Plant a syntactically-valid v1 file under the same cred-name.
-        let cipher = b.cipher().unwrap();
+        let key = b.key().unwrap();
         let mut nonce_bytes = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce_bytes).unwrap();
         let aad = InProcBackend::aad(TEST_UID, "DOWNGRADE");
-        let ciphertext = cipher
-            .encrypt(
-                &nonce_bytes.into(),
-                Payload {
-                    msg: b"old-secret",
-                    aad: &aad,
-                },
-            )
-            .unwrap();
+        let ciphertext = cipher::seal(&key[..], &nonce_bytes, &aad, b"old-secret").unwrap();
         let mut blob = Vec::new();
         blob.extend_from_slice(MAGIC_V1);
         blob.extend_from_slice(&nonce_bytes);

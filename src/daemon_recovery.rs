@@ -18,15 +18,13 @@
 // them, so it can't be used to swap the key of a working store. The
 // restored key is written under a new passphrase (Argon2id envelope).
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::Aes256Gcm;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
 use kepr_core::shamir;
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::audit::{self, AuditEvent, AuditResult};
+use crate::daemon_eco::cipher;
 use crate::{crypto, key_unlock, store};
 
 /// Same layout as crypto_inproc's files: magic(8) | nonce(12) | ct+tag.
@@ -34,9 +32,7 @@ const HEADER: usize = 8 + 12;
 
 /// Short public identifier of a master key, carried by every share.
 pub fn fingerprint(key: &[u8; 32]) -> String {
-    let d = Sha256::new_with_prefix(b"kepr-recovery-v1")
-        .chain_update(key)
-        .finalize();
+    let d = cipher::sha256(&[b"kepr-recovery-v1", key]);
     d[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -45,22 +41,11 @@ fn opens(key: &[u8; 32], uid: u32, name: &str, blob: &[u8]) -> bool {
     if blob.len() < HEADER + 16 || !blob.starts_with(b"kepr_v") {
         return false;
     }
-    let Ok(cipher) = Aes256Gcm::new_from_slice(key) else {
-        return false;
-    };
     let mut aad = uid.to_le_bytes().to_vec();
     aad.extend_from_slice(name.as_bytes());
     let nonce: [u8; 12] = blob[8..HEADER].try_into().expect("12-byte slice");
-    cipher
-        .decrypt(
-            &nonce.into(),
-            Payload {
-                msg: &blob[HEADER..],
-                aad: &aad,
-            },
-        )
-        .map(|p| drop(Zeroizing::new(p)))
-        .is_ok()
+    // The plaintext is Zeroizing and dropped at once; only the tag check counts.
+    cipher::open(key, &nonce, &aad, &blob[HEADER..]).is_ok()
 }
 
 /// (files the key opens, files checked) over the whole store.
@@ -202,6 +187,10 @@ pub fn handle_restore(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Written with RustCrypto directly: proves files from the default
+    // build open through the seam in either build.
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    use aes_gcm::Aes256Gcm;
 
     #[test]
     fn opens_only_with_the_right_key_and_binding() {

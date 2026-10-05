@@ -50,8 +50,8 @@ pub(crate) fn build_client(
     // Compiled-in roots only: never trust CA files or proxies from the
     // environment, which the agent may control.
     let b = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_provider_and_webpki_roots(rustls::crypto::ring::default_provider())
-        .expect("ring provider supports the default protocol versions");
+        .with_provider_and_webpki_roots(crate::tls_provider::provider())
+        .expect("the TLS provider supports the default protocol versions");
     let b = if allow_plain_http {
         b.https_or_http()
     } else {
@@ -594,13 +594,12 @@ mod tests {
         assert!(status.contains("200"), "{status}");
         let mut roots = rustls::RootCertStore::empty();
         roots.add(ca.ca_der()).unwrap();
-        let tls_cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+        let tls_cfg =
+            rustls::ClientConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
         let tls = tokio_rustls::TlsConnector::from(Arc::new(tls_cfg))
             .connect("api.anthropic.com".try_into().unwrap(), stream)
             .await

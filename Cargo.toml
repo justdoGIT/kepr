@@ -106,6 +106,15 @@ toml = { version = "1.1", default-features = false, features = ["parse", "serde"
 # rest of kepr's "pure-Rust crypto" stance. Used by sync_vault today;
 # future sync_aws / sync_gcp will add their own SDK deps.
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
+# T7.16 FIPS mode: the daemon's AES-256-GCM / SHA-256 / HMAC through AWS-LC.
+# Optional, off by default. `--features fips` links AWS-LC's ordinary build;
+# add `aws-lc-rs/fips` for the FIPS 140-3 validated module (needs Go + CMake).
+aws-lc-rs = { version = "1.18", optional = true }
+
+[features]
+default = []
+# T7.16: route the daemon's crypto through aws-lc-rs (src/daemon_eco/crypto_fips.rs).
+fips = ["dep:aws-lc-rs"]
 
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git

@@ -36,13 +36,12 @@ pub async fn upstream(t: &DbTarget, sslmode: &str, ca_pem: &str) -> Result<Box<d
             .add(der)
             .map_err(|_| "ca_pem holds an invalid certificate")?;
     }
-    let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .map_err(|e| e.to_string())?
-    .with_root_certificates(roots)
-    .with_no_client_auth();
+    let cfg =
+        rustls::ClientConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
     let name = rustls::pki_types::ServerName::try_from(t.host.clone())
         .map_err(|_| "invalid database host name")?;
     let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg))
