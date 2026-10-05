@@ -7,12 +7,14 @@
 // dispatch, emit framed JSON response. Connections are handled by a bounded
 // worker pool so a flood can't spawn unbounded threads.
 
+mod atomic_file;
 mod audit;
 mod audit_chain;
 mod crypto;
 mod crypto_inproc;
 mod daemon_audit;
 mod daemon_cache;
+mod daemon_credlock;
 mod daemon_expiry;
 mod daemon_extra;
 mod daemon_gate;
@@ -116,11 +118,11 @@ fn state_dir() -> std::path::PathBuf {
     }
 }
 
-fn master_key_path() -> std::path::PathBuf {
+pub(crate) fn master_key_path() -> std::path::PathBuf {
     state_dir().join("master.key")
 }
 
-fn protected_master_key_path() -> std::path::PathBuf {
+pub(crate) fn protected_master_key_path() -> std::path::PathBuf {
     state_dir().join("master.key.argon2id")
 }
 
@@ -350,7 +352,8 @@ fn handle_client(mut stream: UnixStream) {
 
     // The raw frame can hold a secret (Set value, Unlock password):
     // wipe it once parsed.
-    let buf = match read_frame(&mut stream, MAX_MSG_BYTES) {
+    let mut whole = daemon_socket::Deadline::new(&stream, timeout);
+    let buf = match read_frame(&mut whole, MAX_MSG_BYTES) {
         Ok(b) => zeroize::Zeroizing::new(b),
         Err(_) => return,
     };
@@ -442,22 +445,12 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
             label,
             credential_id,
             public_key_cose,
-        } => {
-            let r = fido2::register(uid, &label, &credential_id, &public_key_cose);
-            audit::log(&AuditEvent {
-                op: "fido2-register",
-                name: Some(&label),
-                uid,
-                username,
-                result: r
-                    .clone()
-                    .map_or_else(AuditResult::Fail, |()| AuditResult::Ok),
-            });
-            match r {
-                Ok(()) => Response::Fido2RegisterOk { credential_id },
-                Err(e) => Response::fail(e),
-            }
-        }
+        } => fido2::handle_register(
+            (uid, peer_pid, username),
+            &label,
+            &credential_id,
+            &public_key_cose,
+        ),
         Request::Fido2List => {
             audit::log(&AuditEvent {
                 op: "fido2-list",

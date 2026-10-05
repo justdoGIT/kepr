@@ -88,6 +88,8 @@ pub fn handle_get(
     }
 
     let upper = name.to_uppercase();
+    // Check and decrypt under one lock: a sealed `set` can't slip between.
+    let _lock = crate::daemon_credlock::lock(uid, &upper);
 
     // Phase 2 α + ε + η — pre-decrypt meta gate. A cred whose meta
     // says expired/consent-required/parse-failed must look on the
@@ -103,7 +105,7 @@ pub fn handle_get(
         // "credential unavailable". This lets the CLI transparently
         // initiate the FIDO2 ceremony.
         if reason.starts_with("fido2:") && fido2_assertion.is_none() {
-            let challenge = match crate::fido2::generate_challenge() {
+            let challenge = match crate::fido2::generate_challenge(uid, &upper) {
                 Ok(c) => c,
                 Err(e) => {
                     audit::log(&AuditEvent {
@@ -145,7 +147,7 @@ pub fn handle_get(
         // fall through to the decrypt path below.
         if reason.starts_with("fido2:") {
             if let Some(assertion) = fido2_assertion {
-                if let Err(e) = crate::fido2::verify_assertion(uid, assertion) {
+                if let Err(e) = crate::fido2::verify_assertion(uid, &upper, assertion) {
                     audit::log(&AuditEvent {
                         op: "get",
                         name: Some(&upper),

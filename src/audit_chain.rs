@@ -132,6 +132,7 @@ impl AuditChain {
         let state = match fs::metadata(&path) {
             Ok(_) => {
                 // Existing file — verify and recover state from it.
+                drop_torn_tail(&path)?;
                 let report = Self::verify(&path)?;
                 ChainState {
                     last_hash: report.last_hash,
@@ -219,8 +220,15 @@ impl AuditChain {
             .mode(0o640)
             .open(&self.path)
             .map_err(|e| format!("open audit chain: {e}"))?;
-        f.write_all(line.as_bytes())
-            .map_err(|e| format!("write audit chain: {e}"))?;
+        let before = f.metadata().map(|m| m.len()).ok();
+        if let Err(e) = f.write_all(line.as_bytes()) {
+            // A partial line (disk full) would make the next append land
+            // after garbage and the chain unreadable: cut it off.
+            if let Some(len) = before {
+                let _ = f.set_len(len);
+            }
+            return Err(format!("write audit chain: {e}"));
+        }
         // Update in-memory state ONLY after the disk write
         // succeeds. If the write failed we'd want a retry to
         // re-emit the same seq + prev_hash; advancing in-memory
@@ -306,21 +314,28 @@ fn compute_hash(prev_hash_hex: &str, canonical_bytes: &[u8]) -> Result<String, S
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
+    hex::encode(bytes)
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
-        return Err(format!("odd-length hex string: {s:?}"));
+    hex::decode(s).map_err(|e| format!("bad hex: {e}"))
+}
+
+/// A crash mid-append leaves a last line with no newline. It never
+/// verified (the write didn't finish), so drop it instead of refusing
+/// to start; every complete line is still checked by `verify`.
+fn drop_torn_tail(path: &Path) -> Result<(), String> {
+    let data = fs::read(path).map_err(|e| format!("read audit chain: {e}"))?;
+    if data.last().is_none_or(|b| *b == b'\n') {
+        return Ok(());
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("bad hex byte: {e}")))
-        .collect()
+    let keep = data.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    eprintln!("[kepr-daemon] audit chain: dropping a torn last line (incomplete write)");
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|f| f.set_len(keep as u64))
+        .map_err(|e| format!("repair audit chain: {e}"))
 }
 
 #[cfg(test)]
@@ -332,6 +347,20 @@ mod tests {
         let path = dir.path().join("audit.log");
         let chain = AuditChain::open(path).unwrap();
         (chain, dir)
+    }
+
+    #[test]
+    fn a_torn_last_line_is_dropped_on_open() {
+        let (chain, dir) = fresh_chain();
+        chain.append("set", Some("A"), 1, "u", "ok").unwrap();
+        chain.append("set", Some("B"), 1, "u", "ok").unwrap();
+        let path = dir.path().join("audit.log");
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(b"{\"seq\":3,\"timest").unwrap();
+        drop(f);
+        let reopened = AuditChain::open(path.clone()).unwrap();
+        reopened.append("get", Some("A"), 1, "u", "ok").unwrap();
+        assert_eq!(AuditChain::verify(&path).unwrap().entries, 3);
     }
 
     #[test]

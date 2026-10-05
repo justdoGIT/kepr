@@ -57,7 +57,8 @@ pub(crate) fn build_client(
     } else {
         b.https_only()
     };
-    let conn = b.enable_http1().enable_http2().build();
+    // HTTP/1.1 only: every provider serves it, and h2 would add ~400 KB.
+    let conn = b.enable_http1().build();
     Client::builder(hyper_util::rt::TokioExecutor::new()).build(conn)
 }
 

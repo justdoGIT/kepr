@@ -154,6 +154,17 @@ pub fn sweep_once(dir: &Path, now: u64, versions: Option<&Arc<VersionState>>) ->
             }
         };
 
+        // Re-check under the credential's lock: a `set` between the
+        // read above and here may have replaced the value (and its TTL).
+        let _lock = crate::daemon_credlock::lock(uid, &name_upper);
+        let still_expired = matches!(
+            expiry::read_meta(&meta_path),
+            Some(Ok(m)) if m.expires_at_unix.is_some_and(|t| t <= now)
+        );
+        if !still_expired {
+            continue;
+        }
+
         // Mirror what InProcBackend::delete does, but via the same
         // primitives the test harness can drive: tombstone the
         // version counter FIRST (so a post-restore replay of the

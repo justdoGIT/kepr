@@ -11,7 +11,7 @@
 // derived directly from a human password.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -19,7 +19,6 @@ use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
 const MASTER_KEY_LEN: usize = 32;
-const URANDOM_PATH: &str = "/dev/urandom";
 const SYSTEMD_CREDS_BIN: &str = "/usr/bin/systemd-creds";
 const KEY_TYPE: &str = "host";
 const SEALED_NAME: &str = "kepr-master-key";
@@ -29,9 +28,7 @@ const SEALED_NAME: &str = "kepr-master-key";
 /// but adds an extra dependency.
 pub fn random_master_key() -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
     let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
-    let mut f = fs::File::open(URANDOM_PATH).map_err(|e| format!("open {URANDOM_PATH}: {e}"))?;
-    f.read_exact(key.as_mut())
-        .map_err(|e| format!("read {URANDOM_PATH}: {e}"))?;
+    getrandom::fill(key.as_mut()).map_err(|e| format!("CSPRNG failure: {e}"))?;
     Ok(key)
 }
 

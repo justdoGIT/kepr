@@ -195,6 +195,7 @@ pub fn handle_send(
         if ttl == 0 || ttl > MAX_TTL {
             return Err("--ttl must be 1 second to 30 days".into());
         }
+        let _lock = crate::daemon_credlock::lock(uid, &upper);
         // The same policy as Get, fail-closed: sealed, SSH and share
         // keys, expired values, an unreadable .meta and FIDO2-gated
         // values are refused; consent-gated ones ask first.

@@ -76,10 +76,6 @@ pub fn cred_path(uid: u32, name: &str) -> PathBuf {
     store_dir().join(to_cred_name(uid, name))
 }
 
-pub fn store_path() -> PathBuf {
-    store_dir()
-}
-
 // ── List creds for a specific uid ─────────────────────────────────────────────
 
 pub fn list_for_uid(uid: u32) -> Vec<(String, PathBuf)> {
