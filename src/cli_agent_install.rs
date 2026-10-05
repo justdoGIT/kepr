@@ -121,7 +121,17 @@ pub fn apply(path: &std::path::Path, edit: impl Fn(&str) -> String) -> Result<bo
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let backup = path.with_extension(format!("kepr-backup-{ts}"));
-        std::fs::write(&backup, old).map_err(|e| format!("{}: {e}", backup.display()))?;
+        // 0600: harness configs often hold API keys, and a plain write
+        // would make the copy readable by every local user.
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&backup)
+            .and_then(|mut f| f.write_all(old.as_bytes()))
+            .map_err(|e| format!("{}: {e}", backup.display()))?;
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;

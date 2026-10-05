@@ -7,7 +7,6 @@
 //   kepr ssh-agent --foreground [--socket PATH]
 
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -25,11 +24,39 @@ const SIGN_REQUEST: u8 = 13;
 const SIGN_RESPONSE: u8 = 14;
 const MAX_MSG: usize = 256 * 1024;
 
-pub fn default_socket() -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    dir.join("kepr-ssh-agent.sock")
+/// `$XDG_RUNTIME_DIR/kepr-ssh-agent.sock` (a private, per-user tmpfs), or
+/// a socket in a fresh 0700 directory with an unpredictable name: a fixed
+/// path in a shared /tmp could be taken first by another user.
+pub fn default_socket() -> Result<PathBuf, String> {
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return Ok(PathBuf::from(dir).join("kepr-ssh-agent.sock"));
+    }
+    let mut rnd = [0u8; 8];
+    getrandom::fill(&mut rnd).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    let dir = std::env::temp_dir().join(format!("kepr-ssh-{}", hex::encode(rnd)));
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+        .create(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir.join("agent.sock"))
+}
+
+/// The connecting process runs as us (SO_PEERCRED).
+fn same_user(s: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: getsockopt writes at most `len` bytes into `cred`.
+    let ok = unsafe {
+        libc::getsockopt(
+            s.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    } == 0;
+    // SAFETY: geteuid has no preconditions.
+    ok && cred.uid == unsafe { libc::geteuid() }
 }
 
 /// Backend the agent asks; production goes to the daemon.
@@ -133,13 +160,20 @@ fn serve_conn(mut s: UnixStream) {
 
 fn serve(path: &PathBuf) -> Response {
     let _ = std::fs::remove_file(path);
-    let listener = match UnixListener::bind(path) {
+    // Create the socket 0600 from the start (no chmod window).
+    // SAFETY: umask only changes this process's file-creation mask.
+    let old = unsafe { libc::umask(0o177) };
+    let bound = UnixListener::bind(path);
+    // SAFETY: as above, restoring the previous mask.
+    unsafe { libc::umask(old) };
+    let listener = match bound {
         Ok(l) => l,
         Err(e) => return Response::fail(format!("{}: {e}", path.display())),
     };
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     for conn in listener.incoming().flatten() {
-        std::thread::spawn(move || serve_conn(conn));
+        if same_user(&conn) {
+            std::thread::spawn(move || serve_conn(conn));
+        }
     }
     Response::Pong
 }
@@ -149,8 +183,14 @@ pub fn cmd_ssh_agent(args: &[String]) -> Response {
         .iter()
         .position(|a| a == "--socket")
         .and_then(|i| args.get(i + 1))
-        .map(PathBuf::from)
-        .unwrap_or_else(default_socket);
+        .map(PathBuf::from);
+    let path = match path {
+        Some(p) => p,
+        None => match default_socket() {
+            Ok(p) => p,
+            Err(e) => return Response::fail(e),
+        },
+    };
     if args.iter().any(|a| a == "--foreground") {
         return serve(&path);
     }
@@ -171,12 +211,24 @@ pub fn cmd_ssh_agent(args: &[String]) -> Response {
         });
     }
     match c.spawn() {
-        Ok(child) => {
+        Ok(mut child) => {
+            // Ready means: our agent is still running and the socket is
+            // ours. A socket someone else left at that path is not.
+            use std::os::unix::fs::{FileTypeExt, MetadataExt};
+            // SAFETY: geteuid has no preconditions.
+            let me = unsafe { libc::geteuid() };
+            let ours = |p: &PathBuf| {
+                std::fs::symlink_metadata(p)
+                    .is_ok_and(|m| m.file_type().is_socket() && m.uid() == me)
+            };
             for _ in 0..50 {
-                if path.exists() {
+                if ours(&path) || matches!(child.try_wait(), Ok(Some(_))) {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if !ours(&path) || matches!(child.try_wait(), Ok(Some(_))) {
+                return Response::fail(format!("the agent could not listen on {}", path.display()));
             }
             println!("SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;", path.display());
             println!("echo kepr ssh-agent pid {};", child.id());

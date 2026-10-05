@@ -69,7 +69,7 @@ The encryption backend persists its host-derived key under
 | `store.rs`             | both           | Naming, validation, path helpers.                        |
 | `client.rs`            | CLI            | `send_request` (connect → write_frame → read_frame).     |
 | `cli_*.rs`             | CLI            | Argv parsing, mode flags, terminal IO.                   |
-| `crypto.rs`            | daemon         | Encryption-backend wrapper; `sanitize_error`.            |
+| `crypto.rs`            | daemon         | Backend seam; fail-closed until start-up; lookup errors. |
 | `audit.rs`             | daemon         | Journal datagram (cached fd) with `KEPR_*` fields.    |
 | `daemon_*.rs`          | daemon         | Socket setup, peer creds, worker pool, dir cache, handlers. |
 

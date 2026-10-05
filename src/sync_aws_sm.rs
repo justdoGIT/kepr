@@ -64,6 +64,16 @@ impl AwsSmSyncer {
                 "AWS_REGION (or AWS_DEFAULT_REGION) not set — required to compute the SigV4 scope"
                     .to_string()
             })?;
+        // It becomes part of the host name: `x@evil.com#` would send the
+        // signed request (and the secret) somewhere else.
+        if region.is_empty()
+            || region.len() > 32
+            || !region
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(format!("AWS_REGION {region:?} is not a region name"));
+        }
         let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
         Ok(AwsCreds {
             access_key,
@@ -107,7 +117,9 @@ impl AwsSmSyncer {
         };
         let signed = sign(&input);
 
-        let mut req = ureq::post(&url).set("Content-Type", "application/x-amz-json-1.1");
+        let mut req = crate::sync_http::agent()
+            .post(&url)
+            .set("Content-Type", "application/x-amz-json-1.1");
         for (name, value) in &signed.headers {
             // ureq sets `Host` automatically from the URL — skip
             // here to avoid duplicate-header rejection.
@@ -117,16 +129,7 @@ impl AwsSmSyncer {
             req = req.set(name, value);
         }
 
-        let response = req.send_bytes(body);
-        match response {
-            Ok(r) => {
-                let status = r.status();
-                let body = r.into_string().unwrap_or_default();
-                Ok((status, body))
-            }
-            Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
-            Err(e) => Err(format!("aws-sm transport: {e}")),
-        }
+        crate::sync_http::send(req, Some(body)).map_err(|e| format!("aws-sm transport: {e}"))
     }
 }
 
@@ -178,9 +181,15 @@ impl Syncer for AwsSmSyncer {
             if (200..300).contains(&cs_status) {
                 return Ok(());
             }
-            return Err(format!("aws-sm CreateSecret: HTTP {cs_status} {cs_body}"));
+            return Err(format!(
+                "aws-sm CreateSecret: HTTP {cs_status} {}",
+                crate::sync_http::error_summary(&cs_body)
+            ));
         }
-        Err(format!("aws-sm PutSecretValue: HTTP {status} {body}"))
+        Err(format!(
+            "aws-sm PutSecretValue: HTTP {status} {}",
+            crate::sync_http::error_summary(&body)
+        ))
     }
 
     fn pull(&self) -> Result<String, String> {
@@ -192,7 +201,10 @@ impl Syncer for AwsSmSyncer {
             body.to_string().as_bytes(),
         )?;
         if !(200..300).contains(&status) {
-            return Err(format!("aws-sm GetSecretValue: HTTP {status} {response}"));
+            return Err(format!(
+                "aws-sm GetSecretValue: HTTP {status} {}",
+                crate::sync_http::error_summary(&response)
+            ));
         }
         let parsed: serde_json::Value =
             serde_json::from_str(&response).map_err(|e| format!("aws-sm: parse JSON: {e}"))?;

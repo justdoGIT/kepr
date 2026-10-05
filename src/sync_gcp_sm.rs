@@ -95,34 +95,18 @@ impl GcpSmSyncer {
     }
 
     fn http_post(url: &str, token: &ZeroString, body: &[u8]) -> Result<(u16, String), String> {
-        let response = ureq::post(url)
+        let req = crate::sync_http::agent()
+            .post(url)
             .set("Authorization", &format!("Bearer {}", token.as_str()))
-            .set("Content-Type", "application/json")
-            .send_bytes(body);
-        match response {
-            Ok(r) => {
-                let status = r.status();
-                let body = r.into_string().unwrap_or_default();
-                Ok((status, body))
-            }
-            Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
-            Err(e) => Err(format!("gcp-sm transport: {e}")),
-        }
+            .set("Content-Type", "application/json");
+        crate::sync_http::send(req, Some(body)).map_err(|e| format!("gcp-sm transport: {e}"))
     }
 
     fn http_get(url: &str, token: &ZeroString) -> Result<(u16, String), String> {
-        let response = ureq::get(url)
-            .set("Authorization", &format!("Bearer {}", token.as_str()))
-            .call();
-        match response {
-            Ok(r) => {
-                let status = r.status();
-                let body = r.into_string().unwrap_or_default();
-                Ok((status, body))
-            }
-            Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
-            Err(e) => Err(format!("gcp-sm transport: {e}")),
-        }
+        let req = crate::sync_http::agent()
+            .get(url)
+            .set("Authorization", &format!("Bearer {}", token.as_str()));
+        crate::sync_http::send(req, None).map_err(|e| format!("gcp-sm transport: {e}"))
     }
 }
 
@@ -150,7 +134,10 @@ impl Syncer for GcpSmSyncer {
             return Ok(());
         }
         if status != 404 {
-            return Err(format!("gcp-sm addVersion: HTTP {status} {response}"));
+            return Err(format!(
+                "gcp-sm addVersion: HTTP {status} {}",
+                crate::sync_http::error_summary(&response)
+            ));
         }
 
         // Create the secret (no payload — that's a separate call)
@@ -165,7 +152,8 @@ impl Syncer for GcpSmSyncer {
             Self::http_post(&create_url, &token, create_body.to_string().as_bytes())?;
         if !(200..300).contains(&cs_status) {
             return Err(format!(
-                "gcp-sm CreateSecret: HTTP {cs_status} {cs_response}"
+                "gcp-sm CreateSecret: HTTP {cs_status} {}",
+                crate::sync_http::error_summary(&cs_response)
             ));
         }
         // Retry the addVersion. If it still fails the secret
@@ -175,7 +163,8 @@ impl Syncer for GcpSmSyncer {
             Ok(())
         } else {
             Err(format!(
-                "gcp-sm addVersion (after CreateSecret): HTTP {status2} {response2}"
+                "gcp-sm addVersion (after CreateSecret): HTTP {status2} {}",
+                crate::sync_http::error_summary(&response2)
             ))
         }
     }
@@ -186,7 +175,10 @@ impl Syncer for GcpSmSyncer {
         let url = format!("{GCP_SM_HOST}/v1/{}/versions/latest:access", self.path);
         let (status, response) = Self::http_get(&url, &token)?;
         if !(200..300).contains(&status) {
-            return Err(format!("gcp-sm access: HTTP {status} {response}"));
+            return Err(format!(
+                "gcp-sm access: HTTP {status} {}",
+                crate::sync_http::error_summary(&response)
+            ));
         }
         let parsed: serde_json::Value =
             serde_json::from_str(&response).map_err(|e| format!("gcp-sm: parse JSON: {e}"))?;

@@ -15,6 +15,7 @@ use kepr_core::gate_protocol::{db_route_key, DbTarget, GateRoute};
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{CredInfo, Request, Response};
 
+use crate::cli_extra::flag;
 use crate::{cli_input, cli_ui, client};
 
 const USAGE: &str = "usage: kepr agent add-db NAME --url postgres://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE] [--stdin]";
@@ -40,11 +41,6 @@ pub fn parse_url(url: &str) -> Result<(String, String, u16, String), String> {
         return Err("the URL needs a user, a host and a database".into());
     }
     Ok((auth.into(), host.to_ascii_lowercase(), port, db.into()))
-}
-
-fn flag<'a>(args: &'a [String], f: &str) -> Option<&'a str> {
-    let i = args.iter().position(|a| a == f)?;
-    args.get(i + 1).map(String::as_str)
 }
 
 pub fn cmd_add_db(args: &[String]) -> Response {
