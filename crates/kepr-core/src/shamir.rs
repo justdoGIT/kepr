@@ -140,7 +140,14 @@ pub fn decode(text: &str) -> Result<(Share, String), String> {
         .ok_or_else(bad)?
         .to_string();
     let hex = parts.next().ok_or_else(bad)?;
-    if parts.next().is_some() || hex.len() % 2 != 0 || x == 0 {
+    // ASCII hex only: slicing below is by byte, and a multi-byte
+    // character would split mid-char (a panic, and an abort in release).
+    if parts.next().is_some()
+        || hex.len() % 2 != 0
+        || x == 0
+        || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+        || !fp.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         return Err(bad());
     }
     let y = (0..hex.len())
@@ -159,6 +166,12 @@ pub fn decode(text: &str) -> Result<(Share, String), String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn non_ascii_share_text_is_an_error_not_a_panic() {
+        assert!(decode("kepr1-2-1-0123456789abcdef-a\u{e9}a").is_err());
+        assert!(decode("kepr1-2-1-0123456789abcd\u{e9}-aa").is_err());
+    }
     use super::*;
 
     #[test]

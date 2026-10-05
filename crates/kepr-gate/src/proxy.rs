@@ -15,11 +15,11 @@ use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use kepr_core::secmem::SplitKey;
 
-use crate::dlp::{self, Verdict};
+use crate::dlp;
 use crate::journal;
 use crate::limits::{Limiter, Refusal, UsageMeter};
 use crate::placeholder;
-use crate::rewrite::{placeholders_in, strip_hop_by_hop, upstream_headers, upstream_query};
+use crate::rewrite::{placeholders_in, upstream_headers, upstream_query};
 use crate::routes;
 use crate::vault::Cache;
 
@@ -57,7 +57,8 @@ pub(crate) fn build_client(
     } else {
         b.https_only()
     };
-    let conn = b.enable_http1().enable_http2().build();
+    // HTTP/1.1 only: every provider serves it, and h2 would add ~400 KB.
+    let conn = b.enable_http1().build();
     Client::builder(hyper_util::rt::TokioExecutor::new()).build(conn)
 }
 
@@ -258,17 +259,7 @@ pub async fn proxy_request(
         }
     };
 
-    let blocked_msg = match dlp::scan(&bytes, &state.cache.values()) {
-        Verdict::Clean => None,
-        Verdict::StoredSecret(n) => Some(format!(
-            "kepr blocked this request: it contains the stored secret {n}. Remove it and retry."
-        )),
-        Verdict::LooksLikeKey => Some(
-            "kepr blocked this request: it contains what looks like an API key. Remove it and retry."
-                .to_string(),
-        ),
-    };
-    if let Some(msg) = blocked_msg {
+    if let Some(msg) = dlp::check(&parts, &bytes, &state.cache.values()) {
         let r = kepr_error(StatusCode::FORBIDDEN, "kepr_blocked", &msg);
         return Ok(log.reply(r, bytes.len(), Some("dlp")));
     }
@@ -307,7 +298,7 @@ pub async fn proxy_request(
     match state.client.request(up).await {
         Ok(resp) => {
             let (mut p, b) = resp.into_parts();
-            strip_hop_by_hop(&mut p.headers);
+            crate::rewrite::clean_response(&mut p.headers, &inject);
             log.emit(p.status, bytes.len(), None);
             if !state.limiter.meters_tokens() {
                 return Ok(Response::from_parts(p, b.boxed()));

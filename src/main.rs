@@ -5,7 +5,6 @@
 // membership is the only access control — see DOCS.md.
 
 mod cli_activity;
-mod cli_agent;
 mod cli_agent_adapters;
 mod cli_agent_adopt;
 mod cli_agent_cmd;
@@ -57,6 +56,7 @@ mod sync;
 mod sync_aws_sigv4;
 mod sync_aws_sm;
 mod sync_gcp_sm;
+mod sync_http;
 mod sync_vault;
 
 use cli_args::parse_args;
@@ -80,7 +80,10 @@ fn main() {
         if cli_extra::VERBS.contains(&raw[pos + 1].as_str()) {
             cli_mode::init_from_argv(&raw);
             let resp = cli_extra::dispatch(&raw[pos + 1], &raw[pos + 2..]);
-            if raw[1..=pos].iter().any(|a| a == "--json") {
+            // `init_from_argv` takes `--json` anywhere on the line, and the
+            // handlers skip their human output in JSON mode: print it here
+            // whatever its position (recovery shares, share envelopes).
+            if json_mode() {
                 print_json(&resp);
             } else if let Response::Err { error } = &resp {
                 err(error);

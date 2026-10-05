@@ -28,8 +28,6 @@
 // or the on-disk format.
 
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -194,42 +192,8 @@ pub fn write_meta(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
     if !parent.exists() {
         fs::create_dir_all(parent).map_err(|e| format!("create meta dir: {e}"))?;
     }
-    let tmp = meta_path.with_extension(format!(
-        "tmp.{}.{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
     let bytes = serde_json::to_vec(meta).map_err(|e| format!("serialise meta: {e}"))?;
-
-    let mut f = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Stale tempfile from a crashed run; retry once.
-            let _ = fs::remove_file(&tmp);
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&tmp)
-                .map_err(|e| format!("open meta temp (after stale-cleanup): {e}"))?
-        }
-        Err(e) => return Err(format!("open meta temp: {e}")),
-    };
-    if let Err(e) = f.write_all(&bytes) {
-        drop(f);
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("write meta: {e}"));
-    }
-    drop(f);
-    fs::rename(&tmp, meta_path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("install meta: {e}")
-    })
+    crate::atomic_file::write(meta_path, &bytes, 0o600).map_err(|e| format!("install meta: {e}"))
 }
 
 /// Read a meta file. `None` if the file is absent (the no-TTL case);

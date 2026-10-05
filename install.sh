@@ -44,10 +44,12 @@ echo -e "\n${CYN}━━━ Installing binaries ━━━${RST}"
 sudo install -o root -g root -m 0755 target/release/kepr /usr/local/bin/kepr
 sudo install -o root -g root -m 0755 target/release/kepr-daemon /usr/local/bin/kepr-daemon
 sudo install -o root -g root -m 0755 target/release/docker-credential-kepr /usr/local/bin/docker-credential-kepr
+sudo install -o root -g root -m 0755 target/release/git-credential-kepr /usr/local/bin/git-credential-kepr
 sudo install -o root -g root -m 0755 target/release/kepr-gate /usr/local/bin/kepr-gate
 ok "kepr                    → /usr/local/bin/kepr"
 ok "kepr-daemon             → /usr/local/bin/kepr-daemon"
 ok "docker-credential-kepr  → /usr/local/bin/docker-credential-kepr"
+ok "git-credential-kepr     → /usr/local/bin/git-credential-kepr"
 ok "kepr-gate               → /usr/local/bin/kepr-gate"
 
 
@@ -109,6 +111,11 @@ if $SYSTEM_MODE; then
     sleep 1
     if sudo systemctl is-active --quiet kepr.service; then
         ok "kepr.service is running"
+        # Point every login shell's kepr (and the credential helpers) at
+        # the system daemon instead of auto-starting a per-user one.
+        echo 'export KEPR_SYSTEM_MODE=1' | sudo tee /etc/profile.d/kepr.sh >/dev/null
+        sudo chmod 0644 /etc/profile.d/kepr.sh
+        ok "KEPR_SYSTEM_MODE=1 for login shells → /etc/profile.d/kepr.sh"
     else
         echo "kepr.service failed to start:" >&2
         sudo journalctl -u kepr.service -n 20 --no-pager >&2
@@ -134,6 +141,9 @@ echo -e "
   View audit log:
     ${CYN}journalctl -t kepr-daemon -f${RST}
 
-  Fix .agentrc (remove sudo):
-    ${CYN}export OPENCLAW_GATEWAY_TOKEN=\"\$(kepr get OPENCLAW_GATEWAY_TOKEN --quiet)\"${RST}
+  Give a command a secret without exporting it into your shell:
+    ${CYN}kepr exec --env OPENCLAW_GATEWAY_TOKEN -- your-command${RST}
+
+  Run an AI agent with sealed keys it never sees:
+    ${CYN}kepr agent add ANTHROPIC_API_KEY && kepr agent run claude${RST}
 "

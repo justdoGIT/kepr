@@ -86,7 +86,7 @@ async fn read_startup(c: &mut (impl AsyncRead + Unpin)) -> std::io::Result<(u32,
     Ok((code, body))
 }
 
-async fn read_msg(c: &mut (impl AsyncRead + Unpin)) -> std::io::Result<(u8, Vec<u8>)> {
+pub(crate) async fn read_msg(c: &mut (impl AsyncRead + Unpin)) -> std::io::Result<(u8, Vec<u8>)> {
     let kind = c.read_u8().await?;
     let len = c.read_u32().await? as usize;
     if !(4..=MAX_MSG).contains(&len) {
@@ -308,6 +308,15 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
             }
         };
     if params.iter().any(|(k, v)| k == "kepr_rotate" && v == "1") {
+        if !route.target.rotate {
+            let _ = client
+                .write_all(&error_response(
+                    "42501",
+                    "kepr: password rotation is only available to `kepr agent rotate-db`",
+                ))
+                .await;
+            return Err((403, None));
+        }
         let reply = crate::pg_rotate::session(up, route, &params, &login_rec).await;
         let _ = client.write_all(&reply).await;
         return Ok(());

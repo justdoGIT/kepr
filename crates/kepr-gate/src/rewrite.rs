@@ -94,12 +94,19 @@ pub fn upstream_headers(
         if HOP_BY_HOP.contains(&name)
             || name == "host"
             || name == "content-length"
+            || name == "accept-encoding"
             || carries_placeholder
         {
             continue;
         }
         out.append(k.clone(), v.clone());
     }
+    // Uncompressed responses: the token meter reads provider `usage`
+    // fields from the bytes, which compression would hide.
+    out.insert(
+        hyper::header::ACCEPT_ENCODING,
+        HeaderValue::from_static("identity"),
+    );
     match inject {
         Inject::Bearer => {
             out.insert(AUTHORIZATION, sensitive(format!("Bearer {value}"))?);
@@ -119,8 +126,81 @@ pub fn upstream_headers(
     Ok(out)
 }
 
+/// Response headers for the agent: hop-by-hop removed and, for a query
+/// injected key, that parameter cut out of any `Location` (a redirect
+/// would otherwise hand the real key back to the agent).
+pub fn clean_response(h: &mut HeaderMap, inject: &Inject) {
+    strip_hop_by_hop(h);
+    let Inject::Query { param } = inject else {
+        return;
+    };
+    let Some(loc) = h.get(hyper::header::LOCATION).and_then(|v| v.to_str().ok()) else {
+        return;
+    };
+    let cleaned = match loc.split_once('?') {
+        Some((base, q)) => {
+            let kept: Vec<&str> = q
+                .split('&')
+                .filter(|kv| kv.split('=').next() != Some(param.as_str()))
+                .collect();
+            match kept.is_empty() {
+                true => base.to_string(),
+                false => format!("{base}?{}", kept.join("&")),
+            }
+        }
+        None => return,
+    };
+    match HeaderValue::from_str(&cleaned) {
+        Ok(v) => {
+            h.insert(hyper::header::LOCATION, v);
+        }
+        Err(_) => {
+            h.remove(hyper::header::LOCATION);
+        }
+    }
+}
+
 pub fn strip_hop_by_hop(h: &mut HeaderMap) {
     for n in HOP_BY_HOP {
         h.remove(*n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redirects_never_carry_a_query_injected_key() {
+        let inject = Inject::Query {
+            param: "key".into(),
+        };
+        let mut h = HeaderMap::new();
+        h.insert(
+            hyper::header::LOCATION,
+            HeaderValue::from_static("https://api.example/v1/x?alt=json&key=REAL-SECRET"),
+        );
+        clean_response(&mut h, &inject);
+        assert_eq!(
+            h[hyper::header::LOCATION],
+            "https://api.example/v1/x?alt=json"
+        );
+        h.insert(
+            hyper::header::LOCATION,
+            HeaderValue::from_static("https://api.example/v1/?key=REAL-SECRET"),
+        );
+        clean_response(&mut h, &inject);
+        assert_eq!(h[hyper::header::LOCATION], "https://api.example/v1/");
+    }
+
+    #[test]
+    fn upstream_always_asks_for_identity_encoding() {
+        let mut src = HeaderMap::new();
+        src.insert(
+            hyper::header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, br"),
+        );
+        let out = upstream_headers(&src, &Inject::Bearer, "k").unwrap();
+        assert_eq!(out[hyper::header::ACCEPT_ENCODING], "identity");
     }
 }

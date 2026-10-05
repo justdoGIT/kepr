@@ -44,14 +44,8 @@ pub fn field_of(value: &str, field: &str) -> Result<ZeroString, String> {
 }
 
 fn get_value(name: &str) -> Result<ZeroString, String> {
-    match client::send_request(&Request::Get {
-        name: name.to_uppercase(),
-        fido2_assertion: None,
-    })? {
-        Response::GetOk { value, .. } => Ok(value),
-        Response::Err { error } => Err(error),
-        _ => Err("this credential needs a FIDO2 touch; use kepr get".into()),
-    }
+    use crate::cli_exec::CredFetcher;
+    crate::cli_exec::DaemonFetcher.fetch(&name.to_uppercase())
 }
 
 fn add(args: &[String]) -> Response {

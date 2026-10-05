@@ -30,6 +30,11 @@ interface HookResult {
 	message: string;
 }
 
+// kepr was found but didn't answer in time: treated as a block, never as
+// an allow (a slow machine must not let `kepr get` through). A missing
+// kepr binary still allows: the gate and sandbox are the boundary.
+const TIMED_OUT: HookResult = { code: 2, message: "kepr: the safety check timed out; blocked" };
+
 /** Run `kepr hook EVENT` with `payload` on stdin (never in argv). */
 function hook(event: string, payload: unknown): Promise<HookResult> {
 	return new Promise(resolve => {
@@ -42,14 +47,19 @@ function hook(event: string, payload: unknown): Promise<HookResult> {
 			resolve({ code: 0, message: "" });
 			return;
 		}
-		const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGKILL");
+		}, 5000);
 		child.stdout.on("data", (d: Buffer) => (stdout += d));
 		child.stderr.on("data", (d: Buffer) => (stderr += d));
 		// kepr missing: allow. The gate and sandbox are the boundary.
 		child.on("error", () => resolve({ code: 0, message: "" }));
 		child.on("close", (code: number | null) => {
 			clearTimeout(timer);
-			resolve({ code: code ?? 0, message: (stderr || stdout).trim() });
+			if (timedOut || code === null) return resolve(TIMED_OUT);
+			resolve({ code, message: (stderr || stdout).trim() });
 		});
 		child.stdin.end(JSON.stringify(payload));
 	});
@@ -99,18 +109,22 @@ export default function kepr(pi: ExtensionAPI) {
 	// Backstop for non-interactive runs (`omp -p`, RPC), where `input`
 	// does not fire: remove key-shaped text from user messages before
 	// every model request.
+	// Bounded memo of texts already checked; failures are not cached, so
+	// a timed-out redaction is retried on the next request.
 	const redacted = new Map<string, string>();
 	const clean = async (text: string): Promise<string> => {
-		let out = redacted.get(text);
-		if (out === undefined) {
-			const r = await hook("redact", { text });
-			try {
-				out = String(JSON.parse(r.message).text);
-			} catch {
-				out = text;
-			}
-			redacted.set(text, out);
+		const hit = redacted.get(text);
+		if (hit !== undefined) return hit;
+		const r = await hook("redact", { text });
+		let out: string;
+		try {
+			out = String(JSON.parse(r.message).text);
+		} catch {
+			// No answer: send nothing rather than an unchecked message.
+			return "[message withheld by kepr: the secret check did not answer]";
 		}
+		if (redacted.size >= 256) redacted.delete(redacted.keys().next().value as string);
+		redacted.set(text, out);
 		return out;
 	};
 	pi.on("context", async event => {

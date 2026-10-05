@@ -107,9 +107,10 @@ impl CliActivity {
             },
             "fido2-register" => cli_cmds::cmd_fido2_register(args),
             "fido2-list" => cli_cmds::cmd_fido2_list(args),
-            "protect-agent" => {
-                crate::cli_agent::cmd_protect_agent(args.name.as_deref(), &args.exec_argv)
-            }
+            "protect-agent" => Response::fail(
+                "`kepr protect-agent` was retired (it exposed the key to every tool the agent ran); \
+                 use `kepr agent add NAME` and `kepr agent run <harness>`",
+            ),
             "panic" => crate::cli_agent_cmd::cmd_panic(),
             "mcp" => crate::cli_mcp::cmd_mcp(),
             _ => unreachable!("CliActivity invariant broken: parse() only emits known verbs"),

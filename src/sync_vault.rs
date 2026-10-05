@@ -108,19 +108,14 @@ impl Syncer for VaultSyncer {
         let url = format!("{addr}/v1/{endpoint}");
         // KV v2 wraps the user's value in {"data": {…}}.
         let body = serde_json::json!({"data": {"value": value}});
-        let response = ureq::post(&url)
-            .set("X-Vault-Token", token.as_str())
-            .send_string(&body.to_string());
-        match response {
-            Ok(r) if r.status() == 200 || r.status() == 204 => Ok(()),
-            Ok(r) => Err(format!(
-                "vault push: HTTP {} {}",
-                r.status(),
-                r.into_string().unwrap_or_default()
-            )),
-            Err(ureq::Error::Status(code, r)) => Err(format!(
+        let req = crate::sync_http::agent()
+            .post(&url)
+            .set("X-Vault-Token", token.as_str());
+        match crate::sync_http::send(req, Some(body.to_string().as_bytes())) {
+            Ok((200 | 204, _)) => Ok(()),
+            Ok((code, b)) => Err(format!(
                 "vault push: HTTP {code} {}",
-                r.into_string().unwrap_or_default()
+                crate::sync_http::error_summary(&b)
             )),
             Err(e) => Err(format!("vault push: {e}")),
         }
@@ -130,15 +125,15 @@ impl Syncer for VaultSyncer {
         let (addr, token) = Self::read_env()?;
         let endpoint = self.kv_v2_endpoint()?;
         let url = format!("{addr}/v1/{endpoint}");
-        let response = ureq::get(&url).set("X-Vault-Token", token.as_str()).call();
-        let text = match response {
-            Ok(r) => r
-                .into_string()
-                .map_err(|e| format!("vault pull: read body: {e}"))?,
-            Err(ureq::Error::Status(code, r)) => {
+        let req = crate::sync_http::agent()
+            .get(&url)
+            .set("X-Vault-Token", token.as_str());
+        let text = match crate::sync_http::send(req, None) {
+            Ok((200, b)) => zeroize::Zeroizing::new(b),
+            Ok((code, b)) => {
                 return Err(format!(
                     "vault pull: HTTP {code} {}",
-                    r.into_string().unwrap_or_default()
+                    crate::sync_http::error_summary(&b)
                 ));
             }
             Err(e) => return Err(format!("vault pull: {e}")),
@@ -150,10 +145,9 @@ impl Syncer for VaultSyncer {
             .pointer("/data/data/value")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                format!(
-                    "vault pull: response missing /data/data/value — \
-                     was the secret written by `kepr sync push`? body: {text}"
-                )
+                "vault pull: response missing /data/data/value — \
+                 was the secret written by `kepr sync push`?"
+                    .to_string()
             })?;
         Ok(value.to_string())
     }

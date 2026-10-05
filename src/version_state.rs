@@ -32,8 +32,6 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -248,42 +246,7 @@ impl VersionState {
         if !parent.exists() {
             fs::create_dir_all(parent).map_err(|e| format!("create state dir: {e}"))?;
         }
-        let tmp = self.path.with_extension(format!(
-            "tmp.{}.{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        // create_new(true) so mode(0o600) is honoured at open time.
-        // EEXIST means a stale tempfile from a crashed run; remove
-        // and retry once. Same shape as crypto_inproc::write_atomic.
-        let mut f = match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-        {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = fs::remove_file(&tmp);
-                fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&tmp)
-                    .map_err(|e| format!("open state temp (after stale-cleanup): {e}"))?
-            }
-            Err(e) => return Err(format!("open state temp: {e}")),
-        };
-        if let Err(e) = f.write_all(&bytes) {
-            drop(f);
-            let _ = fs::remove_file(&tmp);
-            return Err(format!("write state: {e}"));
-        }
-        drop(f);
-        fs::rename(&tmp, &self.path).map_err(|e| {
-            let _ = fs::remove_file(&tmp);
-            format!("install state: {e}")
-        })
+        crate::atomic_file::write(&self.path, &bytes, 0o600)
     }
 }
 

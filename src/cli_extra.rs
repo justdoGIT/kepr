@@ -50,7 +50,15 @@ fn value_of<'a>(args: &'a [String], flags: &[&str]) -> Result<Option<&'a str>, S
     }
 }
 
-fn positionals(args: &[String], value_flags: &[&str]) -> Vec<String> {
+/// The value after `f`, if `f` is present (the shared flag lookup for the
+/// small parsers in cli_*.rs).
+pub fn flag<'a>(args: &'a [String], f: &str) -> Option<&'a str> {
+    let i = args.iter().position(|a| a == f)?;
+    args.get(i + 1).map(String::as_str)
+}
+
+/// Arguments that are neither flags nor flag values (`-` counts: stdin).
+pub fn positionals(args: &[String], value_flags: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
     let mut skip = false;
     for a in args {
@@ -58,7 +66,7 @@ fn positionals(args: &[String], value_flags: &[&str]) -> Vec<String> {
             skip = false;
         } else if value_flags.contains(&a.as_str()) {
             skip = true;
-        } else if !a.starts_with('-') {
+        } else if !a.starts_with('-') || a == "-" {
             out.push(a.clone());
         }
     }

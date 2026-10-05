@@ -20,10 +20,8 @@ fn load(p: &std::path::Path) -> HashMap<String, u64> {
 }
 
 fn save(p: &std::path::Path, seen: &HashMap<String, u64>) -> Result<(), String> {
-    let tmp = p.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_vec(seen).map_err(|e| e.to_string())?)
-        .and_then(|_| std::fs::rename(&tmp, p))
-        .map_err(|e| format!("cannot record the share: {e}"))
+    let bytes = serde_json::to_vec(seen).map_err(|e| e.to_string())?;
+    crate::atomic_file::write(p, &bytes, 0o600).map_err(|e| format!("cannot record the share: {e}"))
 }
 
 /// Forget `id` again: the share was claimed but storing it failed.
@@ -47,8 +45,5 @@ pub fn claim(uid: u32, id: &str, expires: u64) -> Result<(), String> {
         return Err("this share was already received (shares are single-use)".into());
     }
     seen.insert(id.to_string(), expires);
-    let tmp = p.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&seen).map_err(|e| e.to_string())?)
-        .and_then(|_| std::fs::rename(&tmp, &p))
-        .map_err(|e| format!("cannot record the share: {e}"))
+    save(&p, &seen)
 }

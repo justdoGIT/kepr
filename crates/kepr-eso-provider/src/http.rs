@@ -31,8 +31,35 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Parse a minimal HTTP request. Only handles what ESO sends — no
 /// chunked encoding, no keep-alive, no multi-line headers.
+/// One deadline for reading the whole request: the socket timeout alone
+/// restarts on every byte, so a client trickling headers could hold a
+/// worker indefinitely.
+pub const REQUEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: std::time::Instant,
+}
+
+impl std::io::Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self
+            .until
+            .saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        (&mut &*self.stream).read(buf)
+    }
+}
+
 pub fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
-    let mut reader = BufReader::new(&mut *stream);
+    let deadline = Deadline {
+        stream: &*stream,
+        until: std::time::Instant::now() + REQUEST_DEADLINE,
+    };
+    let mut reader = BufReader::new(deadline);
 
     let mut request_line = String::new();
     read_bounded_line(&mut reader, &mut request_line)

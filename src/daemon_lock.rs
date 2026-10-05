@@ -14,39 +14,17 @@
 // daemon's own uid (the owner check in `daemon::handle_client`), so the
 // gate is a no-op there.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::{self};
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::{crypto, key_unlock, user_mode};
 use kepr_core::protocol::Response;
 
-fn master_key_path() -> std::path::PathBuf {
-    crate::state_dir().join("master.key")
-}
-
-fn protected_master_key_path() -> std::path::PathBuf {
-    crate::state_dir().join("master.key.argon2id")
-}
+use crate::{master_key_path, protected_master_key_path};
 
 fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
-    let path = protected_master_key_path();
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|e| format!("cannot create protected master-key file: {e}"))?;
-    file.write_all(envelope)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| format!("cannot write protected master-key file: {e}"))?;
-    drop(file);
-    fs::rename(&tmp, &path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("cannot commit protected master-key file: {e}")
-    })
+    crate::atomic_file::write(&protected_master_key_path(), envelope, 0o600)
+        .map_err(|e| format!("cannot write protected master-key file: {e}"))
 }
 
 /// Recovery restore: make `envelope` the master key (passphrase-wrapped)

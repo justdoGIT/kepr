@@ -73,6 +73,11 @@ pub struct GateRoute {
 pub struct DbTarget {
     pub host: String,
     pub port: u16,
+    /// Set only by `kepr agent rotate-db`: this route may run the
+    /// `kepr_rotate` login. An agent's own session never has it, so the
+    /// agent can't change the database password.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rotate: bool,
 }
 
 /// Route key for a database credential.
