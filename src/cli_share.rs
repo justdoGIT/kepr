@@ -3,8 +3,9 @@
 //
 //   kepr share key                                 your public key (made on first use;
 //                                                  kepr-pk2-…, X25519 + ML-KEM-768)
-//   kepr share send NAME --to KEY [--ttl SECS] [-o FILE]
-//   kepr share receive [FILE] [--as NAME]          FILE or stdin
+//   kepr share send NAME --to KEY|CONTACT [--ttl SECS] [-o FILE] [--qr]
+//                   [--view-window 5m]
+//   kepr share receive [FILE] [--as NAME]          FILE or stdin (QR chunks too)
 //
 // The sender's daemon encrypts to the recipient's public key; the
 // recipient's daemon decrypts and stores it. Shares expire (default 24 h)
@@ -18,14 +19,16 @@ use kepr_core::protocol::{Request, Response};
 use crate::cli_extra::{flag as value, positionals as positional};
 use crate::{cli_mode, cli_ui, client};
 
-const USAGE: &str = "usage: kepr share key | send NAME --to KEY [--ttl SECS] [-o FILE] | receive [FILE] [--as NAME]";
+const USAGE: &str =
+    "usage: kepr share key | send NAME --to KEY|CONTACT [--ttl SECS] [-o FILE] [--qr] \
+                     [--view-window 5m] | receive [FILE] [--as NAME] | contact … | report";
 
 fn send(req: &Request) -> Response {
     client::send_request(req).unwrap_or_else(Response::fail)
 }
 
 fn cmd_send(args: &[String]) -> Response {
-    let pos = positional(args, &["--to", "--ttl", "-o"]);
+    let pos = positional(args, &["--to", "--ttl", "-o", "--view-window"]);
     let (Some(name), Some(to)) = (pos.first(), value(args, "--to")) else {
         return Response::fail(USAGE);
     };
@@ -34,10 +37,15 @@ fn cmd_send(args: &[String]) -> Response {
         Some(Err(_)) => return Response::fail("--ttl needs a number of seconds"),
         None => None,
     };
+    let view_window_secs = match crate::cli_sharing::view_window_arg(args) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
     let r = send(&Request::ShareSend {
         name: name.to_uppercase(),
         to: to.to_string(),
         ttl_secs,
+        view_window_secs,
     });
     let Response::ShareOk {
         envelope,
@@ -71,6 +79,17 @@ fn cmd_send(args: &[String]) -> Response {
             ));
         }
     }
+    // T11.15: the envelope as (chunked) QR codes, for a phone or an air gap.
+    if args.iter().any(|a| a == "--qr") {
+        if let Err(e) = crate::cli_sharing::print_qr(envelope) {
+            return Response::fail(e);
+        }
+    }
+    if let Some(w) = view_window_secs {
+        cli_ui::einfo(&format!(
+            "their copy deletes itself {w} s after its first get"
+        ));
+    }
     Response::Pong
 }
 
@@ -84,8 +103,13 @@ fn cmd_receive(args: &[String]) -> Response {
     if let Err(e) = read {
         return Response::fail(format!("cannot read the share: {e}"));
     }
+    // T11.15: scanned QR chunks (KQ<i>/<n>:…, one per line) are joined.
+    let envelope = match crate::cli_sharing::join_qr(&text) {
+        Ok(e) => e,
+        Err(e) => return Response::fail(e),
+    };
     let r = send(&Request::ShareReceive {
-        envelope: text.trim().to_string(),
+        envelope,
         name: value(args, "--as").map(str::to_uppercase),
     });
     if let (Response::SetOk { name, .. }, false) = (&r, cli_mode::json_mode()) {

@@ -66,6 +66,10 @@ pub struct CredMeta {
     /// link with this id is opened or expires. A new `set` drops it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub self_destruct_share: Option<String>,
+    /// T11.15: a received share with a view window. The first `get`
+    /// turns it into `expires_at_unix` = then + this, and clears it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub view_window_secs: Option<u64>,
     // batch: sync
     // batch: policy
     // batch: gate

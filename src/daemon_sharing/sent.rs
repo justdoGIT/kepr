@@ -49,6 +49,27 @@ pub(crate) fn record(uid: u32, row: SentShare, now: u64) -> Result<(), String> {
     save(&path, &l)
 }
 
+/// T11.15: a ledger row for an envelope sent to `to` (a contact name or
+/// `key:<fingerprint>`). Best effort: the audit chain has it anyway.
+pub(crate) fn record_envelope(uid: u32, p: &crate::daemon_share::Payload1, to: String) {
+    let now = expiry::now_unix();
+    let row = SentShare {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        kind: "envelope".into(),
+        to: Some(to),
+        relay: None,
+        sent_unix: now,
+        expires_unix: p.expires,
+        opened_unix: None,
+        self_destruct: false,
+        settled: false,
+    };
+    if let Err(e) = record(uid, row, now) {
+        eprintln!("[kepr-daemon] share ledger: {e}");
+    }
+}
+
 pub(crate) fn rows(uid: u32) -> Vec<SentShare> {
     let _g = LOCK.lock();
     load::<Ledger>(&state_path(KIND, uid)).sent
@@ -200,7 +221,12 @@ mod tests {
     use kepr_core::protocol_sharing::SharingResponse as S;
 
     fn link(uid: u32, name: &str, self_destruct: bool) -> (String, String, String) {
-        match handle_create((uid, 0), "t", name, Some(60), self_destruct, None) {
+        let opts = crate::daemon_sharing::link::Options {
+            ttl: Some(60),
+            self_destruct,
+            ..Default::default()
+        };
+        match handle_create((uid, 0), "t", name, opts) {
             Response::Sharing(S::ShareLink { key, blob, id, .. }) => {
                 (id, key.as_str().to_string(), blob)
             }

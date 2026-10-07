@@ -2,11 +2,14 @@
 // cli_more.rs): `kepr device …`. The extra `kepr share …` subcommands
 // are reached from cli_share.rs through `share_ext`.
 
+mod contacts;
 mod device;
 mod jwt;
 mod oidc;
 mod once;
 mod qr;
+
+pub(crate) use contacts::view_window_arg;
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -27,6 +30,12 @@ pub const HELP: &str =
                                        one-time link kepr://share/…#key (key only in the #fragment);
                                        --self-destruct deletes KEY once the link is opened or expires
   share check                          ask the relays which of your links were opened
+  share contact add NAME KEY | contact ls | contact rm NAME
+                                       pin a contact's share key; then `share send KEY --to NAME`
+  share send KEY --to NAME|PUBKEY [--qr] [--view-window 5m]
+                                       --qr: the envelope as QR codes (chunked; receive joins them);
+                                       --view-window: their copy deletes itself 5m after first get
+  share report                         sent shares: to whom, when, expiry, opened?
   share open LINK [--from FILE] [--as KEY]
                                        fetch (relay) or read (file) a one-time link and store it
 ";
@@ -46,6 +55,8 @@ pub fn share_ext(args: &[String]) -> Option<Response> {
         Some("send") if rest.iter().any(|a| a == "--once") => Some(once::send_once(rest)),
         Some("open") => Some(once::open(rest)),
         Some("check") => Some(once::check()),
+        Some("contact") => Some(contacts::cmd_contact(rest)),
+        Some("report") => Some(contacts::cmd_report()),
         _ => None,
     }
 }
@@ -69,6 +80,29 @@ pub(crate) fn parse_duration(text: &str) -> Result<u64, String> {
         .and_then(|n| n.checked_mul(mult))
         .filter(|s| *s > 0)
         .ok_or_else(|| format!("{text}: not a duration (like 90s, 15m, 1h, 7d)"))
+}
+
+/// `YYYY-MM-DD HH:MM` (UTC).
+pub(crate) fn fmt_time(unix: u64) -> String {
+    let d = kepr_core::sigv4::format_amz_date(unix); // YYYYMMDDTHHMMSSZ
+    format!(
+        "{}-{}-{} {}:{}",
+        &d[..4],
+        &d[4..6],
+        &d[6..8],
+        &d[9..11],
+        &d[11..13]
+    )
+}
+
+/// Print `text` as QR codes (chunked when long) on stderr.
+pub(crate) fn print_qr(text: &str) -> Result<(), String> {
+    qr::print(text)
+}
+
+/// Undo `print_qr`'s chunking on scanned input (plain text passes through).
+pub(crate) fn join_qr(text: &str) -> Result<String, String> {
+    qr::join(text)
 }
 
 pub(crate) fn now() -> u64 {

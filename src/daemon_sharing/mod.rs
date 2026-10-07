@@ -7,10 +7,13 @@
 // ledger, emergency contacts) is one small JSON file per uid in the
 // daemon's state directory, written through atomic_file under `LOCK`.
 
+pub mod contacts;
 pub mod devices;
 pub mod kem;
 pub mod link;
+pub mod report;
 pub mod sent;
+pub mod view;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -137,18 +140,32 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SharingRequest
             ttl_secs,
             self_destruct,
             relay,
+            view_window_secs,
         } => link::handle_create(
             (uid, peer_pid),
             username,
             &name,
-            ttl_secs,
-            self_destruct == Some(true),
-            relay,
+            link::Options {
+                ttl: ttl_secs,
+                self_destruct: self_destruct == Some(true),
+                relay,
+                view_window: view_window_secs,
+            },
         ),
         SharingRequest::ShareLinkOpen { blob, key, name } => {
             link::handle_open(uid, username, &blob, key.as_str(), name.as_deref())
         }
         SharingRequest::ShareSentList => sent::handle_list(uid),
         SharingRequest::ShareLinkOpened { id } => sent::handle_opened(uid, username, &id),
+        SharingRequest::ShareContactAdd { name, key } => {
+            contacts::handle_add(uid, username, &name, &key)
+        }
+        SharingRequest::ShareContactList => contacts::handle_list(uid),
+        SharingRequest::ShareContactRemove { name } => {
+            contacts::handle_remove(uid, username, &name)
+        }
+        SharingRequest::ShareReport => {
+            report::handle_report(uid, username, &crate::audit_chain_path())
+        }
     }
 }

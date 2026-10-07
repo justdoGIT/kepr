@@ -5,6 +5,7 @@
 // command names here must not collide with any other `cmd` / `kind`.
 
 use crate::generate::ZeroString;
+pub use crate::protocol_sharing_types::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,6 +43,10 @@ pub enum SharingRequest {
         /// Where the CLI puts the blob (kept in the sent-share ledger).
         #[serde(skip_serializing_if = "Option::is_none", default)]
         relay: Option<String>,
+        /// T11.15: the received copy deletes itself this long after its
+        /// first `get`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        view_window_secs: Option<u64>,
     },
     /// T6.04: open a link's blob with the key from its #fragment and
     /// store the value (as `name`, or the sender's name).
@@ -58,6 +63,17 @@ pub enum SharingRequest {
     ShareLinkOpened {
         id: String,
     },
+    /// T11.15: pin `key` (a share public key) under the contact `name`.
+    ShareContactAdd {
+        name: String,
+        key: String,
+    },
+    ShareContactList,
+    ShareContactRemove {
+        name: String,
+    },
+    /// T11.15: the caller's sent shares, from the ledger and the audit chain.
+    ShareReport,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,62 +104,16 @@ pub enum SharingResponse {
         link: ZeroString,
         expires_at: String,
     },
-    /// T6.05: the sent-share ledger, newest last.
+    /// T6.05: the sent-share ledger, newest last (also T11.15's report).
     ShareSent { shares: Vec<SentShare> },
-}
-
-/// One share this user sent (no value, no key).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SentShare {
-    pub id: String,
-    pub name: String,
-    /// `link` or `envelope`.
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub to: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub relay: Option<String>,
-    pub sent_unix: u64,
-    pub expires_unix: u64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub opened_unix: Option<u64>,
-    #[serde(default)]
-    pub self_destruct: bool,
-    /// The self-destruct ran (or found the record already replaced).
-    #[serde(default)]
-    pub settled: bool,
+    /// T11.15: the caller's pinned contacts.
+    ShareContacts { contacts: Vec<ContactInfo> },
 }
 
 impl From<SharingResponse> for crate::protocol::Response {
     fn from(r: SharingResponse) -> Self {
         crate::protocol::Response::Sharing(r)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OidcIdentity {
-    pub issuer: String,
-    pub subject: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceInfo {
-    pub id: String,
-    pub label: String,
-    /// The device's share public key (not secret).
-    pub public: String,
-    pub added: String,
-    /// T6.13: `subject @ issuer` when the enrolment was IdP-checked.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub identity: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingDevice {
-    pub label: String,
-    pub expires_at: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub oidc_issuer: Option<String>,
 }
 
 // ── T6.03 enrolment request (new device → first device) ──────────────────────
@@ -250,8 +220,16 @@ mod tests {
                 ttl_secs: Some(60),
                 self_destruct: Some(true),
                 relay: None,
+                view_window_secs: Some(300),
             },
             SharingRequest::ShareSentList,
+            SharingRequest::ShareContactAdd {
+                name: "bob".into(),
+                key: "kepr-pk2-x".into(),
+            },
+            SharingRequest::ShareContactList,
+            SharingRequest::ShareContactRemove { name: "bob".into() },
+            SharingRequest::ShareReport,
             SharingRequest::ShareLinkOpened { id: "i".into() },
             SharingRequest::ShareLinkOpen {
                 blob: "kepr-link1-x".into(),
@@ -297,6 +275,14 @@ mod tests {
                     opened_unix: None,
                     self_destruct: true,
                     settled: false,
+                }],
+            },
+            SharingResponse::ShareContacts {
+                contacts: vec![ContactInfo {
+                    name: "bob".into(),
+                    public: "kepr-pk2-x".into(),
+                    fingerprint: "ab".into(),
+                    added: "t".into(),
                 }],
             },
         ];

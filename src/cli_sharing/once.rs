@@ -23,7 +23,7 @@ use crate::{cli_mode, cli_ui};
 
 const SCHEME: &str = "kepr://share/";
 const USAGE: &str = "usage: kepr share send NAME --once [--ttl 1h] [--relay URL | -o FILE] [--qr] \
-                     [--self-destruct] | kepr share open LINK [--from FILE] [--as NAME]";
+                     [--self-destruct] [--view-window 5m] | kepr share open LINK [--from FILE] [--as NAME]";
 
 pub struct Link {
     pub id: String,
@@ -131,7 +131,7 @@ fn ttl_arg(args: &[String]) -> Result<Option<u64>, Response> {
 
 pub fn send_once(args: &[String]) -> Response {
     let r = (|| -> Result<Response, Response> {
-        let pos = positionals(args, &["--ttl", "--relay", "-o"]);
+        let pos = positionals(args, &["--ttl", "--relay", "-o", "--view-window"]);
         let name = pos.first().ok_or_else(|| Response::fail(USAGE))?;
         let relay = flag(args, "--relay").map(relay_base).transpose();
         let relay = relay.map_err(Response::fail)?;
@@ -144,6 +144,7 @@ pub fn send_once(args: &[String]) -> Response {
             ttl_secs: ttl_arg(args)?,
             self_destruct: self_destruct.then_some(true),
             relay: relay.clone(),
+            view_window_secs: super::view_window_arg(args)?,
         });
         let Response::Sharing(SharingResponse::ShareLink {
             id,

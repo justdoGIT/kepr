@@ -229,9 +229,14 @@ pub enum Request {
     /// P6.2: encrypt `name` to the public key `to` (expires after ttl).
     ShareSend {
         name: String,
+        /// A share public key, or (T11.15) a pinned contact's name.
         to: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         ttl_secs: Option<u64>,
+        /// T11.15: the received copy deletes itself this long after its
+        /// first `get`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        view_window_secs: Option<u64>,
     },
     /// P6.2: decrypt and store a share (single use), optionally renamed.
     ShareReceive {
