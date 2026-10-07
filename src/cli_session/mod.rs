@@ -1,13 +1,15 @@
 // cli_session/ — the `session` ticket batch, CLI side: `kepr reauth` and
 // `kepr set --reauth` (T11.14), `kepr --profile` (T11.16, applied first
 // thing in main.rs), `kepr batch` (T11.18), `kepr discover` rules
-// (T11.20, called from cli_discover.rs). Registered in cli_more.rs;
+// (T11.20, called from cli_discover.rs), `kepr ssh rotate` (T11.21, from
+// cli_ssh.rs). Registered in cli_more.rs;
 // flags on core verbs are parsed by cli_args.rs (`FLAGS` / `SessionFlags`).
 
 pub mod batch;
 pub mod discover_rules;
 pub mod profile;
 pub mod reauth;
+pub mod ssh_rotate;
 
 use kepr_core::protocol::Response;
 
@@ -24,6 +26,9 @@ pub const HELP: &str = "\
                                        the first error; values never on a line (--generate, kepr://)
   discover                             also applies ~/.config/kepr/discover.toml rules:
                                        [[rule]] match = \"aws:*prod*\" action = \"add|ignore|ask\"
+  ssh rotate KEY --host [USER@]HOST [--port N]
+                                       new key on the host (logged in with the old one), checks
+                                       a login with it, removes the old line, replaces KEY
   --profile NAME COMMAND               run COMMAND on profile NAME: its own store, state and
                                        daemon (same as KEPR_PROFILE=NAME)
 ";
