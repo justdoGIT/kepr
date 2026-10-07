@@ -157,6 +157,23 @@ impl Sealer for LocalFileSealer {
     }
 }
 
+/// The sealer for a daemon's master key at `path`. `KEPR_MASTER_KEY_SEAL`
+/// and the TPM2 PIN / counter options (T4.08) can pick another one
+/// (daemon_seal::sealer_for); otherwise user mode keeps the local file
+/// and system mode the machine's credential sealer.
+pub fn sealer_from_env(user: bool, path: &Path) -> Result<Box<dyn Sealer>, String> {
+    let seal = std::env::var("KEPR_MASTER_KEY_SEAL").ok();
+    let dir = path.parent().unwrap_or(Path::new("."));
+    if let Some(s) = crate::daemon_seal::sealer_for(seal.as_deref(), dir)? {
+        return Ok(s);
+    }
+    Ok(if user {
+        Box::new(LocalFileSealer)
+    } else {
+        Box::new(SystemdCredsSealer)
+    })
+}
+
 /// Load the master key from `path`, or generate + seal + write it on
 /// first run. The file is owned `root:root 0600`; the parent directory
 /// is created with `0700` if it does not exist.

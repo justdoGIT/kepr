@@ -255,20 +255,17 @@ fn main() {
         eprintln!("[kepr-daemon] cannot secure credential directory: {e}");
         std::process::exit(1);
     });
-    let sealer: Box<dyn master_key::Sealer> = if user {
-        Box::new(master_key::LocalFileSealer)
-    } else {
-        Box::new(master_key::SystemdCredsSealer)
-    };
     let password_protected = protected_master_key_path().exists();
     let key = if password_protected {
         None
     } else {
         Some(
-            master_key::load_or_generate(&master_key_path(), sealer.as_ref()).unwrap_or_else(|e| {
-                eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
-                std::process::exit(1);
-            }),
+            master_key::sealer_from_env(user, &master_key_path())
+                .and_then(|s| master_key::load_or_generate(&master_key_path(), s.as_ref()))
+                .unwrap_or_else(|e| {
+                    eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
+                    std::process::exit(1);
+                }),
         )
     };
     let versions = std::sync::Arc::new(
