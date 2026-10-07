@@ -4,6 +4,7 @@
 //   KEPR_MASTER_KEY_SEAL=aws-kms:<key-arn>            kms_aws.rs (T4.11)
 //   KEPR_MASTER_KEY_SEAL=gcp-kms:projects/…/cryptoKeys/… kms_cloud.rs (T4.12)
 //   KEPR_MASTER_KEY_SEAL=azure-kv:https://…/keys/K/V  kms_cloud.rs (T4.12)
+//   KEPR_MASTER_KEY_SEAL=pkcs11:<module>:<key-label>  pkcs11.rs (T4.13)
 //
 // `KekSealer` is one key service (wrap / unwrap 32 bytes); `KmsSealer`
 // turns it into the daemon's `master_key::Sealer` by writing which key

@@ -184,4 +184,13 @@ fn sealer_dropins_leave_the_base_unit_closed() {
     ));
     assert!(kms.contains("EnvironmentFile=-/etc/kepr/kms.env"));
     assert!(!kms.contains("PrivateDevices=no"));
+    // PKCS#11: network and USB stay commented out; the PIN is a file.
+    let p11 = dropin("pkcs11.conf.example");
+    assert!(p11.contains("Environment=KEPR_PKCS11_PIN_FILE=/etc/kepr/pkcs11.pin"));
+    for l in p11.lines().filter(|l| !l.starts_with('#')) {
+        assert!(
+            !l.contains("PrivateNetwork=no") && !l.contains("PrivateDevices=no"),
+            "{l}"
+        );
+    }
 }
