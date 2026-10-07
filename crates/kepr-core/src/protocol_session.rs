@@ -39,6 +39,8 @@ pub enum SessionResponse {
     ReauthOk { name: String, valid_secs: u64 },
     /// `name` now does (`on`) or doesn't require re-authentication.
     ReauthFlagOk { name: String, on: bool },
+    /// T11.18 (CLI only, for `--json`): every line of `kepr batch` ran.
+    BatchOk { ran: u32 },
 }
 
 /// T11.24: what `kepr status` shows beyond the lock state, flattened into
@@ -156,6 +158,7 @@ mod tests {
                 name: "K".into(),
                 on: false,
             }),
+            Response::Session(SessionResponse::BatchOk { ran: 3 }),
         ];
         for r in resps {
             let wire = serde_json::to_string(&r).unwrap();
