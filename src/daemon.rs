@@ -112,13 +112,13 @@ fn user_mode() -> bool {
 
 fn state_dir() -> std::path::PathBuf {
     if user_mode() {
-        std::env::var_os("XDG_STATE_HOME")
+        let base = std::env::var_os("XDG_STATE_HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
                     .join(".local/state")
-            })
-            .join("kepr")
+            });
+        kepr_core::profile::nest(base.join("kepr")) // T11.16
     } else {
         std::path::PathBuf::from("/var/lib/kepr")
     }
@@ -221,6 +221,7 @@ fn main() {
     } else {
         std::env::set_var("KEPR_SYSTEM_MODE", "1");
     }
+    daemon_session::check_profile_or_exit(); // T11.16
 
     fs::create_dir_all(state_dir()).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot create state directory: {e}");

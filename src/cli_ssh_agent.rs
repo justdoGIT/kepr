@@ -29,7 +29,12 @@ const MAX_MSG: usize = 256 * 1024;
 /// path in a shared /tmp could be taken first by another user.
 pub fn default_socket() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return Ok(PathBuf::from(dir).join("kepr-ssh-agent.sock"));
+        // T11.16: one agent per profile.
+        let file = match kepr_core::profile::current() {
+            Ok(Some(p)) => format!("kepr-ssh-agent-{p}.sock"),
+            _ => "kepr-ssh-agent.sock".to_string(),
+        };
+        return Ok(PathBuf::from(dir).join(file));
     }
     let mut rnd = [0u8; 8];
     getrandom::fill(&mut rnd).map_err(|e| format!("CSPRNG failure: {e}"))?;

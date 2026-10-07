@@ -17,6 +17,11 @@ pub fn socket_path() -> std::path::PathBuf {
     if std::env::var_os("KEPR_SYSTEM_MODE").is_some() {
         return std::path::PathBuf::from("/run/kepr/kepr.sock");
     }
+    crate::profile::nest(runtime_root()).join("kepr.sock") // T11.16
+}
+
+/// User mode: `$XDG_RUNTIME_DIR/kepr`, which holds every profile's socket.
+pub fn runtime_root() -> std::path::PathBuf {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -25,7 +30,7 @@ pub fn socket_path() -> std::path::PathBuf {
                 .unwrap_or_else(std::env::temp_dir)
                 .join(".local/state/kepr/runtime")
         });
-    runtime.join("kepr").join("kepr.sock")
+    runtime.join("kepr")
 }
 
 pub fn socket_dir() -> std::path::PathBuf {
