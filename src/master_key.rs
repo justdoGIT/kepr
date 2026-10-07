@@ -25,7 +25,8 @@ const SYSTEMD_CREDS_BIN: &str = "/usr/bin/systemd-creds";
 const KEY_TYPE: &str = "host";
 const SEALED_NAME: &str = "kepr-master-key";
 /// T4.11: the other sealers `KEPR_MASTER_KEY_SEAL` can name (daemon_seal).
-const BYOK_KINDS: &str = "aws-kms:ARN, gcp-kms:NAME, azure-kv:URL, pkcs11:MODULE:LABEL";
+const BYOK_KINDS: &str =
+    "aws-kms:ARN, gcp-kms:NAME, azure-kv:URL, pkcs11:MODULE:LABEL, keychain (macOS)";
 
 /// Read 32 random bytes from /dev/urandom. Linux's CSPRNG is the right
 /// source for long-term key material; getrandom(2) would be equivalent

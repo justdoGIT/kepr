@@ -13,13 +13,15 @@
 //   kms_aws    T4.11 AWS KMS (SigV4)
 //   kms_cloud  T4.12 GCP Cloud KMS and Azure Key Vault (bearer tokens)
 //   pkcs11     T4.13 PKCS#11 token / HSM through pkcs11-tool (RSA-OAEP)
-//   http       the key services' HTTPS transport (fake / loopback in tests)
+//   keychain   T10.04 the macOS keychain (`security`), macOS only at run time
+//   http      the key services' HTTPS transport (fake / loopback in tests)
 //
 // `sealer_for` picks a sealer from the environment for
 // master_key::sealer_from_env; `None` keeps the default one.
 
 pub mod fido2_kek;
 mod http;
+mod keychain;
 mod kms;
 mod kms_aws;
 mod kms_cloud;
@@ -40,6 +42,9 @@ use crate::master_key::Sealer;
 /// The sealer `KEPR_MASTER_KEY_SEAL` (`seal`) and the TPM2 options ask
 /// for, or `None` for the default. `work` is the master key's directory.
 pub fn sealer_for(seal: Option<&str>, work: &Path) -> Result<Option<Box<dyn Sealer>>, String> {
+    if seal == Some("keychain") {
+        return Ok(Some(Box::new(keychain::KeychainSealer::from_env()?)));
+    }
     let (kind, key) = seal.and_then(|s| s.split_once(':')).unwrap_or_default();
     let byok: Option<Box<dyn Sealer>> = match kind {
         "aws-kms" => Some(Box::new(kms::KmsSealer(kms_aws::AwsKms::from_env(key)?))),
@@ -105,5 +110,9 @@ mod tests {
         }
         let e = sealer_for(Some("aws-kms:not-an-arn"), dir).err().unwrap();
         assert!(e.contains("not a KMS key ARN"), "{e}");
+        if !cfg!(target_os = "macos") {
+            let e = sealer_for(Some("keychain"), dir).err().unwrap();
+            assert!(e.contains("only available on macOS"), "{e}");
+        }
     }
 }
