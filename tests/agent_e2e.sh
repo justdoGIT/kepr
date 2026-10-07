@@ -110,6 +110,13 @@ case "$codes" in
     *) fail "request cap not enforced (codes: $codes)" ;;
 esac
 
+echo "── request journal"
+sleep 1
+LOGS=$("$KEPR" agent logs -n 50 2>&1) || true
+case "$LOGS" in *"/v1/messages"*"blocked: dlp"*) pass "agent logs shows the DLP refusal" ;; *) fail "agent logs: $LOGS" ;; esac
+case "$LOGS" in *"blocked: limit"*) pass "agent logs shows the request cap" ;; *) fail "agent logs misses the cap" ;; esac
+case "$LOGS" in *"$REAL"*) fail "agent logs prints the real key" ;; *) pass "agent logs never prints the key" ;; esac
+
 echo "── sandbox"
 cat >"$WORK/sbprobe.sh" <<'PROBE'
 #!/usr/bin/env bash

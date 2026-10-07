@@ -4,6 +4,7 @@
 // lines below are appended to `kepr --help`.
 
 pub mod grant;
+pub mod logs;
 pub mod mysql_login;
 pub mod pg_script;
 pub mod replay;
@@ -19,6 +20,7 @@ pub const HELP: &str = concat!(
     "  agent run HARNESS --record      keep what the agent sends and receives, encrypted (never keys)\n",
     "  agent replay [SESSION]          list recorded sessions, or print one\n",
     "  agent replay SESSION --typescript FILE --timing FILE  its PostgreSQL traffic for scriptreplay\n",
+    "  agent logs [SESSION] [-n N] [--follow]  the gate's request journal (method, host, path, status)\n",
 );
 
 pub fn dispatch(verb: &str, _args: &[String]) -> Response {
@@ -29,6 +31,7 @@ pub fn dispatch(verb: &str, _args: &[String]) -> Response {
 pub fn agent_verb(raw: &[String]) -> Option<Response> {
     match raw.first()?.as_str() {
         "replay" => Some(replay::main(&raw[1..])),
+        "logs" => Some(logs::main(&raw[1..])),
         _ => None,
     }
 }

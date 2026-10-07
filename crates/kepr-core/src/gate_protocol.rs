@@ -30,6 +30,12 @@ pub enum GateRequest {
         id: u64,
         record: crate::gate_record::GateRecord,
     },
+    /// T11.22: request journal entries for `kepr agent logs` (at most
+    /// `gate_journal::MAX_BATCH`); answered with `Recorded`.
+    Journal {
+        id: u64,
+        entries: Vec<crate::gate_journal::JournalEntry>,
+    },
 }
 
 /// Daemon → gate.

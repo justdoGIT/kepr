@@ -159,6 +159,7 @@ pub fn run() -> Result<(), String> {
     // From here on the key exists only as SplitKey shares in secret
     // memory; the plain copy is wiped rather than kept for the session.
     drop(key);
+    crate::journal::spawn_flusher(state.journal.clone(), cache.clone());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -211,7 +212,11 @@ pub fn run() -> Result<(), String> {
             }
             // T7.18: take back the roles this session granted.
             crate::pg_jit::revoke_all(&st, &jit_routes).await;
+            // Connections the agent closed as it exited are still winding
+            // down: let them journal (and record) their last lines.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             recorder.flush(&cache);
+            st.journal.flush(&cache);
             cache.clear();
             std::process::exit(0);
         });
