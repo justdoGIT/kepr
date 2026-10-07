@@ -62,9 +62,14 @@ pub fn pick_syncer(url: &str) -> Result<Box<dyn Syncer>, String> {
         Ok(Box::new(
             crate::cli_syncx::json_file::JsonFileSyncer::from_path(spec)?,
         ))
+    } else if let Some(spec) = url.strip_prefix("azure-kv:") {
+        // T8.05 (batch: sync): Azure Key Vault, bearer token.
+        Ok(Box::new(
+            crate::cli_syncx::azure_kv::AzureKvSyncer::from_path(spec)?,
+        ))
     } else {
         Err(format!(
-            "unsupported sync scheme in {url:?} — supported: vault:, aws-sm:, gcp-sm:, json:"
+            "unsupported sync scheme in {url:?} — supported: vault:, aws-sm:, gcp-sm:, azure-kv:, json:"
         ))
     }
 }
@@ -161,6 +166,13 @@ mod tests {
         assert_eq!(s.backend(), "json");
         // A malformed target is refused before anything runs.
         assert!(pick_syncer("json:secrets.json").is_err());
+    }
+
+    #[test]
+    fn pick_syncer_dispatches_azure_kv_scheme() {
+        let s = pick_syncer("azure-kv:myvault/db-pass").unwrap();
+        assert_eq!(s.backend(), "azure-kv");
+        assert!(pick_syncer("azure-kv:evil.example/x").is_err());
     }
 
     #[test]
