@@ -186,6 +186,11 @@ pub fn handle_get(
         }
     }
 
+    // T11.15: a received share's view window starts at its first read.
+    if crate::daemon_sharing::view::start(uid, &upper).is_err() {
+        return Response::fail("credential unavailable");
+    }
+
     match crypto::default_backend().decrypt(uid, &upper) {
         Ok(secret) => {
             audit::log(&AuditEvent {

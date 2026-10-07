@@ -44,6 +44,7 @@ pub mod protocol_records;
 pub mod record_types;
 // batch: share
 pub mod protocol_sharing;
+pub mod protocol_sharing_types;
 // batch: sync
 // batch: policy
 pub mod policy;

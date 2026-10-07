@@ -77,16 +77,31 @@ pub fn key_text(key: &[u8; 32]) -> String {
     B64.encode(key)
 }
 
+/// `share send --once` flags.
+#[derive(Default)]
+pub struct Options {
+    pub ttl: Option<u64>,
+    pub self_destruct: bool,
+    pub relay: Option<String>,
+    /// T11.15: the received copy deletes itself this long after its first get.
+    pub view_window: Option<u64>,
+}
+
 pub fn handle_create(
     (uid, peer_pid): (u32, i32),
     username: &str,
     name: &str,
-    ttl: Option<u64>,
-    self_destruct: bool,
-    relay: Option<String>,
+    opts: Options,
 ) -> Response {
+    let Options {
+        ttl,
+        self_destruct,
+        relay,
+        view_window,
+    } = opts;
     let upper = name.to_uppercase();
     let r = (|| {
+        crate::daemon_sharing::view::check(view_window)?;
         if relay
             .as_ref()
             .is_some_and(|r| r.len() > 256 || r.chars().any(char::is_control))
@@ -96,7 +111,8 @@ pub fn handle_create(
         // One lock over read + mark: a value set in between is never
         // the one that self-destructs.
         let _lock = crate::daemon_credlock::lock(uid, &upper);
-        let p = new_payload((uid, peer_pid), name, ttl)?;
+        let mut p = new_payload((uid, peer_pid), name, ttl)?;
+        p.view_window = view_window;
         let json = Zeroizing::new(serde_json::to_vec(&p).map_err(|e| e.to_string())?);
         let (key, blob) = seal(&json)?;
         let now = expiry::now_unix();
@@ -154,7 +170,11 @@ mod tests {
     use kepr_core::protocol_sharing::SharingResponse as S;
 
     fn link(uid: u32, name: &str) -> (String, String) {
-        match handle_create((uid, 0), "t", name, Some(60), false, None) {
+        let opts = Options {
+            ttl: Some(60),
+            ..Default::default()
+        };
+        match handle_create((uid, 0), "t", name, opts) {
             Response::Sharing(S::ShareLink { key, blob, id, .. }) => {
                 assert_eq!(id.len(), 32);
                 (key.as_str().to_string(), blob)
@@ -201,6 +221,7 @@ mod tests {
             value: "v".into(),
             expires: expiry::now_unix() - 1,
             record_type: None,
+            view_window: None,
         };
         let (key, blob) = seal(&serde_json::to_vec(&p).unwrap()).unwrap();
         let r = handle_open(uid, "t", &blob, &key_text(&key), None);
@@ -212,7 +233,30 @@ mod tests {
     fn sealed_values_never_go_into_a_link() {
         let uid = testkit::uid();
         testkit::set_sealed(uid, "LINK_SEALED", "v");
-        let r = handle_create((uid, 0), "t", "LINK_SEALED", None, true, None);
+        let opts = Options {
+            self_destruct: true,
+            ..Default::default()
+        };
+        let r = handle_create((uid, 0), "t", "LINK_SEALED", opts);
         assert!(matches!(r, Response::Err { error } if error.contains("can't be shared")));
+    }
+
+    #[test]
+    fn a_link_carries_its_view_window_to_the_receiver() {
+        let (a, b) = (testkit::uid(), testkit::uid());
+        testkit::set(a, "LINK_VW", "v");
+        let opts = |w| Options {
+            view_window: Some(w),
+            ..Default::default()
+        };
+        assert!(!handle_create((a, 0), "t", "LINK_VW", opts(0)).is_success());
+        let Response::Sharing(S::ShareLink { key, blob, .. }) =
+            handle_create((a, 0), "t", "LINK_VW", opts(300))
+        else {
+            panic!("no link");
+        };
+        assert!(handle_open(b, "t", &blob, key.as_str(), None).is_success());
+        assert_eq!(testkit::meta(b, "LINK_VW").view_window_secs, Some(300));
+        assert_eq!(testkit::meta(b, "LINK_VW").expires_at_unix, None);
     }
 }

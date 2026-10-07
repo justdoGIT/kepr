@@ -288,6 +288,7 @@ mod tests {
             name: "a".into(),
             to: "x".into(),
             ttl_secs: None,
+            view_window_secs: None,
         };
         assert!(is_err(
             &decide(&broken, me, "u", &share),
@@ -314,6 +315,7 @@ mod tests {
             name: "token".into(),
             to: "x".into(),
             ttl_secs: None,
+            view_window_secs: None,
         };
         assert!(is_err(
             &decide(&p, me, "u", &share),

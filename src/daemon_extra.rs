@@ -69,8 +69,17 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
             (requires_consent, seal),
         ),
         Request::ShareKey { create } => crate::daemon_share::handle_key(uid, username, create),
-        Request::ShareSend { name, to, ttl_secs } => {
-            crate::daemon_share::handle_send((uid, peer_pid), username, &name, &to, ttl_secs)
+        Request::ShareSend {
+            name,
+            to,
+            ttl_secs,
+            view_window_secs,
+        } => {
+            let opts = crate::daemon_share::SendOptions {
+                ttl: ttl_secs,
+                view_window: view_window_secs,
+            };
+            crate::daemon_share::handle_send((uid, peer_pid), username, &name, &to, opts)
         }
         Request::ShareReceive { envelope, name } => {
             crate::daemon_share::handle_receive(uid, username, &envelope, name.as_deref())
