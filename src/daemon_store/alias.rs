@@ -132,6 +132,7 @@ pub fn infos(uid: u32) -> Vec<CredInfo> {
             folder: meta.folder,
             alias_of: meta.alias_of,
             db_kind: None,
+            ..Default::default()
         })
         .collect()
 }

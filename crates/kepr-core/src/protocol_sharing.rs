@@ -103,6 +103,12 @@ pub enum SharingRequest {
     /// T6.06: released envelopes for the caller's share key (and, for an
     /// owner, the ones released from their grants, to pass on).
     EmergencyRelease,
+    /// T6.07: reveal sealed `name` once, given k recovery-kit shares of
+    /// this store's key. Replies `Response::GetOk`; marks `must_rotate`.
+    BreakGlass {
+        name: String,
+        shares: Vec<ZeroString>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -295,6 +301,10 @@ mod tests {
                 proof: "kepr-emreq1-x".into(),
             },
             SharingRequest::EmergencyRelease,
+            SharingRequest::BreakGlass {
+                name: "A".into(),
+                shares: vec!["kepr1-x".into()],
+            },
             SharingRequest::ShareLinkOpened { id: "i".into() },
             SharingRequest::ShareLinkOpen {
                 blob: "kepr-link1-x".into(),

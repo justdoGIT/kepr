@@ -7,6 +7,7 @@
 // ledger, emergency contacts) is one small JSON file per uid in the
 // daemon's state directory, written through atomic_file under `LOCK`.
 
+pub mod breakglass;
 pub mod contacts;
 pub mod devices;
 pub mod emergency;
@@ -197,5 +198,8 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SharingRequest
             emergency_release::handle_request(uid, username, &proof)
         }
         SharingRequest::EmergencyRelease => emergency_release::handle_release(uid, username),
+        SharingRequest::BreakGlass { name, shares } => {
+            breakglass::handle(uid, username, &name, &shares)
+        }
     }
 }

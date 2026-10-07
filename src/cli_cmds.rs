@@ -309,6 +309,7 @@ pub fn cmd_list(a: &Args) -> Response {
                     tail.push_str("  (consent required)");
                 }
                 tail.push_str(&crate::cli_store::list_tail(c));
+                tail.push_str(crate::cli_sharing::list_tail(c)); // T6.07
                 println!("  {:<40} {}", color("1", &c.name), color("2", &tail));
             }
             println!();

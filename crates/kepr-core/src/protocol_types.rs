@@ -117,6 +117,9 @@ pub struct CredInfo {
     pub alias_of: Option<String>,
     // batch: records
     // batch: share
+    /// T6.07: revealed by break-glass; rotate it (cleared by the next set).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub must_rotate: Option<bool>,
     // batch: sync
     // batch: policy
     // batch: gate

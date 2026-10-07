@@ -70,6 +70,10 @@ pub struct CredMeta {
     /// turns it into `expires_at_unix` = then + this, and clears it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub view_window_secs: Option<u64>,
+    /// T6.07: the value was revealed by break-glass; rotate it. The next
+    /// `set` drops it (handle_set doesn't carry it over).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub must_rotate: Option<bool>,
     // batch: sync
     // batch: policy
     // batch: gate
