@@ -140,3 +140,41 @@ fn gate_service_unit_keeps_its_isolation() {
         "the gate service must not run as root"
     );
 }
+
+/// The `seal` batch (T4.08, T4.11–T4.13): sealers that need a device or
+/// the network get it from opt-in drop-ins under `systemd/kepr.service.d/`;
+/// the base unit keeps no device, no network and only local sockets.
+#[test]
+fn sealer_dropins_leave_the_base_unit_closed() {
+    let body = unit();
+    for d in [
+        "PrivateNetwork=yes",
+        "PrivateDevices=yes",
+        "RestrictAddressFamilies=AF_UNIX AF_NETLINK\n",
+    ] {
+        assert!(body.contains(d), "base unit lost `{}`", d.trim());
+    }
+    let directives: Vec<&str> = body
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    for d in ["AF_INET", "DeviceAllow=", "PrivateNetwork=no"] {
+        assert!(
+            !directives.iter().any(|l| l.contains(d)),
+            "base unit must not carry `{d}`"
+        );
+    }
+    let dropin = |name: &str| {
+        fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("systemd/kepr.service.d")
+                .join(name),
+        )
+        .unwrap_or_else(|e| panic!("read {name}: {e}"))
+    };
+    let tpm2 = dropin("tpm2.conf.example");
+    assert!(tpm2.contains(
+        "[Service]\nPrivateDevices=no\nDevicePolicy=closed\nDeviceAllow=/dev/tpmrm0 rw\n"
+    ));
+    assert!(!tpm2.contains("PrivateNetwork=no"));
+}

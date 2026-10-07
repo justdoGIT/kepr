@@ -40,6 +40,8 @@ pub struct Args {
     pub requires_consent: bool,
     /// `kepr set` only: FIDO2 hardware-key assertion gate. Phase 2 η.
     pub requires_fido2: bool,
+    /// `kepr lock --fido2`: the passphrase and a security key (T4.09).
+    pub lock_fido2: bool,
     /// `kepr fido2-register` only: hex credential ID from authenticator.
     pub fido2_credential_id: Option<String>,
     /// `kepr fido2-register` only: hex COSE_Key public key from authenticator.
@@ -82,6 +84,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut url: Option<String> = None;
     let mut requires_consent = false;
     let mut requires_fido2 = false;
+    let mut lock_fido2 = false;
     let mut fido2_credential_id: Option<String> = None;
     let mut fido2_public_key_cose: Option<String> = None;
     let mut store = crate::cli_store::StoreFlags::default();
@@ -228,6 +231,10 @@ pub fn parse_args() -> Result<Args, String> {
                 requires_fido2 = true;
                 i += 1;
             }
+            "--fido2" => {
+                lock_fido2 = true; // T4.09: `kepr lock --fido2`
+                i += 1;
+            }
             "--hook" => {
                 // `kepr rotate NAME --hook ./refresh.sh` — path to
                 // the validation hook. We don't existence-check
@@ -304,6 +311,7 @@ pub fn parse_args() -> Result<Args, String> {
         url,
         requires_consent,
         requires_fido2,
+        lock_fido2,
         fido2_credential_id,
         fido2_public_key_cose,
         store,

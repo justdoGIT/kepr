@@ -88,23 +88,35 @@ fn allowed(uid: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// The fences every path that hands out the master key goes through
+/// (recovery kit shares, T4.10 recovery words): the owner only, no agent
+/// gate running, a passphrase-protected store and that passphrase again.
+pub fn release_live_key(
+    uid: u32,
+    username: &str,
+    password: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, String> {
+    allowed(uid)?;
+    if crate::daemon_gate_registry::gates_for(uid) > 0 {
+        return Err("stop running agent sessions first (kepr panic)".into());
+    }
+    if !crate::protected_master_key_path().exists() {
+        return Err("set a passphrase first (kepr lock), then retry".into());
+    }
+    // T11.13: the passphrase check is rate-limited like `kepr unlock`.
+    let key = crate::daemon_session::unlock_guard::unwrap_guarded(password, uid, username)?;
+    let live = crypto::snapshot_key()?;
+    if *key != *live {
+        return Err("the passphrase does not match the running store".into());
+    }
+    Ok(key)
+}
+
 pub fn handle_create(uid: u32, username: &str, password: &[u8], k: u8, n: u8) -> Response {
     let mut shares = Vec::new();
     let mut fp = String::new();
     let r = (|| {
-        allowed(uid)?;
-        if crate::daemon_gate_registry::gates_for(uid) > 0 {
-            return Err("stop running agent sessions first (kepr panic)".into());
-        }
-        if !crate::protected_master_key_path().exists() {
-            return Err("set a passphrase first (kepr lock), then retry".into());
-        }
-        // T11.13: the passphrase check is rate-limited like `kepr unlock`.
-        let key = crate::daemon_session::unlock_guard::unwrap_guarded(password, uid, username)?;
-        let live = crypto::snapshot_key()?;
-        if *key != *live {
-            return Err("the passphrase does not match the running store".into());
-        }
+        let key = release_live_key(uid, username, password)?;
         fp = fingerprint(&key);
         for s in shamir::split(key.as_ref(), k, n)? {
             shares.push(ZeroString::from_string(shamir::encode(&s, &fp).to_string()));
@@ -154,27 +166,7 @@ pub fn handle_restore(
         if fps.first() != Some(&fp) {
             return Err("the shares do not rebuild the key they were made from".into());
         }
-        let (opened, total) = probe(&key);
-        if opened == 0 {
-            return Err(format!(
-                "the rebuilt key opens none of the {total} credential file(s) here; \
-                 copy the old credential store into place first"
-            ));
-        }
-        // Never re-key a store whose loaded key still works: restore is
-        // for a lost key. A locked store (forgotten passphrase) has no
-        // loaded key, so restore goes ahead: k shares are the key itself,
-        // so this grants nothing the shares don't already.
-        if let Ok(live) = crypto::snapshot_key() {
-            if probe(&live).0 > 0 {
-                return Err("this store's current key still works; nothing to restore".into());
-            }
-        }
-        let envelope = key_unlock::wrap(&key, new_password)?;
-        crate::daemon_lock::install_protected_key(&envelope)?;
-        let _ = crypto::lock_backend();
-        crypto::unlock_backend(*key)?;
-        summary = (fp, opened);
+        summary = (fp, install_rebuilt_key(&key, new_password)?);
         Ok(())
     })();
     audit_result("recovery-restore", uid, username, &r);
@@ -185,6 +177,33 @@ pub fn handle_restore(
         },
         Err(e) => Response::fail(e),
     }
+}
+
+/// Make a rebuilt master key (shares, T4.10 words) the store's key under
+/// `new_password`, once it proves itself against the credential files and
+/// only while the loaded key no longer works. Returns the files it opens.
+pub fn install_rebuilt_key(key: &[u8; 32], new_password: &[u8]) -> Result<usize, String> {
+    let (opened, total) = probe(key);
+    if opened == 0 {
+        return Err(format!(
+            "the rebuilt key opens none of the {total} credential file(s) here; \
+             copy the old credential store into place first"
+        ));
+    }
+    // Never re-key a store whose loaded key still works: restore is
+    // for a lost key. A locked store (forgotten passphrase) has no
+    // loaded key, so restore goes ahead: k shares are the key itself,
+    // so this grants nothing the shares don't already.
+    if let Ok(live) = crypto::snapshot_key() {
+        if probe(&live).0 > 0 {
+            return Err("this store's current key still works; nothing to restore".into());
+        }
+    }
+    let envelope = key_unlock::wrap(key, new_password)?;
+    crate::daemon_lock::install_protected_key(&envelope)?;
+    let _ = crypto::lock_backend();
+    crypto::unlock_backend(*key)?;
+    Ok(opened)
 }
 
 #[cfg(test)]
