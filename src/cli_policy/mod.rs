@@ -1,22 +1,29 @@
 // cli_policy/ — the `policy` ticket batch, CLI side: `kepr policy`
 // (T6.11), `kepr report access` (T6.12), webhooks (`notify`) and
-// `kepr health --notify` (T6.08). Registered in cli_more.rs.
+// `kepr health --notify` (T6.08), `kepr audit forward` (T7.14).
+// Registered in cli_more.rs.
 
+mod forward;
 mod health;
 mod notify;
 mod policy;
 mod report;
+mod siem;
+mod tail;
 
 use kepr_core::protocol::{Request, Response};
-use kepr_core::protocol_policy::PolicyRequest;
+use kepr_core::protocol_policy::{PolicyRequest, PolicyResponse};
 
-pub const VERBS: &[&str] = &["policy", "report"];
+pub const VERBS: &[&str] = &["policy", "report", "audit"];
 
 pub const HELP: &str = "  policy test FILE                     run the [[test]] cases of a policy.toml (allow / deny per case)
   policy status | policy reload        the policy the daemon enforces (~/.config/kepr/policy.toml or
                                        /etc/kepr/policy.toml); deny by default once the file exists
   report access KEY                    every path KEY can take: gate bindings, shares sent, agent
                                        gates and reads (audit log), aliases, sync devices, policy
+  audit forward --to TARGET [--once]   stream audit events (op, name, uid, result, time; never values)
+                                       to jsonl:PATH, syslog:udp://HOST[:PORT] or otlp:URL; resumes
+                                       after a restart [--interval SECS] [--state FILE]
   health … --notify URL [--format F]   post findings (names and flags only) to a webhook; F: slack,
                                        teams, discord, ntfy or json (guessed from URL); URL may be kepr:NAME
 ";
@@ -25,6 +32,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
     match verb {
         "policy" => policy::cmd_policy(args),
         "report" => report::cmd_report(args),
+        "audit" => forward::cmd_audit(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }
@@ -32,6 +40,14 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
 /// `kepr health` hook (T6.08): `--notify URL [--format F]`, checked
 /// before the health run.
 pub use health::{after as after_health, parse as health_notify};
+
+/// A CLI-local success: printed here (unless --json), returned for main.
+fn done(message: String) -> Response {
+    if !crate::cli_mode::json_mode() {
+        crate::cli_ui::ok(&message);
+    }
+    Response::Policy(PolicyResponse::PolicyDone { message })
+}
 
 fn send(req: PolicyRequest) -> Response {
     crate::client::send_request(&Request::Policy(req)).unwrap_or_else(Response::fail)
