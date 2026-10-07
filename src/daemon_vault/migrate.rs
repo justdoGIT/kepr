@@ -1,6 +1,8 @@
 // daemon_vault/migrate.rs — `kepr vault migrate` (T4.07): move every
-// per-file credential (value, `.meta`, history slots `NAME~N`) into the
-// vault image, one record at a time.
+// per-file credential (value, `.meta`, history slots `NAME~N`, and since
+// T4.14 trash entries `NAME~t<unix>[~N]`, attachment chunks `NAME~a<k>~<n>`
+// and aliases, which are `.meta` only) into the vault image, one record at
+// a time.
 //
 // Each move runs under the credential's lock: decrypt the file, write
 // value + meta as one record (a journaled, fsynced commit), read the
@@ -19,14 +21,13 @@ use std::path::Path;
 use super::backend::ImageBackend;
 use super::index::Record;
 use crate::crypto::Backend;
-use crate::store;
 
 /// One per-file credential: (file name, uid, NAME or NAME~N).
 pub type FileCred = (String, u32, String);
 
-/// `kepr-<uid>-<name>` and history slots `kepr-<uid>-<name>~<n>` in
-/// `dir` (sidecars and temp files excluded), sorted; only `uid`'s when
-/// given.
+/// `kepr-<uid>-<name>`, history slots `kepr-<uid>-<name>~<n>` and trash
+/// entries `…~t<unix>[~<n>]` in `dir` (sidecars and temp files excluded),
+/// sorted; only `uid`'s when given.
 pub fn legacy_files(dir: &Path, only_uid: Option<u32>) -> Vec<FileCred> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -43,20 +44,10 @@ pub fn legacy_files(dir: &Path, only_uid: Option<u32>) -> Vec<FileCred> {
     out
 }
 
-/// `kepr-<uid>-<name>[~<n>]` → (uid, NAME[~n]); `None` for anything
-/// else, sidecars and temp files included (their names don't validate).
+/// `kepr-<uid>-<name>[~…]` → (uid, NAME[~…]); `None` for anything
+/// else, sidecars and temp files included.
 fn parse(file: &str) -> Option<(u32, String)> {
-    let (base, slot) = match file.split_once('~') {
-        Some((b, s)) if !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()) => (b, Some(s)),
-        Some(_) => return None,
-        None => (file, None),
-    };
-    let (uid, name) = store::from_cred_name(base)?;
-    let name = match slot {
-        Some(s) => format!("{name}~{s}"),
-        None => name,
-    };
-    (store::to_cred_name(uid, &name) == file).then_some((uid, name))
+    crate::daemon_store::files::parse_file_name(file)
 }
 
 /// Move what's in `dir` into `image`: (moved, left in files). The caller
@@ -77,8 +68,8 @@ pub fn migrate_from(
             Err(e) => return Err(format!("{e} ({moved} moved before this)")),
         }
     }
-    remove_moved_meta(image, dir)?;
-    Ok((moved, left))
+    let aliases = finish_meta(image, dir)?;
+    Ok((moved + aliases, left))
 }
 
 /// NAME of NAME~N: the credential lock covers its history slots.
@@ -133,13 +124,15 @@ fn move_one(
     Ok(true)
 }
 
-/// Remove `.meta` files whose credential file is gone and whose meta the
-/// image holds byte for byte (what a run stopped mid-removal leaves).
-/// Any other `.meta` stays.
-fn remove_moved_meta(image: &ImageBackend, dir: &Path) -> Result<(), String> {
+/// `.meta` files whose credential file is gone: an alias the image has
+/// no record for moves in as a meta-only record (T4.14); one the image
+/// holds byte for byte (a moved alias, or what a run stopped mid-removal
+/// leaves) is removed. Any other `.meta` stays. Returns aliases moved.
+fn finish_meta(image: &ImageBackend, dir: &Path) -> Result<usize, String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Ok(());
+        return Ok(0);
     };
+    let mut moved = 0;
     for e in entries.flatten() {
         let f = e.file_name();
         let Some(file) = f.to_str().and_then(|f| f.strip_suffix(".meta")) else {
@@ -155,11 +148,28 @@ fn remove_moved_meta(image: &ImageBackend, dir: &Path) -> Result<(), String> {
         let Ok(bytes) = std::fs::read(e.path()) else {
             continue;
         };
-        if image.record(file)?.and_then(|r| r.meta).as_deref() == Some(bytes.as_slice()) {
+        let same = |r: &Option<Record>| {
+            r.as_ref()
+                .is_some_and(|r| r.meta.as_deref() == Some(&bytes[..]))
+        };
+        let mut rec = image.record(file)?;
+        if rec.is_none() && is_alias(&bytes) {
+            image.with_write(|img, keys| img.put_record(keys, file, None, Some(&bytes)))?;
+            rec = image.record(file)?;
+            if !same(&rec) {
+                return Err("vault migrate: a record did not read back".into());
+            }
+            moved += 1;
+        }
+        if same(&rec) {
             std::fs::remove_file(e.path()).map_err(|e| format!("remove meta: {e}"))?;
         }
     }
-    Ok(())
+    Ok(moved)
+}
+
+fn is_alias(meta: &[u8]) -> bool {
+    serde_json::from_slice::<crate::expiry::CredMeta>(meta).is_ok_and(|m| m.alias_of.is_some())
 }
 
 #[cfg(test)]
@@ -167,6 +177,7 @@ mod tests {
     use super::*;
     use crate::crypto_inproc::InProcBackend;
     use crate::expiry::{self, CredMeta, MetaStore};
+    use crate::store;
     use crate::version_state::VersionState;
     use std::sync::Arc;
     use zeroize::Zeroizing;
@@ -221,6 +232,9 @@ mod tests {
             "kepr-1000-plain",
             "kepr-1000-plain.meta",
             "kepr-1000-plain~0",
+            "kepr-1000-plain~t17",
+            "kepr-1000-plain~t17~2",
+            "kepr-1000-plain~a3~1",
             "kepr-1000-plain~x",
             "kepr-1000-plain.tmp.12.3",
             "kepr-1000-bad..name",
@@ -237,6 +251,9 @@ mod tests {
             vec![
                 want("kepr-1000-plain", 1000, "PLAIN"),
                 want("kepr-1000-plain~0", 1000, "PLAIN~0"),
+                want("kepr-1000-plain~a3~1", 1000, "PLAIN~a3~1"),
+                want("kepr-1000-plain~t17", 1000, "PLAIN~t17"),
+                want("kepr-1000-plain~t17~2", 1000, "PLAIN~t17~2"),
                 want("kepr-1001-other-name", 1001, "OTHER_NAME"),
             ]
         );
@@ -361,6 +378,43 @@ mod tests {
         let stray_file = |n: &str| format!("{}.meta", store::to_cred_name(UID, n));
         assert_eq!(f.kepr_files(), [stray_file("GONE~0"), stray_file("STRAY")]);
         assert_eq!(f.image.read_meta(&f.meta_path("GONE")), Some(Ok(meta)));
+    }
+
+    /// T4.14: the trash and aliases come along.
+    #[test]
+    fn migrate_moves_trash_entries_and_aliases() {
+        let f = fixture();
+        f.files.encrypt(UID, "PLAIN", b"plain").unwrap();
+        f.files.encrypt(UID, "OLD~t17", b"trashed").unwrap();
+        f.files.encrypt(UID, "OLD~t17~0", b"kh2:0:1:-:x").unwrap();
+        let trashed = CredMeta {
+            sealed: Some(true),
+            trashed_at: Some(17),
+            ..Default::default()
+        };
+        expiry::write_meta_file(&f.meta_path("OLD~t17"), &trashed).unwrap();
+        let alias = CredMeta {
+            alias_of: Some("PLAIN".into()),
+            tags: Some(vec!["x".into()]),
+            ..Default::default()
+        };
+        expiry::write_meta_file(&f.meta_path("SHORT"), &alias).unwrap();
+        let stray = CredMeta {
+            expires_at_unix: Some(1),
+            ..Default::default()
+        };
+        expiry::write_meta_file(&f.meta_path("STRAY"), &stray).unwrap();
+
+        assert_eq!(migrate_from(&f.image, &f.files, &f.store()), Ok((4, 0)));
+        let stray_file = format!("{}.meta", store::to_cred_name(UID, "STRAY"));
+        assert_eq!(f.kepr_files(), [stray_file], "only the stray meta stays");
+        assert_eq!(f.image.decrypt(UID, "OLD~t17").unwrap().as_str(), "trashed");
+        assert!(f.image.exists(UID, "OLD~t17~0"));
+        let read = |n: &str| f.image.read_meta(&f.meta_path(n));
+        assert_eq!(read("OLD~t17"), Some(Ok(trashed)));
+        assert_eq!(read("SHORT"), Some(Ok(alias)));
+        assert!(!f.image.exists(UID, "SHORT"), "an alias holds no value");
+        assert_eq!(migrate_from(&f.image, &f.files, &f.store()), Ok((0, 0)));
     }
 
     #[test]

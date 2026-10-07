@@ -7,7 +7,7 @@
 mod alias;
 mod diff;
 mod dupes;
-mod files;
+pub mod files;
 mod organize;
 mod pattern;
 mod search;

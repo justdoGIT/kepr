@@ -9,7 +9,7 @@ use kepr_core::protocol_store::StoreResponse;
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::expiry::{self, CredMeta};
-use crate::store::{cred_path, validate_name};
+use crate::store::{cred_exists, cred_path, validate_name};
 
 pub const MAX_TAGS: usize = 16;
 const MAX_TAG_LEN: usize = 32;
@@ -119,8 +119,7 @@ fn organize(
     folder: Option<&str>,
 ) -> Result<CredMeta, String> {
     validate_name(upper)?;
-    let path = cred_path(uid, upper);
-    let mp = expiry::meta_path_for(&path);
+    let mp = expiry::meta_path_for(&cred_path(uid, upper));
     let meta = match expiry::read_meta(&mp) {
         None => CredMeta::default(),
         Some(Ok(m)) => m,
@@ -128,7 +127,7 @@ fn organize(
         // seal written by a newer version.
         Some(Err(_)) => return Err("credential metadata unreadable".into()),
     };
-    if !path.exists() && meta.alias_of.is_none() {
+    if !cred_exists(uid, upper) && meta.alias_of.is_none() {
         return Err(crate::crypto::SANITIZED_LOOKUP_ERROR.into());
     }
     let mut new = meta.clone();

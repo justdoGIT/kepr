@@ -81,21 +81,24 @@ pub fn purge_in(dir: &Path, versions: Option<&VersionState>, uid: u32, owner: &s
     }
 }
 
-/// Re-encrypt every chunk of `from` under `to` (trash and restore move
-/// the meta, manifest included, themselves). Best effort per chunk.
+/// Move every chunk of `from` to `to` with the backend's `rename` (the
+/// image re-keys the record in one commit, T4.14); trash and restore
+/// move the meta, manifest included, themselves. Best effort per chunk:
+/// one that can't be moved is dropped, and a stale chunk at `to` is
+/// replaced.
 pub fn move_all(uid: u32, from: &str, to: &str) {
     let b = crypto::default_backend();
     for k in used_slots(uid, from) {
         for n in 0..count(uid, from, k) {
             let (src, dst) = (chunk_name(from, k, n), chunk_name(to, k, n));
-            let moved = b
-                .decrypt(uid, &src)
-                .and_then(|v| b.encrypt(uid, &dst, v.as_bytes()));
-            if let Err(e) = moved {
+            if cred_exists(uid, &dst) {
+                let _ = b.delete(uid, &dst);
+            }
+            if let Err(e) = b.rename(uid, &src, &dst) {
                 eprintln!("[kepr-daemon] attachments: move failed: {e}");
+                let _ = b.delete(uid, &src);
             }
         }
-        purge_slot(uid, from, k);
     }
 }
 
