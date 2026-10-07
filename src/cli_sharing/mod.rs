@@ -6,6 +6,7 @@ mod breakglass;
 mod contacts;
 mod device;
 mod emergency;
+mod escrow;
 mod jwt;
 mod oidc;
 mod once;
@@ -19,7 +20,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_sharing::{SharingRequest, SharingResponse};
 
-pub const VERBS: &[&str] = &["device", "emergency", "break-glass"];
+pub const VERBS: &[&str] = &["device", "emergency", "break-glass", "escrow"];
 
 pub const HELP: &str =
     "  device add LABEL [--oidc ISSUER]     single-use token (15 min) for enrolling another machine
@@ -47,6 +48,9 @@ pub const HELP: &str =
   emergency fetch [-o DIR]             (contact) store what was released to you
   break-glass NAME                     reveal a sealed credential with k recovery-kit shares
                                        (audited; NAME is marked must-rotate until the next set)
+  escrow enable ADMIN_KEY|CONTACT      wrap the master key to an admin's share key (escrow.bin;
+                                       needs the store passphrase) | escrow disable | escrow status
+  escrow open FILE [--out-dir DIR]     (admin) recover an escrowed key as a 2-of-2 recovery kit
   share open LINK [--from FILE] [--as KEY]
                                        fetch (relay) or read (file) a one-time link and store it
 ";
@@ -56,6 +60,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "device" => device::cmd_device(args),
         "emergency" => emergency::cmd_emergency(args),
         "break-glass" => breakglass::cmd_break_glass(args),
+        "escrow" => escrow::cmd_escrow(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }
@@ -140,8 +145,12 @@ pub fn list_tail(c: &kepr_core::protocol::CredInfo) -> &'static str {
     }
 }
 
-/// `kepr status` (text mode): pending emergency requests (T6.06).
+/// `kepr status` (text mode): escrow (T6.14) and pending emergency
+/// requests (T6.06).
 pub fn print_status() {
+    if let Some(line) = escrow::status_line(&send(SharingRequest::EscrowStatus)) {
+        crate::cli_ui::info(&line);
+    }
     if let Response::Sharing(SharingResponse::EmergencyListing { grants }) =
         send(SharingRequest::EmergencyList)
     {
