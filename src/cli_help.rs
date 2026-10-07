@@ -52,10 +52,12 @@ COMMANDS:
   leaked KEY [--yes]                   key exposed: stop agent sessions, delete it + history, log an
                                        incident, show where to revoke it at the provider
   totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
-  inject -i TEMPLATE [-o OUT]          fill kepr://NAME and kepr://NAME/field references (OUT 0600)
+  inject -i TEMPLATE [-o OUT]          fill kepr:// references (OUT 0600): NAME, NAME/field[i][sub],
+                                       NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape)
   scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
   copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
-  record add KEY --type T [--field k=v|k=-]...  typed record (login, card, database, server, api, note, custom)
+  record add KEY --type T [--field k=v|k=-|k[]=v]... [--custom LABEL=v]...  typed record
+                                       (login, card, database, server, api, note, custom)
   record show KEY [--reveal] | record get KEY FIELD | record types
   share key | share send KEY --to PUBKEY [--ttl SECS] [-o FILE] | share receive [FILE] [--as KEY]
                                        give one credential to another kepr user (encrypted, single-use)

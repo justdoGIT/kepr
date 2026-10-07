@@ -172,7 +172,7 @@ pub fn parse_args() -> Result<Args, String> {
                 // here or from a `.kepr.toml` manifest.
                 i += 1;
                 let csv = raw.get(i).ok_or("--env needs a CSV of variable names")?;
-                env_vars = crate::cli_exec::parse_env_csv(csv)?;
+                env_vars.extend(crate::cli_exec::parse_env_csv(csv)?); // repeatable (T5.06)
                 i += 1;
             }
             "--memfd" => {

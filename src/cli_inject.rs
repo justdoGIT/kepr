@@ -1,9 +1,11 @@
 // cli_inject.rs — `kepr inject -i TEMPLATE [-o OUT]` (agent vault P5.7).
-// Replaces every `kepr://NAME` reference in a template with the stored
-// value, and `kepr://NAME/field` with one field of a typed record (like Keeper's `ksm interpolate`). Output goes to stdout or to a
-// new 0600 file; a warning is printed when that file is not on tmpfs,
-// because rendered secrets on persistent disk outlive the process.
-// Sealed credentials cannot be injected (the daemon refuses them).
+// Replaces every `kepr://` reference in a template with what it stands
+// for (like Keeper's `ksm interpolate`): `kepr://NAME` the stored value,
+// `kepr://NAME/field[i][sub]`, `/custom_field/LABEL` and `/file/FILE`
+// parts of a record (T5.05, cli_recordsx/notation.rs). Output goes to
+// stdout or to a new 0600 file; a warning is printed when that file is
+// not on tmpfs, because rendered secrets on persistent disk outlive the
+// process. Sealed credentials cannot be injected (the daemon refuses them).
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -12,43 +14,24 @@ use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
 use zeroize::Zeroizing;
 
-use crate::cli_exec::{CredFetcher, DaemonFetcher};
+use crate::cli_recordsx::notation::{self, PREFIX};
+use crate::cli_recordsx::resolve::{self, Cached, Source};
 
-pub const PREFIX: &str = "kepr://";
-
-/// (start, end, NAME or NAME/field) for every reference in `tpl`.
+/// (start, end, the reference after `kepr://` with NAME upper-cased)
+/// for every reference in `tpl`.
 pub fn references(tpl: &str) -> Vec<(usize, usize, String)> {
     let mut out = Vec::new();
     let mut from = 0;
     while let Some(pos) = tpl[from..].find(PREFIX) {
         let start = from + pos;
-        let name_start = start + PREFIX.len();
-        let len = tpl[name_start..]
-            .bytes()
-            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
-            .count();
-        let name_end = name_start + len;
-        // Optional `/field` (lower-case record field names).
-        let flen = match tpl[name_end..].strip_prefix('/') {
-            Some(rest) => rest
-                .bytes()
-                .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
-                .count(),
-            None => 0,
-        };
-        let end = if flen > 0 {
-            name_end + 1 + flen
-        } else {
-            name_end
-        };
-        if len > 0 {
-            let mut key = tpl[name_start..name_end].to_uppercase();
-            if flen > 0 {
-                key = format!("{key}/{}", &tpl[name_end + 1..end]);
+        let body = start + PREFIX.len();
+        match notation::scan(&tpl[body..]) {
+            Some((len, key)) => {
+                out.push((start, body + len, key));
+                from = body + len;
             }
-            out.push((start, end, key));
+            None => from = body,
         }
-        from = end;
     }
     out
 }
@@ -106,30 +89,21 @@ fn on_tmpfs(path: &std::path::Path) -> bool {
     }
 }
 
-/// Resolve `NAME` and `NAME/field` keys with one fetch per NAME, so a
-/// consent- or FIDO2-gated record prompts once however many of its
+/// Resolve reference texts with one fetch per credential and attachment,
+/// so a consent- or FIDO2-gated record prompts once however many of its
 /// fields the template uses. `NAME/rest` on a value that is not a record
 /// renders as the value followed by `/rest`, as before records existed.
-fn fields_of(src: &impl CredFetcher) -> impl Fn(&str) -> Result<ZeroString, String> + '_ {
-    let cache = std::cell::RefCell::new(std::collections::HashMap::<String, ZeroString>::new());
+pub fn resolver(src: &dyn Source) -> impl Fn(&str) -> Result<ZeroString, String> + '_ {
+    let cached = Cached::new(src);
     move |key: &str| {
-        let (name, field) = match key.split_once('/') {
-            Some((n, f)) => (n, Some(f)),
-            None => (key, None),
-        };
-        let mut cache = cache.borrow_mut();
-        if !cache.contains_key(name) {
-            cache.insert(name.to_string(), src.fetch(name)?);
-        }
-        let value = cache[name].as_str();
-        match field {
-            None => Ok(ZeroString::from_string(value.to_string())),
-            Some(f) => match crate::cli_record::field_of(value, f) {
-                Err(e) if e.starts_with("not a record") => {
-                    Ok(ZeroString::from_string(format!("{value}/{f}")))
-                }
-                r => r,
-            },
+        let n = notation::parse(&format!("{PREFIX}{key}"))?;
+        match resolve::resolve(&n, &cached) {
+            Err(e) if e == resolve::NOT_A_RECORD => {
+                let v = cached.value(&n.name)?;
+                let rest = &key[n.name.len()..];
+                Ok(ZeroString::from_string(format!("{}{rest}", v.as_str())))
+            }
+            r => r,
         }
     }
 }
@@ -139,7 +113,7 @@ pub fn cmd_inject(input: &str, output: Option<&str>) -> Response {
         Ok(t) => t,
         Err(e) => return Response::fail(format!("{input}: {e}")),
     };
-    let rendered = match render(&tpl, &fields_of(&DaemonFetcher)) {
+    let rendered = match render(&tpl, &resolver(&resolve::Daemon)) {
         Ok(r) => r,
         Err(e) => return Response::fail(e),
     };
@@ -178,8 +152,11 @@ mod tests {
     }
 
     struct Counting(std::cell::Cell<u32>);
-    impl CredFetcher for Counting {
-        fn fetch(&self, name: &str) -> Result<ZeroString, String> {
+    impl Source for Counting {
+        fn file(&self, _: &str, _: &str) -> Result<Zeroizing<Vec<u8>>, String> {
+            Err("no attachment".into())
+        }
+        fn value(&self, name: &str) -> Result<ZeroString, String> {
             self.0.set(self.0.get() + 1);
             match name {
                 "DB" => Ok(ZeroString::from_string(
@@ -195,10 +172,28 @@ mod tests {
     fn one_fetch_per_record_and_old_path_templates_still_render() {
         let src = Counting(std::cell::Cell::new(0));
         let tpl = "kepr://DB/user:kepr://DB/password@h kepr://DB/user kepr://API_BASE/v1";
-        let out = render(tpl, &fields_of(&src)).unwrap();
+        let out = render(tpl, &resolver(&src)).unwrap();
         assert_eq!(out.as_str(), "u:p@h u https://x/v1");
         assert_eq!(src.0.get(), 2);
-        assert!(render("kepr://DB/nope", &fields_of(&src)).is_err());
+        assert!(render("kepr://DB/nope", &resolver(&src)).is_err());
+    }
+
+    #[test]
+    fn templates_use_indexes_custom_fields_and_files() {
+        let src = crate::cli_recordsx::resolve::tests::fixture();
+        let tpl = "a=kepr://r/url[1] b=kepr://R/phone[0][number]\n\
+                   c=kepr://R/custom_field/Q\\/A\\ \\[1\\] d=\"kepr://R/file/notes.txt\" e=kepr://R/url[x y]";
+        let out = render(tpl, &resolver(&src)).unwrap();
+        assert_eq!(
+            out.as_str(),
+            "a=https://b.example b=111\nc=answer d=\"line one\n\" e=https://a.example[x y]"
+        );
+        assert_eq!(src.fetches.get(), 1);
+        let e = render("x=kepr://R/file/key.bin", &resolver(&src)).unwrap_err();
+        assert!(
+            e.contains("kepr://R/file/key.bin") && e.contains("not text"),
+            "{e}"
+        );
     }
 
     #[test]
