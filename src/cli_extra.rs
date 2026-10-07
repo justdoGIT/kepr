@@ -9,7 +9,8 @@
 //   kepr history NAME
 //   kepr restore NAME --version N
 //   kepr usage [--days N]
-//   kepr health [--max-age DAYS] [--breach] [--notify URL [--format F]]
+//   kepr health [--max-age DAYS | --period N] [--policy FILE] [--breach]
+//               [--notify URL [--format F]]
 //   kepr leaked NAME [--yes]
 //   kepr record add|show|get|types        see cli_record.rs
 //   kepr share key|send|receive           see cli_share.rs
@@ -131,17 +132,10 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 None => crate::cli_usage::cmd_usage(None),
             },
             "health" => {
-                let max_age = match value_of(args, &["--max-age"]).map_err(Response::fail)? {
-                    Some(d) => Some(
-                        d.parse()
-                            .map_err(|_| Response::fail("--max-age needs a number of days"))?,
-                    ),
-                    None => None,
-                };
                 let notify = crate::cli_policy::health_notify(args).map_err(Response::fail)?; // T6.08
-                let r =
-                    crate::cli_health::cmd_health(max_age, args.iter().any(|a| a == "--breach"));
-                crate::cli_policy::after_health(notify, r)
+                let rest = crate::cli_policy::health_rest(args);
+                crate::cli_policy::after_health(notify, crate::cli_health::cmd(&rest))
+                // T11.11
             }
             "import" => {
                 let file = one_name(args, verb, &["--format", "--prefix"])?;

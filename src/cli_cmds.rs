@@ -75,14 +75,14 @@ pub fn cmd_set(a: &Args) -> Response {
         }
         (Some(v.clone().into()), None)
     } else if a.generate {
-        let s = match generate_secret(a.gen_kind) {
+        let s = match crate::cli_recordsx::generate::generate(a.gen_kind, a.profile.as_deref()) {
             Ok(s) => s,
             Err(e) => return Response::fail(e),
         };
         if !a.json {
             ok(&format!(
                 "Generated {} secret ({} chars)",
-                a.gen_kind.as_str(),
+                a.profile.as_deref().unwrap_or(a.gen_kind.as_str()),
                 s.len()
             ));
         }

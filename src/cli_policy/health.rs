@@ -34,6 +34,21 @@ pub fn parse(args: &[String]) -> Result<Option<HealthNotify>, String> {
     }
 }
 
+/// The health arguments without `--notify URL` / `--format F`, for the
+/// `kepr health` parser, which owns the rest.
+pub fn rest(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--notify" || a == "--format" {
+            it.next();
+        } else {
+            out.push(a.clone());
+        }
+    }
+    out
+}
+
 /// The webhook message, or `None` when every credential is healthy.
 pub fn note(items: &[KeyHealth]) -> Option<Note> {
     let lines: Vec<String> = items
@@ -83,6 +98,25 @@ pub fn after(n: Option<HealthNotify>, r: Response) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rest_drops_the_notify_flags_only() {
+        let a: Vec<String> = [
+            "--period",
+            "90d",
+            "--notify",
+            "kepr:HOOK",
+            "--format",
+            "slack",
+            "--breach",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(rest(&a), vec!["--period", "90d", "--breach"]);
+        let parsed = crate::cli_health::parse(&rest(&a)).unwrap();
+        assert!(parsed.breach && parsed.period);
+    }
 
     fn item(name: &str, issues: &[&str]) -> KeyHealth {
         KeyHealth {

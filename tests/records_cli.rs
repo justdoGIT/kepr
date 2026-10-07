@@ -260,3 +260,71 @@ fn user_types_templates_required_fields_clone_and_convert() {
     let e = fails(&d, &["record", "convert", "DST", "nosuchtype"]);
     assert!(e.contains("unknown record type"), "{e}");
 }
+
+fn kepr_in(d: &Daemon, args: &[&str], input: &str) -> Output {
+    use std::io::Write;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kepr"));
+    env(&mut cmd, d.home.path());
+    let mut child = cmd
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run kepr");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn generator_profiles_and_strength() {
+    let d = start();
+    let cfg = d.home.path().join(".config/kepr");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(
+        cfg.join("generate.toml"),
+        "[profile.bank]\nlength = 16\nclasses = [\"digit\", \"symbol\"]\nsymbols = \"#\"\n\
+         [host.\"wifi.example\"]\nwords = 4\nseparator = \".\"\n",
+    )
+    .unwrap();
+    ok(&d, &["set", "PIN", "--profile", "bank"]);
+    let v = ok(&d, &["get", "PIN", "-q"]);
+    let v = v.trim_end();
+    assert_eq!(v.len(), 16, "{v:?}");
+    assert!(v.bytes().all(|b| b.is_ascii_digit() || b == b'#'), "{v:?}");
+    let e = fails(&d, &["set", "X", "--profile", "nope"]);
+    assert!(e.contains("no generator profile"), "{e}");
+    ok(
+        &d,
+        &[
+            "record",
+            "add",
+            "W",
+            "--type",
+            "login",
+            "--field",
+            "url=https://wifi.example/",
+            "--generate",
+            "password",
+        ],
+    );
+    let p = ok(&d, &["record", "get", "W", "password"]);
+    assert_eq!(p.trim_end().split('.').count(), 4, "{p:?}");
+
+    let s = kepr_in(&d, &["--json", "strength"], "Password1\n");
+    let s: serde_json::Value = serde_json::from_slice(&s.stdout).unwrap();
+    assert!(s["bits"].as_u64().unwrap() < 30, "{s}");
+    assert!(!s.to_string().contains("Password1"));
+    let s = kepr_in(
+        &d,
+        &["--json", "strength"],
+        "jump-oak-staple-correct-battery-abacus",
+    );
+    let s: serde_json::Value = serde_json::from_slice(&s.stdout).unwrap();
+    assert!(s["bits"].as_u64().unwrap() > 70, "{s}");
+}

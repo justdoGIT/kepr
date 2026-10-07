@@ -29,9 +29,10 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         Request::Usage { days } => {
             daemon_usage::handle_usage(uid, username, &crate::audit_chain_path(), days)
         }
-        Request::Health { max_age_days } => {
-            daemon_health::handle_health(uid, username, max_age_days)
-        }
+        Request::Health {
+            max_age_days,
+            policy,
+        } => daemon_health::handle_health(uid, username, max_age_days, policy.as_ref()),
         Request::BreachCheck { name, suffixes } => {
             daemon_health::handle_breach_check(uid, username, &name, &suffixes)
         }

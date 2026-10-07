@@ -202,6 +202,9 @@ pub enum Request {
     Health {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         max_age_days: Option<u32>,
+        /// T11.11 `kepr health --policy FILE`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        policy: Option<crate::health_policy::HealthPolicy>,
     },
     /// P6.4: is `name`'s SHA-1 among these breach-list suffixes (the
     /// public range for the prefix `Health` returned)?

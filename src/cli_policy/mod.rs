@@ -31,7 +31,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
 
 /// `kepr health` hook (T6.08): `--notify URL [--format F]`, checked
 /// before the health run.
-pub use health::{after as after_health, parse as health_notify};
+pub use health::{after as after_health, parse as health_notify, rest as health_rest};
 
 fn send(req: PolicyRequest) -> Response {
     crate::client::send_request(&Request::Policy(req)).unwrap_or_else(Response::fail)

@@ -1,12 +1,14 @@
-// cli_health.rs — `kepr health [--max-age DAYS] [--breach]` (agent vault
-// P6.4). The daemon reports weak, short, common, reused, old and expired
-// credentials without returning values. With --breach, each readable
+// cli_health.rs — `kepr health [--max-age DAYS | --period N[d|w|m|y]]
+// [--policy FILE] [--breach]` (agent vault P6.4; T11.11 period and policy
+// reports, cli_recordsx/health.rs). The daemon reports weak, short,
+// common, reused, old and expired credentials without returning values. With --breach, each readable
 // value's 5-digit SHA-1 prefix is looked up in the Have I Been Pwned
 // password range API (k-anonymity), and the returned suffixes go back
 // to the daemon, which says only whether the value is among them.
 
 use std::collections::HashMap;
 
+use kepr_core::health_policy::HealthPolicy;
 use kepr_core::protocol::{KeyHealth, Request, Response};
 
 use crate::{cli_mode, cli_ui, client};
@@ -64,8 +66,65 @@ fn check_breaches(items: &mut [KeyHealth]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn cmd_health(max_age_days: Option<u32>, breach: bool) -> Response {
-    let r = send(&Request::Health { max_age_days });
+#[derive(Debug, Default, PartialEq)]
+pub struct Opts {
+    pub max_age_days: Option<u32>,
+    /// T11.11: `--period`: like --max-age, plus the aging report.
+    pub period: bool,
+    pub policy: Option<HealthPolicy>,
+    pub breach: bool,
+}
+
+const USAGE: &str =
+    "usage: kepr health [--max-age DAYS | --period N[d|w|m|y]] [--policy FILE] [--breach]";
+
+pub fn parse(args: &[String]) -> Result<Opts, String> {
+    let mut o = Opts::default();
+    let mut i = 0;
+    while i < args.len() {
+        let value = || {
+            args.get(i + 1)
+                .ok_or_else(|| format!("{} needs a value", args[i]))
+        };
+        match args[i].as_str() {
+            "--breach" => {
+                o.breach = true;
+                i += 1;
+                continue;
+            }
+            "--max-age" | "--period" if o.max_age_days.is_some() => {
+                return Err("use one of --max-age and --period".into())
+            }
+            "--max-age" => {
+                let d = value()?;
+                o.max_age_days = Some(d.parse().map_err(|_| "--max-age needs a number of days")?);
+            }
+            "--period" => {
+                o.max_age_days = Some(crate::cli_recordsx::health::parse_period(value()?)?);
+                o.period = true;
+            }
+            "--policy" => o.policy = Some(crate::cli_recordsx::health::load_policy(value()?)?),
+            other => return Err(format!("unexpected argument: {other}\n{USAGE}")),
+        }
+        i += 2;
+    }
+    Ok(o)
+}
+
+/// `kepr health ARGS`.
+pub fn cmd(args: &[String]) -> Response {
+    match parse(args) {
+        Ok(o) => cmd_health(o),
+        Err(e) => Response::fail(e),
+    }
+}
+
+pub fn cmd_health(o: Opts) -> Response {
+    let (max_age_days, breach) = (o.max_age_days, o.breach);
+    let r = send(&Request::Health {
+        max_age_days,
+        policy: o.policy,
+    });
     let Response::HealthOk { mut items } = r else {
         return r;
     };
@@ -73,6 +132,16 @@ pub fn cmd_health(max_age_days: Option<u32>, breach: bool) -> Response {
         if let Err(e) = check_breaches(&mut items) {
             cli_ui::warn(&format!("{e}; breach check skipped"));
         }
+    }
+    if let (true, Some(days), false) = (o.period, max_age_days, cli_mode::json_mode()) {
+        let old = crate::cli_recordsx::health::aging(&items, days);
+        cli_ui::info(&format!(
+            "{} of {} credential(s) unchanged for more than {days} days",
+            old.len(),
+            items.len()
+        ));
+        old.iter().for_each(|l| println!("  {l}"));
+        return Response::HealthOk { items };
     }
     if !cli_mode::json_mode() {
         let bad: Vec<&KeyHealth> = items.iter().filter(|i| !i.issues.is_empty()).collect();
@@ -104,5 +173,25 @@ mod tests {
         let body = "1E4C9B93F3F0682250B6CF8331B7EE68FD8:9659365\r\n\
                     0000000000000000000000000000000000A:0\r\nbad line\r\n";
         assert_eq!(parse_range(body), vec!["1E4C9B93F3F06822".to_string()]);
+    }
+
+    #[test]
+    fn parses_period_policy_and_breach_flags() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let o = parse(&a(&["--period", "3m", "--breach"])).unwrap();
+        assert_eq!((o.max_age_days, o.period, o.breach), (Some(90), true, true));
+        let o = parse(&a(&["--max-age", "30"])).unwrap();
+        assert_eq!((o.max_age_days, o.period), (Some(30), false));
+        assert!(parse(&a(&["--max-age", "30", "--period", "9"])).is_err());
+        assert!(parse(&a(&["--period"]))
+            .unwrap_err()
+            .contains("needs a value"));
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("p.toml");
+        std::fs::write(&f, "min_length = 20\n").unwrap();
+        let o = parse(&a(&["--policy", f.to_str().unwrap()])).unwrap();
+        assert_eq!(o.policy.unwrap().all.min_length, Some(20));
+        assert!(parse(&a(&["--policy", "/nonexistent/p.toml"])).is_err());
+        assert!(parse(&a(&["--bogus"])).unwrap_err().contains("unexpected"));
     }
 }

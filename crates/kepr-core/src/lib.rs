@@ -40,8 +40,11 @@ pub mod seal_factor;
 // batch: store
 pub mod protocol_store;
 // batch: records
+pub mod generate_profile;
+pub mod health_policy;
 pub mod protocol_records;
 pub mod record_types;
+pub mod strength;
 // batch: share
 pub mod protocol_sharing;
 pub mod protocol_sharing_types;
