@@ -191,6 +191,11 @@ pub fn tunnel_route_key(name: &str) -> String {
     format!("tcp:{name}")
 }
 
+/// T2.02 (batch: aws): route key for a sealed AWS key (SigV4 re-signing).
+pub fn aws_route_key(cred: &str) -> String {
+    format!("aws:{cred}")
+}
+
 impl GateRoute {
     pub fn is_tunnel(&self) -> bool {
         self.target
@@ -309,7 +314,11 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
             };
             r.provider == key && t.port != 0 && crate::binding::validate_host(&t.host).is_ok()
         });
-        if !db_ok && (r.target.is_some() || crate::providers::lookup(&r.provider).is_none()) {
+        let aws_ok = r.target.is_none() && r.provider == aws_route_key(&r.cred);
+        if !db_ok
+            && !aws_ok
+            && (r.target.is_some() || crate::providers::lookup(&r.provider).is_none())
+        {
             return Err(format!("unknown provider {}", r.provider));
         }
         if let Some((t, g)) = r.target.as_ref().and_then(|t| Some((t, t.grant.as_ref()?))) {
@@ -371,6 +380,10 @@ mod tests {
         assert!(validate_routes(&[r("xai", 0), r("xai", 1)]).is_err());
         assert!(validate_routes(&[r("xai", 0), r("openai", 0)]).is_err());
         assert!(validate_routes(&(0..17).map(|i| r("xai", i)).collect::<Vec<_>>()).is_err());
+        // T2.02: an AWS route is keyed by its own credential only.
+        assert!(validate_routes(&[r("xai", 0), r("aws:K", 1)]).is_ok());
+        assert!(validate_routes(&[r("aws:OTHER", 0)]).is_err());
+        assert!(validate_routes(&[r("aws:", 0)]).is_err());
     }
 
     #[test]
