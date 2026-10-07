@@ -18,6 +18,12 @@ pub enum PolicyRequest {
     },
     /// T6.12: where a credential can go and where it went.
     ReportAccess { name: String },
+    /// T7.14: the caller's audit-chain entries after the one whose hash
+    /// is `after` (absent: from the first), oldest first, one page.
+    AuditTail {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        after: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +38,10 @@ pub enum PolicyResponse {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         error: Option<String>,
     },
+    /// A CLI-local command finished (`kepr audit forward --once`, …).
+    PolicyDone {
+        message: String,
+    },
     /// `kepr policy test FILE` (CLI-local): one line per passing case.
     PolicyTestOk {
         lines: Vec<String>,
@@ -40,6 +50,33 @@ pub enum PolicyResponse {
         name: String,
         rows: Vec<AccessRow>,
     },
+    AuditTailOk {
+        events: Vec<AuditRecord>,
+        /// More entries follow: ask again after the last one.
+        more: bool,
+        /// `after` is no longer in the log (it was reset or rotated):
+        /// this page starts again from the first entry.
+        #[serde(default)]
+        reset: bool,
+    },
+}
+
+/// One audit-chain entry as the forwarders see it: what happened, never
+/// a value (the chain holds none).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditRecord {
+    pub seq: u64,
+    /// Unix seconds.
+    pub time: u64,
+    pub op: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+    pub uid: u32,
+    pub user: String,
+    /// `ok` or `fail: …`.
+    pub result: String,
+    /// The entry's chain hash: the resume point.
+    pub hash: String,
 }
 
 /// One path of a credential: `binding`, `share`, `agent`, `read`, `ssh`,
@@ -102,6 +139,37 @@ mod tests {
                 kind: "share".into(),
                 detail: "sent 1 time(s)".into(),
             }],
+        });
+    }
+
+    #[test]
+    fn audit_tail_round_trips() {
+        round_trip_req(
+            PolicyRequest::AuditTail { after: None },
+            r#"{"cmd":"audit_tail"}"#,
+        );
+        round_trip_req(
+            PolicyRequest::AuditTail {
+                after: Some("ab12".into()),
+            },
+            r#"{"cmd":"audit_tail","after":"ab12"}"#,
+        );
+        round_trip_resp(PolicyResponse::AuditTailOk {
+            events: vec![AuditRecord {
+                seq: 4,
+                time: 1_700_000_000,
+                op: "get".into(),
+                name: Some("K".into()),
+                uid: 1000,
+                user: "alice".into(),
+                result: "ok".into(),
+                hash: "ab12".into(),
+            }],
+            more: false,
+            reset: true,
+        });
+        round_trip_resp(PolicyResponse::PolicyDone {
+            message: "forwarded 3 audit event(s)".into(),
         });
     }
 

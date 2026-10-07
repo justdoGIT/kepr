@@ -1,5 +1,6 @@
 // daemon_policy/ — the `policy` ticket batch, daemon side: the access
-// policy (T6.11), access reports (T6.12). Requests arrive as
+// policy (T6.11), access reports (T6.12), the audit feed for the CLI-side
+// forwarders and alerts (T7.14). Requests arrive as
 // `Request::Policy` via daemon_extra.rs; `enforce` runs before every request in
 // daemon_dispatch.rs, `init` once at start in daemon.rs.
 
@@ -22,6 +23,7 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: PolicyRequest) -> R
     match r {
         PolicyRequest::PolicyStatus { reload } => status(uid, username, reload),
         PolicyRequest::ReportAccess { name } => report::handle_access(uid, username, &name),
+        PolicyRequest::AuditTail { after } => events::handle_tail(uid, after.as_deref()),
     }
 }
 
