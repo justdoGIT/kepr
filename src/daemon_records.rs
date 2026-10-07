@@ -8,39 +8,22 @@
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
+use kepr_core::record_types;
 
 use crate::daemon_handlers::{handle_set, SetFlags};
 
-/// Known record types and the fields `kepr record add` asks for.
-pub const TYPES: &[(&str, &[&str])] = &[
-    ("login", &["username", "password", "url", "totp"]),
-    ("card", &["holder", "number", "expiry", "cvv", "pin"]),
-    (
-        "database",
-        &["host", "port", "user", "password", "database"],
-    ),
-    ("server", &["host", "port", "user", "password"]),
-    ("api", &["key", "secret", "url"]),
-    ("note", &["text"]),
-    ("custom", &[]),
-];
 const MAX_FIELDS: usize = 64;
 
-fn valid_field_name(k: &str) -> bool {
-    (1..=32).contains(&k.len())
-        && k.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-}
-
 /// Check the type and that `fields` is a JSON object of 1..=64 fields
-/// with lower-case names (values: daemon_recordsx/fields.rs).
+/// with lower-case names (values: daemon_recordsx/fields.rs). The type is
+/// a built-in or a well-formed user type name (T11.7: user types live in
+/// the caller's config, so only their name reaches the daemon).
 pub fn validate(record_type: &str, fields: &str) -> Result<(), String> {
-    if !TYPES.iter().any(|(t, _)| *t == record_type) {
-        let names: Vec<&str> = TYPES.iter().map(|(t, _)| *t).collect();
-        return Err(format!(
-            "unknown record type; use one of: {}",
-            names.join(", ")
-        ));
+    if !record_types::is_builtin(record_type) {
+        record_types::valid_type_name(record_type).map_err(|e| {
+            let names: Vec<&str> = record_types::builtin_names().collect();
+            format!("{e} (built-in types: {})", names.join(", "))
+        })?;
     }
     let obj: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(fields).map_err(|_| "record fields must be a JSON object")?;
@@ -48,7 +31,7 @@ pub fn validate(record_type: &str, fields: &str) -> Result<(), String> {
         return Err(format!("a record needs 1-{MAX_FIELDS} fields"));
     }
     for (k, v) in &obj {
-        if !valid_field_name(k) {
+        if !record_types::valid_field_name(k) {
             return Err(format!(
                 "field name {k:?}: use 1-32 of a-z, 0-9, underscore"
             ));
@@ -230,7 +213,10 @@ mod tests {
     #[test]
     fn validates_type_and_fields() {
         assert!(validate("login", r#"{"username":"me","password":"p"}"#).is_ok());
-        assert!(validate("nope", r#"{"a":"b"}"#).is_err());
+        assert!(validate("Nope", r#"{"a":"b"}"#).is_err());
+        assert!(validate("a b", r#"{"a":"b"}"#).is_err());
+        // T11.7: a user type's name.
+        assert!(validate("wifi", r#"{"ssid":"home"}"#).is_ok());
         assert!(validate("login", "[]").is_err());
         assert!(validate("login", "{}").is_err());
         assert!(validate("login", r#"{"User":"x"}"#).is_err());

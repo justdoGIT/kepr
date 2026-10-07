@@ -150,6 +150,10 @@ fn governed(
         Request::Records(RecordsRequest::AttachGet { name, .. }) => {
             ("get", vec![name.to_uppercase()], vec![], None)
         }
+        // T11.7: a convert rewrites the value.
+        Request::Records(RecordsRequest::RecordConvert { name, .. }) => {
+            ("set", vec![name.to_uppercase()], vec![], None)
+        }
         Request::ShareSend { name, .. } => ("share", vec![name.to_uppercase()], vec![], None),
         _ => return None,
     })

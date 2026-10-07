@@ -1,5 +1,6 @@
 // daemon_recordsx/ — the `records` ticket batch, daemon side: attachments
-// (T5.03), record field shapes (T5.05), linked records (T11.6). Requests arrive as `Request::Records` via daemon_extra.rs.
+// (T5.03), record field shapes (T5.05), linked records (T11.6), record
+// convert (T11.7). Requests arrive as `Request::Records` via daemon_extra.rs.
 // (`daemon_records.rs` already holds the P5.1 typed records, hence the x.)
 //
 // Hooks other modules call:
@@ -15,6 +16,7 @@
 mod attach;
 mod attach_read;
 mod chunks;
+mod convert;
 mod fields;
 mod links;
 
@@ -57,5 +59,10 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: RecordsRequest) -> 
         RecordsRequest::AttachRemove { name, file } => {
             attach_read::handle_remove(uid, username, &name, &file)
         }
+        RecordsRequest::RecordConvert {
+            name,
+            record_type,
+            fields,
+        } => convert::handle_convert(uid, username, &name, &record_type, &fields),
     }
 }

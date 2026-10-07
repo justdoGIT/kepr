@@ -8,7 +8,10 @@
 //   kepr record show NAME [--reveal]     field names (values masked unless --reveal)
 //   kepr record get NAME FIELD           one field's value, raw; FIELD is
 //       anything after `kepr://NAME/` (url[1], custom_field/LABEL, ...)
-//   kepr record types                    known types and their standard fields
+//   kepr record types [--export DIR]     known types and their fields (T11.7:
+//       built-ins plus ~/.config/kepr/types/*.toml; cli_recordsx/types.rs)
+//   kepr record convert NAME TYPE        re-type a record, unmatched fields
+//       kept as custom fields (T11.7)
 //
 // `kepr://NAME/field` in `kepr inject` templates reads one field.
 
@@ -22,20 +25,7 @@ use crate::cli_recordsx::resolve::{self, Record};
 use crate::cli_ui;
 use crate::client;
 
-/// Same list as the daemon's (daemon_records::TYPES); the daemon re-checks.
-const TYPES: &[(&str, &[&str])] = &[
-    ("login", &["username", "password", "url", "totp"]),
-    ("card", &["holder", "number", "expiry", "cvv", "pin"]),
-    (
-        "database",
-        &["host", "port", "user", "password", "database"],
-    ),
-    ("server", &["host", "port", "user", "password"]),
-    ("api", &["key", "secret", "url"]),
-    ("note", &["text"]),
-    ("custom", &[]),
-];
-const USAGE: &str = "usage: kepr record add NAME --type T [--field k=v | k[]=v]... [--custom LABEL=v]... [--ref k=OTHER]... | show NAME [--reveal] | get NAME FIELD | types";
+const USAGE: &str = "usage: kepr record add NAME --type T [--field k=v | k[]=v]... [--custom LABEL=v]... [--ref k=OTHER]... | show NAME [--reveal] | get NAME FIELD | types [--export DIR] | convert NAME TYPE";
 
 /// Where one `--field` / `--custom` value goes.
 enum Slot {
@@ -119,10 +109,10 @@ fn add(args: &[String]) -> Response {
     let Some(rtype) = rtype else {
         return Response::fail("--type is required (see: kepr record types)");
     };
-    let standard = TYPES
-        .iter()
-        .find(|(t, _)| *t == rtype)
-        .map_or(&[][..], |(_, f)| *f);
+    let standard: Vec<String> = match crate::cli_recordsx::types::find(&rtype) {
+        Ok(t) => t.fields.into_iter().map(|f| f.name).collect(),
+        Err(e) => return Response::fail(e),
+    };
     // Wiped on drop, like the JSON text built from it.
     let mut fields = Record(Map::new());
     for (slot, v) in given {
@@ -133,7 +123,7 @@ fn add(args: &[String]) -> Response {
         put(&mut fields.0, &slot, v);
     }
     if fields.0.is_empty() {
-        for k in standard {
+        for k in &standard {
             let v = read_masked(&format!("  {k} (blank to skip): "));
             if !v.as_str().is_empty() {
                 put(
@@ -209,19 +199,8 @@ pub fn cmd_record(args: &[String]) -> Response {
                 Err(e) => Response::fail(e),
             }
         }
-        (Some("types"), _) => {
-            for (t, f) in TYPES {
-                println!(
-                    "{t:<9} {}",
-                    if f.is_empty() {
-                        "(any fields)".to_string()
-                    } else {
-                        f.join(", ")
-                    }
-                );
-            }
-            Response::Pong
-        }
+        (Some("types"), _) => crate::cli_recordsx::types::cmd_types(rest), // T11.7
+        (Some("convert"), _) => crate::cli_recordsx::types::cmd_convert(rest), // T11.7
         _ => Response::fail(USAGE),
     }
 }
@@ -262,14 +241,5 @@ mod tests {
         assert!(slot_of("--ref", "billing=").is_none());
         assert!(slot_of("--field", "novalue").is_none());
         assert!(slot_of("--field", "k=-").unwrap().1.is_none());
-    }
-
-    #[test]
-    fn type_table_matches_the_daemon() {
-        let names: Vec<&str> = TYPES.iter().map(|(t, _)| *t).collect();
-        assert_eq!(
-            names,
-            ["login", "card", "database", "server", "api", "note", "custom"]
-        );
     }
 }
