@@ -8,6 +8,10 @@
 // Record values are JSON objects. A field is a string, an object of
 // strings (a structured value such as `name: {first, last}`) or an array
 // of either; `custom` holds the custom fields, keyed by free-text label.
+// T11.6: a structured value `{"ref": "OTHER"}` links to the record OTHER;
+// `kepr://NAME/field/...` follows it (each record read with its own Get,
+// so a sealed or gated target is refused or prompts as usual), and a
+// path that comes back to a record it already read is refused.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -106,10 +110,11 @@ impl Record {
 /// The text `n` stands for. Attachments must be UTF-8 here (inject,
 /// exec and resolve all produce text); `kepr attach get` saves any file.
 pub fn resolve(n: &Notation, src: &dyn Source) -> Result<ZeroString, String> {
-    match &n.sel {
-        Sel::Whole => src.value(&n.name),
+    let (name, sel) = follow(n, src)?;
+    match sel {
+        Sel::Whole => src.value(&name),
         Sel::File(f) => {
-            let bytes = src.file(&n.name, f)?;
+            let bytes = src.file(&name, f)?;
             match std::str::from_utf8(&bytes) {
                 Ok(s) => Ok(ZeroString::from_string(s.to_string())),
                 Err(_) => Err(format!(
@@ -117,12 +122,58 @@ pub fn resolve(n: &Notation, src: &dyn Source) -> Result<ZeroString, String> {
                 )),
             }
         }
-        sel => select(&Record::parse(src.value(&n.name)?.as_str())?, sel),
+        sel => select(&Record::parse(src.value(&name)?.as_str())?, sel),
     }
 }
 
-/// A field or custom field of `rec`, indexed.
-pub fn select(rec: &Record, sel: &Sel) -> Result<ZeroString, String> {
+/// T11.6: the record and selection `n` ends at, after its links
+/// (`kepr://CARD/billing/city`: HOME_ADDRESS and `city`).
+pub fn follow<'n>(n: &'n Notation, src: &dyn Source) -> Result<(String, &'n Sel), String> {
+    let mut path = vec![n.name.clone()];
+    let mut sel = &n.sel;
+    for next in &n.links {
+        let here = &path[path.len() - 1];
+        let target = link(&Record::parse(src.value(here)?.as_str())?, sel)?;
+        let cycle = path.contains(&target);
+        path.push(target);
+        if cycle {
+            return Err(format!("reference cycle: {}", path.join(" -> ")));
+        }
+        sel = next;
+    }
+    Ok((path.pop().unwrap_or_default(), sel))
+}
+
+/// The name a `{"ref": "NAME"}` value links to.
+pub fn link_of(v: &Value) -> Option<&str> {
+    match v.as_object() {
+        Some(o) if o.len() == 1 => o.get("ref").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// The record the selected item of `rec` links to.
+fn link(rec: &Record, sel: &Sel) -> Result<String, String> {
+    let (v, what, index) = field(rec, sel)?;
+    let one = match index {
+        Index::None => item(v, 0),
+        Index::At(i) => item(v, *i),
+        _ => return Err(format!("{what}: a link is one item ({what} or {what}[i])")),
+    }
+    .map_err(|e| format!("{what}: {e}"))?;
+    let target = link_of(one).ok_or_else(|| format!("{what} is not a link to another record"))?;
+    let ok = (1..=128).contains(&target.len())
+        && target
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if !ok {
+        return Err(format!("{what} links to an invalid name"));
+    }
+    Ok(target.to_uppercase())
+}
+
+/// The value a field or custom-field selection names, its label and index.
+fn field<'r>(rec: &'r Record, sel: &'r Sel) -> Result<(&'r Value, &'r str, &'r Index), String> {
     let (v, what, index) = match sel {
         Sel::Field { field, index } => (rec.0.get(field), field, index),
         Sel::Custom { label, index } => (
@@ -139,6 +190,12 @@ pub fn select(rec: &Record, sel: &Sel) -> Result<ZeroString, String> {
         Sel::Custom { .. } => format!("no custom field {what:?}"),
         _ => format!("no field {what:?}"),
     })?;
+    Ok((v, what, index))
+}
+
+/// A field or custom field of `rec`, indexed.
+pub fn select(rec: &Record, sel: &Sel) -> Result<ZeroString, String> {
+    let (v, what, index) = field(rec, sel)?;
     apply(v, index)
         .map(ZeroString::from_string)
         .map_err(|e| format!("{what}: {e}"))
@@ -209,11 +266,25 @@ pub mod tests {
         "custom": {"Q/A [1]": "answer", "pins": ["1", "2"]}
     }"#;
 
+    /// T11.6: CARD links to HOME (and back), to R by a list, to a
+    /// sealed record (whose Get the daemon refuses) and to itself.
+    pub const CARD: &str = r#"{
+        "number": "4111",
+        "billing": {"ref": "HOME"},
+        "others": ["x", {"ref": "R"}],
+        "custom": {"Bank/1": {"ref": "SEALED"}},
+        "me": {"ref": "card"},
+        "bad": {"ref": "../x"}
+    }"#;
+    pub const HOME: &str = r#"{"city": "Oslo", "owner": {"ref": "CARD"}}"#;
+
     impl Source for Fixture {
         fn value(&self, name: &str) -> Result<ZeroString, String> {
             self.fetches.set(self.fetches.get() + 1);
             match name {
                 "R" => Ok(RECORD.into()),
+                "CARD" => Ok(CARD.into()),
+                "HOME" => Ok(HOME.into()),
                 "PLAIN" => Ok("https://x".into()),
                 _ => Err("credential unavailable".into()),
             }
@@ -280,6 +351,46 @@ pub mod tests {
             let e = get(text).unwrap_err();
             assert!(e.contains(what), "{text}: {e}");
         }
+    }
+
+    #[test]
+    fn links_resolve_one_hop_and_refuse_cycles_and_sealed_targets() {
+        for (text, want) in [
+            ("kepr://CARD/billing/city", "Oslo"),
+            ("kepr://card/others[1]/login", "me"),
+            ("kepr://CARD/others[1]/url[1]", "https://b.example"),
+            ("kepr://CARD/billing/file/notes.txt", "no attachment"),
+            ("kepr://CARD/billing", r#"{"ref":"HOME"}"#),
+            ("kepr://CARD/billing[ref]", "HOME"),
+        ] {
+            let got = get(text).unwrap_or_else(|e| e);
+            assert_eq!(got, want, "{text}");
+        }
+        for (text, what) in [
+            (
+                "kepr://CARD/billing/owner/number",
+                "reference cycle: CARD -> HOME -> CARD",
+            ),
+            ("kepr://CARD/me/number", "reference cycle: CARD -> CARD"),
+            (
+                r"kepr://CARD/custom_field/Bank\/1/x",
+                "credential unavailable",
+            ),
+            ("kepr://CARD/number/x", "number is not a link"),
+            ("kepr://CARD/others/x", "others is not a link"),
+            ("kepr://CARD/others[]/x", "a link is one item"),
+            ("kepr://CARD/others[5]/x", "no item 5"),
+            ("kepr://CARD/bad/x", "invalid name"),
+            ("kepr://CARD/nope/x", "no field \"nope\""),
+        ] {
+            let e = get(text).unwrap_err();
+            assert!(e.contains(what), "{text}: {e}");
+        }
+        // The sealed target is never fetched past its refusal, and each
+        // record is read once per hop.
+        let f = fixture();
+        resolve(&parse("kepr://CARD/billing/city").unwrap(), &f).unwrap();
+        assert_eq!(f.fetches.get(), 2);
     }
 
     #[test]

@@ -94,7 +94,9 @@ pub fn handle_record_set(
     (record_type, fields): (&str, &ZeroString),
     (requires_consent, seal): (Option<bool>, bool),
 ) -> Response {
-    if let Err(e) = validate(record_type, fields.as_str()) {
+    if let Err(e) = validate(record_type, fields.as_str())
+        .and_then(|()| crate::daemon_recordsx::check_links(uid, name, fields.as_str()))
+    {
         return Response::fail(e);
     }
     let bindings = match (seal, record_type) {

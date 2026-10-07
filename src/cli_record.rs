@@ -3,7 +3,8 @@
 //   kepr record add NAME --type T [--field k=v | --field k=-]... [--requires-consent]
 //       `k=-` (or a type's standard field left out) is prompted for, hidden.
 //       `--field k[]=v` appends to a list, `--custom LABEL=v` sets a
-//       custom field (T5.05).
+//       custom field (T5.05), `--ref k=OTHER` links to the record OTHER
+//       (T11.6: `kepr://NAME/k/field` reads OTHER's field).
 //   kepr record show NAME [--reveal]     field names (values masked unless --reveal)
 //   kepr record get NAME FIELD           one field's value, raw; FIELD is
 //       anything after `kepr://NAME/` (url[1], custom_field/LABEL, ...)
@@ -34,7 +35,7 @@ const TYPES: &[(&str, &[&str])] = &[
     ("note", &["text"]),
     ("custom", &[]),
 ];
-const USAGE: &str = "usage: kepr record add NAME --type T [--field k=v | k[]=v]... [--custom LABEL=v]... | show NAME [--reveal] | get NAME FIELD | types";
+const USAGE: &str = "usage: kepr record add NAME --type T [--field k=v | k[]=v]... [--custom LABEL=v]... [--ref k=OTHER]... | show NAME [--reveal] | get NAME FIELD | types";
 
 /// Where one `--field` / `--custom` value goes.
 enum Slot {
@@ -43,8 +44,7 @@ enum Slot {
     Custom(String),
 }
 
-fn put(map: &mut Map<String, Value>, slot: &Slot, v: String) {
-    let v = Value::String(v);
+fn put(map: &mut Map<String, Value>, slot: &Slot, v: Value) {
     match slot {
         Slot::Field(k) => {
             map.insert(k.clone(), v);
@@ -67,10 +67,15 @@ fn put(map: &mut Map<String, Value>, slot: &Slot, v: String) {
     }
 }
 
-/// `k=v`, `k[]=v` (list item) or, for `--custom`, `LABEL=v`.
-fn slot_of(flag: &str, arg: &str) -> Option<(Slot, Option<String>)> {
+/// `k=v`, `k[]=v` (list item) or, for `--custom`, `LABEL=v`; `--ref`
+/// takes `k=OTHER` / `k[]=OTHER` and is never asked for.
+fn slot_of(flag: &str, arg: &str) -> Option<(Slot, Option<Value>)> {
     let (k, v) = arg.split_once('=')?;
-    let v = (v != "-").then(|| v.to_string());
+    let v = match flag {
+        "--ref" if v.is_empty() || v == "-" => return None,
+        "--ref" => Some(serde_json::json!({ "ref": v.to_uppercase() })),
+        _ => (v != "-").then(|| Value::String(v.to_string())),
+    };
     let slot = match (flag, k.strip_suffix("[]")) {
         ("--custom", _) => Slot::Custom(k.to_string()),
         (_, Some(list)) => Slot::Item(list.to_string()),
@@ -89,12 +94,15 @@ fn add(args: &[String]) -> Response {
         return Response::fail(USAGE);
     };
     let mut rtype = None;
-    let mut given: Vec<(Slot, Option<String>)> = Vec::new();
+    let mut given: Vec<(Slot, Option<Value>)> = Vec::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--type" => rtype = args.get(i + 1).cloned(),
-            f @ ("--field" | "--custom") => match args.get(i + 1).and_then(|a| slot_of(f, a)) {
+            f @ ("--field" | "--custom" | "--ref") => match args
+                .get(i + 1)
+                .and_then(|a| slot_of(f, a))
+            {
                 Some(s) => given.push(s),
                 None => {
                     return Response::fail(format!("{f} needs key=value (or key=- to be asked)"))
@@ -120,7 +128,7 @@ fn add(args: &[String]) -> Response {
     for (slot, v) in given {
         let v = v.unwrap_or_else(|| {
             let (Slot::Field(k) | Slot::Item(k) | Slot::Custom(k)) = &slot;
-            read_masked(&format!("  {k}: ")).as_str().to_string()
+            Value::String(read_masked(&format!("  {k}: ")).as_str().to_string())
         });
         put(&mut fields.0, &slot, v);
     }
@@ -131,7 +139,7 @@ fn add(args: &[String]) -> Response {
                 put(
                     &mut fields.0,
                     &Slot::Field(k.to_string()),
-                    v.as_str().to_string(),
+                    Value::String(v.as_str().to_string()),
                 );
             }
         }
@@ -168,6 +176,10 @@ fn show(name: &str, reveal: bool) -> Response {
         Err(e) => return Response::fail(e),
     };
     for (k, v) in &rec.0 {
+        if let Some(target) = resolve::link_of(v) {
+            println!("{k}: -> {target}");
+            continue;
+        }
         let v = zeroize::Zeroizing::new(match v {
             Value::String(s) => s.clone(),
             other => other.to_string(),
@@ -236,6 +248,18 @@ mod tests {
             Value::Object(m).to_string(),
             r#"{"custom":{"Q/A [1]":"x=y"},"one":["1"],"url":["a","b"],"user":"you"}"#
         );
+        // T11.6: links.
+        let mut m = Map::new();
+        for arg in ["billing=home", "cards[]=A", "cards[]=B"] {
+            let (slot, v) = slot_of("--ref", arg).unwrap();
+            put(&mut m, &slot, v.unwrap());
+        }
+        assert_eq!(
+            Value::Object(m).to_string(),
+            r#"{"billing":{"ref":"HOME"},"cards":[{"ref":"A"},{"ref":"B"}]}"#
+        );
+        assert!(slot_of("--ref", "billing=-").is_none());
+        assert!(slot_of("--ref", "billing=").is_none());
         assert!(slot_of("--field", "novalue").is_none());
         assert!(slot_of("--field", "k=-").unwrap().1.is_none());
     }

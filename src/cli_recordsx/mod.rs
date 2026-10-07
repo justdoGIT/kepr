@@ -1,6 +1,7 @@
 // cli_recordsx/ — the `records` ticket batch, CLI side: `kepr attach`
 // (T5.03), `kepr://` notation (T5.05), references in exec / manifests and
-// `kepr resolve` (T5.06), manifest stages (T5.02). Registered in cli_more.rs.
+// `kepr resolve` (T5.06), manifest stages (T5.02), linked records (T11.6).
+// Registered in cli_more.rs.
 // (`cli_record.rs` already holds `kepr record`, hence the x.)
 
 mod attach;
@@ -23,6 +24,8 @@ pub const HELP: &str = "\
   resolve kepr://KEY/...               print what a reference stands for (sealed keys refused);
                                        exec/env also take --env VAR=kepr://... and [env.map]
   exec|env --stage S                   add the .kepr.toml [env.S] set (default: $KEPR_STAGE)
+  record add KEY ... --ref k=OTHER     link field k to the record OTHER: kepr://KEY/k/field reads
+                                       OTHER's field (each record read with its own get)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
