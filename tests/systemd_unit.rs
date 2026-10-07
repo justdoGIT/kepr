@@ -177,4 +177,20 @@ fn sealer_dropins_leave_the_base_unit_closed() {
         "[Service]\nPrivateDevices=no\nDevicePolicy=closed\nDeviceAllow=/dev/tpmrm0 rw\n"
     ));
     assert!(!tpm2.contains("PrivateNetwork=no"));
+    // KMS sealers reach the network at start-up only through this drop-in.
+    let kms = dropin("kms.conf.example");
+    assert!(kms.contains(
+        "[Service]\nPrivateNetwork=no\nRestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6\n"
+    ));
+    assert!(kms.contains("EnvironmentFile=-/etc/kepr/kms.env"));
+    assert!(!kms.contains("PrivateDevices=no"));
+    // PKCS#11: network and USB stay commented out; the PIN is a file.
+    let p11 = dropin("pkcs11.conf.example");
+    assert!(p11.contains("Environment=KEPR_PKCS11_PIN_FILE=/etc/kepr/pkcs11.pin"));
+    for l in p11.lines().filter(|l| !l.starts_with('#')) {
+        assert!(
+            !l.contains("PrivateNetwork=no") && !l.contains("PrivateDevices=no"),
+            "{l}"
+        );
+    }
 }
