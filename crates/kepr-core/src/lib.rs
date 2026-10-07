@@ -43,8 +43,10 @@ pub mod protocol_sharing;
 // batch: sync
 // batch: policy
 // batch: gate
+pub mod gate_record;
 pub mod mysql_handshake;
 pub mod mysql_wire;
+pub mod protocol_gatex;
 // batch: aws
 // batch: eco
 pub mod protocol_eco;

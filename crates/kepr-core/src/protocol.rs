@@ -108,6 +108,9 @@ pub enum Request {
         /// P2.1: let the egress proxy tunnel hosts no route is bound to.
         #[serde(default)]
         tunnel: bool,
+        /// T7.09: keep the session's bodies, encrypted (`--record`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        record: bool,
     },
     Get {
         name: String,
@@ -273,6 +276,8 @@ pub enum Request {
     // batch: sync
     // batch: policy
     // batch: gate
+    #[serde(untagged)]
+    Gatex(crate::protocol_gatex::GatexRequest),
     // batch: aws
     // batch: eco
     #[serde(untagged)]

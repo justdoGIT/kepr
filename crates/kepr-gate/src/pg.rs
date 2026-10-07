@@ -285,7 +285,7 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
         }
     }
     drop(login_rec);
-    let _ = tokio::io::copy_bidirectional(client, &mut up).await;
+    crate::recording::relay(state, route, client, &mut up).await;
     Ok(())
 }
 

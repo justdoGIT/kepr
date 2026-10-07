@@ -9,13 +9,8 @@
 // session is handed to kepr-gate.service instead (daemon_gate_service.rs,
 // T1.19); the channel and every resolve check stay here either way.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::process::Child;
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::daemon_gate_registry::{gates_for, track_gate, Handle, MAX_GATES_PER_UID};
@@ -23,20 +18,11 @@ use crate::store::{cred_path, validate_name};
 use crate::{crypto, expiry};
 use kepr_core::binding::Inject;
 use kepr_core::framing::{read_frame, write_frame};
-use kepr_core::gate_protocol::{
-    GateLimits, GateRequest, GateResponse, GateRoute, ReadyLine, SessionConfig,
-};
+use kepr_core::gate_protocol::{GateLimits, GateRequest, GateResponse, GateRoute, SessionConfig};
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Response, MAX_MSG_BYTES};
 
-const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const UNAVAILABLE: &str = "credential unavailable";
-
-fn gate_bin() -> std::path::PathBuf {
-    std::env::var_os("KEPR_GATE_BIN")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| "/usr/local/bin/kepr-gate".into())
-}
 
 pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
     kepr_core::gate_protocol::validate_routes(routes)?;
@@ -80,6 +66,8 @@ pub struct GateOwner {
     /// The credentials this session's routes name; anything else a gate
     /// asks for is refused, so a compromised gate stays confined.
     pub creds: std::collections::HashSet<String>,
+    /// T7.09: stores what the gate records (`kepr agent run --record`).
+    pub rec: crate::daemon_gatex::recording::Recorder,
 }
 
 /// Bumped on every set, delete and expiry sweep; gates compare it
@@ -150,50 +138,7 @@ fn random_hex(n: usize) -> Result<ZeroString, String> {
     Ok(ZeroString::from_string(hex::encode(&*buf)))
 }
 
-fn spawn_gate(owner_pid: i32, gate_end: &UnixStream) -> Result<Child, String> {
-    let fd = gate_end.as_raw_fd();
-    let mut cmd = Command::new(gate_bin());
-    cmd.arg("--owner-pid")
-        .arg(owner_pid.to_string())
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    // SAFETY: only async-signal-safe calls (dup2, fcntl) between fork
-    // and exec; `fd` stays open in the parent until spawn returns.
-    unsafe {
-        cmd.pre_exec(move || {
-            if libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    cmd.spawn()
-        .map_err(|e| format!("cannot start kepr-gate: {e}"))
-}
-
-fn read_ready(child: &mut Child) -> Result<ReadyLine, String> {
-    let stdout = child.stdout.take().ok_or("kepr-gate has no stdout")?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = tx.send(BufReader::new(stdout).read_line(&mut line).map(|_| line));
-    });
-    let line = rx
-        .recv_timeout(READY_TIMEOUT)
-        .map_err(|_| "kepr-gate did not become ready")?
-        .map_err(|e| format!("kepr-gate: {e}"))?;
-    let ready: ReadyLine =
-        serde_json::from_str(&line).map_err(|_| "kepr-gate sent a malformed ready line")?;
-    if !ready.ready {
-        return Err("kepr-gate reported not ready".into());
-    }
-    Ok(ready)
-}
-
-fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, owner: GateOwner) {
+fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut owner: GateOwner) {
     while let Ok(raw) = read_frame(&mut chan, MAX_MSG_BYTES) {
         let resp = match serde_json::from_slice::<GateRequest>(&raw) {
             Ok(GateRequest::Resolve {
@@ -212,6 +157,7 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, owne
                 id,
                 generation: GENERATION.load(std::sync::atomic::Ordering::SeqCst),
             },
+            Ok(GateRequest::Record { id, record }) => owner.rec.handle(id, record),
             Err(_) => GateResponse::Err {
                 id: 0,
                 error: "malformed request".into(),
@@ -234,41 +180,12 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, owne
     }
 }
 
-/// Spawn the gate here (user mode): returns the child and its ready line.
-fn start_local(
-    peer_pid: i32,
-    gate_end: &UnixStream,
-    config: SessionConfig,
-) -> Result<(Child, ReadyLine), String> {
-    let mut child = spawn_gate(peer_pid, gate_end)?;
-    let payload = zeroize::Zeroizing::new(serde_json::to_vec(&config).map_err(|e| e.to_string())?);
-    drop(config);
-    let ready = child
-        .stdin
-        .take()
-        .ok_or_else(|| "kepr-gate has no stdin".to_string())
-        .and_then(|mut stdin| {
-            stdin
-                .write_all(&payload)
-                .map_err(|e| format!("kepr-gate: {e}"))
-        })
-        .and_then(|_| read_ready(&mut child));
-    match ready {
-        Ok(r) => Ok((child, r)),
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(e)
-        }
-    }
-}
-
 fn start(
     uid: u32,
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
-    (port, limits, tunnel): (Option<u16>, GateLimits, bool),
+    (port, limits, tunnel, record): (Option<u16>, GateLimits, bool, bool),
 ) -> Result<Response, String> {
     validate_routes(routes)?;
     limits.validate()?;
@@ -284,10 +201,13 @@ fn start(
         port,
         limits,
         tunnel,
+        record,
     };
+    let session = config.session_id.clone();
+    let rec = crate::daemon_gatex::recording::Recorder::new(uid, &session, record);
     let (daemon_end, gate_end) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
     let (child, ready, key, handle) = if crate::user_mode() {
-        let (child, ready) = start_local(peer_pid, &gate_end, config)?;
+        let (child, ready) = crate::daemon_gatex::spawn::start_local(peer_pid, &gate_end, config)?;
         let pid = child.id() as i32;
         (Some(child), ready, pid, Handle::Pid(pid))
     } else {
@@ -305,6 +225,7 @@ fn start(
         username: username.to_string(),
         pid: peer_pid,
         creds: kepr_core::gate_protocol::resolvable_creds(routes),
+        rec,
     };
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
@@ -316,6 +237,7 @@ fn start(
         extras: Box::new(kepr_core::protocol_types::GateExtras {
             ca_pem: ready.ca_pem,
             db_ports: ready.db_ports,
+            session: Some(session),
         }),
     })
 }
@@ -325,7 +247,7 @@ pub fn handle_start_gate(
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
-    port_limits: (Option<u16>, GateLimits, bool),
+    port_limits: (Option<u16>, GateLimits, bool, bool),
 ) -> Response {
     let result = start(uid, peer_pid, username, routes, port_limits);
     audit::log(&AuditEvent {

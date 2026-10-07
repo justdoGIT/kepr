@@ -1,6 +1,12 @@
 //! Metadata-only request journal (T1.11). One JSON line per request on
 //! stderr. Never headers, query strings or bodies.
 
+use std::time::Instant;
+
+use hyper::{Response, StatusCode};
+
+use crate::proxy::{Body, State};
+
 pub struct Entry<'a> {
     pub session: &'a str,
     pub provider: &'a str,
@@ -36,6 +42,40 @@ pub fn format(e: &Entry) -> String {
 
 pub fn emit(e: &Entry) {
     eprintln!("{}", format(e));
+}
+
+/// The journal line of one proxied HTTP request.
+pub(crate) struct Log<'a> {
+    pub state: &'a State,
+    pub provider: &'a str,
+    pub method: &'a str,
+    pub path: &'a str,
+    pub start: Instant,
+}
+
+impl Log<'_> {
+    pub fn emit(&self, status: StatusCode, bytes_out: usize, blocked: Option<&str>) {
+        emit(&Entry {
+            session: &self.state.session_id,
+            provider: self.provider,
+            method: self.method,
+            path: self.path,
+            status: status.as_u16(),
+            bytes_out,
+            ms: self.start.elapsed().as_millis(),
+            blocked,
+        });
+    }
+
+    pub fn reply(
+        &self,
+        r: Response<Body>,
+        bytes_out: usize,
+        blocked: Option<&str>,
+    ) -> Response<Body> {
+        self.emit(r.status(), bytes_out, blocked);
+        r
+    }
 }
 
 #[cfg(test)]

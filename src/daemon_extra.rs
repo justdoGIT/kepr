@@ -14,12 +14,13 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
             port,
             limits,
             tunnel,
+            record,
         } => crate::daemon_gate::handle_start_gate(
             uid,
             peer_pid,
             username,
             &routes,
-            (port, limits, tunnel),
+            (port, limits, tunnel, record),
         ),
         Request::History { name } => daemon_history::handle_history(uid, username, &name),
         Request::Restore { name, version } => {
@@ -91,6 +92,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         // batch: sync
         // batch: policy
         // batch: gate
+        Request::Gatex(r) => crate::daemon_gatex::dispatch(uid, peer_pid, username, r),
         // batch: aws
         // batch: eco
         Request::Eco(r) => crate::daemon_eco::dispatch(uid, peer_pid, username, r),
