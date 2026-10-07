@@ -331,6 +331,7 @@ mod tests {
             ttl_secs: Some(60),
             self_destruct: None,
             relay: None,
+            view_window_secs: None,
         });
         assert!(is_err(
             &decide(&p, me, "u", &link),
