@@ -91,6 +91,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         Request::Sharing(r) => crate::daemon_sharing::dispatch(uid, peer_pid, username, r),
         // batch: sync
         // batch: policy
+        Request::Policy(r) => crate::daemon_policy::dispatch(uid, peer_pid, username, r),
         // batch: gate
         Request::Gatex(r) => crate::daemon_gatex::dispatch(uid, peer_pid, username, r),
         // batch: aws

@@ -275,6 +275,8 @@ pub enum Request {
     Sharing(crate::protocol_sharing::SharingRequest),
     // batch: sync
     // batch: policy
+    #[serde(untagged)]
+    Policy(crate::protocol_policy::PolicyRequest),
     // batch: gate
     #[serde(untagged)]
     Gatex(crate::protocol_gatex::GatexRequest),

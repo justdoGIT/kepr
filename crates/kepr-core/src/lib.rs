@@ -42,6 +42,8 @@ pub mod protocol_records;
 pub mod protocol_sharing;
 // batch: sync
 // batch: policy
+pub mod policy;
+pub mod protocol_policy;
 // batch: gate
 pub mod gate_record;
 pub mod mysql_handshake;

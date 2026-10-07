@@ -45,6 +45,11 @@ const GROUPS: &[Group] = &[
     ),
     // batch: sync
     // batch: policy
+    (
+        crate::cli_policy::VERBS,
+        crate::cli_policy::HELP,
+        crate::cli_policy::dispatch,
+    ),
     // batch: gate
     (
         crate::cli_gatex::VERBS,
