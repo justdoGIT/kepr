@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use kepr_core::policy::{Ctx, Decision, PolicyFile};
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_records::RecordsRequest;
+use kepr_core::protocol_sharing::SharingRequest;
 
 use crate::audit::{self, AuditEvent, AuditResult};
 
@@ -151,6 +152,10 @@ fn governed(
             ("get", vec![name.to_uppercase()], vec![], None)
         }
         Request::ShareSend { name, .. } => ("share", vec![name.to_uppercase()], vec![], None),
+        // A one-time link (T6.04) is a share too.
+        Request::Sharing(SharingRequest::ShareLinkCreate { name, .. }) => {
+            ("share", vec![name.to_uppercase()], vec![], None)
+        }
         _ => return None,
     })
 }
@@ -313,6 +318,16 @@ mod tests {
         };
         assert!(is_err(
             &decide(&p, me, "u", &share),
+            "no rule allows share of TOKEN"
+        ));
+        let link = Request::Sharing(SharingRequest::ShareLinkCreate {
+            name: "token".into(),
+            ttl_secs: Some(60),
+            self_destruct: None,
+            relay: None,
+        });
+        assert!(is_err(
+            &decide(&p, me, "u", &link),
             "no rule allows share of TOKEN"
         ));
     }
