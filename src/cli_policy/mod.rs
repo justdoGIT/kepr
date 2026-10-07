@@ -1,8 +1,11 @@
 // cli_policy/ — the `policy` ticket batch, CLI side: `kepr policy`
 // (T6.11), `kepr report access` (T6.12), webhooks (`notify`) and
-// `kepr health --notify` (T6.08), `kepr audit forward` (T7.14).
+// `kepr health --notify` (T6.08), `kepr audit forward` (T7.14),
+// `kepr alerts` (T7.15).
 // Registered in cli_more.rs.
 
+mod alerts;
+mod alerts_cmd;
 mod forward;
 mod health;
 mod notify;
@@ -14,7 +17,7 @@ mod tail;
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_policy::{PolicyRequest, PolicyResponse};
 
-pub const VERBS: &[&str] = &["policy", "report", "audit"];
+pub const VERBS: &[&str] = &["policy", "report", "audit", "alerts"];
 
 pub const HELP: &str = "  policy test FILE                     run the [[test]] cases of a policy.toml (allow / deny per case)
   policy status | policy reload        the policy the daemon enforces (~/.config/kepr/policy.toml or
@@ -24,6 +27,9 @@ pub const HELP: &str = "  policy test FILE                     run the [[test]] 
   audit forward --to TARGET [--once]   stream audit events (op, name, uid, result, time; never values)
                                        to jsonl:PATH, syslog:udp://HOST[:PORT] or otlp:URL; resumes
                                        after a restart [--interval SECS] [--state FILE]
+  alerts check | alerts run [--once]   post audit events matching ~/.config/kepr/alerts.toml rules
+                                       to Slack / Teams / Discord / ntfy webhooks, throttled per rule
+                                       [--file F] [--interval SECS] [--state FILE]
   health … --notify URL [--format F]   post findings (names and flags only) to a webhook; F: slack,
                                        teams, discord, ntfy or json (guessed from URL); URL may be kepr:NAME
 ";
@@ -33,6 +39,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "policy" => policy::cmd_policy(args),
         "report" => report::cmd_report(args),
         "audit" => forward::cmd_audit(args),
+        "alerts" => alerts_cmd::cmd_alerts(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

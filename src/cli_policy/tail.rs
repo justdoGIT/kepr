@@ -60,6 +60,11 @@ pub fn state_dir() -> PathBuf {
     home_base("XDG_STATE_HOME", ".local/state").join("kepr")
 }
 
+/// `~/.config/kepr` (or `$XDG_CONFIG_HOME/kepr`).
+pub fn config_dir() -> PathBuf {
+    home_base("XDG_CONFIG_HOME", ".config").join("kepr")
+}
+
 /// A state file name for `spec` (a target, a rules file): its hash, so
 /// a URL never appears in a file name.
 pub fn state_file(prefix: &str, spec: &str) -> PathBuf {
