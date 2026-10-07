@@ -35,7 +35,10 @@ pub fn grid(words: &str) -> String {
 }
 
 pub fn create() -> Response {
-    let password = read_masked("  Store passphrase: ");
+    let password = match crate::cli_seal::fido2::store_passphrase("  Store passphrase: ") {
+        Ok(p) => p,
+        Err(e) => return Response::fail(e),
+    };
     let r = send(SealRequest::RecoveryWordsCreate { password });
     let Response::Seal(SealResponse::RecoveryWordsOk { fingerprint, words }) = &r else {
         return r;

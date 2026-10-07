@@ -36,6 +36,7 @@ pub mod protocol_vault;
 // batch: seal
 pub mod protocol_seal;
 pub mod recovery_words;
+pub mod seal_factor;
 // batch: store
 pub mod protocol_store;
 // batch: records

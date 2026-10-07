@@ -7,10 +7,13 @@
 //   runner     the helper-tool runner the sealers share (fake in tests)
 //   tpm        T4.08 TPM2 PIN + anti-rollback counter (tpm2-tools);
 //   tpm_config its environment
+//   fido2_kek  T4.09 the `kepr_pw2` envelope: passphrase + security key
+//              (used by key_unlock.rs; the CLI drives the device)
 //
 // `sealer_for` picks a sealer from the environment for
 // master_key::sealer_from_env; `None` keeps the default one.
 
+pub mod fido2_kek;
 mod recovery;
 mod runner;
 mod tpm;
@@ -46,6 +49,7 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: SealRequest) 
             words,
             new_password,
         } => recovery::handle_restore(uid, username, &words, new_password.as_bytes()),
+        SealRequest::Fido2UnlockParams => fido2_kek::handle_params(uid, username),
     }
 }
 

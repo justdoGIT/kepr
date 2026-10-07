@@ -45,7 +45,9 @@ fn write_share(dir: &str, x: usize, share: &ZeroString) -> Result<String, String
 fn create(args: &[String]) -> Result<Response, Response> {
     let threshold = number(args, "--threshold", 3)?;
     let shares = number(args, "--shares", 5)?;
-    let password = read_masked("  Store passphrase: ");
+    // T4.09: plus the security key's factor when the store has one.
+    let password =
+        crate::cli_seal::fido2::store_passphrase("  Store passphrase: ").map_err(Response::fail)?;
     let r = client::send_request(&Request::RecoveryKitCreate {
         password,
         threshold,

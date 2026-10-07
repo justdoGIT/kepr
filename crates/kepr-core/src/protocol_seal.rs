@@ -22,6 +22,8 @@ pub enum SealRequest {
         words: ZeroString,
         new_password: ZeroString,
     },
+    /// T4.09: the security key `kepr unlock` must also use, if any.
+    Fido2UnlockParams,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,6 +33,15 @@ pub enum SealResponse {
         /// Same fingerprint as the recovery kit's shares.
         fingerprint: String,
         words: ZeroString,
+    },
+    /// T4.09: public parameters of the store's FIDO2 factor (base64);
+    /// `None` when the store needs only its passphrase.
+    Fido2UnlockParamsOk {
+        rp_id: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        credential_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        salt: Option<String>,
     },
 }
 
@@ -55,6 +66,7 @@ mod tests {
             words: "abacus zoom".into(),
             new_password: "pw2".into(),
         }));
+        round_trip_request(Request::Seal(SealRequest::Fido2UnlockParams));
         // Core requests still parse as themselves.
         let r: Request = serde_json::from_str(
             r#"{"cmd":"recoverykitcreate","password":"p","threshold":2,"shares":3}"#,
@@ -82,5 +94,22 @@ mod tests {
         assert!(back.is_success());
         // Secrets stay out of Debug output.
         assert!(!format!("{back:?}").contains("abacus"));
+        for p in [
+            SealResponse::Fido2UnlockParamsOk {
+                rp_id: "kepr".into(),
+                credential_id: Some("AAEC".into()),
+                salt: Some("AwQF".into()),
+            },
+            SealResponse::Fido2UnlockParamsOk {
+                rp_id: "kepr".into(),
+                credential_id: None,
+                salt: None,
+            },
+        ] {
+            let json = serde_json::to_string(&Response::Seal(p)).unwrap();
+            let back: Response = serde_json::from_str(&json).unwrap();
+            assert_eq!(serde_json::to_string(&back).unwrap(), json);
+            assert!(matches!(back, Response::Seal(_)), "{json}");
+        }
     }
 }

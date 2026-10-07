@@ -411,6 +411,9 @@ pub fn cmd_audit_verify(a: &Args) -> Response {
 }
 
 pub fn cmd_lock(a: &Args) -> Response {
+    if a.lock_fido2 {
+        return crate::cli_seal::fido2::cmd_lock_fido2(a);
+    }
     let first = read_masked("  Lock password: ");
     if first.is_empty() {
         return Response::fail("password cannot be empty");
@@ -431,10 +434,11 @@ pub fn cmd_lock(a: &Args) -> Response {
 }
 
 pub fn cmd_unlock(a: &Args) -> Response {
-    let password = read_masked("  Unlock password: ");
-    if password.is_empty() {
-        return Response::fail("password cannot be empty");
-    }
+    // T4.09: with the security key's factor when the store has one.
+    let password = match crate::cli_seal::fido2::store_passphrase("  Unlock password: ") {
+        Ok(p) => p,
+        Err(e) => return crate::cli_seal::fido2::failed(a, e),
+    };
     let resp = dispatch(a, &Request::Unlock { password });
     if !a.json {
         match &resp {
