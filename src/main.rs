@@ -78,6 +78,7 @@ mod cli_policy;
 // batch: gate
 mod cli_gatex;
 // batch: aws
+mod cli_aws;
 // batch: eco
 mod cli_eco;
 // batch: platform

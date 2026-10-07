@@ -57,6 +57,11 @@ const GROUPS: &[Group] = &[
         crate::cli_gatex::dispatch,
     ),
     // batch: aws
+    (
+        crate::cli_aws::VERBS,
+        crate::cli_aws::HELP,
+        crate::cli_aws::dispatch,
+    ),
     // batch: eco
     (
         crate::cli_eco::VERBS,
