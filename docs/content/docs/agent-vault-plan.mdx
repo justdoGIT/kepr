@@ -862,7 +862,8 @@ can't misuse it quietly either". P9.1–P9.3 should ship right after P1.
 - P10.2 Importers (1Password, Bitwarden, KeePass KDBX, LastPass, Keeper
   JSON, Chrome CSV, `.env`, Doppler, Infisical) and encrypted export.
 - P10.3 Fingerprint unlock through polkit + fprintd.
-- P10.4 macOS Keychain sealer (the existing roadmap item).
+- P10.4 macOS Keychain sealer (the existing roadmap item); the daemon reads
+  the item through Security.framework so the access list applies.
 - P10.5 Kernel `logon` keyring export for dm-crypt, fscrypt and CIFS/NFS (A12).
 - P10.6 Service and container delivery: `systemd-creds` export for
   `LoadCredentialEncrypted=` (A11), Podman secret driver, Kubernetes Secrets

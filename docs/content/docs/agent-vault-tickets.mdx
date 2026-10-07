@@ -871,7 +871,7 @@ P7:  T7.01, T7.02, T7.03 ; T7.04 (needs T7.02) ; T7.06 ─▶ T7.05 ; T7.07
      T7.16 ; T7.17 ; T7.18
 P8:  all independent (T8.09 before T8.03, T8.04, T8.08)
 P9:  T9.04 ; T9.05 (needs T7.01) ; T9.06 ; T9.07 ; T9.08 ; T9.09 (needs T7.05)
-P10: all independent except T10.11 (needs T10.10)
+P10: all independent except T10.11 (needs T10.10) and T10.12 (needs T10.04)
 P11: all independent except T11.1 (needs T5.01), T11.15 (needs T6.04)
 ```
 
@@ -1883,6 +1883,17 @@ Goal: `kepr pki svid spiffe://TRUST/path --ttl 1h` issues an X.509 SVID
 (`tpm2_quote`) over PCR 7 matches the enrolled value.
 Depends on: T10.10.
 Tests: URI SAN form; TTL cap; quote verification with fixture data.
+
+### T10.12 Native Keychain unseal on macOS (S) 🔒
+
+Goal: the Keychain sealer (T10.04) reads the master key through
+Security.framework from the daemon itself, so the item's access list
+(`-T` the daemon binary) applies and macOS doesn't prompt on every start.
+Depends on: T10.04.
+Files: `security-framework` behind `cfg(target_os = "macos")` in the
+Keychain sealer; `/usr/bin/security` stays only for adding the item.
+Tests: a macOS CI job that seals, restarts the daemon and unseals without a
+prompt (login keychain unlocked in the job); Linux builds unchanged.
 
 ---
 
