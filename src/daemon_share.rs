@@ -30,14 +30,15 @@ pub(crate) const KEY_NAME: &str = "KEPR_SHARE_KEY";
 const DEFAULT_TTL: u64 = 24 * 3600;
 const MAX_TTL: u64 = 30 * 24 * 3600;
 
+/// What every share carries (envelopes and one-time links alike).
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Payload1 {
-    id: String,
-    name: String,
-    value: ZeroString,
-    expires: u64,
+pub(crate) struct Payload1 {
+    pub id: String,
+    pub name: String,
+    pub value: ZeroString,
+    pub expires: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    record_type: Option<String>,
+    pub record_type: Option<String>,
 }
 
 pub(crate) fn load_secret(uid: u32) -> Result<ShareSecret, String> {
@@ -91,6 +92,41 @@ pub fn handle_key(uid: u32, username: &str, create: bool) -> Response {
     }
 }
 
+/// A fresh single-use payload holding NAME's value, under the same
+/// policy as Get, fail-closed: sealed, SSH and share keys, expired
+/// values, an unreadable .meta and FIDO2-gated values are refused;
+/// consent-gated ones ask first. Also used by one-time links (T6.04).
+pub(crate) fn new_payload(
+    (uid, peer_pid): (u32, i32),
+    name: &str,
+    ttl: Option<u64>,
+) -> Result<Payload1, String> {
+    validate_name(name)?;
+    let upper = &name.to_uppercase();
+    let ttl = ttl.unwrap_or(DEFAULT_TTL);
+    if ttl == 0 || ttl > MAX_TTL {
+        return Err("--ttl must be 1 second to 30 days".into());
+    }
+    let _lock = crate::daemon_credlock::lock(uid, upper);
+    crate::daemon_handlers_get::precheck_meta(uid, peer_pid, upper)
+        .map_err(|_| "this credential can't be shared".to_string())?;
+    let meta = expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, upper)))
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    let value = crypto::default_backend()
+        .decrypt(uid, upper)
+        .map_err(|e| crypto::sanitize_lookup_error(&e))?;
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    Ok(Payload1 {
+        id: hex::encode(id),
+        name: upper.to_string(),
+        value,
+        expires: expiry::now_unix() + ttl,
+        record_type: meta.record_type,
+    })
+}
+
 pub fn handle_send(
     (uid, peer_pid): (u32, i32),
     username: &str,
@@ -101,36 +137,10 @@ pub fn handle_send(
     let upper = name.to_uppercase();
     let mut out = (String::new(), 0u64);
     let r = (|| {
-        validate_name(name)?;
         let to = Recipient::parse(to)?;
-        let ttl = ttl.unwrap_or(DEFAULT_TTL);
-        if ttl == 0 || ttl > MAX_TTL {
-            return Err("--ttl must be 1 second to 30 days".into());
-        }
-        let _lock = crate::daemon_credlock::lock(uid, &upper);
-        // The same policy as Get, fail-closed: sealed, SSH and share
-        // keys, expired values, an unreadable .meta and FIDO2-gated
-        // values are refused; consent-gated ones ask first.
-        crate::daemon_handlers_get::precheck_meta(uid, peer_pid, &upper)
-            .map_err(|_| "this credential can't be shared".to_string())?;
-        let meta = expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, &upper)))
-            .and_then(Result::ok)
-            .unwrap_or_default();
-        let value = crypto::default_backend()
-            .decrypt(uid, &upper)
-            .map_err(|e| crypto::sanitize_lookup_error(&e))?;
-        let mut id = [0u8; 16];
-        getrandom::fill(&mut id).map_err(|e| format!("CSPRNG failure: {e}"))?;
-        let expires = expiry::now_unix() + ttl;
-        let payload = Payload1 {
-            id: hex::encode(id),
-            name: upper.clone(),
-            value,
-            expires,
-            record_type: meta.record_type,
-        };
+        let payload = new_payload((uid, peer_pid), name, ttl)?;
         let json = Zeroizing::new(serde_json::to_vec(&payload).map_err(|e| e.to_string())?);
-        out = (kem::seal(&to, &json)?, expires);
+        out = (kem::seal(&to, &json)?, payload.expires);
         Ok(())
     })();
     audit_r("share-send", uid, username, Some(&upper), &r);
@@ -143,49 +153,75 @@ pub fn handle_send(
     }
 }
 
+/// Store a received payload under its name (or `rename`): refuses an
+/// expired share, a reserved or existing name, and an id already
+/// received (single use). Also used by one-time links (T6.04).
+pub(crate) fn store_payload(
+    uid: u32,
+    username: &str,
+    p: Payload1,
+    rename: Option<&str>,
+) -> Result<(String, Response), String> {
+    if expiry::now_unix() >= p.expires {
+        return Err("this share has expired".to_string());
+    }
+    // Everything that can refuse runs before the share is used up.
+    let name = rename.map(str::to_uppercase).unwrap_or(p.name);
+    validate_name(&name)?;
+    if name == KEY_NAME {
+        return Err("this name is reserved".into());
+    }
+    // Never let a sender's choice of name replace an existing
+    // credential (a sealed key, an SSH key, …).
+    if crate::store::cred_exists(uid, &name) {
+        return Err(format!(
+            "{name} already exists; receive it --as ANOTHER_NAME"
+        ));
+    }
+    crate::daemon_share_seen::claim(uid, &p.id, p.expires)?;
+    let flags = SetFlags {
+        record_type: p.record_type,
+        ..Default::default()
+    };
+    match handle_set(uid, username, &name, Some(p.value.as_str()), None, flags) {
+        r @ Response::SetOk { .. } => {
+            // T6.05: the sender's ledger row (and a self-destruct).
+            crate::daemon_sharing::sent::on_received(&p.id, expiry::now_unix());
+            Ok((name, r))
+        }
+        Response::Err { error } => {
+            crate::daemon_share_seen::release(uid, &p.id);
+            Err(error)
+        }
+        _ => Err("unexpected store reply".into()),
+    }
+}
+
+/// Audit a receive-like operation and turn it into the reply.
+pub(crate) fn received(
+    op: &'static str,
+    uid: u32,
+    username: &str,
+    r: Result<(String, Response), String>,
+) -> Response {
+    match r {
+        Ok((name, resp)) => {
+            audit_r(op, uid, username, Some(&name), &Ok(()));
+            resp
+        }
+        Err(e) => {
+            audit_r(op, uid, username, None, &Err(e.clone()));
+            Response::fail(e)
+        }
+    }
+}
+
 pub fn handle_receive(uid: u32, username: &str, envelope: &str, rename: Option<&str>) -> Response {
     let r = (|| {
         let secret = load_secret(uid)?;
         let plain = kem::open(&secret, envelope)?;
         let p: Payload1 = serde_json::from_slice(&plain).map_err(|_| "malformed share")?;
-        if expiry::now_unix() >= p.expires {
-            return Err("this share has expired".to_string());
-        }
-        // Everything that can refuse runs before the share is used up.
-        let name = rename.map(str::to_uppercase).unwrap_or(p.name);
-        validate_name(&name)?;
-        if name == KEY_NAME {
-            return Err("this name is reserved".into());
-        }
-        // Never let a sender's choice of name replace an existing
-        // credential (a sealed key, an SSH key, …).
-        if crate::store::cred_exists(uid, &name) {
-            return Err(format!(
-                "{name} already exists; receive it --as ANOTHER_NAME"
-            ));
-        }
-        crate::daemon_share_seen::claim(uid, &p.id, p.expires)?;
-        let flags = SetFlags {
-            record_type: p.record_type,
-            ..Default::default()
-        };
-        match handle_set(uid, username, &name, Some(p.value.as_str()), None, flags) {
-            r @ Response::SetOk { .. } => Ok((name, r)),
-            Response::Err { error } => {
-                crate::daemon_share_seen::release(uid, &p.id);
-                Err(error)
-            }
-            _ => Err("unexpected store reply".into()),
-        }
+        store_payload(uid, username, p, rename)
     })();
-    match r {
-        Ok((name, resp)) => {
-            audit_r("share-receive", uid, username, Some(&name), &Ok(()));
-            resp
-        }
-        Err(e) => {
-            audit_r("share-receive", uid, username, None, &Err(e.clone()));
-            Response::fail(e)
-        }
-    }
+    received("share-receive", uid, username, r)
 }

@@ -9,7 +9,7 @@ use std::sync::Mutex;
 static LOCK: Mutex<()> = Mutex::new(());
 
 fn path(uid: u32) -> std::path::PathBuf {
-    crate::state_dir().join(format!("share-seen-{uid}.json"))
+    crate::daemon_sharing::state_path("share-seen", uid)
 }
 
 fn load(p: &std::path::Path) -> HashMap<String, u64> {
@@ -20,8 +20,7 @@ fn load(p: &std::path::Path) -> HashMap<String, u64> {
 }
 
 fn save(p: &std::path::Path, seen: &HashMap<String, u64>) -> Result<(), String> {
-    let bytes = serde_json::to_vec(seen).map_err(|e| e.to_string())?;
-    crate::atomic_file::write(p, &bytes, 0o600).map_err(|e| format!("cannot record the share: {e}"))
+    crate::daemon_sharing::save(p, seen).map_err(|e| format!("cannot record the share: {e}"))
 }
 
 /// Forget `id` again: the share was claimed but storing it failed.

@@ -9,6 +9,8 @@
 
 pub mod devices;
 pub mod kem;
+pub mod link;
+pub mod sent;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -21,8 +23,20 @@ use crate::audit::{self, AuditEvent, AuditResult};
 /// Serialises read-modify-write of the per-uid state files below.
 pub(crate) static LOCK: Mutex<()> = Mutex::new(());
 
+/// The daemon's state directory (a per-process temp dir under test).
+pub(crate) fn state_root() -> PathBuf {
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join(format!("kepr-sharing-tests-{}", std::process::id()))
+    }
+    #[cfg(not(test))]
+    {
+        crate::state_dir()
+    }
+}
+
 pub(crate) fn state_path(kind: &str, uid: u32) -> PathBuf {
-    crate::state_dir().join(format!("{kind}-{uid}.json"))
+    state_root().join(format!("{kind}-{uid}.json"))
 }
 
 /// A missing or unreadable file is the empty state.
@@ -60,6 +74,47 @@ pub(crate) fn audit_r<T>(
     });
 }
 
+/// The audit chain's entries at `path` (unreadable lines skipped).
+#[cfg(test)]
+pub(crate) fn chain_entries(path: &Path) -> Vec<crate::audit_chain::ChainEntry> {
+    use std::io::BufRead;
+    let Ok(f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    std::io::BufReader::new(f)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|l| serde_json::from_str(&l).ok())
+        .collect()
+}
+
+/// Test-only: an audit chain for this test binary, installed once, so
+/// tests can check which ops were audited.
+#[cfg(test)]
+pub(crate) fn test_chain() -> PathBuf {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let path = state_root().join("audit-chain.log");
+    ONCE.call_once(|| {
+        let _ = std::fs::create_dir_all(state_root());
+        let chain = crate::audit_chain::AuditChain::open(path.clone()).expect("test chain");
+        let _ = crate::audit::install_chain(std::sync::Arc::new(chain));
+    });
+    path
+}
+
+/// Test-only: was `op` audited for (uid, name) with result `ok`?
+#[cfg(test)]
+pub(crate) fn audited(uid: u32, op: &str, name: &str) -> bool {
+    chain_entries(&test_chain())
+        .iter()
+        .any(|e| e.uid == uid && e.op == op && e.name.as_deref() == Some(name) && e.result == "ok")
+}
+
+/// Called by the expiry sweeper (daemon_expiry.rs) once per tick.
+pub fn sweep(now: u64) {
+    sent::sweep(now);
+}
+
 pub(crate) fn done(message: impl Into<String>) -> Response {
     SharingResponse::SharingDone {
         message: message.into(),
@@ -67,7 +122,7 @@ pub(crate) fn done(message: impl Into<String>) -> Response {
     .into()
 }
 
-pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: SharingRequest) -> Response {
+pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SharingRequest) -> Response {
     match request {
         SharingRequest::DeviceAdd { label, oidc_issuer } => {
             devices::handle_add(uid, username, &label, oidc_issuer)
@@ -77,5 +132,23 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: SharingReques
         }
         SharingRequest::DeviceList => devices::handle_list(uid),
         SharingRequest::DeviceRemove { device } => devices::handle_remove(uid, username, &device),
+        SharingRequest::ShareLinkCreate {
+            name,
+            ttl_secs,
+            self_destruct,
+            relay,
+        } => link::handle_create(
+            (uid, peer_pid),
+            username,
+            &name,
+            ttl_secs,
+            self_destruct == Some(true),
+            relay,
+        ),
+        SharingRequest::ShareLinkOpen { blob, key, name } => {
+            link::handle_open(uid, username, &blob, key.as_str(), name.as_deref())
+        }
+        SharingRequest::ShareSentList => sent::handle_list(uid),
+        SharingRequest::ShareLinkOpened { id } => sent::handle_opened(uid, username, &id),
     }
 }

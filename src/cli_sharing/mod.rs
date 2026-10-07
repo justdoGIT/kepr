@@ -5,6 +5,8 @@
 mod device;
 mod jwt;
 mod oidc;
+mod once;
+mod qr;
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -21,6 +23,12 @@ pub const HELP: &str =
   device enroll … --oidc ISSUER --client-id ID [--subject WHO]
                                        prove the user via the IdP (device-code login) first
   device ls | device rm ID|LABEL       enrolled devices (what sync encrypts to)
+  share send KEY --once [--ttl 1h] [--relay URL | -o FILE] [--qr] [--self-destruct]
+                                       one-time link kepr://share/…#key (key only in the #fragment);
+                                       --self-destruct deletes KEY once the link is opened or expires
+  share check                          ask the relays which of your links were opened
+  share open LINK [--from FILE] [--as KEY]
+                                       fetch (relay) or read (file) a one-time link and store it
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -28,6 +36,39 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "device" => device::cmd_device(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
+}
+
+/// `kepr share …` subcommands added by this batch (called from
+/// cli_share.rs); `None` leaves the arguments to cli_share.
+pub fn share_ext(args: &[String]) -> Option<Response> {
+    let rest = args.get(1..).unwrap_or_default();
+    match args.first().map(String::as_str) {
+        Some("send") if rest.iter().any(|a| a == "--once") => Some(once::send_once(rest)),
+        Some("open") => Some(once::open(rest)),
+        Some("check") => Some(once::check()),
+        _ => None,
+    }
+}
+
+/// `90`, `90s`, `15m`, `1h`, `7d` → seconds.
+pub(crate) fn parse_duration(text: &str) -> Result<u64, String> {
+    let t = text.trim();
+    let (num, unit) = match t.find(|c: char| !c.is_ascii_digit()) {
+        Some(i) => t.split_at(i),
+        None => (t, "s"),
+    };
+    let mult = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => 0,
+    };
+    num.parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(mult))
+        .filter(|s| *s > 0)
+        .ok_or_else(|| format!("{text}: not a duration (like 90s, 15m, 1h, 7d)"))
 }
 
 pub(crate) fn now() -> u64 {
@@ -75,6 +116,17 @@ mod tests {
         assert!(HELP.lines().all(|l| l.starts_with("  ")));
         for v in VERBS {
             assert!(HELP.contains(v), "{v} missing from help");
+        }
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(parse_duration("90").unwrap(), 90);
+        assert_eq!(parse_duration("15m").unwrap(), 900);
+        assert_eq!(parse_duration("1h").unwrap(), 3600);
+        assert_eq!(parse_duration("7d").unwrap(), 604_800);
+        for bad in ["", "0", "1w", "h", "-5m", "1.5h"] {
+            assert!(parse_duration(bad).is_err(), "{bad}");
         }
     }
 
