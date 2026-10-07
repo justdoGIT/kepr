@@ -1,14 +1,14 @@
 // daemon_store/wipe.rs — T11.9 `kepr delete --all --yes`: remove every
 // credential of the caller (sealed, SSH and share keys included), their
 // history slots, the trash and the aliases, as one `delete-all` audit
-// event. Only files named for the caller's SO_PEERCRED uid are touched.
+// event. Only entries named for the caller's SO_PEERCRED uid are touched
+// (files, or the vault image's records with KEPR_STORE=image).
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_store::StoreResponse;
 
 use super::files;
 use crate::audit::{self, AuditEvent, AuditResult};
-use crate::store::{self, CRED_PREFIX};
 use crate::{crypto, daemon_cache, expiry};
 
 pub fn handle_delete_all(uid: u32, username: &str, confirm: bool) -> Response {
@@ -36,6 +36,10 @@ pub fn handle_delete_all(uid: u32, username: &str, confirm: bool) -> Response {
 
 /// Returns how many credentials and aliases were removed.
 fn wipe(uid: u32) -> Result<usize, String> {
+    // A locked image lists nothing: never report that as an empty store.
+    if crate::daemon_vault::active().is_some() && crypto::backend_is_locked() {
+        return Err("credential store is locked; unlock it first".into());
+    }
     let deleted = daemon_cache::list_for_uid(uid).len() + super::alias::aliases_of_uid(uid).len();
     let mut failed = 0;
     for (name, _) in files::all_of(uid) {
@@ -46,15 +50,10 @@ fn wipe(uid: u32) -> Result<usize, String> {
             failed += 1;
         }
     }
-    // Sidecars: credential, alias, trash and orphan metas.
-    let prefix = format!("{CRED_PREFIX}-{uid}-");
-    if let Ok(rd) = std::fs::read_dir(store::store_dir()) {
-        for e in rd.flatten() {
-            let f = e.file_name().to_string_lossy().to_string();
-            if f.starts_with(&prefix) && f.ends_with(".meta") {
-                expiry::delete_meta(&e.path());
-            }
-        }
+    // Sidecars: credential, alias, trash and orphan metas (in the image,
+    // what is left once the values are gone: meta-only records).
+    for p in files::meta_paths_of(uid) {
+        expiry::delete_meta(&p);
     }
     if failed > 0 {
         return Err(format!("{failed} stored value(s) could not be deleted"));
@@ -92,7 +91,7 @@ mod tests {
         }
         assert!(files::all_of(me).is_empty());
         let prefix = format!("kepr-{me}-");
-        let left: Vec<_> = std::fs::read_dir(store::store_dir())
+        let left: Vec<_> = std::fs::read_dir(crate::store::store_dir())
             .unwrap()
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))

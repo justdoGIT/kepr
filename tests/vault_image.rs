@@ -55,12 +55,24 @@ fn start(home: tempfile::TempDir, store: Option<&str>) -> Daemon {
 }
 
 fn kepr(d: &Daemon, args: &[&str]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kepr"));
-    env(&mut cmd, d.home.path());
-    cmd.args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run kepr")
+    // These tests fire requests faster than the daemon's per-uid rate limit
+    // (burst 30, 10/s) allows; wait for the bucket to refill and retry.
+    let t = Instant::now();
+    loop {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_kepr"));
+        env(&mut cmd, d.home.path());
+        let o = cmd
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run kepr");
+        let limited = String::from_utf8_lossy(&o.stdout).contains("rate limited")
+            || String::from_utf8_lossy(&o.stderr).contains("rate limited");
+        if !limited || t.elapsed() > Duration::from_secs(20) {
+            return o;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
 }
 
 fn ok(d: &Daemon, args: &[&str]) -> String {
@@ -152,6 +164,21 @@ fn json(d: &Daemon, args: &[&str]) -> serde_json::Value {
     serde_json::from_str(&ok(d, &all)).unwrap()
 }
 
+/// `kepr agent add NAME --stdin`: a sealed key bound to its provider.
+fn add_sealed(d: &Daemon, name: &str, value: &str) {
+    use std::io::Write;
+    let mut add = Command::new(env!("CARGO_BIN_EXE_kepr"));
+    env(&mut add, d.home.path());
+    let mut child = add
+        .args(["agent", "add", name, "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{value}").unwrap();
+    assert!(child.wait().unwrap().success(), "agent add");
+}
+
 fn fails_with(d: &Daemon, args: &[&str]) -> String {
     let o = kepr(d, args);
     assert!(!o.status.success(), "kepr {args:?} succeeded");
@@ -167,18 +194,8 @@ fn migrate_moves_the_file_store_into_the_image() {
         &d,
         &["set", "ROTATED", "--value", "second", "--ttl", "3600"],
     );
-    let mut add = Command::new(env!("CARGO_BIN_EXE_kepr"));
-    env(&mut add, d.home.path());
-    let mut child = add
-        .args(["agent", "add", "ANTHROPIC_API_KEY", "--stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    use std::io::Write;
     let sealed = "sk-ant-api03-VAULTMIGRATE0123456789SECRET";
-    writeln!(child.stdin.take().unwrap(), "{sealed}").unwrap();
-    assert!(child.wait().unwrap().success(), "agent add");
+    add_sealed(&d, "ANTHROPIC_API_KEY", sealed);
     ok(&d, &["ssh", "generate", "DEPLOY_KEY"]);
     let ssh_keys = json(&d, &["ssh", "list"])["keys"].clone();
     assert_eq!(ssh_keys.as_array().map(Vec::len), Some(1), "{ssh_keys}");
@@ -304,6 +321,134 @@ fn verify_names_each_damaged_slot_and_only_used_ones() {
     }
     assert_eq!(two_only, 1);
     assert_eq!(ok(&d, &["get", "TWO", "--quiet"]).trim(), "two");
+}
+
+/// T4.14: the store batch's features with the image as the store.
+#[test]
+fn trash_aliases_verify_and_delete_all_work_on_the_image() {
+    let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["set", "KEEP", "--value", "one"]);
+    ok(&d, &["set", "KEEP", "--value", "two"]);
+    ok(&d, &["tag", "KEEP", "+prod"]);
+    let sealed = "sk-ant-api03-VAULTTRASH0123456789SECRET";
+    add_sealed(&d, "ANTHROPIC_API_KEY", sealed);
+    let entry = |list: &serde_json::Value, n: &str| {
+        list["credentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == n)
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    // rm → the trash (history, tags and seal with it) → restore.
+    json(&d, &["rm", "KEEP"]);
+    json(&d, &["rm", "ANTHROPIC_API_KEY"]);
+    assert!(names(&d).is_empty());
+    assert!(!kepr(&d, &["get", "KEEP", "--quiet"]).status.success());
+    let trash = json(&d, &["trash"]);
+    let mut trashed: Vec<&str> = trash["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap())
+        .collect();
+    trashed.sort_unstable();
+    assert_eq!(trashed, ["ANTHROPIC_API_KEY", "KEEP"], "{trash}");
+    ok(&d, &["trash", "restore", "KEEP"]);
+    ok(&d, &["trash", "restore", "ANTHROPIC_API_KEY"]);
+    assert_eq!(json(&d, &["trash"])["items"], serde_json::json!([]));
+    assert_eq!(ok(&d, &["get", "KEEP", "--quiet"]).trim(), "two");
+    let hist = json(&d, &["history", "KEEP"]);
+    assert_eq!(hist["versions"].as_array().map(Vec::len), Some(1), "{hist}");
+    let list = json(&d, &["list"]);
+    assert_eq!(entry(&list, "KEEP")["tags"], serde_json::json!(["prod"]));
+    assert_eq!(entry(&list, "ANTHROPIC_API_KEY")["sealed"], true, "{list}");
+    let o = kepr(&d, &["get", "ANTHROPIC_API_KEY", "--quiet"]);
+    assert!(!o.status.success());
+    assert!(!String::from_utf8_lossy(&o.stdout).contains(sealed));
+
+    // An alias is a meta-only record: listed, resolved, removed alone.
+    ok(&d, &["ln", "SHORT", "KEEP"]);
+    assert_eq!(ok(&d, &["get", "SHORT", "--quiet"]).trim(), "two");
+    let list = json(&d, &["list"]);
+    assert_eq!(entry(&list, "SHORT")["alias_of"], "KEEP", "{list}");
+    ok(&d, &["ln", "GONE", "KEEP"]);
+    json(&d, &["rm", "GONE"]);
+    assert_eq!(ok(&d, &["get", "KEEP", "--quiet"]).trim(), "two");
+    assert!(!kepr(&d, &["get", "GONE", "--quiet"]).status.success());
+
+    // Folders, history diff and the duplicate finder read the image too.
+    ok(&d, &["mv", "KEEP", "team/app"]);
+    assert_eq!(entry(&json(&d, &["list"]), "KEEP")["folder"], "team/app");
+    let diff = json(&d, &["history", "KEEP", "--diff", "1", "0"]);
+    let changed = serde_json::json!([{"field": "value", "change": "changed"}]);
+    assert_eq!(diff["changes"], changed, "{diff}");
+    ok(&d, &["set", "COPY", "--value", "two"]);
+    let dupes = json(&d, &["dupes"]);
+    assert_eq!(
+        dupes["groups"],
+        serde_json::json!([["COPY", "KEEP"]]),
+        "{dupes}"
+    );
+    ok(&d, &["dupes", "--merge", "KEEP"]);
+    assert_eq!(entry(&json(&d, &["list"]), "COPY")["alias_of"], "KEEP");
+    assert_eq!(ok(&d, &["get", "COPY", "--quiet"]).trim(), "two");
+
+    // doctor --verify checks what the image holds.
+    let v = json(&d, &["doctor", "--verify"]);
+    assert_eq!(v["all_ok"], true, "{v}");
+    assert_eq!(v["results"]["SHORT"], "ok", "{v}");
+    assert_eq!(v["results"]["COPY"], "ok", "{v}");
+    assert_eq!(v["results"]["KEEP~0"], "ok", "{v}");
+    assert_eq!(v["count"], 6, "{v}"); // KEEP, KEEP~0, the key, 2 aliases, COPY's trash entry
+
+    // delete --all takes values, history, trash and aliases.
+    ok(&d, &["set", "BIN", "--value", "b"]);
+    json(&d, &["rm", "BIN"]);
+    ok(&d, &["delete", "--all", "--yes"]);
+    assert!(names(&d).is_empty());
+    assert_eq!(json(&d, &["trash"])["items"], serde_json::json!([]));
+    assert!(!kepr(&d, &["get", "SHORT", "--quiet"]).status.success());
+    assert_eq!(json(&d, &["vault", "verify"])["records"], 0);
+    // Nothing ever went to per-file storage.
+    assert!(cred_files(&d).is_empty(), "{:?}", cred_files(&d));
+}
+
+/// T4.14: attachments (T5.03) are chunk records in the image; they go
+/// to the trash and back with their credential, are checked by doctor
+/// --verify and removed by delete --all.
+#[test]
+fn attachments_follow_their_credential_on_the_image() {
+    let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["set", "DOC", "--value", "v"]);
+    let src = d.home.path().join("notes.bin");
+    let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&src, &data).unwrap(); // three 45 KiB chunks
+    ok(&d, &["attach", "add", "DOC", src.to_str().unwrap()]);
+    let records = |d: &Daemon| json(d, &["vault", "verify"])["records"].clone();
+    assert_eq!(records(&d), 4, "DOC and three chunks");
+
+    json(&d, &["rm", "DOC"]);
+    assert!(!kepr(&d, &["attach", "ls", "DOC"]).status.success());
+    assert_eq!(records(&d), 4, "the chunks went to the trash with DOC");
+    ok(&d, &["trash", "restore", "DOC"]);
+    let ls = json(&d, &["attach", "ls", "DOC"]);
+    assert_eq!(ls["files"][0]["file"], "notes.bin", "{ls}");
+    let out = d.home.path().join("out.bin");
+    let out_s = out.to_str().unwrap();
+    ok(&d, &["attach", "get", "DOC", "notes.bin", "-o", out_s]);
+    assert_eq!(std::fs::read(&out).unwrap(), data);
+
+    let v = json(&d, &["doctor", "--verify"]);
+    assert_eq!(v["all_ok"], true, "{v}");
+    assert_eq!(v["count"], 4, "{v}");
+    assert_eq!(v["results"]["DOC~a0~2"], "ok", "{v}");
+
+    ok(&d, &["delete", "--all", "--yes"]);
+    assert_eq!(records(&d), 0);
+    assert!(cred_files(&d).is_empty(), "{:?}", cred_files(&d));
 }
 
 fn uid() -> String {

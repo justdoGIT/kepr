@@ -267,6 +267,20 @@ impl Backend for ImageBackend {
         }
         self.with_write(|img, keys| img.remove_record(keys, &key).map(drop))
     }
+
+    /// One commit: the record (value and meta) re-keyed under `to`.
+    fn rename(&self, uid: u32, from: &str, to: &str) -> Result<(), String> {
+        if self.exists(uid, to) {
+            return Err(format!("{to} already holds a value"));
+        }
+        if !self.exists(uid, from) {
+            return Err(not_found(from));
+        }
+        let (f, t) = (store::to_cred_name(uid, from), store::to_cred_name(uid, to));
+        self.with_write(|img, keys| img.rename_record(keys, &f, &t))?
+            .then_some(())
+            .ok_or_else(|| not_found(from))
+    }
 }
 
 /// `kepr-<uid>-<name>.meta` → `kepr-<uid>-<name>`.
@@ -465,6 +479,32 @@ mod tests {
             .unwrap()
             .entries
             .is_empty());
+    }
+
+    #[test]
+    fn rename_moves_the_record_with_its_meta() {
+        let (b, d) = fresh();
+        let meta = CredMeta {
+            sealed: Some(true),
+            ..Default::default()
+        };
+        b.write_meta(&meta_path(d.path(), UID, "OLD"), &meta)
+            .unwrap();
+        b.encrypt(UID, "OLD", b"v").unwrap();
+        b.encrypt(UID, "TAKEN", b"t").unwrap();
+        let err = b.rename(UID, "OLD", "TAKEN").unwrap_err();
+        assert!(err.contains("already holds"), "{err}");
+        assert!(b
+            .rename(UID, "NONE", "NEW")
+            .unwrap_err()
+            .contains("not found"));
+        b.rename(UID, "OLD", "NEW~t5").unwrap();
+        assert!(!b.exists(UID, "OLD"));
+        assert!(b.read_meta(&meta_path(d.path(), UID, "OLD")).is_none());
+        assert_eq!(b.decrypt(UID, "NEW~t5").unwrap().as_str(), "v");
+        let moved = b.read_meta(&meta_path(d.path(), UID, "NEW~t5"));
+        assert_eq!(moved, Some(Ok(meta)));
+        assert_eq!(b.decrypt(UID, "TAKEN").unwrap().as_str(), "t");
     }
 
     #[test]

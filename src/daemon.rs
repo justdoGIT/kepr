@@ -62,7 +62,9 @@ mod daemon_recordsx;
 mod daemon_sharing;
 // batch: sync
 // batch: policy
+mod daemon_policy;
 // batch: gate
+mod daemon_gatex;
 // batch: aws
 // batch: eco
 mod daemon_eco;
@@ -291,6 +293,7 @@ fn main() {
 
     sweep_legacy_credstore();
     daemon_expiry::spawn_sweeper(versions_for_sweeper);
+    daemon_policy::init(); // T6.11: policy.toml, reloaded on SIGHUP
     if user {
         daemon_sleepwatch::spawn(effective_uid());
         daemon_session::idle::spawn(effective_uid());

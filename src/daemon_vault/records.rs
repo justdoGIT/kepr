@@ -100,6 +100,41 @@ impl<I: SlotIo> VaultImage<I> {
     ) -> Result<(), String> {
         let old = self.load_index(keys)?;
         let mut alloc = self.allocator(&old);
+        let (entry, writes) = self.seal_record(keys, &old, &mut alloc, name, (value, meta))?;
+        let mut new = old.clone();
+        new.entries.insert(name.to_string(), entry);
+        self.commit_index(keys, &old, new, alloc, writes)
+    }
+
+    /// Move `from`'s record (value and meta) to `to`, replacing `to`, in
+    /// one commit: re-sealed under a fresh record key and new pages, the
+    /// old key and pages gone. False if there is no `from`.
+    pub fn rename_record(&mut self, keys: &Keys, from: &str, to: &str) -> Result<bool, String> {
+        let old = self.load_index(keys)?;
+        let Some(rec) = self.read_record(keys, &old, from)? else {
+            return Ok(false);
+        };
+        let mut alloc = self.allocator(&old);
+        let value = rec.value.as_deref().map(Vec::as_slice);
+        let (entry, writes) =
+            self.seal_record(keys, &old, &mut alloc, to, (value, rec.meta.as_deref()))?;
+        let mut new = old.clone();
+        new.entries.remove(from);
+        new.entries.insert(to.to_string(), entry);
+        self.commit_index(keys, &old, new, alloc, writes)?;
+        Ok(true)
+    }
+
+    /// Seal `name`'s payload under a fresh record key into newly placed
+    /// pages for the next epoch: its index entry and the page writes.
+    fn seal_record(
+        &self,
+        keys: &Keys,
+        old: &Index,
+        alloc: &mut Allocator,
+        name: &str,
+        (value, meta): (Option<&[u8]>, Option<&[u8]>),
+    ) -> Result<(Entry, Pages), String> {
         let epoch = self.header.epoch + 1;
         let record_id = match old.entries.get(name) {
             Some(e) => e.record_id,
@@ -129,9 +164,7 @@ impl<I: SlotIo> VaultImage<I> {
             has_value: value.is_some(),
             pages,
         };
-        let mut new = old.clone();
-        new.entries.insert(name.to_string(), entry);
-        self.commit_index(keys, &old, new, alloc, writes)
+        Ok((entry, writes))
     }
 
     /// Crypto-shred `name`. False if there was no such record.
@@ -321,6 +354,43 @@ mod tests {
         let ix = img.load_index(&keys).unwrap();
         let err = img.read_record(&keys, &ix, "B").err().unwrap();
         assert!(err.contains("authentication"), "{err}");
+    }
+
+    #[test]
+    fn rename_moves_value_and_meta_in_one_commit_under_a_new_key() {
+        let (mut img, keys, _) = fresh();
+        img.put_record(&keys, "A", Some(b"secret"), Some(b"{\"s\":1}"))
+            .unwrap();
+        img.put_record(&keys, "C", None, Some(b"{\"alias\":1}"))
+            .unwrap();
+        let before = img.load_index(&keys).unwrap().entries["A"].clone();
+        let epoch = img.header.epoch;
+        assert!(img.rename_record(&keys, "A", "B").unwrap());
+        assert_eq!(img.header.epoch, epoch + 1, "one commit");
+        let ix = img.load_index(&keys).unwrap();
+        assert!(!ix.entries.contains_key("A"));
+        let b = img.read_record(&keys, &ix, "B").unwrap().unwrap();
+        assert_eq!(b.value.unwrap().as_slice(), b"secret");
+        assert_eq!(b.meta.unwrap(), b"{\"s\":1}");
+        // Re-keyed and re-placed: the old pages are noise, the old key gone.
+        let after = &ix.entries["B"];
+        assert_ne!(after.record_id, before.record_id);
+        assert_ne!(after.wrapped_key, before.wrapped_key);
+        for (s, h) in &before.pages {
+            assert_ne!(
+                crate::daemon_vault::merkle::leaf(*s, &img.read_slot(*s).unwrap()),
+                *h
+            );
+        }
+        // A meta-only record moves too, and replaces what `to` held.
+        assert!(img.rename_record(&keys, "C", "B").unwrap());
+        let ix = img.load_index(&keys).unwrap();
+        let b = img.read_record(&keys, &ix, "B").unwrap().unwrap();
+        assert!(b.value.is_none());
+        assert_eq!(b.meta.unwrap(), b"{\"alias\":1}");
+        assert_eq!(ix.entries.len(), 1);
+        assert!(!img.rename_record(&keys, "NONE", "D").unwrap());
+        assert!(img.verify_records(&keys).is_ok());
     }
 
     #[test]

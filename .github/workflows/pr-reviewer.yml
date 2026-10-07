@@ -103,10 +103,18 @@ jobs:
           REVIEW_FILE=$(mktemp)
           FILTERED_DIFF=$(mktemp)
           PROMPT_FILE=$(mktemp)
-          trap 'rm -f "$DIFF_FILE" "$REVIEW_FILE" "$PROMPT_FILE" "$FILTERED_DIFF"' EXIT
+          DIFF_ERR=$(mktemp)
+          trap 'rm -f "$DIFF_FILE" "$REVIEW_FILE" "$PROMPT_FILE" "$FILTERED_DIFF" "$DIFF_ERR"' EXIT
 
-          if ! gh pr diff "$PR" > "$DIFF_FILE" 2>/dev/null; then
+          if ! gh pr diff "$PR" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+            # GitHub refuses diffs over 20,000 lines or 300 files (HTTP 406);
+            # such a PR is beyond a single-prompt review, so skip it.
+            if grep -q "too_large\|exceeded the maximum" "$DIFF_ERR"; then
+              echo "::notice::PR diff is too large for the GitHub diff API; skipping the agent review."
+              exit 0
+            fi
             echo "ERROR: gh pr diff failed" >&2
+            cat "$DIFF_ERR" >&2
             exit 1
           fi
           if [[ ! -s "$DIFF_FILE" ]]; then

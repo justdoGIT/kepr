@@ -1,13 +1,12 @@
 // daemon_store/files.rs — raw store helpers shared by the trash, delete-
-// all and verify: every file a uid owns (including the unnameable `~`
+// all and verify: every value a uid owns (including the unnameable `~`
 // entries: history slots `NAME~3`, trash entries `NAME~t<unix>` and their
-// slots `NAME~t<unix>~3`, attachment chunks `NAME~a<k>~<n>`), and moving a
-// value from one name to another.
-//
-// A value's AEAD tag is bound to its exact name, so a "move" is decrypt +
-// encrypt under the new name; the plaintext stays in a ZeroString.
+// slots `NAME~t<unix>~3`, attachment chunks `NAME~a<k>~<n>`), every
+// `.meta`, and moving history from one name to another. With
+// `KEPR_STORE=image` the same entries are records in the vault image
+// (T4.14); a move is the backend's `rename`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::crypto;
 use crate::store::{self, CRED_PREFIX};
@@ -46,29 +45,59 @@ pub fn parse_file_name(file: &str) -> Option<(u32, String)> {
     (store::to_cred_name(uid, &canonical) == file).then_some((uid, canonical))
 }
 
-/// Every value file under `dir`: `(uid, canonical name, path)`.
-pub fn all_in(dir: &Path) -> Vec<(u32, String, PathBuf)> {
-    let Ok(rd) = std::fs::read_dir(dir) else {
+/// The store's entries as (`kepr-<uid>-…` base name, holds a value): the
+/// vault image's records when it is the active store (T4.14), else the
+/// value files and `.meta` sidecars in the store directory.
+fn entries() -> Vec<(String, bool)> {
+    if let Some(image) = crate::daemon_vault::active() {
+        return image.records().unwrap_or_default();
+    }
+    let Ok(rd) = std::fs::read_dir(store::store_dir()) else {
         return Vec::new();
     };
-    let mut out: Vec<_> = rd
-        .flatten()
-        .filter_map(|e| {
-            let f = e.file_name().to_string_lossy().to_string();
-            parse_file_name(&f).map(|(u, n)| (u, n, e.path()))
+    rd.flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .map(|f| match f.strip_suffix(".meta") {
+            Some(base) => (base.to_string(), false),
+            None => (f, true),
         })
+        .collect()
+}
+
+/// Every stored value of every uid: `(uid, canonical name, path)`.
+pub fn all() -> Vec<(u32, String, PathBuf)> {
+    let dir = store::store_dir();
+    let mut out: Vec<_> = entries()
+        .into_iter()
+        .filter(|(_, value)| *value)
+        .filter_map(|(f, _)| parse_file_name(&f).map(|(u, n)| (u, n, dir.join(&f))))
         .collect();
     out.sort_by(|a, b| a.1.cmp(&b.1));
     out
 }
 
-/// Every value file of `uid` in the store: `(canonical name, path)`.
+/// Every stored value of `uid`: `(canonical name, path)`.
 pub fn all_of(uid: u32) -> Vec<(String, PathBuf)> {
-    all_in(&store::store_dir())
+    all()
         .into_iter()
         .filter(|(u, _, _)| *u == uid)
         .map(|(_, n, p)| (n, p))
         .collect()
+}
+
+/// The `.meta` path of every entry of `uid` that may have one: every
+/// sidecar file, or every image record (`read_meta` is `None` where a
+/// record has no meta). Meta-only entries (aliases) are among them.
+pub fn meta_paths_of(uid: u32) -> Vec<PathBuf> {
+    let (dir, prefix) = (store::store_dir(), format!("{CRED_PREFIX}-{uid}-"));
+    let image = crate::daemon_vault::active().is_some();
+    let mut out: Vec<PathBuf> = entries()
+        .into_iter()
+        .filter(|(base, value)| base.starts_with(&prefix) && (image || !value))
+        .map(|(base, _)| dir.join(format!("{base}.meta")))
+        .collect();
+    out.sort();
+    out
 }
 
 /// Would a plain `get` return this value with no prompt? Only such
@@ -84,24 +113,18 @@ pub fn readable_without_prompt(meta: &crate::expiry::CredMeta, now: u64) -> bool
         && meta.expires_at_unix.is_none_or(|t| now < t)
 }
 
-/// Re-encrypt `from`'s value under `to` (the caller deletes `from`).
-pub fn copy_value(uid: u32, from: &str, to: &str) -> Result<(), String> {
-    let v = crypto::default_backend().decrypt(uid, from)?;
-    crypto::default_backend().encrypt(uid, to, v.as_bytes())
-}
-
 /// `from`'s history slots become `to`'s (best effort, like history
 /// itself); slots that can't be moved are dropped.
 pub fn move_history(uid: u32, from: &str, to: &str) {
     for s in 0..crate::daemon_history::DEPTH {
         let (src, dst) = (format!("{from}~{s}"), format!("{to}~{s}"));
-        if !store::cred_path(uid, &src).exists() {
+        if !store::cred_exists(uid, &src) {
             continue;
         }
-        if let Err(e) = copy_value(uid, &src, &dst) {
+        if let Err(e) = crypto::default_backend().rename(uid, &src, &dst) {
             eprintln!("[kepr-daemon] history move failed: {e}");
+            let _ = crypto::default_backend().delete(uid, &src);
         }
-        let _ = crypto::default_backend().delete(uid, &src);
     }
 }
 

@@ -16,7 +16,7 @@ use kepr_core::protocol_store::{FieldChange, StoreResponse};
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::expiry;
-use crate::store::{cred_path, validate_name};
+use crate::store::{cred_exists, cred_path, validate_name};
 
 pub fn handle_diff(uid: u32, username: &str, name: &str, from: u32, to: u32) -> Response {
     let upper = name.to_uppercase();
@@ -45,7 +45,7 @@ pub fn handle_diff(uid: u32, username: &str, name: &str, from: u32, to: u32) -> 
 
 fn diff(uid: u32, upper: &str, from: u32, to: u32) -> Result<Vec<FieldChange>, String> {
     validate_name(upper)?;
-    if !cred_path(uid, upper).exists() {
+    if !cred_exists(uid, upper) {
         return Err(crate::crypto::SANITIZED_LOOKUP_ERROR.into());
     }
     let meta = expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, upper)))

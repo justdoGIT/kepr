@@ -4,7 +4,8 @@
 // sealed ones included (nothing is returned). Every `.meta` must parse;
 // history slots must belong to an existing value; a `.meta` with no value
 // must be an alias whose target exists. Answered with `Response::CheckOk`
-// (name → "ok" or the problems), so `all_ok` drives the exit code.
+// (name → "ok" or the problems), so `all_ok` drives the exit code. With
+// `KEPR_STORE=image` the same checks run over the image's records (T4.14).
 //
 // Attachment manifests (T5.03) must match their chunks (size, SHA-256),
 // and every chunk must belong to a listed attachment of a stored value
@@ -18,7 +19,7 @@ use super::files;
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::crypto;
 use crate::expiry::{self, CredMeta};
-use crate::store::{self, CRED_PREFIX};
+use crate::store;
 
 /// `name → problems` for `uid` (an empty list = ok).
 fn check(uid: u32) -> HashMap<String, Vec<String>> {
@@ -40,15 +41,13 @@ fn check(uid: u32) -> HashMap<String, Vec<String>> {
     for (name, problem) in crate::daemon_recordsx::verify_attachments(uid, &values) {
         out.entry(name).or_default().push(problem);
     }
-    let prefix = format!("{CRED_PREFIX}-{uid}-");
-    let Ok(rd) = std::fs::read_dir(store::store_dir()) else {
-        return out;
-    };
-    for e in rd.flatten() {
-        let f = e.file_name().to_string_lossy().to_string();
-        let Some(base) = f.strip_suffix(".meta").filter(|b| b.starts_with(&prefix)) else {
-            continue;
-        };
+    for p in files::meta_paths_of(uid) {
+        let f = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let base = f.strip_suffix(".meta").unwrap_or(&f);
         let Some((_, name)) = files::parse_file_name(base) else {
             out.entry(f.clone())
                 .or_default()
@@ -56,7 +55,7 @@ fn check(uid: u32) -> HashMap<String, Vec<String>> {
             continue;
         };
         let problems = out.entry(name.clone()).or_default();
-        match expiry::read_meta(&e.path()) {
+        match expiry::read_meta(&p) {
             Some(Ok(meta)) if !values.contains(&name) => problems.extend(no_value(uid, &meta)),
             Some(Ok(_)) | None => {}
             Some(Err(_)) => problems.push("meta does not parse".into()),
@@ -70,7 +69,7 @@ fn no_value(uid: u32, meta: &CredMeta) -> Option<String> {
     let Some(target) = &meta.alias_of else {
         return Some("meta without a value".into());
     };
-    if store::validate_name(target).is_err() || !store::cred_path(uid, target).exists() {
+    if store::validate_name(target).is_err() || !store::cred_exists(uid, target) {
         return Some(format!("alias target {target} is missing"));
     }
     None

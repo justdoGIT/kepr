@@ -181,7 +181,11 @@ pub enum Response {
     Sharing(crate::protocol_sharing::SharingResponse),
     // batch: sync
     // batch: policy
+    #[serde(untagged)]
+    Policy(crate::protocol_policy::PolicyResponse),
     // batch: gate
+    #[serde(untagged)]
+    Gatex(crate::protocol_gatex::GatexResponse),
     // batch: aws
     // batch: eco
     #[serde(untagged)]

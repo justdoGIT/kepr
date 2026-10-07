@@ -7,7 +7,6 @@
 // are refused.
 
 use base64::Engine;
-use sha2::{Digest, Sha256};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 /// Clock skew allowed on `exp` / `nbf` / `iat`.
@@ -79,19 +78,22 @@ fn field(v: &Option<String>) -> Result<Vec<u8>, String> {
 }
 
 fn verify_rs256(k: &Jwk, input: &[u8], sig: &[u8]) -> Result<(), String> {
-    use rsa::{BigUint, Pkcs1v15Sign, RsaPublicKey};
-    let n = BigUint::from_bytes_be(&field(&k.n)?);
-    let e = BigUint::from_bytes_be(&field(&k.e)?);
-    if n.bits() < 2048 {
+    use ring::signature::{RsaPublicKeyComponents, RSA_PKCS1_2048_8192_SHA256};
+    let n = field(&k.n)?;
+    let n: Vec<u8> = n.iter().copied().skip_while(|b| *b == 0).collect();
+    let bits = n
+        .first()
+        .map_or(0, |b| (n.len() - 1) * 8 + (8 - b.leading_zeros() as usize));
+    if bits < 2048 {
         return Err("the IdP's RSA key is too short".into());
     }
-    let key = RsaPublicKey::new(n, e).map_err(|_| "bad RSA key in JWKS")?;
-    key.verify(
-        Pkcs1v15Sign::new::<rsa::sha2::Sha256>(),
-        &Sha256::digest(input),
-        sig,
-    )
-    .map_err(|_| "ID token signature is invalid".into())
+    let e = field(&k.e)?;
+    let e: Vec<u8> = e.iter().copied().skip_while(|b| *b == 0).collect();
+    // Verify-only, with `ring` (already in the tree via rustls): no RSA
+    // private-key operation happens in kepr.
+    RsaPublicKeyComponents { n, e }
+        .verify(&RSA_PKCS1_2048_8192_SHA256, input, sig)
+        .map_err(|_| "ID token signature is invalid".into())
 }
 
 fn verify_es256(k: &Jwk, input: &[u8], sig: &[u8]) -> Result<(), String> {
@@ -197,28 +199,32 @@ pub(super) mod tests {
         format!("{input}.{}", B64.encode(sig))
     }
 
-    fn rsa_fixture() -> (rsa::RsaPrivateKey, Jwks) {
-        use rsa::pkcs1::DecodeRsaPrivateKey;
-        use rsa::traits::PublicKeyParts;
+    fn rsa_fixture() -> (ring::rsa::KeyPair, Jwks) {
+        use ring::signature::RsaPublicKeyComponents;
         let der = base64::engine::general_purpose::STANDARD
             .decode(include_str!("testdata/rsa2048-test-only.der.b64").trim())
             .unwrap();
-        let key = rsa::RsaPrivateKey::from_pkcs1_der(&der).unwrap();
+        let key = ring::rsa::KeyPair::from_der(&der).unwrap();
+        let pk = RsaPublicKeyComponents::<Vec<u8>>::from(key.public());
         let jwk = json!({"kty": "RSA", "kid": "r1", "alg": "RS256",
-            "n": B64.encode(key.n().to_bytes_be()), "e": B64.encode(key.e().to_bytes_be())});
+            "n": B64.encode(&pk.n), "e": B64.encode(&pk.e)});
         (
             key,
             serde_json::from_value(json!({ "keys": [jwk] })).unwrap(),
         )
     }
 
-    fn rs256(key: &rsa::RsaPrivateKey, c: &serde_json::Value) -> String {
+    fn rs256(key: &ring::rsa::KeyPair, c: &serde_json::Value) -> String {
         jws(json!({"alg": "RS256", "kid": "r1"}), c, |m| {
+            let mut sig = vec![0u8; key.public().modulus_len()];
             key.sign(
-                rsa::Pkcs1v15Sign::new::<rsa::sha2::Sha256>(),
-                &Sha256::digest(m),
+                &ring::signature::RSA_PKCS1_SHA256,
+                &ring::rand::SystemRandom::new(),
+                m,
+                &mut sig,
             )
-            .unwrap()
+            .unwrap();
+            sig
         })
     }
 

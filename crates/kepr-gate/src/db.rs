@@ -143,12 +143,23 @@ pub(crate) mod testkit {
     }
 
     pub fn state(record: &str, inject: Inject) -> Arc<State> {
+        let off = Arc::new(crate::recording::Recorder::new(false));
+        recording_state(record, inject, off)
+    }
+
+    /// `state` with a recorder (T7.09).
+    pub fn recording_state(
+        record: &str,
+        inject: Inject,
+        recorder: Arc<crate::recording::Recorder>,
+    ) -> Arc<State> {
         let cache = Arc::new(Cache::new(
             Box::new(Fixed(record.into(), inject)),
             DEFAULT_TTL,
         ));
         let key = SplitKey::new(&KEY).unwrap();
-        Arc::new(State::new(SID.into(), key, Default::default(), cache))
+        let st = State::new(SID.into(), key, Default::default(), cache);
+        Arc::new(st.with_recorder(recorder))
     }
 
     pub fn placeholder(slot: u16) -> String {

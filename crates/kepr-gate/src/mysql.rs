@@ -147,7 +147,7 @@ async fn session(state: &State, route: &DbRoute, client: &mut TcpStream) -> Resu
         .map_err(|_| (400, None))?;
     // A rotation login ends at its OK; there is nothing to relay.
     if let Some(mut up) = up {
-        let _ = tokio::io::copy_bidirectional(client, &mut up).await;
+        crate::recording::relay(state, route, client, &mut up).await;
     }
     Ok(())
 }

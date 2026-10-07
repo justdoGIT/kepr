@@ -24,7 +24,9 @@ use crate::{master_key_path, protected_master_key_path};
 
 fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
     crate::atomic_file::write(&protected_master_key_path(), envelope, 0o600)
-        .map_err(|e| format!("cannot write protected master-key file: {e}"))
+        .map_err(|e| format!("cannot write protected master-key file: {e}"))?;
+    crate::daemon_session::unlock_guard::reset(); // T11.13: a new passphrase
+    Ok(())
 }
 
 /// Recovery restore: make `envelope` the master key (passphrase-wrapped)
@@ -68,15 +70,12 @@ fn handle_lock(password: &[u8]) -> Response {
     Response::LockedOk
 }
 
-fn handle_unlock(password: &[u8]) -> Response {
+fn handle_unlock(uid: u32, username: &str, password: &[u8]) -> Response {
     if password.is_empty() {
         return Response::fail("password cannot be empty");
     }
-    let envelope = match fs::read(protected_master_key_path()) {
-        Ok(envelope) => envelope,
-        Err(_) => return Response::fail("credential store is not password protected"),
-    };
-    let key = match key_unlock::unwrap(&envelope, password) {
+    // T11.13: backoff, failure counter and the opt-in wipe.
+    let key = match crate::daemon_session::unlock_guard::unwrap_guarded(password, uid, username) {
         Ok(key) => key,
         Err(e) => return Response::fail(e),
     };
@@ -125,7 +124,7 @@ pub fn handle_unlock_gated(uid: u32, username: &str, password: &[u8]) -> Respons
     if let Some(denied) = require_root_in_system_mode(uid, "unlock", username) {
         return denied;
     }
-    let response = handle_unlock(password);
+    let response = handle_unlock(uid, username, password);
     audit::log(&AuditEvent {
         op: "unlock",
         name: None,
@@ -162,7 +161,7 @@ mod tests {
 
     #[test]
     fn handle_unlock_rejects_empty_password() {
-        match handle_unlock(b"") {
+        match handle_unlock(0, "root", b"") {
             Response::Err { error } => assert!(error.contains("empty")),
             other => panic!("expected Err, got {other:?}"),
         }

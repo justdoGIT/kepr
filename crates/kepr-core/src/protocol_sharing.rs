@@ -30,6 +30,34 @@ pub enum SharingRequest {
     DeviceRemove {
         device: String,
     },
+    /// T6.04: a one-time link for `name`: an encrypted blob plus its key.
+    ShareLinkCreate {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        ttl_secs: Option<u64>,
+        /// T6.05: delete the record (and its history) once the link is
+        /// opened or expires.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        self_destruct: Option<bool>,
+        /// Where the CLI puts the blob (kept in the sent-share ledger).
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        relay: Option<String>,
+    },
+    /// T6.04: open a link's blob with the key from its #fragment and
+    /// store the value (as `name`, or the sender's name).
+    ShareLinkOpen {
+        blob: String,
+        key: ZeroString,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        name: Option<String>,
+    },
+    /// T6.05: the caller's sent shares (the ledger).
+    ShareSentList,
+    /// T6.05: the caller saw its link's blob gone from the relay (410):
+    /// mark it opened, and self-destruct the record if it asked for it.
+    ShareLinkOpened {
+        id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +75,43 @@ pub enum SharingResponse {
     },
     /// A request that needs no other reply than a line for the user.
     SharingDone { message: String },
+    /// T6.04: the key goes only into the link's #fragment, never to a relay.
+    ShareLink {
+        id: String,
+        key: ZeroString,
+        blob: String,
+        expires_at: String,
+        ttl_secs: u64,
+    },
+    /// T6.04, CLI output only (`--json`): the finished link.
+    ShareLinkReady {
+        link: ZeroString,
+        expires_at: String,
+    },
+    /// T6.05: the sent-share ledger, newest last.
+    ShareSent { shares: Vec<SentShare> },
+}
+
+/// One share this user sent (no value, no key).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SentShare {
+    pub id: String,
+    pub name: String,
+    /// `link` or `envelope`.
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub relay: Option<String>,
+    pub sent_unix: u64,
+    pub expires_unix: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub opened_unix: Option<u64>,
+    #[serde(default)]
+    pub self_destruct: bool,
+    /// The self-destruct ran (or found the record already replaced).
+    #[serde(default)]
+    pub settled: bool,
 }
 
 impl From<SharingResponse> for crate::protocol::Response {
@@ -180,6 +245,19 @@ mod tests {
             },
             SharingRequest::DeviceList,
             SharingRequest::DeviceRemove { device: "x".into() },
+            SharingRequest::ShareLinkCreate {
+                name: "A".into(),
+                ttl_secs: Some(60),
+                self_destruct: Some(true),
+                relay: None,
+            },
+            SharingRequest::ShareSentList,
+            SharingRequest::ShareLinkOpened { id: "i".into() },
+            SharingRequest::ShareLinkOpen {
+                blob: "kepr-link1-x".into(),
+                key: "k".into(),
+                name: None,
+            },
         ];
         for r in reqs {
             let json = serde_json::to_string(&Request::Sharing(r)).unwrap();
@@ -199,6 +277,27 @@ mod tests {
             },
             SharingResponse::SharingDone {
                 message: "ok".into(),
+            },
+            SharingResponse::ShareLink {
+                id: "i".into(),
+                key: "k".into(),
+                blob: "b".into(),
+                expires_at: "t".into(),
+                ttl_secs: 60,
+            },
+            SharingResponse::ShareSent {
+                shares: vec![SentShare {
+                    id: "i".into(),
+                    name: "A".into(),
+                    kind: "link".into(),
+                    to: None,
+                    relay: Some("http://r".into()),
+                    sent_unix: 1,
+                    expires_unix: 2,
+                    opened_unix: None,
+                    self_destruct: true,
+                    settled: false,
+                }],
             },
         ];
         for r in resps {

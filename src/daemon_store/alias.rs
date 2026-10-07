@@ -10,7 +10,7 @@ use kepr_core::protocol_store::StoreResponse;
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::expiry::{self, CredMeta};
-use crate::store::{self, cred_path, validate_name};
+use crate::store::{self, cred_exists, cred_path, validate_name};
 
 fn meta_path(uid: u32, upper: &str) -> std::path::PathBuf {
     expiry::meta_path_for(&cred_path(uid, upper))
@@ -18,7 +18,7 @@ fn meta_path(uid: u32, upper: &str) -> std::path::PathBuf {
 
 /// The target `upper` is an alias of, if it is one (no value file).
 pub fn target_of(uid: u32, upper: &str) -> Option<String> {
-    if cred_path(uid, upper).exists() {
+    if cred_exists(uid, upper) {
         return None;
     }
     let target = expiry::read_meta(&meta_path(uid, upper))?.ok()?.alias_of?;
@@ -60,7 +60,7 @@ pub fn link(uid: u32, alias: &str, target: &str) -> Result<(), String> {
     if alias == target {
         return Err("an alias can't point at itself".into());
     }
-    if cred_path(uid, alias).exists() {
+    if cred_exists(uid, alias) {
         return Err(format!("{alias} already holds a value; kepr rm it first"));
     }
     if let Some(t) = target_of(uid, alias) {
@@ -71,7 +71,7 @@ pub fn link(uid: u32, alias: &str, target: &str) -> Result<(), String> {
             "{target} is itself an alias (of {t}); aliases of aliases are refused"
         ));
     }
-    if !cred_path(uid, target).exists() {
+    if !cred_exists(uid, target) {
         return Err(crate::crypto::SANITIZED_LOOKUP_ERROR.into());
     }
     let meta = CredMeta {
@@ -101,22 +101,13 @@ pub fn remove_if_alias(uid: u32, username: &str, name: &str) -> Option<Response>
 
 /// The caller's aliases as `kepr ls` entries: `(name, meta)`.
 pub fn aliases_of_uid(uid: u32) -> Vec<(String, CredMeta, std::path::PathBuf)> {
-    let prefix = format!("{}-{uid}-", store::CRED_PREFIX);
-    let Ok(rd) = std::fs::read_dir(store::store_dir()) else {
-        return Vec::new();
-    };
-    let mut out: Vec<_> = rd
-        .flatten()
-        .filter_map(|e| {
-            let f = e.file_name().to_string_lossy().to_string();
-            let base = f.strip_suffix(".meta")?;
-            if !base.starts_with(&prefix) {
-                return None;
-            }
+    let mut out: Vec<_> = super::files::meta_paths_of(uid)
+        .into_iter()
+        .filter_map(|p| {
+            let base = p.file_name()?.to_str()?.strip_suffix(".meta")?;
             let (_, name) = store::from_cred_name(base)?;
-            let meta = expiry::read_meta(&e.path())?.ok()?;
-            (meta.alias_of.is_some() && !cred_path(uid, &name).exists())
-                .then(|| (name, meta, e.path()))
+            let meta = expiry::read_meta(&p)?.ok()?;
+            (meta.alias_of.is_some() && !cred_exists(uid, &name)).then_some((name, meta, p))
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -167,8 +158,8 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
-        // The alias has no value file of its own.
-        assert!(!cred_path(uid, "AL_A").exists());
+        // The alias has no value of its own.
+        assert!(!cred_exists(uid, "AL_A"));
         let ls = infos(uid);
         assert_eq!(ls.len(), 1);
         assert_eq!(ls[0].alias_of.as_deref(), Some("AL_T"));
