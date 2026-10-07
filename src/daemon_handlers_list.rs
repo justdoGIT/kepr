@@ -55,6 +55,7 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                     .as_ref()
                     .and_then(|m| m.bindings.as_ref()?.first()?.inject.db_kind())
                     .map(str::to_string),
+                requires_reauth: meta_opt.as_ref().and_then(|m| m.requires_reauth), // T11.14
             }
         })
         .chain(crate::daemon_store::alias_infos(uid)) // T11.5

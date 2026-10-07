@@ -82,6 +82,7 @@ mod cli_gatex;
 mod cli_eco;
 // batch: platform
 // batch: session
+mod cli_session;
 // end of batches
 
 use cli_args::parse_args;

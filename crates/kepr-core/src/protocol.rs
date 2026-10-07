@@ -286,6 +286,8 @@ pub enum Request {
     Eco(crate::protocol_eco::EcoRequest),
     // batch: platform
     // batch: session
+    #[serde(untagged)]
+    Session(crate::protocol_session::SessionRequest),
     // end of batches
 }
 

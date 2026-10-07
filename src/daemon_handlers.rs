@@ -74,6 +74,7 @@ pub fn handle_set(
         (m.ssh, m.record_type, m.share_key) = (flags.ssh, flags.record_type, flags.share_key);
         crate::daemon_store::carry_over(uid, &upper, &mut m); // T5.01: keep tags / folder
         crate::daemon_recordsx::carry_over(uid, &upper, &mut m); // T5.03: attachments
+        crate::daemon_session::reauth::carry_over(uid, &upper, &mut m); // T11.14
         m
     }) {
         Ok(m) => m,

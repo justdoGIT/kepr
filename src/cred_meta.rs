@@ -73,6 +73,11 @@ pub struct CredMeta {
     // batch: eco
     // batch: platform
     // batch: session
+    /// T11.14: `get` / `copy` / `record show --reveal` need the store
+    /// passphrase again (a 60 s window per credential). Kept across `set`;
+    /// only an open window may clear it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_reauth: Option<bool>,
     // end of batches
 }
 
