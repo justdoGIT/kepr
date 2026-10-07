@@ -55,12 +55,24 @@ fn start(home: tempfile::TempDir, store: Option<&str>) -> Daemon {
 }
 
 fn kepr(d: &Daemon, args: &[&str]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kepr"));
-    env(&mut cmd, d.home.path());
-    cmd.args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run kepr")
+    // These tests fire requests faster than the daemon's per-uid rate limit
+    // (burst 30, 10/s) allows; wait for the bucket to refill and retry.
+    let t = Instant::now();
+    loop {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_kepr"));
+        env(&mut cmd, d.home.path());
+        let o = cmd
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run kepr");
+        let limited = String::from_utf8_lossy(&o.stdout).contains("rate limited")
+            || String::from_utf8_lossy(&o.stderr).contains("rate limited");
+        if !limited || t.elapsed() > Duration::from_secs(20) {
+            return o;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
 }
 
 fn ok(d: &Daemon, args: &[&str]) -> String {

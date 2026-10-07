@@ -190,7 +190,7 @@
       		requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
       		subject_token_type: "urn:ietf:params:oauth:token-type:jwt", subject_token: env.KEPR_JWT}' |
       		curl -fsS -H 'Content-Type: application/json' -d @- https://sts.googleapis.com/v1/token | jq -r .access_token)"
-      	[ -n "$fed" ] && [ "$fed" != "null" ] || kepr_ci_die "gcp: token exchange failed"
+      	if [ -z "$fed" ] || [ "$fed" = "null" ]; then kepr_ci_die "gcp: token exchange failed"; fi
       	kepr_ci_mask "$fed"
       	GCP_ACCESS_TOKEN="$fed"
       	if [ -n "${KEPR_GCP_SERVICE_ACCOUNT:-}" ]; then
@@ -205,12 +205,12 @@
       }
 
       kepr_ci_login_vault() {
-      	[ -n "${VAULT_ADDR:-}" ] && [ -n "${KEPR_VAULT_ROLE:-}" ] || kepr_ci_die "vault: set VAULT_ADDR and KEPR_VAULT_ROLE"
+      	if [ -z "${VAULT_ADDR:-}" ] || [ -z "${KEPR_VAULT_ROLE:-}" ]; then kepr_ci_die "vault: set VAULT_ADDR and KEPR_VAULT_ROLE"; fi
       	local jwt
       	jwt="$(kepr_ci_id_token "${KEPR_OIDC_AUDIENCE:-$VAULT_ADDR}")"
       	VAULT_TOKEN="$(KEPR_JWT="$jwt" jq -n --arg r "$KEPR_VAULT_ROLE" '{role: $r, jwt: env.KEPR_JWT}' |
       		curl -fsS -d @- "$VAULT_ADDR/v1/auth/${KEPR_VAULT_AUTH_PATH:-jwt}/login" | jq -r .auth.client_token)"
-      	[ -n "$VAULT_TOKEN" ] && [ "$VAULT_TOKEN" != "null" ] || kepr_ci_die "vault: login failed"
+      	if [ -z "$VAULT_TOKEN" ] || [ "$VAULT_TOKEN" = "null" ]; then kepr_ci_die "vault: login failed"; fi
       	kepr_ci_mask "$VAULT_TOKEN"
       	export VAULT_TOKEN
       }

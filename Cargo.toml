@@ -109,9 +109,10 @@ ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # T6.01: ML-KEM-768 (FIPS 203, RustCrypto) for the hybrid X25519 + ML-KEM
 # share envelopes (`kepr-pk2-…` / `kepr-share2-…`).
 ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
-# T6.13: RS256 ID-token signatures (OIDC device enrolment). Verify only:
-# RUSTSEC-2023-0071 (Marvin) concerns private-key operations, see deny.toml.
-rsa = { version = "0.9", default-features = false, features = ["std", "u64_digit", "sha2"] }
+# T6.13: RS256 ID-token signature verification (OIDC device enrolment).
+# Already in the tree through rustls; used instead of the `rsa` crate,
+# which carries an unpatched timing advisory (RUSTSEC-2023-0071).
+ring = "0.17"
 # T6.04 / T11.15: `--qr` prints share links and envelopes as terminal QR
 # codes (unicode renderer only; no image/svg features).
 qrcode = { version = "0.14", default-features = false }
