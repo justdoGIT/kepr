@@ -13,9 +13,64 @@
 //
 // (The access policy of `kepr policy`, policy.toml, says who may read
 // what; it has no hygiene rules, so this file is separate.)
+//
+// T11.23: `--ignore NAME:KIND[,KIND]` / `--unignore NAME[:KIND,...]`
+// (kinds: kepr_core::health_policy::FINDING_KINDS), kept in the
+// credential's .meta by the daemon until its value changes.
 
-use kepr_core::health_policy::{HealthPolicy, HealthRules};
-use kepr_core::protocol::KeyHealth;
+use kepr_core::health_policy::{HealthPolicy, HealthRules, FINDING_KINDS};
+use kepr_core::protocol::{KeyHealth, Response};
+use kepr_core::protocol_records::{RecordsRequest, RecordsResponse};
+
+use crate::{cli_mode, cli_ui};
+
+/// `NAME:KIND[,KIND]` (for --unignore the kinds may be left out: all).
+pub fn parse_ignore(arg: &str, clear: bool) -> Result<(String, Vec<String>), String> {
+    let (name, kinds) = match arg.split_once(':') {
+        Some((n, k)) => (n, k.split(',').map(|k| k.trim().to_string()).collect()),
+        None if clear => (arg, Vec::new()),
+        None => {
+            return Err(format!(
+                "--ignore {arg}: use NAME:KIND[,KIND] ({})",
+                FINDING_KINDS.join(", ")
+            ))
+        }
+    };
+    if let Some(k) = kinds
+        .iter()
+        .find(|k: &&String| !FINDING_KINDS.contains(&k.as_str()))
+    {
+        return Err(format!(
+            "unknown finding {k:?}; use: {}",
+            FINDING_KINDS.join(", ")
+        ));
+    }
+    Ok((name.to_uppercase(), kinds))
+}
+
+/// Send each ignore; stop at the first refusal.
+pub fn cmd_ignore(ignores: &[(String, Vec<String>, bool)]) -> Response {
+    let mut last = Response::Pong;
+    for (name, kinds, clear) in ignores {
+        last = super::send(RecordsRequest::HealthIgnore {
+            name: name.clone(),
+            kinds: kinds.clone(),
+            clear: *clear,
+        });
+        match &last {
+            Response::Records(RecordsResponse::HealthIgnoreOk { name, ignored }) => {
+                if !cli_mode::json_mode() {
+                    cli_ui::ok(&match ignored.is_empty() {
+                        true => format!("{name}: no findings ignored"),
+                        false => format!("{name}: ignoring {}", ignored.join(", ")),
+                    });
+                }
+            }
+            _ => return last,
+        }
+    }
+    last
+}
 
 /// `90`, `90d`, `12w`, `6m` (30 days each) or `1y` → days.
 pub fn parse_period(s: &str) -> Result<u32, String> {
@@ -82,6 +137,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ignore_arguments_name_known_findings() {
+        assert_eq!(
+            parse_ignore("db:weak, old", false),
+            Ok(("DB".into(), vec!["weak".into(), "old".into()]))
+        );
+        assert_eq!(parse_ignore("db", true), Ok(("DB".into(), vec![])));
+        assert!(parse_ignore("db", false).unwrap_err().contains("NAME:KIND"));
+        assert!(parse_ignore("db:nope", false)
+            .unwrap_err()
+            .contains("unknown finding"));
+    }
+
+    #[test]
     fn periods_take_units() {
         for (s, days) in [
             ("90", 90),
@@ -127,6 +195,8 @@ mod tests {
             issues: vec![],
             age_days,
             hibp_prefix: None,
+            ignored: vec![],
+            ignore: vec![],
         };
         let items = [item("A", 10), item("BB", 400), item("C", 91), item("D", 90)];
         assert_eq!(aging(&items, 90), ["BB  400 days", "C   91 days"]);

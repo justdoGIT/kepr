@@ -1,10 +1,11 @@
 // protocol_records.rs — wire types of the `records` ticket batch:
-// attachments (T5.03), record convert (T11.7). The last three responses
-// never cross the socket: they are what `kepr --json` prints for the
-// local commands `record types`, `record template` and `strength`. Wrapped by `Request::Records` / `Response::Records`,
-// which are `#[serde(untagged)]` and tried after every tagged variant, so
-// the `cmd` / `kind` names here must not repeat one in protocol.rs or
-// protocol_store.rs.
+// attachments (T5.03), record convert (T11.7), health ignores (T11.23).
+// Wrapped by `Request::Records` / `Response::Records`, which are
+// `#[serde(untagged)]` and tried after every tagged variant, so the
+// `cmd` / `kind` names here must not repeat one in protocol.rs or
+// protocol_store.rs. The last three responses never cross the socket:
+// they are what `kepr --json` prints for the local commands
+// `record types`, `record template` and `strength`.
 //
 // Attachment bytes travel base64-encoded in `ZeroString`s (a chunk is
 // secret material), one chunk per frame: CHUNK_BYTES raw bytes encode to
@@ -59,6 +60,15 @@ pub enum RecordsRequest {
         #[serde(default)]
         fields: Vec<String>,
     },
+    /// T11.23: ignore (or, with `clear`, stop ignoring) `kepr health`
+    /// finding kinds for `name`; `clear` with no kinds clears them all.
+    HealthIgnore {
+        name: String,
+        #[serde(default)]
+        kinds: Vec<String>,
+        #[serde(default)]
+        clear: bool,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,6 +111,11 @@ pub enum RecordsResponse {
         promoted: Vec<String>,
         #[serde(default)]
         gated: bool,
+    },
+    /// T11.23: the kinds now ignored for `name`.
+    HealthIgnoreOk {
+        name: String,
+        ignored: Vec<String>,
     },
     /// T11.7 `kepr record types` (built-in and user types).
     RecordTypesOk {
@@ -207,6 +222,14 @@ mod tests {
                 "attach_remove",
             ),
             (
+                RecordsRequest::HealthIgnore {
+                    name: "DOC".into(),
+                    kinds: vec!["weak".into()],
+                    clear: false,
+                },
+                "health_ignore",
+            ),
+            (
                 RecordsRequest::RecordConvert {
                     name: "DOC".into(),
                     record_type: "wifi".into(),
@@ -260,6 +283,10 @@ mod tests {
             },
             RecordsResponse::RecordTypesOk {
                 types: crate::record_types::builtins(),
+            },
+            RecordsResponse::HealthIgnoreOk {
+                name: "DOC".into(),
+                ignored: vec!["weak".into()],
             },
             RecordsResponse::RecordTemplateOk {
                 record_type: "note".into(),

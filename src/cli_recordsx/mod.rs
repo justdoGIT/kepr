@@ -4,7 +4,7 @@
 // record types and convert (T11.7), record add/show/template with field
 // options, --from-file and --clone (T11.8), generator profiles and
 // `kepr strength` (T5.04), `kepr health --period / --policy` reports
-// (T11.11). Registered in cli_more.rs.
+// (T11.11) and `--ignore` (T11.23). Registered in cli_more.rs.
 // (`cli_record.rs` already holds `kepr record`, hence the x.)
 
 mod attach;
@@ -47,6 +47,9 @@ pub const HELP: &str = "\
   strength                             estimate the bits of a value (typed hidden, or on stdin)
   health --period N[d|w|m|y]           aging report: keys unchanged for longer, oldest first
   health --policy FILE                 check min_length / classes / max_age_days, and [tag.T] rules
+  health --ignore KEY:KIND[,KIND]      list those findings as ignored until KEY's value changes
+                                       (weak common short reused old expired breached policy);
+                                       --unignore KEY[:KIND,...] undoes it
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {

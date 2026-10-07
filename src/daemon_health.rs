@@ -1,6 +1,7 @@
 // daemon_health.rs — `kepr health` (agent vault P6.4): weak, reused and
 // old credentials, plus a k-anonymity breach check. Everything that
-// needs a value runs here; replies carry only flags.
+// needs a value runs here; replies carry only flags. T11.11 policy rules
+// (kepr_core::health_policy); T11.23 ignored findings (daemon_recordsx).
 //
 // Breach check (Have I Been Pwned "range" model): `Health` returns the
 // first 5 hex digits of each readable value's SHA-1. The CLI downloads
@@ -150,6 +151,8 @@ pub fn handle_health(
             issues,
             age_days,
             hibp_prefix,
+            ignored: Vec::new(),
+            ignore: meta.health_ignore.unwrap_or_default(), // T11.23
         });
     }
     for names in seen.values().filter(|n| n.len() > 1) {
@@ -163,6 +166,9 @@ pub fn handle_health(
                 .push(format!("same value as {}", others.join(", ")));
         }
     }
+    items
+        .iter_mut()
+        .for_each(crate::daemon_recordsx::apply_health_ignores);
     audit_ok("health", uid, username, None);
     Response::HealthOk { items }
 }

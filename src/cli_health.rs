@@ -1,6 +1,7 @@
 // cli_health.rs — `kepr health [--max-age DAYS | --period N[d|w|m|y]]
 // [--policy FILE] [--breach]` (agent vault P6.4; T11.11 period and policy
-// reports, cli_recordsx/health.rs). The daemon reports weak, short,
+// reports, cli_recordsx/health.rs), `kepr health --ignore NAME:KIND[,KIND]`
+// / `--unignore NAME[:KIND,...]` (T11.23: shown as ignored, not as issues). The daemon reports weak, short,
 // common, reused, old and expired credentials without returning values. With --breach, each readable
 // value's 5-digit SHA-1 prefix is looked up in the Have I Been Pwned
 // password range API (k-anonymity), and the returned suffixes go back
@@ -60,7 +61,11 @@ fn check_breaches(items: &mut [KeyHealth]) -> Result<(), String> {
             suffixes: ranges[&prefix].clone(),
         };
         if let Response::BreachOk { breached: true, .. } = send(&req) {
-            item.issues.push("found in a data breach".to_string());
+            let finding = "found in a data breach".to_string();
+            match item.ignore.iter().any(|k| k == "breached") {
+                true => item.ignored.push(finding), // T11.23
+                false => item.issues.push(finding),
+            }
         }
     }
     Ok(())
@@ -73,10 +78,12 @@ pub struct Opts {
     pub period: bool,
     pub policy: Option<HealthPolicy>,
     pub breach: bool,
+    /// T11.23: (name, kinds, clear) for each --ignore / --unignore.
+    pub ignores: Vec<(String, Vec<String>, bool)>,
 }
 
-const USAGE: &str =
-    "usage: kepr health [--max-age DAYS | --period N[d|w|m|y]] [--policy FILE] [--breach]";
+const USAGE: &str = "usage: kepr health [--max-age DAYS | --period N[d|w|m|y]] [--policy FILE] \
+                     [--breach] | --ignore NAME:KIND[,KIND] | --unignore NAME[:KIND,...]";
 
 pub fn parse(args: &[String]) -> Result<Opts, String> {
     let mut o = Opts::default();
@@ -104,6 +111,11 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
                 o.period = true;
             }
             "--policy" => o.policy = Some(crate::cli_recordsx::health::load_policy(value()?)?),
+            f @ ("--ignore" | "--unignore") => {
+                let clear = f == "--unignore";
+                let (name, kinds) = crate::cli_recordsx::health::parse_ignore(value()?, clear)?;
+                o.ignores.push((name, kinds, clear));
+            }
             other => return Err(format!("unexpected argument: {other}\n{USAGE}")),
         }
         i += 2;
@@ -114,6 +126,7 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
 /// `kepr health ARGS`.
 pub fn cmd(args: &[String]) -> Response {
     match parse(args) {
+        Ok(o) if !o.ignores.is_empty() => crate::cli_recordsx::health::cmd_ignore(&o.ignores),
         Ok(o) => cmd_health(o),
         Err(e) => Response::fail(e),
     }
@@ -147,6 +160,9 @@ pub fn cmd_health(o: Opts) -> Response {
         let bad: Vec<&KeyHealth> = items.iter().filter(|i| !i.issues.is_empty()).collect();
         for i in &bad {
             println!("{}: {}", i.name, i.issues.join("; "));
+        }
+        for i in items.iter().filter(|i| !i.ignored.is_empty()) {
+            cli_ui::dim(&format!("{}: ignored: {}", i.name, i.ignored.join("; ")));
         }
         if bad.is_empty() {
             cli_ui::ok(&format!("{} credential(s), no issues found", items.len()));
@@ -193,5 +209,18 @@ mod tests {
         assert_eq!(o.policy.unwrap().all.min_length, Some(20));
         assert!(parse(&a(&["--policy", "/nonexistent/p.toml"])).is_err());
         assert!(parse(&a(&["--bogus"])).unwrap_err().contains("unexpected"));
+        let o = parse(&a(&["--ignore", "db:weak,old", "--unignore", "x"])).unwrap();
+        assert_eq!(
+            o.ignores,
+            [
+                (
+                    "DB".to_string(),
+                    vec!["weak".to_string(), "old".to_string()],
+                    false
+                ),
+                ("X".to_string(), vec![], true)
+            ]
+        );
+        assert!(parse(&a(&["--ignore", "db"])).is_err());
     }
 }

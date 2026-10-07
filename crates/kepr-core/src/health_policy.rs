@@ -2,6 +2,7 @@
 // for every credential, stricter ones per tag (T5.01 tags). The CLI reads
 // the file and sends the rules with `Health`; the daemon checks values
 // against them and reports only which rule a credential breaks.
+// T11.23: the kind of each finding, the unit `kepr health --ignore` uses.
 //
 //   min_length = 16                    # every credential
 //   classes = ["lower", "upper", "digit"]
@@ -17,6 +18,37 @@ use serde::{Deserialize, Serialize};
 use crate::generate_profile::CLASSES;
 
 const MAX_TAGS: usize = 64;
+
+/// T11.23: what `kepr health --ignore NAME:KIND` can name.
+pub const FINDING_KINDS: &[&str] = &[
+    "weak",
+    "common",
+    "short",
+    "reused",
+    "old",
+    "expired",
+    "breached",
+    "policy",
+    "unreadable",
+];
+
+/// The kind of a `kepr health` finding (one of FINDING_KINDS).
+pub fn finding_kind(issue: &str) -> &'static str {
+    const PREFIXES: &[(&str, &str)] = &[
+        ("common password", "common"),
+        ("weak", "weak"),
+        ("short", "short"),
+        ("same value as", "reused"),
+        ("not changed in", "old"),
+        ("expired", "expired"),
+        ("found in a data breach", "breached"),
+        ("policy:", "policy"),
+    ];
+    PREFIXES
+        .iter()
+        .find(|(p, _)| issue.starts_with(p))
+        .map_or("unreadable", |(_, k)| k)
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -200,6 +232,24 @@ mod tests {
             p.rules_for(&["legacy".into()]),
             rules(Some(12), &["lower"], Some(365))
         );
+    }
+
+    #[test]
+    fn every_finding_has_a_kind() {
+        for (issue, kind) in [
+            ("common password", "common"),
+            ("weak (easy to guess)", "weak"),
+            ("short (under 12 characters)", "short"),
+            ("same value as A, B", "reused"),
+            ("not changed in 400 days", "old"),
+            ("expired", "expired"),
+            ("found in a data breach", "breached"),
+            ("policy: older than 90 days", "policy"),
+            ("unreadable", "unreadable"),
+        ] {
+            assert_eq!(finding_kind(issue), kind, "{issue}");
+            assert!(FINDING_KINDS.contains(&kind));
+        }
     }
 
     #[test]
