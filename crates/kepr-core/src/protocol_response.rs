@@ -186,6 +186,8 @@ pub enum Response {
     #[serde(untagged)]
     Sharing(crate::protocol_sharing::SharingResponse),
     // batch: sync
+    #[serde(untagged)]
+    Syncx(crate::protocol_syncx::SyncxResponse),
     // batch: policy
     #[serde(untagged)]
     Policy(crate::protocol_policy::PolicyResponse),

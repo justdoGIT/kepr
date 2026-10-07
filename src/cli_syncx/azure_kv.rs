@@ -118,7 +118,7 @@ impl AzureKvSyncer {
     }
 
     /// The current value, `None` when the secret doesn't exist.
-    pub fn fetch(&self) -> Result<Option<Zeroizing<String>>, String> {
+    fn lookup(&self) -> Result<Option<Zeroizing<String>>, String> {
         let token = read_token()?;
         let req = sync_http::agent()
             .get(&self.url())
@@ -159,8 +159,12 @@ impl Syncer for AzureKvSyncer {
         }
     }
 
+    fn fetch(&self) -> Result<Option<Zeroizing<String>>, String> {
+        self.lookup()
+    }
+
     fn pull(&self) -> Result<String, String> {
-        match self.fetch()? {
+        match self.lookup()? {
             Some(v) => Ok(v.as_str().to_string()),
             None => Err(format!(
                 "azure-kv get: HTTP 404 SecretNotFound ({})",
@@ -168,6 +172,79 @@ impl Syncer for AzureKvSyncer {
             )),
         }
     }
+}
+
+/// Does `s` start with `prefix`, ignoring ASCII case? Returns the rest.
+fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &s[prefix.len()..])
+}
+
+/// T11.17: the secret names on one `GET /secrets` page, and the next
+/// page's URL. The bearer token goes with that request, so a `nextLink`
+/// that leaves `base` is refused.
+pub fn parse_list(body: &str, base: &str) -> Result<(Vec<String>, Option<String>), String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "azure-kv list: reply is not JSON")?;
+    let items = v
+        .get("value")
+        .and_then(|x| x.as_array())
+        .ok_or("azure-kv list: reply has no value list")?;
+    let ids = format!("{base}/secrets/");
+    let names = items
+        .iter()
+        .filter_map(|i| i.get("id")?.as_str())
+        .filter_map(|id| strip_prefix_ci(id, &ids))
+        .filter(|n| valid_secret_name(n))
+        .map(str::to_string)
+        .collect();
+    let next = match v.get("nextLink").and_then(|x| x.as_str()) {
+        None | Some("") => None,
+        Some(n) if strip_prefix_ci(n, &format!("{base}/secrets?")).is_some() => Some(n.to_string()),
+        Some(_) => return Err("azure-kv list: the next page is on another host".into()),
+    };
+    Ok((names, next))
+}
+
+/// T11.17: every secret in VAULT whose name starts with `prefix`, as
+/// `(name, azure-kv:VAULT/name)`.
+pub fn list(vault: &str, prefix: &str) -> Result<Vec<(String, String)>, String> {
+    list_at(&format!("https://{}", vault_host(vault)?), vault, prefix)
+}
+
+pub(super) fn list_at(
+    base: &str,
+    vault: &str,
+    prefix: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let token = read_token()?;
+    let mut url = format!("{base}/secrets?api-version={API_VERSION}&maxresults=25");
+    let mut out = Vec::new();
+    for _ in 0..super::MAX_PAGES {
+        let req = sync_http::agent()
+            .get(&url)
+            .set("Authorization", &format!("Bearer {}", token.as_str()));
+        let (status, body) = sync_http::send(req, None).map_err(|e| format!("azure-kv: {e}"))?;
+        if status != 200 {
+            return Err(format!(
+                "azure-kv list: HTTP {status} {}",
+                error_code(&body)
+            ));
+        }
+        let (names, next) = parse_list(&body, base)?;
+        out.extend(
+            names
+                .into_iter()
+                .filter(|n| n.starts_with(prefix))
+                .map(|n| (n.clone(), format!("azure-kv:{vault}/{n}"))),
+        );
+        match next {
+            Some(n) => url = n,
+            None => return Ok(out),
+        }
+    }
+    Err("azure-kv list: too many pages".into())
 }
 
 #[cfg(test)]
@@ -273,5 +350,52 @@ mod tests {
             .push("v")
             .unwrap_err();
         assert!(e.contains("AZURE_ACCESS_TOKEN"), "{e}");
+    }
+
+    #[test]
+    fn list_pages_parse_and_stay_on_the_vault() {
+        let base = "https://kv1.vault.azure.net";
+        let page = r#"{"value":[
+            {"id":"https://kv1.vault.azure.net/secrets/prod-db","attributes":{}},
+            {"id":"https://KV1.vault.azure.net/secrets/prod-api"},
+            {"id":"https://kv1.vault.azure.net/secrets/bad_name"},
+            {"id":"https://other.vault.azure.net/secrets/x"}],
+            "nextLink":"https://kv1.vault.azure.net/secrets?api-version=7.4&$skiptoken=abc"}"#;
+        let (names, next) = parse_list(page, base).unwrap();
+        assert_eq!(names, ["prod-db", "prod-api"]);
+        assert!(next.unwrap().ends_with("$skiptoken=abc"));
+        let last = r#"{"value":[],"nextLink":null}"#;
+        assert_eq!(parse_list(last, base).unwrap(), (vec![], None));
+        let away = r#"{"value":[],"nextLink":"https://evil.example/secrets?x"}"#;
+        assert!(parse_list(away, base).is_err());
+        assert!(parse_list("{}", base).is_err());
+    }
+
+    #[test]
+    fn list_follows_next_links_with_the_token() {
+        // `{BASE}` in a reply is the fake's own address.
+        let (base, h) = testserver::serve(vec![
+            (
+                200,
+                r#"{"value":[{"id":"{BASE}/secrets/a-1"},{"id":"{BASE}/secrets/b-2"}],
+                    "nextLink":"{BASE}/secrets?api-version=7.4&$skiptoken=t2"}"#
+                    .into(),
+            ),
+            (200, r#"{"value":[{"id":"{BASE}/secrets/b-1"}]}"#.into()),
+        ]);
+        let got = with_token(|| list_at(&base, "kv1", "b")).unwrap();
+        assert_eq!(
+            got,
+            [
+                ("b-2".to_string(), "azure-kv:kv1/b-2".to_string()),
+                ("b-1".to_string(), "azure-kv:kv1/b-1".to_string()),
+            ]
+        );
+        let reqs = h.join().unwrap();
+        assert!(reqs[0].starts_with("GET /secrets?api-version=7.4&maxresults=25 HTTP/1.1"));
+        assert!(reqs[1].starts_with("GET /secrets?api-version=7.4&$skiptoken=t2 HTTP/1.1"));
+        assert!(reqs
+            .iter()
+            .all(|r| r.contains("Authorization: Bearer tok-123")));
     }
 }

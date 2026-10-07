@@ -73,7 +73,7 @@ impl JsonFileSyncer {
     }
 
     /// The string at KEY, `None` when KEY (or the file) is missing.
-    pub fn fetch(&self) -> Result<Option<Zeroizing<String>>, String> {
+    fn lookup(&self) -> Result<Option<Zeroizing<String>>, String> {
         let Some(doc) = self.load()? else {
             return Ok(None);
         };
@@ -114,6 +114,48 @@ impl JsonFileSyncer {
                 .or_insert_with(|| Value::Object(Map::new()));
         }
         Ok(())
+    }
+}
+
+/// T11.17: every string / number / boolean in the file at `path` whose
+/// dotted key starts with `prefix`, as `(key, json:PATH#key)`.
+pub fn list(path: &str, prefix: &str) -> Result<Vec<(String, String)>, String> {
+    let file = JsonFileSyncer {
+        path: PathBuf::from(path),
+        key: Vec::new(),
+    };
+    let doc = file
+        .load()?
+        .ok_or_else(|| format!("{path}: no such file"))?;
+    let mut keys = Vec::new();
+    leaves(&doc.0, String::new(), &mut keys);
+    Ok(keys
+        .into_iter()
+        .filter(|k| k.starts_with(prefix))
+        .map(|k| {
+            let url = format!("json:{path}#{k}");
+            (k, url)
+        })
+        .collect())
+}
+
+fn leaves(v: &Value, at: String, out: &mut Vec<String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, v) in m {
+                // A key with a dot can't be addressed as PATH#a.b.
+                if !k.is_empty() && !k.contains('.') {
+                    let next = if at.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{at}.{k}")
+                    };
+                    leaves(v, next, out);
+                }
+            }
+        }
+        Value::String(_) | Value::Number(_) | Value::Bool(_) if !at.is_empty() => out.push(at),
+        _ => {}
     }
 }
 
@@ -158,8 +200,12 @@ impl Syncer for JsonFileSyncer {
         super::atomic_file::write(&path, &bytes, 0o600)
     }
 
+    fn fetch(&self) -> Result<Option<Zeroizing<String>>, String> {
+        self.lookup()
+    }
+
     fn pull(&self) -> Result<String, String> {
-        match self.fetch()? {
+        match self.lookup()? {
             Some(v) => Ok(v.as_str().to_string()),
             None => Err(format!(
                 "json: {} not found in {}",
@@ -208,6 +254,12 @@ mod tests {
         assert!(target(d.path(), "a.missing").fetch().unwrap().is_none());
         assert!(target(d.path(), "a.b.c").pull().is_err());
         assert!(target(d.path(), "a").pull().is_err());
+        // T11.17: listing for `sync import --from json:PATH`.
+        let p = p.display().to_string();
+        let keys: Vec<String> = list(&p, "").unwrap().into_iter().map(|k| k.0).collect();
+        assert_eq!(keys, ["a.b", "a.n", "a.t", "top"]);
+        let one = list(&p, "a.b").unwrap();
+        assert_eq!(one, [("a.b".to_string(), format!("json:{p}#a.b"))]);
         let gone = JsonFileSyncer::from_path(&format!("{}#k", d.path().join("no").display()));
         assert!(gone.unwrap().fetch().unwrap().is_none());
     }
