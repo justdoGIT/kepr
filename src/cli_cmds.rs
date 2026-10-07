@@ -269,7 +269,9 @@ pub fn cmd_get(a: &Args) -> Response {
         Response::Err { error } => {
             if !a.json {
                 err(error);
-                einfo(&crate::cli_agent_cmd::get_failure_hint(&name));
+                if !crate::cli_session::reauth::asked() {
+                    einfo(&crate::cli_agent_cmd::get_failure_hint(&name));
+                }
             }
             resp
         }
