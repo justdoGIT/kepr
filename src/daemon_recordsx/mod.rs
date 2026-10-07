@@ -1,6 +1,6 @@
 // daemon_recordsx/ — the `records` ticket batch, daemon side: attachments
 // (T5.03), record field shapes (T5.05), linked records (T11.6), record
-// convert (T11.7). Requests arrive as `Request::Records` via daemon_extra.rs.
+// convert (T11.7), health ignores (T11.23). Requests arrive as `Request::Records` via daemon_extra.rs.
 // (`daemon_records.rs` already holds the P5.1 typed records, hence the x.)
 //
 // Hooks other modules call:
@@ -12,18 +12,21 @@
 //   daemon_store verify                 verify_attachments
 //   daemon_records::validate            check_field
 //   daemon_records::handle_record_set   check_links
+//   daemon_health::handle_health        apply_health_ignores
 
 mod attach;
 mod attach_read;
 mod chunks;
 mod convert;
 mod fields;
+mod health_ignore;
 mod links;
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_records::RecordsRequest;
 
 pub use fields::check_field;
+pub use health_ignore::apply as apply_health_ignores;
 pub use links::check_links;
 
 pub use chunks::{
@@ -64,5 +67,8 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: RecordsRequest) -> 
             record_type,
             fields,
         } => convert::handle_convert(uid, username, &name, &record_type, &fields),
+        RecordsRequest::HealthIgnore { name, kinds, clear } => {
+            health_ignore::handle_ignore(uid, username, &name, &kinds, clear)
+        }
     }
 }

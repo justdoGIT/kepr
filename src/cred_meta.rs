@@ -61,6 +61,10 @@ pub struct CredMeta {
     /// T5.03: attachment manifest; chunks are `NAME~a<id>~<n>` values.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub attachments: Option<Vec<kepr_core::protocol_records::AttachInfo>>,
+    /// T11.23: `kepr health` finding kinds the owner ignores; a new value
+    /// starts without (handle_set does not carry it over).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub health_ignore: Option<Vec<String>>,
     // batch: share
     /// T6.05: delete this record (and its history) once the one-time
     /// link with this id is opened or expires. A new `set` drops it.

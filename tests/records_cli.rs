@@ -328,3 +328,33 @@ fn generator_profiles_and_strength() {
     let s: serde_json::Value = serde_json::from_slice(&s.stdout).unwrap();
     assert!(s["bits"].as_u64().unwrap() > 70, "{s}");
 }
+
+#[test]
+fn health_ignores_last_until_the_value_changes() {
+    let d = start();
+    let set = |v: &str| assert!(kepr_in(&d, &["set", "WEAK", "--stdin"], v).status.success());
+    let item = |d: &Daemon| -> serde_json::Value {
+        json(d, &["health"])["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "WEAK")
+            .cloned()
+            .unwrap()
+    };
+    set("password1");
+    assert!(item(&d)["issues"].to_string().contains("common password"));
+    ok(&d, &["health", "--ignore", "weak:common,short"]);
+    let i = item(&d);
+    assert!(
+        i.get("issues").unwrap().as_array().unwrap().is_empty(),
+        "{i}"
+    );
+    assert!(i["ignored"].to_string().contains("common password"), "{i}");
+    let e = fails(&d, &["health", "--ignore", "WEAK:sometimes"]);
+    assert!(e.contains("unknown finding"), "{e}");
+    set("password2");
+    let i = item(&d);
+    assert!(i.get("ignored").is_none(), "{i}");
+    assert!(i["issues"].to_string().contains("common password"), "{i}");
+}
