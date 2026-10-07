@@ -126,11 +126,14 @@ pub fn download(key: &str, file: &str) -> Result<Zeroizing<Vec<u8>>, String> {
     let mut out: Option<Zeroizing<Vec<u8>>> = None;
     let mut index = 0;
     loop {
-        let r = super::send(RecordsRequest::AttachGet {
-            name: key.to_uppercase(),
-            file: file.to_string(),
-            index,
-        });
+        let get = || {
+            Ok(super::send(RecordsRequest::AttachGet {
+                name: key.to_uppercase(),
+                file: file.to_string(),
+                index,
+            }))
+        };
+        let r = crate::cli_session::reauth::get_or_ask(&key.to_uppercase(), get)?; // T11.14
         let (chunks, size, sha256, data) = match r {
             Response::Records(RecordsResponse::AttachChunkOk {
                 chunks,

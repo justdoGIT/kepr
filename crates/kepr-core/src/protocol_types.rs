@@ -128,6 +128,9 @@ pub struct CredInfo {
     // batch: eco
     // batch: platform
     // batch: session
+    /// T11.14: revealing the value needs the store passphrase again.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_reauth: Option<bool>,
     // end of batches
 }
 

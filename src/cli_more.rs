@@ -65,6 +65,11 @@ const GROUPS: &[Group] = &[
     ),
     // batch: platform
     // batch: session
+    (
+        crate::cli_session::VERBS,
+        crate::cli_session::HELP,
+        crate::cli_session::dispatch,
+    ),
     // end of batches
 ];
 

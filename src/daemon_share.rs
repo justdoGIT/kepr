@@ -108,8 +108,9 @@ pub(crate) fn new_payload(
         return Err("--ttl must be 1 second to 30 days".into());
     }
     let _lock = crate::daemon_credlock::lock(uid, upper);
-    crate::daemon_handlers_get::precheck_meta(uid, peer_pid, upper)
-        .map_err(|_| "this credential can't be shared".to_string())?;
+    crate::daemon_handlers_get::precheck_meta(uid, peer_pid, upper).map_err(|e| {
+        crate::daemon_session::reauth::refusal(&e, upper, "this credential can't be shared")
+    })?;
     let meta = expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, upper)))
         .and_then(Result::ok)
         .unwrap_or_default();

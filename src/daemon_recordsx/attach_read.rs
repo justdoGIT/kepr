@@ -57,6 +57,7 @@ pub fn handle_get(uid: u32, username: &str, name: &str, file: &str, index: u32) 
             data,
         }),
         Err(e) if e.starts_with("no attachment") || e.contains("chunk") => Response::fail(e),
+        Err(e) if e == crate::daemon_session::reauth::NEEDED => Response::fail(e), // T11.14
         Err(_) => Response::fail(SANITIZED_LOOKUP_ERROR),
     }
 }
@@ -69,6 +70,8 @@ fn get(uid: u32, owner: &str, file: &str, index: u32) -> Result<(AttachInfo, Zer
     if let Some(why) = read_refused(&meta) {
         return Err(why.into());
     }
+    let reauth = crate::daemon_session::reauth::window_open(uid, owner); // T11.14
+    crate::daemon_session::reauth::gate(&meta, reauth)?;
     let (info, slot) = find(&meta, file)?;
     if index >= info.chunks() {
         return Err("attachment chunk index out of range".into());

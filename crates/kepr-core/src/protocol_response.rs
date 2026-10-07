@@ -192,6 +192,8 @@ pub enum Response {
     Eco(crate::protocol_eco::EcoResponse),
     // batch: platform
     // batch: session
+    #[serde(untagged)]
+    Session(crate::protocol_session::SessionResponse),
     // end of batches
 }
 

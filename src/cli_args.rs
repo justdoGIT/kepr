@@ -44,6 +44,8 @@ pub struct Args {
     pub fido2_public_key_cose: Option<String>,
     /// Flags of the `store` batch on core verbs (`ls --tag/--folder`, …).
     pub store: crate::cli_store::StoreFlags,
+    /// Flags of the `session` batch on core verbs (`set --reauth`).
+    pub session: crate::cli_session::SessionFlags,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -80,6 +82,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut fido2_credential_id: Option<String> = None;
     let mut fido2_public_key_cose: Option<String> = None;
     let mut store = crate::cli_store::StoreFlags::default();
+    let mut session = crate::cli_session::SessionFlags::default();
 
     let mut i = 1usize;
 
@@ -251,6 +254,7 @@ pub fn parse_args() -> Result<Args, String> {
                 break;
             }
             s if crate::cli_store::FLAGS.contains(&s) => i = store.take(&raw, i)?,
+            s if crate::cli_session::FLAGS.contains(&s) => i = session.take(&raw, i)?,
             s if !s.starts_with('-') => {
                 if name.is_none() {
                     name = Some(s.to_uppercase());
@@ -291,5 +295,6 @@ pub fn parse_args() -> Result<Args, String> {
         fido2_credential_id,
         fido2_public_key_cose,
         store,
+        session,
     })
 }

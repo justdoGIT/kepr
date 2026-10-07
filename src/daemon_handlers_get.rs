@@ -36,7 +36,9 @@ pub(crate) fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result
         Ok(m) => m,
         Err(e) => return Err(format!("meta parse: {e}")),
     };
-    meta_gate(&meta, expiry::now_unix(), || {
+    // T11.14 (batch: session): is a re-auth window open for it?
+    let reauth_open = crate::daemon_session::reauth::window_open(uid, name_upper);
+    meta_gate(&meta, expiry::now_unix(), reauth_open, || {
         crate::daemon_polkit::consent_granted(peer_pid)
     })
 }
@@ -47,6 +49,7 @@ pub(crate) fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result
 fn meta_gate(
     meta: &expiry::CredMeta,
     now_unix: u64,
+    reauth_open: bool,
     consent: impl FnOnce() -> bool,
 ) -> Result<(), String> {
     if meta.sealed == Some(true) {
@@ -63,6 +66,9 @@ fn meta_gate(
             return Err("expired".to_string());
         }
     }
+    // T11.14: before consent and FIDO2, so the client's passphrase round
+    // trip comes first and a FIDO2 retry finds the window open.
+    crate::daemon_session::reauth::gate(meta, reauth_open)?;
     if matches!(meta.requires_consent, Some(true)) && !consent() {
         return Err("consent denied".to_string());
     }
@@ -172,6 +178,10 @@ pub fn handle_get(
                 username,
                 result: AuditResult::Fail(reason.to_string()),
             });
+            // T11.14: the one refusal the client acts on (asks again).
+            if reason == crate::daemon_session::reauth::NEEDED {
+                return Response::fail(reason);
+            }
             return Response::fail("credential unavailable");
         }
     }
@@ -233,7 +243,10 @@ mod tests {
 
     #[test]
     fn sealed_wins_over_fido2_and_valid_expiry() {
-        assert_eq!(meta_gate(&sealed_meta(), 0, || true), Err("sealed".into()));
+        assert_eq!(
+            meta_gate(&sealed_meta(), 0, false, || true),
+            Err("sealed".into())
+        );
     }
 
     #[test]
@@ -242,23 +255,50 @@ mod tests {
             requires_fido2: Some(true),
             ..Default::default()
         };
-        assert!(meta_gate(&fido, 0, || true)
+        assert!(meta_gate(&fido, 0, false, || true)
             .unwrap_err()
             .starts_with("fido2:"));
         let expired = expiry::CredMeta {
             expires_at_unix: Some(10),
             ..Default::default()
         };
-        assert_eq!(meta_gate(&expired, 10, || true), Err("expired".into()));
+        assert_eq!(
+            meta_gate(&expired, 10, false, || true),
+            Err("expired".into())
+        );
         let consent = expiry::CredMeta {
             requires_consent: Some(true),
             ..Default::default()
         };
         assert_eq!(
-            meta_gate(&consent, 0, || false),
+            meta_gate(&consent, 0, false, || false),
             Err("consent denied".into())
         );
-        assert_eq!(meta_gate(&consent, 0, || true), Ok(()));
-        assert_eq!(meta_gate(&expiry::CredMeta::default(), 0, || false), Ok(()));
+        assert_eq!(meta_gate(&consent, 0, false, || true), Ok(()));
+        assert_eq!(
+            meta_gate(&expiry::CredMeta::default(), 0, false, || false),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn reauth_comes_after_the_seal_and_before_fido2() {
+        let m = expiry::CredMeta {
+            requires_reauth: Some(true),
+            requires_fido2: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            meta_gate(&m, 0, false, || true),
+            Err("reauth needed".into())
+        );
+        assert!(meta_gate(&m, 0, true, || true)
+            .unwrap_err()
+            .starts_with("fido2:"));
+        let sealed = expiry::CredMeta {
+            requires_reauth: Some(true),
+            ..sealed_meta()
+        };
+        assert_eq!(meta_gate(&sealed, 0, false, || true), Err("sealed".into()));
     }
 }
