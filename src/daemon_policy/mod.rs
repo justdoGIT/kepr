@@ -1,10 +1,12 @@
 // daemon_policy/ — the `policy` ticket batch, daemon side: the access
-// policy (T6.11). Requests arrive as `Request::Policy` via
-// daemon_extra.rs; `enforce` runs before every request in
+// policy (T6.11), access reports (T6.12). Requests arrive as
+// `Request::Policy` via daemon_extra.rs; `enforce` runs before every request in
 // daemon_dispatch.rs, `init` once at start in daemon.rs.
 
 mod caller;
 mod enforce;
+mod events;
+mod report;
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_policy::{PolicyRequest, PolicyResponse};
@@ -19,6 +21,7 @@ pub use enforce::init;
 pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: PolicyRequest) -> Response {
     match r {
         PolicyRequest::PolicyStatus { reload } => status(uid, username, reload),
+        PolicyRequest::ReportAccess { name } => report::handle_access(uid, username, &name),
     }
 }
 

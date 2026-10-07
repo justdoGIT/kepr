@@ -1,21 +1,25 @@
 // cli_policy/ — the `policy` ticket batch, CLI side: `kepr policy`
-// (T6.11). Registered in cli_more.rs.
+// (T6.11), `kepr report access` (T6.12). Registered in cli_more.rs.
 
 mod policy;
+mod report;
 
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_policy::PolicyRequest;
 
-pub const VERBS: &[&str] = &["policy"];
+pub const VERBS: &[&str] = &["policy", "report"];
 
 pub const HELP: &str = "  policy test FILE                     run the [[test]] cases of a policy.toml (allow / deny per case)
   policy status | policy reload        the policy the daemon enforces (~/.config/kepr/policy.toml or
                                        /etc/kepr/policy.toml); deny by default once the file exists
+  report access KEY                    every path KEY can take: gate bindings, shares sent, agent
+                                       gates and reads (audit log), aliases, sync devices, policy
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
     match verb {
         "policy" => policy::cmd_policy(args),
+        "report" => report::cmd_report(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

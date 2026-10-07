@@ -16,6 +16,8 @@ pub enum PolicyRequest {
         #[serde(default)]
         reload: bool,
     },
+    /// T6.12: where a credential can go and where it went.
+    ReportAccess { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +33,21 @@ pub enum PolicyResponse {
         error: Option<String>,
     },
     /// `kepr policy test FILE` (CLI-local): one line per passing case.
-    PolicyTestOk { lines: Vec<String> },
+    PolicyTestOk {
+        lines: Vec<String>,
+    },
+    AccessReportOk {
+        name: String,
+        rows: Vec<AccessRow>,
+    },
+}
+
+/// One path of a credential: `binding`, `share`, `agent`, `read`, `ssh`,
+/// `alias`, `folder`, `sync` or `policy`, and a line about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessRow {
+    pub kind: String,
+    pub detail: String,
 }
 
 #[cfg(test)]
@@ -71,6 +87,21 @@ mod tests {
             active: true,
             rules: 3,
             error: Some("rule 1: unknown op `read`".into()),
+        });
+    }
+
+    #[test]
+    fn access_report_round_trips() {
+        round_trip_req(
+            PolicyRequest::ReportAccess { name: "K".into() },
+            r#"{"cmd":"report_access","name":"K"}"#,
+        );
+        round_trip_resp(PolicyResponse::AccessReportOk {
+            name: "K".into(),
+            rows: vec![AccessRow {
+                kind: "share".into(),
+                detail: "sent 1 time(s)".into(),
+            }],
         });
     }
 
