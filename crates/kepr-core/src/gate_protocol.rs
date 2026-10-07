@@ -25,6 +25,11 @@ pub enum GateRequest {
     /// Current store generation: changes whenever any credential is set,
     /// deleted or expires, so gates can drop cached values.
     Generation { id: u64 },
+    /// T7.09: recorded chunks for the daemon to store, encrypted.
+    Record {
+        id: u64,
+        record: crate::gate_record::GateRecord,
+    },
 }
 
 /// Daemon → gate.
@@ -40,6 +45,9 @@ pub enum GateResponse {
         id: u64,
         generation: u64,
     },
+    Recorded {
+        id: u64,
+    },
     Err {
         id: u64,
         error: String,
@@ -49,7 +57,10 @@ pub enum GateResponse {
 impl GateResponse {
     pub fn id(&self) -> u64 {
         match self {
-            Self::ResolveOk { id, .. } | Self::Generation { id, .. } | Self::Err { id, .. } => *id,
+            Self::ResolveOk { id, .. }
+            | Self::Generation { id, .. }
+            | Self::Recorded { id }
+            | Self::Err { id, .. } => *id,
         }
     }
 }
@@ -216,6 +227,9 @@ pub struct SessionConfig {
     /// (off under `--isolate-net`, where only bound hosts are reachable).
     #[serde(default)]
     pub tunnel: bool,
+    /// T7.09: send what the agent sends and receives to the daemon.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub record: bool,
 }
 
 /// Per-session caps the gate enforces (P9.5). `None` = no cap.

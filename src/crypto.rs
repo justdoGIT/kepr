@@ -41,6 +41,33 @@ pub trait Backend: Send + Sync {
     fn verify(&self, uid: u32, name: &str) -> bool {
         self.decrypt(uid, name).is_ok()
     }
+
+    /// Move `from`'s value and its `.meta` to `to` (T4.14); refused if
+    /// `to` holds a value. This per-file version re-encrypts under `to`
+    /// (the AEAD binds the name) after moving the meta, so the value is
+    /// never readable under `to` without its policy, and removes `from`
+    /// last, so a failure never loses the value. The vault image does it
+    /// all in one commit.
+    fn rename(&self, uid: u32, from: &str, to: &str) -> Result<(), String> {
+        use crate::{expiry, store};
+        if store::cred_path(uid, to).exists() {
+            return Err(format!("{to} already holds a value"));
+        }
+        let value = self.decrypt(uid, from)?;
+        let meta_of = |n: &str| expiry::meta_path_for(&store::cred_path(uid, n));
+        let (src, dst) = (meta_of(from), meta_of(to));
+        match expiry::read_meta(&src).transpose()? {
+            Some(m) => expiry::write_meta(&dst, &m)?,
+            None => expiry::delete_meta(&dst),
+        }
+        if let Err(e) = self.encrypt(uid, to, value.as_bytes()) {
+            expiry::delete_meta(&dst);
+            return Err(e);
+        }
+        self.delete(uid, from)?;
+        expiry::delete_meta(&src);
+        Ok(())
+    }
 }
 
 /// What `default_backend()` returns before start-up has installed the

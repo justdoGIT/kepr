@@ -62,6 +62,10 @@ pub struct CredMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub attachments: Option<Vec<kepr_core::protocol_records::AttachInfo>>,
     // batch: share
+    /// T6.05: delete this record (and its history) once the one-time
+    /// link with this id is opened or expires. A new `set` drops it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub self_destruct_share: Option<String>,
     // batch: sync
     // batch: policy
     // batch: gate

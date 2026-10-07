@@ -32,7 +32,7 @@ name = "git-credential-kepr"
 path = "src/git_helper.rs"
 
 [workspace]
-members = ["crates/kepr-core", "crates/kepr-eso-provider", "crates/kepr-gate"]
+members = ["crates/kepr-core", "crates/kepr-eso-provider", "crates/kepr-gate", "crates/kepr-relay"]
 
 [dependencies]
 kepr-core = { path = "crates/kepr-core", version = "0.4.0" }
@@ -109,9 +109,13 @@ ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # T6.01: ML-KEM-768 (FIPS 203, RustCrypto) for the hybrid X25519 + ML-KEM
 # share envelopes (`kepr-pk2-…` / `kepr-share2-…`).
 ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
-# T6.13: RS256 ID-token signatures (OIDC device enrolment). Verify only:
-# RUSTSEC-2023-0071 (Marvin) concerns private-key operations, see deny.toml.
-rsa = { version = "0.9", default-features = false, features = ["std", "u64_digit", "sha2"] }
+# T6.13: RS256 ID-token signature verification (OIDC device enrolment).
+# Already in the tree through rustls; used instead of the `rsa` crate,
+# which carries an unpatched timing advisory (RUSTSEC-2023-0071).
+ring = "0.17"
+# T6.04 / T11.15: `--qr` prints share links and envelopes as terminal QR
+# codes (unicode renderer only; no image/svg features).
+qrcode = { version = "0.14", default-features = false }
 # T7.16 FIPS mode: the daemon's AES-256-GCM / SHA-256 / HMAC through AWS-LC.
 # Optional, off by default. `--features fips` links AWS-LC's ordinary build;
 # add `aws-lc-rs/fips` for the FIPS 140-3 validated module (needs Go + CMake).
@@ -132,6 +136,8 @@ proptest = "1"
 # tempfile auto-cleans on drop so each test gets a hermetic credstore
 # without touching /etc/credstore.encrypted/.
 tempfile = "3"
+# T6.04: link round trips through a real relay on 127.0.0.1.
+kepr-relay = { path = "crates/kepr-relay" }
 
 [profile.release]
 opt-level = "z"

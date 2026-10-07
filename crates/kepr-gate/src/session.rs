@@ -141,6 +141,8 @@ pub fn run() -> Result<(), String> {
         false => Some(Arc::new(crate::ca::SessionCa::new(&hosts)?)),
     };
     let ca_pem = ca.as_ref().map(|c| c.pem().to_string());
+    let recorder = Arc::new(crate::recording::Recorder::new(cfg.record));
+    crate::recording::spawn_flusher(recorder.clone(), cache.clone());
     let state = Arc::new(
         State::new(
             cfg.session_id.clone(),
@@ -151,6 +153,7 @@ pub fn run() -> Result<(), String> {
         .with_limits(cfg.limits)
         .with_egress(ca, cfg.tunnel)
         .with_tunnels(&cfg.routes)
+        .with_recorder(recorder.clone())
         .validated()?,
     );
     // From here on the key exists only as SplitKey shares in secret
@@ -208,6 +211,7 @@ pub fn run() -> Result<(), String> {
             }
             // T7.18: take back the roles this session granted.
             crate::pg_jit::revoke_all(&st, &jit_routes).await;
+            recorder.flush(&cache);
             cache.clear();
             std::process::exit(0);
         });
@@ -230,6 +234,7 @@ mod tests {
             port: None,
             limits: Default::default(),
             tunnel: false,
+            record: false,
         }
     }
 

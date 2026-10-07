@@ -11,6 +11,9 @@
 //   [env]
 //   required = ["DB_PASS", "DB_USER", "OPENAI_API_KEY"]
 //
+//   [env.map]                       # T5.06: VAR = a kepr:// reference
+//   DATABASE_URL = "kepr://DB/url"
+//
 // Future fields go under their own `[…]` table; the parser ignores
 // unknown tables (so a Phase 1 binary reading a Phase 2 manifest
 // doesn't fail on a config-format-newer-than-tool mismatch — it
@@ -33,11 +36,40 @@ use std::path::{Path, PathBuf};
 /// places where users edit them.
 pub const MANIFEST_FILENAME: &str = ".kepr.toml";
 
-/// Parsed manifest. Currently carries only the `[env].required`
-/// list; future fields land here as additional `pub` members.
+/// Parsed manifest: the `[env].required` list and the `[env.map]`
+/// references; future fields land here as additional `pub` members.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Manifest {
     pub env_required: Vec<String>,
+    /// `VAR=kepr://…` entries from `[env.map]`, checked at load.
+    pub env_map: Vec<String>,
+}
+
+impl Manifest {
+    /// What `kepr exec` / `kepr env` provision: names, then references.
+    pub fn entries(self) -> Vec<String> {
+        let mut out = self.env_required;
+        out.extend(self.env_map);
+        out
+    }
+}
+
+/// `[env.map]`-style table → `VAR=kepr://…` entries.
+fn map_entries(v: &toml::Value, at: &str) -> Result<Vec<String>, String> {
+    let t = v
+        .as_table()
+        .ok_or_else(|| format!("`{at}` must be a table of VAR = \"kepr://…\""))?;
+    t.iter()
+        .map(|(var, r)| {
+            let r = r
+                .as_str()
+                .ok_or_else(|| format!("`{at}` {var}: the value must be a kepr:// string"))?;
+            let entry = format!("{var}={r}");
+            crate::cli_recordsx::refs::check_entry(&entry)
+                .map_err(|e| format!("`{at}` {var}: {e}"))?;
+            Ok(entry)
+        })
+        .collect()
 }
 
 /// Walk `start` upward toward `/`, returning the first ancestor
@@ -71,7 +103,11 @@ pub fn parse_str(text: &str) -> Result<Manifest, String> {
     let v: toml::Value = toml::from_str(text).map_err(|e| format!("parse manifest: {e}"))?;
 
     let mut required: Vec<String> = Vec::new();
+    let mut env_map: Vec<String> = Vec::new();
     if let Some(env_table) = v.get("env").and_then(|t| t.as_table()) {
+        if let Some(map) = env_table.get("map") {
+            env_map = map_entries(map, "[env.map]")?;
+        }
         if let Some(req) = env_table.get("required") {
             let arr = req
                 .as_array()
@@ -89,6 +125,7 @@ pub fn parse_str(text: &str) -> Result<Manifest, String> {
     }
     Ok(Manifest {
         env_required: required,
+        env_map,
     })
 }
 
@@ -135,12 +172,12 @@ fn resolve_internal(
     }
     if let Some(p) = explicit_manifest {
         let m = parse_file(p)?;
-        return Ok((m.env_required, Some(p.to_path_buf())));
+        return Ok((m.entries(), Some(p.to_path_buf())));
     }
     if auto_discover {
         if let Some(p) = find_manifest(auto_start) {
             let m = parse_file(&p)?;
-            return Ok((m.env_required, Some(p)));
+            return Ok((m.entries(), Some(p)));
         }
     }
     Ok((Vec::new(), None))
@@ -173,6 +210,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.env_required, vec!["DB_PASS", "DB_USER", "OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn parse_str_reads_env_map_references() {
+        let m = parse_str(
+            "[env]\nrequired = [\"A\"]\n[env.map]\nDB_URL = \"kepr://DB/url\"\nPIN = 'kepr://R/custom_field/a\\/b[1]'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.env_map,
+            [
+                r"DB_URL=kepr://DB/url",
+                r"PIN=kepr://R/custom_field/a\/b[1]"
+            ]
+        );
+        assert_eq!(m.entries().len(), 3);
+        for (bad, what) in [
+            ("[env.map]\nX = 1\n", "kepr:// string"),
+            ("[env.map]\nX = \"DB\"\n", "starts with kepr://"),
+            (
+                "[env.map]\nX = \"kepr://DB/url[\"\n",
+                "`[env.map]` X: kepr://DB/url[: unclosed [ at column 14",
+            ),
+            (
+                "[env.map]\n\"1X\" = \"kepr://DB\"\n",
+                "environment variable",
+            ),
+            ("[env]\nmap = 3\n", "must be a table"),
+        ] {
+            let e = parse_str(bad).unwrap_err();
+            assert!(e.contains(what), "{bad}: {e}");
+        }
     }
 
     #[test]

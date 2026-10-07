@@ -64,6 +64,7 @@ mod daemon_sharing;
 // batch: policy
 mod daemon_policy;
 // batch: gate
+mod daemon_gatex;
 // batch: aws
 // batch: eco
 mod daemon_eco;

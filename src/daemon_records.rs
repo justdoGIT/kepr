@@ -32,8 +32,8 @@ fn valid_field_name(k: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-/// Check the type and that `fields` is a JSON object of 1..=64 string
-/// fields with lower-case names.
+/// Check the type and that `fields` is a JSON object of 1..=64 fields
+/// with lower-case names (values: daemon_recordsx/fields.rs).
 pub fn validate(record_type: &str, fields: &str) -> Result<(), String> {
     if !TYPES.iter().any(|(t, _)| *t == record_type) {
         let names: Vec<&str> = TYPES.iter().map(|(t, _)| *t).collect();
@@ -53,9 +53,7 @@ pub fn validate(record_type: &str, fields: &str) -> Result<(), String> {
                 "field name {k:?}: use 1-32 of a-z, 0-9, underscore"
             ));
         }
-        if !v.is_string() {
-            return Err(format!("field {k}: values must be strings"));
-        }
+        crate::daemon_recordsx::check_field(k, v)?; // T5.05: lists, structured, custom
     }
     Ok(())
 }
@@ -235,6 +233,7 @@ mod tests {
         assert!(validate("login", "{}").is_err());
         assert!(validate("login", r#"{"User":"x"}"#).is_err());
         assert!(validate("login", r#"{"port":5432}"#).is_err());
+        assert!(validate("login", r#"{"url":["a","b"],"custom":{"Q/A":"x"}}"#).is_ok());
         let many: String = (0..65)
             .map(|i| format!("\"f{i}\":\"v\""))
             .collect::<Vec<_>>()

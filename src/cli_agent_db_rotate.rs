@@ -131,6 +131,7 @@ fn start_gate(name: &str) -> Result<(String, u16, TargetKind), String> {
         port: None,
         limits: GateLimits::default(),
         tunnel: false,
+        record: false,
     })? {
         Response::GateStarted {
             placeholders,

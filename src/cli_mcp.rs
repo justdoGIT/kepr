@@ -234,6 +234,7 @@ impl Live {
             port: None,
             limits: Default::default(),
             tunnel: false,
+            record: false,
         })? {
             Response::GateStarted {
                 port, placeholders, ..

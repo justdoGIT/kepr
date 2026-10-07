@@ -61,6 +61,9 @@ pub struct GateExtras {
     /// `db:<CRED>` → local port of the gate's database proxy.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty", default)]
     pub db_ports: std::collections::HashMap<String, u16>,
+    /// The gate session's id (`kepr agent replay` / `kepr agent logs`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session: Option<String>,
 }
 
 // ── Credential info (for ListOk) ──────────────────────────────────────────────

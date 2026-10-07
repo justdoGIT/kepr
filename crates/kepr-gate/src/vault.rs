@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use kepr_core::binding::Inject;
 use kepr_core::framing::{read_frame, write_frame};
 use kepr_core::gate_protocol::{GateRequest, GateResponse};
+use kepr_core::gate_record::GateRecord;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::MAX_MSG_BYTES;
 
@@ -32,6 +33,10 @@ pub trait Resolve: Send + Sync {
     fn resolve(&self, name: &str, host: &str, port: u16) -> Result<(ZeroString, Inject), String>;
     /// The daemon's store generation (see module docs).
     fn generation(&self) -> Result<u64, String>;
+    /// T7.09: hand recorded chunks to the daemon.
+    fn record(&self, _record: GateRecord) -> Result<(), String> {
+        Err("recording is not available".into())
+    }
 }
 
 pub struct FdResolver {
@@ -87,7 +92,7 @@ impl Resolve for FdResolver {
         match self.call(req)? {
             GateResponse::ResolveOk { value, inject, .. } => Ok((value, inject)),
             GateResponse::Err { error, .. } => Err(error),
-            GateResponse::Generation { .. } => Err("daemon channel: unexpected reply".into()),
+            _ => Err("daemon channel: unexpected reply".into()),
         }
     }
 
@@ -95,7 +100,15 @@ impl Resolve for FdResolver {
         match self.call(|id| GateRequest::Generation { id })? {
             GateResponse::Generation { generation, .. } => Ok(generation),
             GateResponse::Err { error, .. } => Err(error),
-            GateResponse::ResolveOk { .. } => Err("daemon channel: unexpected reply".into()),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
+
+    fn record(&self, record: GateRecord) -> Result<(), String> {
+        match self.call(|id| GateRequest::Record { id, record })? {
+            GateResponse::Recorded { .. } => Ok(()),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
         }
     }
 }
@@ -177,6 +190,11 @@ impl Cache {
                 .collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// T7.09: pass recorded chunks to the daemon (not cached).
+    pub fn record(&self, record: GateRecord) -> Result<(), String> {
+        self.resolver.record(record)
     }
 
     pub fn clear(&self) {
