@@ -98,6 +98,7 @@ fn main() {
     // On parse failure: honour --json mode, if it was already seen on
     // argv, by emitting a Response::Err on stdout with no stderr noise.
     // Verbs with their own small parsers (cli_extra.rs).
+    cli_session::profile::apply(); // T11.16: --profile / KEPR_PROFILE
     let raw: Vec<String> = std::env::args().collect();
     if let Some(pos) = raw.iter().skip(1).position(|a| !a.starts_with("--")) {
         // Harness hooks speak exit codes, not Responses.

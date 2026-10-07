@@ -54,10 +54,19 @@ pub fn hide_dirs() -> Vec<PathBuf> {
     .map(|b| b.join("kepr"))
     .collect();
     v.push(kepr_core::protocol::socket_dir());
+    v.push(kepr_core::protocol::runtime_root()); // T11.16: every profile's socket
     v.extend(["/etc/credstore.encrypted", "/var/lib/kepr", "/run/kepr"].map(PathBuf::from));
+    outermost(v.into_iter().filter(|p| p.is_dir()).collect())
+}
+
+/// Sorted, without any path inside another: a directory under one
+/// already covered by an empty tmpfs no longer exists to be mounted on.
+fn outermost(mut v: Vec<PathBuf>) -> Vec<PathBuf> {
     v.sort();
     v.dedup();
-    v.into_iter().filter(|p| p.is_dir()).collect()
+    let all = v.clone();
+    v.retain(|p| !all.iter().any(|q| q != p && p.starts_with(q)));
+    v
 }
 
 fn cstrings(items: impl IntoIterator<Item = String>) -> Result<Vec<CString>, String> {
@@ -311,6 +320,22 @@ pub fn run(plan: Plan) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_hidden_dirs_are_dropped() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(
+            outermost(vec![
+                p("/s/kepr/runtime/kepr"),
+                p("/r/kepr/profiles/work"),
+                p("/s/kepr"),
+                p("/r/kepr"),
+                p("/r/kepr2"),
+                p("/r/kepr"),
+            ]),
+            [p("/r/kepr"), p("/r/kepr2"), p("/s/kepr")]
+        );
+    }
 
     #[test]
     fn hide_dirs_only_existing_and_include_socket_dir_when_present() {

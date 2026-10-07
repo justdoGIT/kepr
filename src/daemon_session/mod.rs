@@ -22,6 +22,19 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: SessionRequest) -> 
     }
 }
 
+/// T11.16: refuse to start with an invalid `KEPR_PROFILE` (or one in
+/// system mode) instead of serving some other store.
+pub fn check_profile_or_exit() {
+    match kepr_core::profile::current() {
+        Ok(Some(p)) => eprintln!("[kepr-daemon] profile: {p}"),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("[kepr-daemon] {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// One audit line for a session-batch operation (op and name only).
 pub(crate) fn audit_op(
     op: &'static str,

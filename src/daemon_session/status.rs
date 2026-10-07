@@ -17,14 +17,6 @@ pub fn key_sealer(password_protected: bool, user_mode: bool) -> &'static str {
     }
 }
 
-/// The daemon's profile (T11.16), `default` when none is set.
-pub fn profile() -> String {
-    std::env::var("KEPR_PROFILE")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "default".into())
-}
-
 pub fn handle(uid: u32) -> Response {
     let password_protected = crate::protected_master_key_path().exists();
     let user = crate::user_mode();
@@ -38,7 +30,7 @@ pub fn handle(uid: u32) -> Response {
         password_protected,
         info: StatusInfo {
             mode: Some(if user { "user" } else { "system" }.into()),
-            profile: Some(profile()),
+            profile: Some(kepr_core::profile::display_name()),
             store_backend: Some(backend.into()),
             key_sealer: Some(key_sealer(password_protected, user).into()),
             gates: Some(crate::daemon_gate_registry::gates_for(uid) as u32),

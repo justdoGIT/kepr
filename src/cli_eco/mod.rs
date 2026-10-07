@@ -11,6 +11,7 @@ mod tui_term;
 
 pub use crypto::print_status_crypto;
 use kepr_core::protocol::Response;
+pub use shell::split_words; // also `kepr batch` (T11.18)
 
 pub const VERBS: &[&str] = &["shell", "ui"];
 

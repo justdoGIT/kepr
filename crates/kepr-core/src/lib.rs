@@ -60,5 +60,6 @@ pub mod protocol_gatex;
 pub mod protocol_eco;
 // batch: platform
 // batch: session
+pub mod profile;
 pub mod protocol_session;
 // end of batches

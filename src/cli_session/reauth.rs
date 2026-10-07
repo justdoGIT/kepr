@@ -2,7 +2,7 @@
 // (T11.14). When the daemon answers a read with exactly `REAUTH_NEEDED`,
 // ask for the store passphrase on the terminal, send `Reauth` (which
 // opens a 60 s window for that credential) and retry once. Without a
-// terminal (scripts, MCP) nothing is asked: the error says to
+// terminal (scripts, `kepr ui`, MCP) nothing is asked: the error says to
 // run `kepr reauth NAME` first.
 
 use std::io::IsTerminal;
