@@ -1,11 +1,14 @@
 // cli_recordsx/ — the `records` ticket batch, CLI side: `kepr attach`
 // (T5.03), `kepr://` notation (T5.05), references in exec / manifests and
 // `kepr resolve` (T5.06), manifest stages (T5.02), linked records (T11.6),
-// record types and convert (T11.7). Registered in cli_more.rs.
+// record types and convert (T11.7), record add/show/template with field
+// options, --from-file and --clone (T11.8). Registered in cli_more.rs.
 // (`cli_record.rs` already holds `kepr record`, hence the x.)
 
 mod attach;
 pub mod notation;
+pub mod record_add;
+mod record_fields;
 pub mod refs;
 pub mod resolve;
 pub mod stages;
@@ -30,6 +33,9 @@ pub const HELP: &str = "\
   record types [--export DIR]          built-in types plus yours (~/.config/kepr/types/*.toml:
                                        name, fields = [{name, type, required, masked}])
   record convert KEY TYPE              re-type a record; unmatched fields become custom fields
+  record template TYPE                 JSON skeleton; fill it in, then record add KEY --from-file F
+  record add KEY --clone OTHER         start from OTHER's fields (not its attachments or history);
+                                       a type's required fields must be set, masked ones are starred
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
