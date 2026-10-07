@@ -134,17 +134,20 @@ mod tests {
         let u = testkit::uid();
         testkit::set(u, "VW_B", "v");
         let path = meta_path(u, "VW_B");
+        // Future times: a past expiry would let the sweeper in a parallel
+        // test delete this credential mid-test.
+        let t = expiry::now_unix() + 100_000;
         let mut m = testkit::meta(u, "VW_B");
-        m.expires_at_unix = Some(1_000);
+        m.expires_at_unix = Some(t + 1_000);
         m.view_window_secs = Some(600);
         expiry::write_meta(&path, &m).unwrap();
-        start_at(u, "VW_B", 900).unwrap();
-        assert_eq!(testkit::meta(u, "VW_B").expires_at_unix, Some(1_000));
-        m.expires_at_unix = Some(10_000);
+        start_at(u, "VW_B", t + 900).unwrap();
+        assert_eq!(testkit::meta(u, "VW_B").expires_at_unix, Some(t + 1_000));
+        m.expires_at_unix = Some(t + 10_000);
         m.view_window_secs = Some(600);
         expiry::write_meta(&path, &m).unwrap();
-        start_at(u, "VW_B", 900).unwrap();
-        assert_eq!(testkit::meta(u, "VW_B").expires_at_unix, Some(1_500));
+        start_at(u, "VW_B", t + 900).unwrap();
+        assert_eq!(testkit::meta(u, "VW_B").expires_at_unix, Some(t + 1_500));
     }
 
     #[test]
