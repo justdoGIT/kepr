@@ -1,12 +1,13 @@
 // cli_recordsx/ — the `records` ticket batch, CLI side: `kepr attach`
 // (T5.03), `kepr://` notation (T5.05), references in exec / manifests and
-// `kepr resolve` (T5.06). Registered in cli_more.rs.
+// `kepr resolve` (T5.06), manifest stages (T5.02). Registered in cli_more.rs.
 // (`cli_record.rs` already holds `kepr record`, hence the x.)
 
 mod attach;
 pub mod notation;
 pub mod refs;
 pub mod resolve;
+pub mod stages;
 
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_records::RecordsRequest;
@@ -21,6 +22,7 @@ pub const HELP: &str = "\
   attach ls KEY | attach rm KEY NAME   list / remove attachments
   resolve kepr://KEY/...               print what a reference stands for (sealed keys refused);
                                        exec/env also take --env VAR=kepr://... and [env.map]
+  exec|env --stage S                   add the .kepr.toml [env.S] set (default: $KEPR_STAGE)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {

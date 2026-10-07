@@ -28,6 +28,8 @@ pub struct Args {
     pub exec_argv: Vec<String>,
     /// Explicit `.kepr.toml` path. Falls back to walk-up then no-manifest.
     pub manifest_path: Option<std::path::PathBuf>,
+    /// `kepr exec|env --stage S`: the manifest's `[env.S]` set (T5.02).
+    pub stage: Option<String>,
     /// `kepr set` only: TTL in seconds. Daemon writes sidecar meta; None = no expiry.
     pub ttl_secs: Option<u64>,
     /// `kepr rotate` only: validation hook path. Candidate piped on stdin.
@@ -70,6 +72,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut memfd_vars: Vec<String> = Vec::new();
     let mut exec_argv: Vec<String> = Vec::new();
     let mut manifest_path: Option<std::path::PathBuf> = None;
+    let mut stage: Option<String> = None;
     let mut stdin = false;
     let mut mask = false;
     let mut ttl_secs: Option<u64> = None;
@@ -193,6 +196,10 @@ pub fn parse_args() -> Result<Args, String> {
                 manifest_path = Some(std::path::PathBuf::from(p));
                 i += 1;
             }
+            "--stage" => {
+                stage = Some(raw.get(i + 1).ok_or("--stage needs a name")?.clone());
+                i += 2;
+            }
             "--url" => {
                 // Phase 2 ζ. Scheme-prefixed remote URL for
                 // `kepr sync-push|pull`. Validated downstream
@@ -283,6 +290,7 @@ pub fn parse_args() -> Result<Args, String> {
         mask,
         exec_argv,
         manifest_path,
+        stage,
         ttl_secs,
         hook_path,
         url,
