@@ -28,48 +28,39 @@
 // `KEPR_AUTO_MANIFEST=1`; this prevents an untrusted checkout from
 // supplying a manifest that injects credentials into a child process.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::cli_recordsx::stages::{self, EnvSet};
 
 /// Default manifest filename. Hidden so it doesn't clutter `ls`,
 /// dotted so it sorts adjacent to `.gitignore` / `.envrc` in the
 /// places where users edit them.
 pub const MANIFEST_FILENAME: &str = ".kepr.toml";
 
-/// Parsed manifest: the `[env].required` list and the `[env.map]`
-/// references; future fields land here as additional `pub` members.
+/// Parsed manifest: the `[env].required` list, the `[env.map]`
+/// references and the `[env.<stage>]` sets (cli_recordsx/stages.rs);
+/// future fields land here as additional `pub` members.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Manifest {
     pub env_required: Vec<String>,
     /// `VAR=kepr://…` entries from `[env.map]`, checked at load.
     pub env_map: Vec<String>,
+    /// T5.02: `[env.<stage>]` tables by stage name.
+    pub stages: BTreeMap<String, EnvSet>,
 }
 
 impl Manifest {
-    /// What `kepr exec` / `kepr env` provision: names, then references.
-    pub fn entries(self) -> Vec<String> {
-        let mut out = self.env_required;
-        out.extend(self.env_map);
-        out
+    /// What `kepr exec` / `kepr env` provision: names, then references;
+    /// with `stage`, merged with that stage's set.
+    pub fn entries(self, stage: Option<&str>) -> Result<Vec<String>, String> {
+        let base = EnvSet {
+            required: self.env_required,
+            map: self.env_map,
+        };
+        stages::merge(base, self.stages, stage)
     }
-}
-
-/// `[env.map]`-style table → `VAR=kepr://…` entries.
-fn map_entries(v: &toml::Value, at: &str) -> Result<Vec<String>, String> {
-    let t = v
-        .as_table()
-        .ok_or_else(|| format!("`{at}` must be a table of VAR = \"kepr://…\""))?;
-    t.iter()
-        .map(|(var, r)| {
-            let r = r
-                .as_str()
-                .ok_or_else(|| format!("`{at}` {var}: the value must be a kepr:// string"))?;
-            let entry = format!("{var}={r}");
-            crate::cli_recordsx::refs::check_entry(&entry)
-                .map_err(|e| format!("`{at}` {var}: {e}"))?;
-            Ok(entry)
-        })
-        .collect()
 }
 
 /// Walk `start` upward toward `/`, returning the first ancestor
@@ -102,31 +93,13 @@ pub fn parse_str(text: &str) -> Result<Manifest, String> {
     // makes "ignore unknown sections" trivially the default.
     let v: toml::Value = toml::from_str(text).map_err(|e| format!("parse manifest: {e}"))?;
 
-    let mut required: Vec<String> = Vec::new();
-    let mut env_map: Vec<String> = Vec::new();
+    let mut m = Manifest::default();
     if let Some(env_table) = v.get("env").and_then(|t| t.as_table()) {
-        if let Some(map) = env_table.get("map") {
-            env_map = map_entries(map, "[env.map]")?;
-        }
-        if let Some(req) = env_table.get("required") {
-            let arr = req
-                .as_array()
-                .ok_or("`[env].required` must be an array of strings")?;
-            for entry in arr {
-                let s = entry
-                    .as_str()
-                    .ok_or("`[env].required` must contain only strings")?;
-                if s.is_empty() {
-                    return Err("`[env].required` contains an empty entry".into());
-                }
-                required.push(s.to_string());
-            }
-        }
+        let base = stages::env_set(env_table, "env")?;
+        (m.env_required, m.env_map) = (base.required, base.map);
+        m.stages = stages::stages(env_table)?;
     }
-    Ok(Manifest {
-        env_required: required,
-        env_map,
-    })
+    Ok(m)
 }
 
 /// Read and parse a manifest file. Composes `parse_str` with a
@@ -147,8 +120,9 @@ pub fn resolve(
     cli_env: &[String],
     explicit_manifest: Option<&Path>,
     auto_start: &Path,
+    stage: Option<&str>,
 ) -> Result<(Vec<String>, Option<PathBuf>), String> {
-    resolve_internal(cli_env, explicit_manifest, auto_start, false)
+    resolve_internal(cli_env, explicit_manifest, auto_start, false, stage)
 }
 
 /// Resolve credentials with ancestor manifest discovery explicitly enabled.
@@ -157,8 +131,9 @@ pub fn resolve_with_auto_discovery(
     cli_env: &[String],
     explicit_manifest: Option<&Path>,
     auto_start: &Path,
+    stage: Option<&str>,
 ) -> Result<(Vec<String>, Option<PathBuf>), String> {
-    resolve_internal(cli_env, explicit_manifest, auto_start, true)
+    resolve_internal(cli_env, explicit_manifest, auto_start, true, stage)
 }
 
 fn resolve_internal(
@@ -166,18 +141,19 @@ fn resolve_internal(
     explicit_manifest: Option<&Path>,
     auto_start: &Path,
     auto_discover: bool,
+    stage: Option<&str>,
 ) -> Result<(Vec<String>, Option<PathBuf>), String> {
     if !cli_env.is_empty() {
         return Ok((cli_env.to_vec(), None));
     }
     if let Some(p) = explicit_manifest {
         let m = parse_file(p)?;
-        return Ok((m.entries(), Some(p.to_path_buf())));
+        return Ok((m.entries(stage)?, Some(p.to_path_buf())));
     }
     if auto_discover {
         if let Some(p) = find_manifest(auto_start) {
             let m = parse_file(&p)?;
-            return Ok((m.entries(), Some(p)));
+            return Ok((m.entries(stage)?, Some(p)));
         }
     }
     Ok((Vec::new(), None))
@@ -225,7 +201,7 @@ mod tests {
                 r"PIN=kepr://R/custom_field/a\/b[1]"
             ]
         );
-        assert_eq!(m.entries().len(), 3);
+        assert_eq!(m.entries(None).unwrap().len(), 3);
         for (bad, what) in [
             ("[env.map]\nX = 1\n", "kepr:// string"),
             ("[env.map]\nX = \"DB\"\n", "starts with kepr://"),
@@ -367,7 +343,7 @@ mod tests {
         let path = dir.path().join(MANIFEST_FILENAME);
         fs::write(&path, "[env]\nrequired = [\"FOO\"]\n").unwrap();
         let cli = vec!["BAR".to_string()];
-        let (resolved, used) = resolve(&cli, None, dir.path()).unwrap();
+        let (resolved, used) = resolve(&cli, None, dir.path(), None).unwrap();
         assert_eq!(resolved, vec!["BAR"]);
         assert!(used.is_none(), "manifest must not be reported as used");
     }
@@ -384,7 +360,7 @@ mod tests {
         .unwrap();
         let pinned = dir.path().join("alt.toml");
         fs::write(&pinned, "[env]\nrequired = [\"BAR\"]\n").unwrap();
-        let (resolved, used) = resolve(&[], Some(&pinned), dir.path()).unwrap();
+        let (resolved, used) = resolve(&[], Some(&pinned), dir.path(), None).unwrap();
         assert_eq!(resolved, vec!["BAR"]);
         assert_eq!(
             fs::canonicalize(used.unwrap()).unwrap(),
@@ -393,11 +369,31 @@ mod tests {
     }
 
     #[test]
+    fn resolve_adds_the_named_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let pinned = dir.path().join("staged.toml");
+        fs::write(
+            &pinned,
+            "[env]\nrequired = [\"A\"]\n[env.dev]\nrequired = [\"B\"]\n[env.dev.map]\nU = \"kepr://DB/url\"\n",
+        )
+        .unwrap();
+        let (r, _) = resolve(&[], Some(&pinned), dir.path(), Some("dev")).unwrap();
+        assert_eq!(r, ["A", "B", "U=kepr://DB/url"]);
+        let (r, _) = resolve(&[], Some(&pinned), dir.path(), None).unwrap();
+        assert_eq!(r, ["A"]);
+        let e = resolve(&[], Some(&pinned), dir.path(), Some("prod")).unwrap_err();
+        assert!(e.contains("known stages: dev"), "{e}");
+        // An explicit --env list ignores stages.
+        let (r, _) = resolve(&["X".into()], Some(&pinned), dir.path(), Some("prod")).unwrap();
+        assert_eq!(r, ["X"]);
+    }
+
+    #[test]
     fn resolve_falls_through_to_auto_discovery() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(MANIFEST_FILENAME);
         fs::write(&path, "[env]\nrequired = [\"FOO\"]\n").unwrap();
-        let (resolved, used) = resolve_with_auto_discovery(&[], None, dir.path()).unwrap();
+        let (resolved, used) = resolve_with_auto_discovery(&[], None, dir.path(), None).unwrap();
         assert_eq!(resolved, vec!["FOO"]);
         assert!(used.is_some(), "auto-discovered path must be reported");
     }
@@ -410,7 +406,7 @@ mod tests {
             "[env]\nrequired = [\"UNTRUSTED\"]\n",
         )
         .unwrap();
-        let (resolved, used) = resolve(&[], None, dir.path()).unwrap();
+        let (resolved, used) = resolve(&[], None, dir.path(), None).unwrap();
         assert!(resolved.is_empty());
         assert!(used.is_none());
     }
@@ -418,7 +414,7 @@ mod tests {
     #[test]
     fn resolve_returns_empty_when_nothing_found() {
         let dir = tempfile::tempdir().unwrap();
-        let (resolved, used) = resolve(&[], None, dir.path()).unwrap();
+        let (resolved, used) = resolve(&[], None, dir.path(), None).unwrap();
         assert!(resolved.is_empty());
         assert!(used.is_none());
     }

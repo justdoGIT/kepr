@@ -121,6 +121,8 @@ MANIFEST:
     required = ["DB_PASS", "DB_USER", "OPENAI_API_KEY"]
   Then `kepr exec -- python train.py` and `kepr env` need no flags.
   --env CSV overrides the manifest; --manifest path pins a different file.
+  [env.map] VAR = "kepr://KEY/field" adds references; [env.STAGE] tables add per-stage sets,
+  picked with --stage STAGE or $KEPR_STAGE.
 
   View audit log: journalctl -t kepr-daemon
     journalctl -t kepr-daemon KEPR_OP=get
