@@ -6,7 +6,9 @@
 // key_unlock.rs; the daemon then starts locked until `kepr unlock`.
 //
 // The Sealer trait keeps system and local startup protection injectable and
-// testable. Password protection is deliberately a separate envelope: the
+// testable. The other sealers (TPM2 PIN / counter, bring-your-own-key KMS
+// and HSM, the macOS Keychain) live in daemon_seal/ and are picked by
+// `sealer_from_env`; the default path stays as below. Password protection is deliberately a separate envelope: the
 // credential-encryption key remains random 256-bit material and is never
 // derived directly from a human password.
 
@@ -22,6 +24,8 @@ const MASTER_KEY_LEN: usize = 32;
 const SYSTEMD_CREDS_BIN: &str = "/usr/bin/systemd-creds";
 const KEY_TYPE: &str = "host";
 const SEALED_NAME: &str = "kepr-master-key";
+/// T4.11: the other sealers `KEPR_MASTER_KEY_SEAL` can name (daemon_seal).
+const BYOK_KINDS: &str = "aws-kms:ARN";
 
 /// Read 32 random bytes from /dev/urandom. Linux's CSPRNG is the right
 /// source for long-term key material; getrandom(2) would be equivalent
@@ -57,7 +61,7 @@ pub fn seal_args(seal: Option<&str>, pcrs: Option<&str>) -> Result<Vec<String>, 
     let kind = seal.unwrap_or(KEY_TYPE);
     if !matches!(kind, "host" | "tpm2" | "host+tpm2" | "auto") {
         return Err(format!(
-            "KEPR_MASTER_KEY_SEAL={kind}: use host, tpm2, host+tpm2 or auto"
+            "KEPR_MASTER_KEY_SEAL={kind}: use host, tpm2, host+tpm2, auto or {BYOK_KINDS}"
         ));
     }
     let mut args = vec!["encrypt".to_string(), format!("--with-key={kind}")];

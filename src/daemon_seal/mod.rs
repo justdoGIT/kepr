@@ -9,11 +9,17 @@
 //   tpm_config its environment
 //   fido2_kek  T4.09 the `kepr_pw2` envelope: passphrase + security key
 //              (used by key_unlock.rs; the CLI drives the device)
+//   kms        T4.11 bring your own key: `KekSealer`, the blob header
+//   kms_aws    T4.11 AWS KMS (SigV4)
+//   http       the key services' HTTPS transport (fake / loopback in tests)
 //
 // `sealer_for` picks a sealer from the environment for
 // master_key::sealer_from_env; `None` keeps the default one.
 
 pub mod fido2_kek;
+mod http;
+mod kms;
+mod kms_aws;
 mod recovery;
 mod runner;
 mod tpm;
@@ -30,6 +36,14 @@ use crate::master_key::Sealer;
 /// The sealer `KEPR_MASTER_KEY_SEAL` (`seal`) and the TPM2 options ask
 /// for, or `None` for the default. `work` is the master key's directory.
 pub fn sealer_for(seal: Option<&str>, work: &Path) -> Result<Option<Box<dyn Sealer>>, String> {
+    let (kind, key) = seal.and_then(|s| s.split_once(':')).unwrap_or_default();
+    let byok: Option<Box<dyn Sealer>> = match kind {
+        "aws-kms" => Some(Box::new(kms::KmsSealer(kms_aws::AwsKms::from_env(key)?))),
+        _ => None,
+    };
+    if byok.is_some() {
+        return Ok(byok);
+    }
     if let Some(cfg) = tpm_config::TpmConfig::from_env(seal)? {
         return Ok(Some(Box::new(tpm::TpmSealer {
             cfg,
@@ -65,4 +79,24 @@ fn audit_result(op: &'static str, uid: u32, username: &str, r: &Result<(), Strin
             Err(e) => AuditResult::Fail(e.clone()),
         },
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sealer_choice_follows_the_setting() {
+        let dir = Path::new("/nonexistent");
+        let tpm_unset = ["KEPR_TPM2_PIN", "KEPR_TPM2_NV_INDEX"]
+            .iter()
+            .all(|v| std::env::var_os(v).is_none());
+        // Nothing asked for: the default sealer.
+        if tpm_unset {
+            assert!(sealer_for(None, dir).unwrap().is_none());
+            assert!(sealer_for(Some("host+tpm2"), dir).unwrap().is_none());
+        }
+        let e = sealer_for(Some("aws-kms:not-an-arn"), dir).err().unwrap();
+        assert!(e.contains("not a KMS key ARN"), "{e}");
+    }
 }
