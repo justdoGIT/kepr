@@ -57,9 +57,14 @@ pub fn pick_syncer(url: &str) -> Result<Box<dyn Syncer>, String> {
         Ok(Box::new(crate::sync_aws_sm::AwsSmSyncer::from_path(path)))
     } else if let Some(path) = url.strip_prefix("gcp-sm:") {
         Ok(Box::new(crate::sync_gcp_sm::GcpSmSyncer::from_path(path)))
+    } else if let Some(spec) = url.strip_prefix("json:") {
+        // T8.06 (batch: sync): one key of a local JSON file.
+        Ok(Box::new(
+            crate::cli_syncx::json_file::JsonFileSyncer::from_path(spec)?,
+        ))
     } else {
         Err(format!(
-            "unsupported sync scheme in {url:?} — supported: vault:, aws-sm:, gcp-sm:"
+            "unsupported sync scheme in {url:?} — supported: vault:, aws-sm:, gcp-sm:, json:"
         ))
     }
 }
@@ -148,6 +153,14 @@ mod tests {
     fn pick_syncer_dispatches_gcp_sm_scheme() {
         let s = pick_syncer("gcp-sm:projects/myproj/secrets/db_pass").unwrap();
         assert_eq!(s.backend(), "gcp-sm");
+    }
+
+    #[test]
+    fn pick_syncer_dispatches_json_scheme() {
+        let s = pick_syncer("json:secrets.json#db.password").unwrap();
+        assert_eq!(s.backend(), "json");
+        // A malformed target is refused before anything runs.
+        assert!(pick_syncer("json:secrets.json").is_err());
     }
 
     #[test]

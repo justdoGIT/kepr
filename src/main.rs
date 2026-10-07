@@ -74,6 +74,7 @@ mod cli_recordsx;
 // batch: share
 mod cli_sharing;
 // batch: sync
+mod cli_syncx;
 // batch: policy
 mod cli_policy;
 // batch: gate
