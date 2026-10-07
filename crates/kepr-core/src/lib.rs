@@ -34,6 +34,8 @@ pub mod ssh_wire;
 // batch: vault
 pub mod protocol_vault;
 // batch: seal
+pub mod protocol_seal;
+pub mod recovery_words;
 // batch: store
 pub mod protocol_store;
 // batch: records

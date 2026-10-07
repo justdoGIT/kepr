@@ -264,6 +264,8 @@ pub enum Request {
     #[serde(untagged)]
     Vault(crate::protocol_vault::VaultRequest),
     // batch: seal
+    #[serde(untagged)]
+    Seal(crate::protocol_seal::SealRequest),
     // batch: store
     #[serde(untagged)]
     Store(crate::protocol_store::StoreRequest),

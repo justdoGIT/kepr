@@ -54,6 +54,7 @@ mod version_state;
 // batch: vault
 mod daemon_vault;
 // batch: seal
+mod daemon_seal;
 // batch: store
 mod daemon_store;
 // batch: records
