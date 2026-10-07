@@ -41,10 +41,84 @@ pub enum SessionResponse {
     ReauthFlagOk { name: String, on: bool },
 }
 
+/// T11.24: what `kepr status` shows beyond the lock state, flattened into
+/// `Response::StatusOk`. Every field is optional: an older daemon sends
+/// none of them and its status still parses.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusInfo {
+    /// `user` or `system`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// The daemon's profile (T11.16); `default` when none is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// `file` or `image` (T4.06 vault image).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_backend: Option<String>,
+    /// What protects the master key at rest: `passphrase`, `host` (the
+    /// credential backend, system mode) or `file` (owner-only key file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_sealer: Option<String>,
+    /// Agent gates running for the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates: Option<u32>,
+    /// Account-transfer escrow (T6.14) is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow: Option<bool>,
+    /// The FIPS-validated crypto module is in use (T7.16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fips: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::{Request, Response};
+
+    #[test]
+    fn status_info_rides_in_status_ok_and_old_daemons_still_parse() {
+        let full = StatusInfo {
+            mode: Some("user".into()),
+            profile: Some("default".into()),
+            store_backend: Some("file".into()),
+            key_sealer: Some("passphrase".into()),
+            gates: Some(2),
+            escrow: Some(false),
+            fips: Some(false),
+        };
+        let r = Response::StatusOk {
+            locked: false,
+            password_protected: true,
+            info: full.clone(),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        for k in [
+            "kind",
+            "locked",
+            "password_protected",
+            "mode",
+            "profile",
+            "store_backend",
+            "key_sealer",
+            "gates",
+            "escrow",
+            "fips",
+        ] {
+            assert!(v.get(k).is_some(), "{k} missing from {v}");
+        }
+        match serde_json::from_value::<Response>(v).unwrap() {
+            Response::StatusOk { info, .. } => assert_eq!(info, full),
+            other => panic!("{other:?}"),
+        }
+        let old = r#"{"kind":"status_ok","locked":true,"password_protected":false}"#;
+        match serde_json::from_str::<Response>(old).unwrap() {
+            Response::StatusOk { locked, info, .. } => {
+                assert!(locked);
+                assert_eq!(info, StatusInfo::default());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[test]
     fn requests_round_trip_through_the_core_enum() {

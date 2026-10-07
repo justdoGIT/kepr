@@ -160,6 +160,10 @@ pub enum Response {
     StatusOk {
         locked: bool,
         password_protected: bool,
+        /// T11.24 (batch: session): mode, profile, backend, sealer, … —
+        /// all optional, absent from older daemons.
+        #[serde(flatten)]
+        info: crate::protocol_session::StatusInfo,
     },
     Err {
         error: String,

@@ -1,10 +1,11 @@
 // daemon_session/ — the `session` ticket batch, daemon side: idle
 // auto-lock (T11.12), unlock backoff and opt-in wipe (T11.13),
-// re-authentication before reveal (T11.14). Requests arrive as
-// `Request::Session` via daemon_extra.rs.
+// re-authentication before reveal (T11.14), `kepr status` (T11.24).
+// Requests arrive as `Request::Session` via daemon_extra.rs.
 
 pub mod idle;
 pub mod reauth;
+pub mod status;
 pub mod unlock_guard;
 
 use kepr_core::protocol::Response;
