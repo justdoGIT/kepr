@@ -2,10 +2,12 @@
 // (T5.03), `kepr://` notation (T5.05), references in exec / manifests and
 // `kepr resolve` (T5.06), manifest stages (T5.02), linked records (T11.6),
 // record types and convert (T11.7), record add/show/template with field
-// options, --from-file and --clone (T11.8). Registered in cli_more.rs.
+// options, --from-file and --clone (T11.8), generator profiles and
+// `kepr strength` (T5.04). Registered in cli_more.rs.
 // (`cli_record.rs` already holds `kepr record`, hence the x.)
 
 mod attach;
+pub mod generate;
 pub mod notation;
 pub mod record_add;
 mod record_fields;
@@ -17,7 +19,7 @@ pub mod types;
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_records::RecordsRequest;
 
-pub const VERBS: &[&str] = &["attach", "resolve"];
+pub const VERBS: &[&str] = &["attach", "resolve", "strength"];
 
 pub const HELP: &str = "\
   attach add KEY FILE [--as NAME]      attach a file to KEY, encrypted (16 MiB each, 64 MiB per key);
@@ -36,12 +38,18 @@ pub const HELP: &str = "\
   record template TYPE                 JSON skeleton; fill it in, then record add KEY --from-file F
   record add KEY --clone OTHER         start from OTHER's fields (not its attachments or history);
                                        a type's required fields must be set, masked ones are starred
+  set KEY --generate --profile P       generate from profile P of ~/.config/kepr/generate.toml
+                                       ([profile.P], [host.\"example.com\"], [type.T], [default]:
+                                       length, classes, symbols, words, separator)
+  record add KEY ... --generate FIELD  fill FIELD from --profile P, else the url/host's or type's
+  strength                             estimate the bits of a value (typed hidden, or on stdin)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
     match verb {
         "attach" => attach::cmd_attach(args),
         "resolve" => refs::cmd_resolve(args),
+        "strength" => generate::cmd_strength(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

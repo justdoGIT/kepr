@@ -9,11 +9,15 @@
 //       its attachments and history stay with it); flags then add or
 //       replace fields. The type comes from --type, else F or OTHER. The
 //       type's required fields must be present.
+//       T5.04: `--generate FIELD` fills FIELD from a generator profile
+//       (--profile P, else by the record's url / host, else its type).
 //   record show KEY [--reveal]    masked fields starred (T11.8: per type)
 //   record template TYPE          the JSON skeleton --from-file reads
 
 use kepr_core::generate::ZeroString;
+use kepr_core::generate_profile::ProfileFile;
 use kepr_core::protocol::{Request, Response};
+use kepr_core::protocol_records::RecordsResponse;
 use kepr_core::record_types::RecordType;
 use serde_json::{Map, Value};
 
@@ -24,7 +28,8 @@ use crate::cli_input::read_masked;
 use crate::{cli_ui, client};
 
 const USAGE: &str = "usage: kepr record add KEY [--type T] [--from-file F | --clone OTHER] \
-                     [--field k=v|k[]=v]... [--custom LABEL=v]... [--ref k=OTHER]... [--requires-consent]";
+                     [--field k=v|k[]=v]... [--custom LABEL=v]... [--ref k=OTHER]... \
+                     [--generate FIELD]... [--profile P] [--requires-consent]";
 
 #[derive(Default)]
 struct AddArgs {
@@ -33,6 +38,8 @@ struct AddArgs {
     from_file: Option<String>,
     clone: Option<String>,
     consent: bool,
+    generate: Vec<String>,
+    profile: Option<String>,
 }
 
 fn parse(args: &[String]) -> Result<AddArgs, String> {
@@ -48,6 +55,8 @@ fn parse(args: &[String]) -> Result<AddArgs, String> {
             "--type" => a.rtype = Some(next()?),
             "--from-file" => a.from_file = Some(next()?),
             "--clone" => a.clone = Some(next()?.to_uppercase()),
+            "--generate" => a.generate.push(next()?),
+            "--profile" => a.profile = Some(next()?),
             f @ ("--field" | "--custom" | "--ref") => {
                 match args.get(i + 1).and_then(|v| slot_of(f, v)) {
                     Some(s) => a.given.push(s),
@@ -85,9 +94,15 @@ pub fn clone_fields(src: &dyn Source, other: &str) -> Result<Record, String> {
     Record::parse(src.value(other)?.as_str()).map_err(|_| format!("{other} is not a record"))
 }
 
-/// Fields from flags (prompting for `k=-`), or the type's fields, asked.
-fn ask(fields: &mut Map<String, Value>, given: Vec<(Slot, Option<Value>)>, t: &RecordType) {
-    let started = !fields.is_empty() || !given.is_empty();
+/// Fields from flags (prompting for `k=-`), or the type's fields, asked
+/// (unless the record already has fields, or some will be generated).
+fn ask(
+    fields: &mut Map<String, Value>,
+    given: Vec<(Slot, Option<Value>)>,
+    t: &RecordType,
+    quiet: bool,
+) {
+    let started = quiet || !fields.is_empty() || !given.is_empty();
     for (slot, v) in given {
         let v = v.unwrap_or_else(|| {
             Value::String(
@@ -119,6 +134,36 @@ fn ask(fields: &mut Map<String, Value>, given: Vec<(Slot, Option<Value>)>, t: &R
     }
 }
 
+/// T5.04: fill each of `names` from its generator profile in `file`.
+fn generate(
+    fields: &mut Map<String, Value>,
+    names: &[String],
+    (file, profile): (&ProfileFile, Option<&str>),
+    rtype: &str,
+) -> Result<(), String> {
+    let text = |k: &str| match fields.get(k) {
+        Some(Value::Array(a)) => a.first().and_then(Value::as_str).map(str::to_string),
+        Some(v) => v.as_str().map(str::to_string),
+        None => None,
+    };
+    let host = text("url").or_else(|| text("host"));
+    let host = host.as_deref().and_then(super::generate::host_of);
+    for f in names {
+        if !kepr_core::record_types::valid_field_name(f) {
+            return Err(format!("--generate {f}: not a field name"));
+        }
+        let v = file
+            .pick(profile, host.as_deref(), Some(rtype))?
+            .generate()?;
+        put(
+            fields,
+            &Slot::Field(f.clone()),
+            Value::String(v.as_str().to_string()),
+        );
+    }
+    Ok(())
+}
+
 pub fn cmd_add(args: &[String]) -> Response {
     let Some(name) = args.first().filter(|a| !a.starts_with('-')) else {
         return Response::fail(USAGE);
@@ -142,8 +187,17 @@ fn add(name: &str, args: &[String]) -> Result<Response, String> {
         .or(from_type)
         .ok_or("--type is required (see: kepr record types)")?;
     let t = types::find(&rtype)?;
-    ask(&mut fields.0, a.given, &t);
+    ask(&mut fields.0, a.given, &t, !a.generate.is_empty());
     tidy(&mut fields.0, &t);
+    if !a.generate.is_empty() {
+        let file = super::generate::load()?;
+        generate(
+            &mut fields.0,
+            &a.generate,
+            (&file, a.profile.as_deref()),
+            &rtype,
+        )?;
+    }
     let lacking = missing(&fields.0, &t);
     if !lacking.is_empty() {
         return Err(format!(
@@ -189,6 +243,12 @@ pub fn cmd_template(args: &[String]) -> Response {
     match types::find(rtype) {
         Ok(t) => {
             let text = serde_json::to_string_pretty(&template(&t)).unwrap_or_default();
+            if crate::cli_mode::json_mode() {
+                return Response::Records(RecordsResponse::RecordTemplateOk {
+                    record_type: t.name,
+                    template: text,
+                });
+            }
             println!("{text}");
             Response::Pong
         }
@@ -229,6 +289,35 @@ mod tests {
             .err()
             .unwrap()
             .contains("unexpected"));
+        let a = parse(&args(&["--generate", "password", "--profile", "bank"])).unwrap();
+        assert_eq!(a.generate, ["password"]);
+        assert_eq!(a.profile.as_deref(), Some("bank"));
+    }
+
+    #[test]
+    fn generated_fields_use_the_profile_for_the_records_host() {
+        let mut m = Map::new();
+        m.insert(
+            "url".into(),
+            Value::String("https://a.x.example/login".into()),
+        );
+        let none = ProfileFile::default();
+        generate(&mut m, &["password".into()], (&none, None), "login").unwrap();
+        let v = m["password"].as_str().unwrap();
+        assert_eq!(v.len(), kepr_core::generate_profile::DEFAULT_LENGTH);
+        assert!(generate(&mut m, &["Bad".into()], (&none, None), "login").is_err());
+        let file = super::super::generate::parse(
+            "[host.\"x.example\"]\nlength = 9\n[type.login]\nlength = 11\n[profile.p]\nlength = 13\n",
+        )
+        .unwrap();
+        let len = |m: &Map<String, Value>| m["pin"].as_str().unwrap().len();
+        generate(&mut m, &["pin".into()], (&file, None), "login").unwrap();
+        assert_eq!(len(&m), 9);
+        generate(&mut m, &["pin".into()], (&file, Some("p")), "login").unwrap();
+        assert_eq!(len(&m), 13);
+        m.remove("url");
+        generate(&mut m, &["pin".into()], (&file, None), "login").unwrap();
+        assert_eq!(len(&m), 11);
     }
 
     #[test]
@@ -240,6 +329,7 @@ mod tests {
             &mut rec.0,
             vec![slot_of("--field", "login=you").unwrap()],
             &login,
+            false,
         );
         assert_eq!(rec.0["login"], "you");
         assert_eq!(rec.0["url"][1], "https://b.example");

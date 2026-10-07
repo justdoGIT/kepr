@@ -37,8 +37,10 @@ pub mod protocol_vault;
 // batch: store
 pub mod protocol_store;
 // batch: records
+pub mod generate_profile;
 pub mod protocol_records;
 pub mod record_types;
+pub mod strength;
 // batch: share
 pub mod protocol_sharing;
 // batch: sync

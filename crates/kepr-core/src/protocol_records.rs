@@ -1,5 +1,7 @@
 // protocol_records.rs — wire types of the `records` ticket batch:
-// attachments (T5.03), record convert (T11.7). Wrapped by `Request::Records` / `Response::Records`,
+// attachments (T5.03), record convert (T11.7). The last three responses
+// never cross the socket: they are what `kepr --json` prints for the
+// local commands `record types`, `record template` and `strength`. Wrapped by `Request::Records` / `Response::Records`,
 // which are `#[serde(untagged)]` and tried after every tagged variant, so
 // the `cmd` / `kind` names here must not repeat one in protocol.rs or
 // protocol_store.rs.
@@ -99,6 +101,21 @@ pub enum RecordsResponse {
         promoted: Vec<String>,
         #[serde(default)]
         gated: bool,
+    },
+    /// T11.7 `kepr record types` (built-in and user types).
+    RecordTypesOk {
+        types: Vec<crate::record_types::RecordType>,
+    },
+    /// T11.8 `kepr record template TYPE`: the JSON skeleton, as text.
+    RecordTemplateOk {
+        record_type: String,
+        template: String,
+    },
+    /// T5.04 `kepr strength`: the estimate, never the value.
+    StrengthOk {
+        bits: u32,
+        rating: String,
+        notes: Vec<String>,
     },
 }
 
@@ -240,6 +257,18 @@ mod tests {
                 moved: vec!["url".into()],
                 promoted: vec![],
                 gated: false,
+            },
+            RecordsResponse::RecordTypesOk {
+                types: crate::record_types::builtins(),
+            },
+            RecordsResponse::RecordTemplateOk {
+                record_type: "note".into(),
+                template: "{}".into(),
+            },
+            RecordsResponse::StrengthOk {
+                bits: 12,
+                rating: "very weak".into(),
+                notes: vec!["a year".into()],
             },
         ] {
             resp_round_trip(Response::Records(r));

@@ -12,6 +12,8 @@ pub struct Args {
     pub value: Option<String>,
     pub generate: bool,
     pub gen_kind: GenKind,
+    /// `kepr set --profile P` (T5.04): generate from a profile; implies --generate.
+    pub profile: Option<String>,
     pub quiet: bool,
     pub export: bool,
     pub json: bool,
@@ -64,6 +66,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut value: Option<String> = None;
     let mut generate = false;
     let mut gen_kind = GenKind::Hex;
+    let mut profile: Option<String> = None;
     let mut quiet = false;
     let mut export = false;
     let mut json = false;
@@ -167,6 +170,11 @@ pub fn parse_args() -> Result<Args, String> {
                     "unknown gen-kind: {k} (hex|base62|pass|uuid|words)"
                 ))?;
                 i += 1;
+            }
+            "--profile" => {
+                profile = Some(raw.get(i + 1).ok_or("--profile needs a name")?.clone());
+                generate = true;
+                i += 2;
             }
             "--env" => {
                 // `kepr exec --env VAR1,VAR2` — defer the CSV split
@@ -280,6 +288,7 @@ pub fn parse_args() -> Result<Args, String> {
         value,
         generate,
         gen_kind,
+        profile,
         quiet,
         export,
         json,

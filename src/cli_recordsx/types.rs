@@ -166,8 +166,7 @@ pub fn cmd_types(args: &[String]) -> Response {
         _ => return Response::fail("usage: kepr record types [--export DIR]"),
     }
     if cli_mode::json_mode() {
-        println!("{}", serde_json::to_string(&types).unwrap_or_default());
-        return Response::Pong;
+        return Response::Records(RecordsResponse::RecordTypesOk { types });
     }
     for t in &types {
         println!("{:<9} {}", t.name, summary(t));
