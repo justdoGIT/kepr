@@ -4,6 +4,7 @@
 
 mod contacts;
 mod device;
+mod emergency;
 mod jwt;
 mod oidc;
 mod once;
@@ -15,9 +16,9 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 
 use kepr_core::protocol::{Request, Response};
-use kepr_core::protocol_sharing::SharingRequest;
+use kepr_core::protocol_sharing::{SharingRequest, SharingResponse};
 
-pub const VERBS: &[&str] = &["device"];
+pub const VERBS: &[&str] = &["device", "emergency"];
 
 pub const HELP: &str =
     "  device add LABEL [--oidc ISSUER]     single-use token (15 min) for enrolling another machine
@@ -36,6 +37,13 @@ pub const HELP: &str =
                                        --qr: the envelope as QR codes (chunked; receive joins them);
                                        --view-window: their copy deletes itself 5m after first get
   share report                         sent shares: to whom, when, expiry, opened?
+  emergency add CONTACT --delay 7d (--names A,B | --all)
+                                       let a contact request access; granted after the delay
+                                       unless you deny it (max 5 contacts, 90 days)
+  emergency ls | deny CONTACT | rm CONTACT
+  emergency request OWNER_KEY [-o FILE] | request --proof FILE
+                                       (contact) ask for access; -o makes a file for their machine
+  emergency fetch [-o DIR]             (contact) store what was released to you
   share open LINK [--from FILE] [--as KEY]
                                        fetch (relay) or read (file) a one-time link and store it
 ";
@@ -43,6 +51,7 @@ pub const HELP: &str =
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
     match verb {
         "device" => device::cmd_device(args),
+        "emergency" => emergency::cmd_emergency(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }
@@ -105,6 +114,37 @@ pub(crate) fn join_qr(text: &str) -> Result<String, String> {
     qr::join(text)
 }
 
+/// `90s`, `15m`, `1h`, `7d`: the largest unit that divides `secs`.
+pub(crate) fn human_secs(secs: u64) -> String {
+    match secs {
+        s if s > 0 && s % 86_400 == 0 => format!("{}d", s / 86_400),
+        s if s > 0 && s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s > 0 && s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
+pub(crate) fn done_line(message: String) -> Response {
+    SharingResponse::SharingDone { message }.into()
+}
+
+/// `kepr status` (text mode): pending emergency requests (T6.06).
+pub fn print_status() {
+    if let Response::Sharing(SharingResponse::EmergencyListing { grants }) =
+        send(SharingRequest::EmergencyList)
+    {
+        for g in grants.iter().filter(|g| g.state == "requested") {
+            crate::cli_ui::warn(&format!(
+                "Emergency access requested by {}: released {} UTC unless you run \
+                 `kepr emergency deny {}`",
+                g.contact,
+                g.release_at.as_deref().unwrap_or("soon"),
+                g.contact
+            ));
+        }
+    }
+}
+
 pub(crate) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -162,6 +202,15 @@ mod tests {
         for bad in ["", "0", "1w", "h", "-5m", "1.5h"] {
             assert!(parse_duration(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn human_durations() {
+        assert_eq!(human_secs(7 * 86_400), "7d");
+        assert_eq!(human_secs(7200), "2h");
+        assert_eq!(human_secs(300), "5m");
+        assert_eq!(human_secs(90), "90s");
+        assert_eq!(human_secs(0), "0s");
     }
 
     #[test]

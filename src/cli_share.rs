@@ -87,7 +87,8 @@ fn cmd_send(args: &[String]) -> Response {
     }
     if let Some(w) = view_window_secs {
         cli_ui::einfo(&format!(
-            "their copy deletes itself {w} s after its first get"
+            "their copy deletes itself {} after its first get",
+            crate::cli_sharing::human_secs(w)
         ));
     }
     Response::Pong

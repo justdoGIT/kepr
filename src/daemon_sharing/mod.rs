@@ -9,6 +9,9 @@
 
 pub mod contacts;
 pub mod devices;
+pub mod emergency;
+pub mod emergency_proof;
+pub mod emergency_release;
 pub mod kem;
 pub mod link;
 pub mod report;
@@ -116,6 +119,14 @@ pub(crate) fn audited(uid: u32, op: &str, name: &str) -> bool {
 /// Called by the expiry sweeper (daemon_expiry.rs) once per tick.
 pub fn sweep(now: u64) {
     sent::sweep(now);
+    emergency_release::sweep(now);
+}
+
+pub(crate) fn reply(r: Result<String, String>) -> Response {
+    match r {
+        Ok(message) => done(message),
+        Err(e) => Response::fail(e),
+    }
 }
 
 pub(crate) fn done(message: impl Into<String>) -> Response {
@@ -167,5 +178,24 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SharingRequest
         SharingRequest::ShareReport => {
             report::handle_report(uid, username, &crate::audit_chain_path())
         }
+        SharingRequest::EmergencyAdd {
+            contact,
+            delay_secs,
+            names,
+        } => emergency::handle_add(uid, username, &contact, delay_secs, names),
+        SharingRequest::EmergencyList => emergency::handle_list(uid),
+        SharingRequest::EmergencyRemove { contact } => {
+            emergency::handle_remove(uid, username, &contact)
+        }
+        SharingRequest::EmergencyDeny { contact } => {
+            emergency::handle_deny(uid, username, &contact)
+        }
+        SharingRequest::EmergencyProve { owner } => {
+            emergency_release::handle_prove(uid, username, &owner)
+        }
+        SharingRequest::EmergencyRequest { proof } => {
+            emergency_release::handle_request(uid, username, &proof)
+        }
+        SharingRequest::EmergencyRelease => emergency_release::handle_release(uid, username),
     }
 }

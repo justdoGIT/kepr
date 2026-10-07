@@ -62,3 +62,23 @@ pub struct ContactInfo {
     pub fingerprint: String,
     pub added: String,
 }
+
+/// T6.06: one emergency contact as its owner sees it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmergencyInfo {
+    /// The contact's name (or `key:<fingerprint>`).
+    pub contact: String,
+    pub fingerprint: String,
+    pub delay_secs: u64,
+    /// `None`: every shareable credential at release time.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub names: Option<Vec<String>>,
+    /// `waiting` (no request), `requested`, or `released`.
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requested_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub release_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub released_at: Option<String>,
+}

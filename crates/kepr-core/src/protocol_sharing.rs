@@ -74,6 +74,35 @@ pub enum SharingRequest {
     },
     /// T11.15: the caller's sent shares, from the ledger and the audit chain.
     ShareReport,
+    /// T6.06: let `contact` (a pinned contact or a key) request access;
+    /// `names` (None = every shareable credential) is released to them
+    /// `delay_secs` after a request the owner doesn't deny.
+    EmergencyAdd {
+        contact: String,
+        delay_secs: u64,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        names: Option<Vec<String>>,
+    },
+    EmergencyList,
+    EmergencyRemove {
+        contact: String,
+    },
+    /// T6.06 (owner): cancel a pending request (and unfetched releases).
+    EmergencyDeny {
+        contact: String,
+    },
+    /// T6.06 (contact): a request to `owner` (key or pinned contact),
+    /// authenticated with the caller's share key.
+    EmergencyProve {
+        owner: String,
+    },
+    /// T6.06: hand a request (`kepr-emreq1-…`) to this daemon.
+    EmergencyRequest {
+        proof: String,
+    },
+    /// T6.06: released envelopes for the caller's share key (and, for an
+    /// owner, the ones released from their grants, to pass on).
+    EmergencyRelease,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -90,7 +119,9 @@ pub enum SharingResponse {
         pending: Vec<PendingDevice>,
     },
     /// A request that needs no other reply than a line for the user.
-    SharingDone { message: String },
+    SharingDone {
+        message: String,
+    },
     /// T6.04: the key goes only into the link's #fragment, never to a relay.
     ShareLink {
         id: String,
@@ -105,9 +136,24 @@ pub enum SharingResponse {
         expires_at: String,
     },
     /// T6.05: the sent-share ledger, newest last (also T11.15's report).
-    ShareSent { shares: Vec<SentShare> },
+    ShareSent {
+        shares: Vec<SentShare>,
+    },
     /// T11.15: the caller's pinned contacts.
-    ShareContacts { contacts: Vec<ContactInfo> },
+    ShareContacts {
+        contacts: Vec<ContactInfo>,
+    },
+    /// T6.06: the caller's emergency contacts and their state.
+    EmergencyListing {
+        grants: Vec<EmergencyInfo>,
+    },
+    EmergencyProof {
+        proof: String,
+    },
+    /// T6.06: share envelopes (each opens only with its contact's key).
+    EmergencyEnvelopes {
+        envelopes: Vec<String>,
+    },
 }
 
 impl From<SharingResponse> for crate::protocol::Response {
@@ -230,6 +276,25 @@ mod tests {
             SharingRequest::ShareContactList,
             SharingRequest::ShareContactRemove { name: "bob".into() },
             SharingRequest::ShareReport,
+            SharingRequest::EmergencyAdd {
+                contact: "bob".into(),
+                delay_secs: 3600,
+                names: Some(vec!["A".into()]),
+            },
+            SharingRequest::EmergencyList,
+            SharingRequest::EmergencyRemove {
+                contact: "bob".into(),
+            },
+            SharingRequest::EmergencyDeny {
+                contact: "bob".into(),
+            },
+            SharingRequest::EmergencyProve {
+                owner: "alice".into(),
+            },
+            SharingRequest::EmergencyRequest {
+                proof: "kepr-emreq1-x".into(),
+            },
+            SharingRequest::EmergencyRelease,
             SharingRequest::ShareLinkOpened { id: "i".into() },
             SharingRequest::ShareLinkOpen {
                 blob: "kepr-link1-x".into(),
@@ -284,6 +349,24 @@ mod tests {
                     fingerprint: "ab".into(),
                     added: "t".into(),
                 }],
+            },
+            SharingResponse::EmergencyListing {
+                grants: vec![EmergencyInfo {
+                    contact: "bob".into(),
+                    fingerprint: "ab".into(),
+                    delay_secs: 3600,
+                    names: None,
+                    state: "requested".into(),
+                    requested_at: Some("t".into()),
+                    release_at: Some("t".into()),
+                    released_at: None,
+                }],
+            },
+            SharingResponse::EmergencyProof {
+                proof: "kepr-emreq1-x".into(),
+            },
+            SharingResponse::EmergencyEnvelopes {
+                envelopes: vec!["kepr-share2-x".into()],
             },
         ];
         for r in resps {

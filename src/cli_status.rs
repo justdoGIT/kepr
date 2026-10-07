@@ -26,6 +26,7 @@ pub fn cmd_status(a: &Args) -> Response {
             _ => err("unexpected response"),
         }
         crate::cli_eco::print_status_crypto(&resp); // T7.16
+        crate::cli_sharing::print_status(); // T6.06 pending emergency requests
     }
     resp
 }
