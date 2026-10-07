@@ -1,0 +1,29 @@
+# kepr.service drop-in: wrap the master key with an RSA key pair on a
+# PKCS#11 token or HSM (T4.13), through OpenSC's pkcs11-tool (0.23+).
+#
+# Install:
+#   sudo mkdir -p /etc/systemd/system/kepr.service.d
+#   sudo cp pkcs11.conf.example /etc/systemd/system/kepr.service.d/pkcs11.conf
+#   sudo install -m 0600 /dev/null /etc/kepr/pkcs11.pin   # then write the PIN
+#   sudo systemctl daemon-reload && sudo systemctl restart kepr.service
+#
+# Applies to a newly created master key; an existing one keeps the
+# sealing it was made with.
+
+[Service]
+Environment=KEPR_MASTER_KEY_SEAL=pkcs11:/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so:kepr-master
+# The user PIN, read by the daemon and given only to pkcs11-tool's own
+# environment (YubiHSM: auth key id + password, e.g. 0001password).
+Environment=KEPR_PKCS11_PIN_FILE=/etc/kepr/pkcs11.pin
+
+# YubiHSM 2 through yubihsm-connector on this machine: loopback only.
+#Environment=YUBIHSM_PKCS11_CONF=/etc/kepr/yubihsm_pkcs11.conf
+#PrivateNetwork=no
+#RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+#IPAddressAllow=localhost
+#IPAddressDeny=any
+
+# A token the module opens directly over USB (no pcscd): open USB only.
+#PrivateDevices=no
+#DevicePolicy=closed
+#DeviceAllow=char-usb_device rw

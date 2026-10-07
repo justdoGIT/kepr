@@ -10,8 +10,8 @@ use crate::daemon_audit::handle_audit_verify;
 use crate::daemon_handlers::{handle_check, handle_set, SetFlags};
 use crate::daemon_handlers_list::handle_list;
 use crate::{
-    audit_chain_path, crypto, daemon_extra, daemon_gate_registry, daemon_handlers_get, daemon_lock,
-    daemon_ssh, fido2, protected_master_key_path,
+    audit_chain_path, daemon_extra, daemon_gate_registry, daemon_handlers_get, daemon_lock,
+    daemon_ssh, fido2,
 };
 
 pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
@@ -30,10 +30,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         | Request::SshImport { .. }
         | Request::SshList
         | Request::SshSign { .. } => daemon_ssh::dispatch(uid, peer_pid, username, request),
-        Request::Status => Response::StatusOk {
-            locked: crypto::backend_is_locked(),
-            password_protected: protected_master_key_path().exists(),
-        },
+        Request::Status => crate::daemon_session::status::handle(uid), // T11.24
         Request::Ping => {
             audit::log(&AuditEvent {
                 op: "ping",

@@ -37,6 +37,11 @@ impl Recorder {
         }
     }
 
+    /// The session this gate was started as.
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
     /// Store one batch; the gate only ever sees a generic failure.
     pub fn handle(&mut self, id: u64, batch: GateRecord) -> GateResponse {
         match self.store(&crate::state_dir(), batch) {

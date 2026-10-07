@@ -5,6 +5,7 @@
 // command names here must not collide with any other `cmd` / `kind`.
 
 use crate::generate::ZeroString;
+pub use crate::protocol_sharing_types::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,6 +43,10 @@ pub enum SharingRequest {
         /// Where the CLI puts the blob (kept in the sent-share ledger).
         #[serde(skip_serializing_if = "Option::is_none", default)]
         relay: Option<String>,
+        /// T11.15: the received copy deletes itself this long after its
+        /// first `get`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        view_window_secs: Option<u64>,
     },
     /// T6.04: open a link's blob with the key from its #fragment and
     /// store the value (as `name`, or the sender's name).
@@ -57,6 +62,66 @@ pub enum SharingRequest {
     /// mark it opened, and self-destruct the record if it asked for it.
     ShareLinkOpened {
         id: String,
+    },
+    /// T11.15: pin `key` (a share public key) under the contact `name`.
+    ShareContactAdd {
+        name: String,
+        key: String,
+    },
+    ShareContactList,
+    ShareContactRemove {
+        name: String,
+    },
+    /// T11.15: the caller's sent shares, from the ledger and the audit chain.
+    ShareReport,
+    /// T6.06: let `contact` (a pinned contact or a key) request access;
+    /// `names` (None = every shareable credential) is released to them
+    /// `delay_secs` after a request the owner doesn't deny.
+    EmergencyAdd {
+        contact: String,
+        delay_secs: u64,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        names: Option<Vec<String>>,
+    },
+    EmergencyList,
+    EmergencyRemove {
+        contact: String,
+    },
+    /// T6.06 (owner): cancel a pending request (and unfetched releases).
+    EmergencyDeny {
+        contact: String,
+    },
+    /// T6.06 (contact): a request to `owner` (key or pinned contact),
+    /// authenticated with the caller's share key.
+    EmergencyProve {
+        owner: String,
+    },
+    /// T6.06: hand a request (`kepr-emreq1-…`) to this daemon.
+    EmergencyRequest {
+        proof: String,
+    },
+    /// T6.06: released envelopes for the caller's share key (and, for an
+    /// owner, the ones released from their grants, to pass on).
+    EmergencyRelease,
+    /// T6.07: reveal sealed `name` once, given k recovery-kit shares of
+    /// this store's key. Replies `Response::GetOk`; marks `must_rotate`.
+    BreakGlass {
+        name: String,
+        shares: Vec<ZeroString>,
+    },
+    /// T6.14: wrap the master key to an administrator's share key
+    /// (`escrow.bin`). Needs the store passphrase, like the recovery kit.
+    EscrowEnable {
+        admin_key: String,
+        password: ZeroString,
+    },
+    EscrowDisable,
+    EscrowStatus,
+    /// T6.14 (admin's machine): open an escrow file with the caller's
+    /// share key; replies `Response::RecoveryKitOk` (a 2-of-2 kit for
+    /// `kepr recovery-kit restore` next to the old credential files).
+    EscrowOpen {
+        escrow: String,
     },
 }
 
@@ -74,7 +139,9 @@ pub enum SharingResponse {
         pending: Vec<PendingDevice>,
     },
     /// A request that needs no other reply than a line for the user.
-    SharingDone { message: String },
+    SharingDone {
+        message: String,
+    },
     /// T6.04: the key goes only into the link's #fragment, never to a relay.
     ShareLink {
         id: String,
@@ -88,62 +155,41 @@ pub enum SharingResponse {
         link: ZeroString,
         expires_at: String,
     },
-    /// T6.05: the sent-share ledger, newest last.
-    ShareSent { shares: Vec<SentShare> },
-}
-
-/// One share this user sent (no value, no key).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SentShare {
-    pub id: String,
-    pub name: String,
-    /// `link` or `envelope`.
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub to: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub relay: Option<String>,
-    pub sent_unix: u64,
-    pub expires_unix: u64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub opened_unix: Option<u64>,
-    #[serde(default)]
-    pub self_destruct: bool,
-    /// The self-destruct ran (or found the record already replaced).
-    #[serde(default)]
-    pub settled: bool,
+    /// T6.05: the sent-share ledger, newest last (also T11.15's report).
+    ShareSent {
+        shares: Vec<SentShare>,
+    },
+    /// T11.15: the caller's pinned contacts.
+    ShareContacts {
+        contacts: Vec<ContactInfo>,
+    },
+    /// T6.06: the caller's emergency contacts and their state.
+    EmergencyListing {
+        grants: Vec<EmergencyInfo>,
+    },
+    EmergencyProof {
+        proof: String,
+    },
+    /// T6.06: share envelopes (each opens only with its contact's key).
+    EmergencyEnvelopes {
+        envelopes: Vec<String>,
+    },
+    /// T6.14: is the master key escrowed, and to whom?
+    EscrowState {
+        enabled: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        admin: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        admin_fingerprint: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        since: Option<String>,
+    },
 }
 
 impl From<SharingResponse> for crate::protocol::Response {
     fn from(r: SharingResponse) -> Self {
         crate::protocol::Response::Sharing(r)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OidcIdentity {
-    pub issuer: String,
-    pub subject: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceInfo {
-    pub id: String,
-    pub label: String,
-    /// The device's share public key (not secret).
-    pub public: String,
-    pub added: String,
-    /// T6.13: `subject @ issuer` when the enrolment was IdP-checked.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub identity: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingDevice {
-    pub label: String,
-    pub expires_at: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub oidc_issuer: Option<String>,
 }
 
 // ── T6.03 enrolment request (new device → first device) ──────────────────────
@@ -250,8 +296,48 @@ mod tests {
                 ttl_secs: Some(60),
                 self_destruct: Some(true),
                 relay: None,
+                view_window_secs: Some(300),
             },
             SharingRequest::ShareSentList,
+            SharingRequest::ShareContactAdd {
+                name: "bob".into(),
+                key: "kepr-pk2-x".into(),
+            },
+            SharingRequest::ShareContactList,
+            SharingRequest::ShareContactRemove { name: "bob".into() },
+            SharingRequest::ShareReport,
+            SharingRequest::EmergencyAdd {
+                contact: "bob".into(),
+                delay_secs: 3600,
+                names: Some(vec!["A".into()]),
+            },
+            SharingRequest::EmergencyList,
+            SharingRequest::EmergencyRemove {
+                contact: "bob".into(),
+            },
+            SharingRequest::EmergencyDeny {
+                contact: "bob".into(),
+            },
+            SharingRequest::EmergencyProve {
+                owner: "alice".into(),
+            },
+            SharingRequest::EmergencyRequest {
+                proof: "kepr-emreq1-x".into(),
+            },
+            SharingRequest::EmergencyRelease,
+            SharingRequest::BreakGlass {
+                name: "A".into(),
+                shares: vec!["kepr1-x".into()],
+            },
+            SharingRequest::EscrowEnable {
+                admin_key: "kepr-pk2-x".into(),
+                password: "pw".into(),
+            },
+            SharingRequest::EscrowDisable,
+            SharingRequest::EscrowStatus,
+            SharingRequest::EscrowOpen {
+                escrow: "{}".into(),
+            },
             SharingRequest::ShareLinkOpened { id: "i".into() },
             SharingRequest::ShareLinkOpen {
                 blob: "kepr-link1-x".into(),
@@ -298,6 +384,38 @@ mod tests {
                     self_destruct: true,
                     settled: false,
                 }],
+            },
+            SharingResponse::ShareContacts {
+                contacts: vec![ContactInfo {
+                    name: "bob".into(),
+                    public: "kepr-pk2-x".into(),
+                    fingerprint: "ab".into(),
+                    added: "t".into(),
+                }],
+            },
+            SharingResponse::EmergencyListing {
+                grants: vec![EmergencyInfo {
+                    contact: "bob".into(),
+                    fingerprint: "ab".into(),
+                    delay_secs: 3600,
+                    names: None,
+                    state: "requested".into(),
+                    requested_at: Some("t".into()),
+                    release_at: Some("t".into()),
+                    released_at: None,
+                }],
+            },
+            SharingResponse::EmergencyProof {
+                proof: "kepr-emreq1-x".into(),
+            },
+            SharingResponse::EmergencyEnvelopes {
+                envelopes: vec!["kepr-share2-x".into()],
+            },
+            SharingResponse::EscrowState {
+                enabled: true,
+                admin: Some("it-admin".into()),
+                admin_fingerprint: Some("ab".into()),
+                since: Some("t".into()),
             },
         ];
         for r in resps {

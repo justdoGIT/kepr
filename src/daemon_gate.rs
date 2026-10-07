@@ -158,6 +158,12 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
                 generation: GENERATION.load(std::sync::atomic::Ordering::SeqCst),
             },
             Ok(GateRequest::Record { id, record }) => owner.rec.handle(id, record),
+            Ok(GateRequest::Journal { id, entries }) => crate::daemon_gatex::logs::handle_journal(
+                owner.uid,
+                owner.rec.session(),
+                id,
+                entries,
+            ),
             Err(_) => GateResponse::Err {
                 id: 0,
                 error: "malformed request".into(),

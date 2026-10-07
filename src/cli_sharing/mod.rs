@@ -2,19 +2,25 @@
 // cli_more.rs): `kepr device …`. The extra `kepr share …` subcommands
 // are reached from cli_share.rs through `share_ext`.
 
+mod breakglass;
+mod contacts;
 mod device;
+mod emergency;
+mod escrow;
 mod jwt;
 mod oidc;
 mod once;
 mod qr;
 
+pub(crate) use contacts::view_window_arg;
+
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 
 use kepr_core::protocol::{Request, Response};
-use kepr_core::protocol_sharing::SharingRequest;
+use kepr_core::protocol_sharing::{SharingRequest, SharingResponse};
 
-pub const VERBS: &[&str] = &["device"];
+pub const VERBS: &[&str] = &["device", "emergency", "break-glass", "escrow"];
 
 pub const HELP: &str =
     "  device add LABEL [--oidc ISSUER]     single-use token (15 min) for enrolling another machine
@@ -27,6 +33,24 @@ pub const HELP: &str =
                                        one-time link kepr://share/…#key (key only in the #fragment);
                                        --self-destruct deletes KEY once the link is opened or expires
   share check                          ask the relays which of your links were opened
+  share contact add NAME KEY | contact ls | contact rm NAME
+                                       pin a contact's share key; then `share send KEY --to NAME`
+  share send KEY --to NAME|PUBKEY [--qr] [--view-window 5m]
+                                       --qr: the envelope as QR codes (chunked; receive joins them);
+                                       --view-window: their copy deletes itself 5m after first get
+  share report                         sent shares: to whom, when, expiry, opened?
+  emergency add CONTACT --delay 7d (--names A,B | --all)
+                                       let a contact request access; granted after the delay
+                                       unless you deny it (max 5 contacts, 90 days)
+  emergency ls | deny CONTACT | rm CONTACT
+  emergency request OWNER_KEY [-o FILE] | request --proof FILE
+                                       (contact) ask for access; -o makes a file for their machine
+  emergency fetch [-o DIR]             (contact) store what was released to you
+  break-glass NAME                     reveal a sealed credential with k recovery-kit shares
+                                       (audited; NAME is marked must-rotate until the next set)
+  escrow enable ADMIN_KEY|CONTACT      wrap the master key to an admin's share key (escrow.bin;
+                                       needs the store passphrase) | escrow disable | escrow status
+  escrow open FILE [--out-dir DIR]     (admin) recover an escrowed key as a 2-of-2 recovery kit
   share open LINK [--from FILE] [--as KEY]
                                        fetch (relay) or read (file) a one-time link and store it
 ";
@@ -34,6 +58,9 @@ pub const HELP: &str =
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
     match verb {
         "device" => device::cmd_device(args),
+        "emergency" => emergency::cmd_emergency(args),
+        "break-glass" => breakglass::cmd_break_glass(args),
+        "escrow" => escrow::cmd_escrow(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }
@@ -46,6 +73,8 @@ pub fn share_ext(args: &[String]) -> Option<Response> {
         Some("send") if rest.iter().any(|a| a == "--once") => Some(once::send_once(rest)),
         Some("open") => Some(once::open(rest)),
         Some("check") => Some(once::check()),
+        Some("contact") => Some(contacts::cmd_contact(rest)),
+        Some("report") => Some(contacts::cmd_report()),
         _ => None,
     }
 }
@@ -69,6 +98,72 @@ pub(crate) fn parse_duration(text: &str) -> Result<u64, String> {
         .and_then(|n| n.checked_mul(mult))
         .filter(|s| *s > 0)
         .ok_or_else(|| format!("{text}: not a duration (like 90s, 15m, 1h, 7d)"))
+}
+
+/// `YYYY-MM-DD HH:MM` (UTC).
+pub(crate) fn fmt_time(unix: u64) -> String {
+    let d = kepr_core::sigv4::format_amz_date(unix); // YYYYMMDDTHHMMSSZ
+    format!(
+        "{}-{}-{} {}:{}",
+        &d[..4],
+        &d[4..6],
+        &d[6..8],
+        &d[9..11],
+        &d[11..13]
+    )
+}
+
+/// Print `text` as QR codes (chunked when long) on stderr.
+pub(crate) fn print_qr(text: &str) -> Result<(), String> {
+    qr::print(text)
+}
+
+/// Undo `print_qr`'s chunking on scanned input (plain text passes through).
+pub(crate) fn join_qr(text: &str) -> Result<String, String> {
+    qr::join(text)
+}
+
+/// `90s`, `15m`, `1h`, `7d`: the largest unit that divides `secs`.
+pub(crate) fn human_secs(secs: u64) -> String {
+    match secs {
+        s if s > 0 && s % 86_400 == 0 => format!("{}d", s / 86_400),
+        s if s > 0 && s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s > 0 && s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
+pub(crate) fn done_line(message: String) -> Response {
+    SharingResponse::SharingDone { message }.into()
+}
+
+/// `kepr list` flags (T6.07).
+pub fn list_tail(c: &kepr_core::protocol::CredInfo) -> &'static str {
+    match c.must_rotate {
+        Some(true) => "  (must rotate: revealed by break-glass)",
+        _ => "",
+    }
+}
+
+/// `kepr status` (text mode): escrow (T6.14) and pending emergency
+/// requests (T6.06).
+pub fn print_status() {
+    if let Some(line) = escrow::status_line(&send(SharingRequest::EscrowStatus)) {
+        crate::cli_ui::info(&line);
+    }
+    if let Response::Sharing(SharingResponse::EmergencyListing { grants }) =
+        send(SharingRequest::EmergencyList)
+    {
+        for g in grants.iter().filter(|g| g.state == "requested") {
+            crate::cli_ui::warn(&format!(
+                "Emergency access requested by {}: released {} UTC unless you run \
+                 `kepr emergency deny {}`",
+                g.contact,
+                g.release_at.as_deref().unwrap_or("soon"),
+                g.contact
+            ));
+        }
+    }
 }
 
 pub(crate) fn now() -> u64 {
@@ -128,6 +223,15 @@ mod tests {
         for bad in ["", "0", "1w", "h", "-5m", "1.5h"] {
             assert!(parse_duration(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn human_durations() {
+        assert_eq!(human_secs(7 * 86_400), "7d");
+        assert_eq!(human_secs(7200), "2h");
+        assert_eq!(human_secs(300), "5m");
+        assert_eq!(human_secs(90), "90s");
+        assert_eq!(human_secs(0), "0s");
     }
 
     #[test]

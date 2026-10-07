@@ -25,6 +25,11 @@ const GROUPS: &[Group] = &[
         crate::cli_vault::dispatch,
     ),
     // batch: seal
+    (
+        crate::cli_seal::VERBS,
+        crate::cli_seal::HELP,
+        crate::cli_seal::dispatch,
+    ),
     // batch: store
     (
         crate::cli_store::VERBS,
@@ -65,6 +70,11 @@ const GROUPS: &[Group] = &[
     ),
     // batch: platform
     // batch: session
+    (
+        crate::cli_session::VERBS,
+        crate::cli_session::HELP,
+        crate::cli_session::dispatch,
+    ),
     // end of batches
 ];
 

@@ -44,6 +44,8 @@ pub struct State {
     pub tunnels: Vec<(String, u16)>,
     /// T7.09: what the agent sends and receives (`--record`).
     pub recorder: Arc<crate::recording::Recorder>,
+    /// T11.22: request journal entries on their way to the daemon.
+    pub journal: Arc<crate::journal::Queue>,
     pub(crate) client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     pub(crate) base_override: Option<String>,
 }
@@ -85,6 +87,7 @@ impl State {
             tunnel: false,
             tunnels: Vec::new(),
             recorder: Arc::new(crate::recording::Recorder::new(false)),
+            journal: Arc::default(),
         }
     }
 
@@ -190,6 +193,7 @@ pub async fn proxy_request(
     let log = Log {
         state: &state,
         provider: pname,
+        host: provider.host,
         method: &method,
         path: rest,
         start: Instant::now(),
@@ -436,6 +440,15 @@ mod tests {
         limits: kepr_core::gate_protocol::GateLimits,
         recorder: Arc<crate::recording::Recorder>,
     ) -> String {
+        start_gate_journal(upstream, limits, recorder, Arc::default()).await
+    }
+
+    async fn start_gate_journal(
+        upstream: String,
+        limits: kepr_core::gate_protocol::GateLimits,
+        recorder: Arc<crate::recording::Recorder>,
+        journal: Arc<crate::journal::Queue>,
+    ) -> String {
         let cache = Arc::new(Cache::new(Box::new(Fixed), DEFAULT_TTL));
         let mut routes = HashMap::new();
         routes.insert(
@@ -445,10 +458,11 @@ mod tests {
                 slot: 0,
             },
         );
-        let state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
+        let mut state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
             .with_test_upstream(upstream)
             .with_limits(limits)
             .with_recorder(recorder);
+        state.journal = journal;
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://{}", l.local_addr().unwrap());
         tokio::spawn(serve(l, Arc::new(state)));
@@ -522,6 +536,48 @@ mod tests {
         assert_eq!(side("o"), "HTTP 200\n\nfirstsecond");
         assert!(!side("i").contains(REAL) && !side("o").contains(REAL));
         assert!(chunks.iter().all(|c| c.conn == chunks[0].conn));
+    }
+
+    #[tokio::test]
+    async fn the_journal_keeps_the_agents_request_line_never_the_key() {
+        let (up, mut rx) =
+            fake_upstream_with(Some(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")).await;
+        let journal = Arc::new(crate::journal::Queue::default());
+        let rec = Arc::new(crate::recording::Recorder::new(false));
+        let gate = start_gate_journal(up, Default::default(), rec, journal.clone()).await;
+        let ph = placeholder::make(&KEY, SID, 0);
+        assert_eq!(send(&gate, &ph, "{}").await.status(), StatusCode::OK);
+        assert!(
+            rx.recv().await.unwrap().contains(REAL),
+            "upstream got the key"
+        );
+        let bad = send(
+            &gate,
+            "kepr-ph-0123456789abcdef-0000-0000000000000000",
+            "{}",
+        )
+        .await;
+        assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let got = journal.take();
+        assert_eq!(got.len(), 2, "{got:?}");
+        let (ok, refused) = (&got[0], &got[1]);
+        assert_eq!(
+            (ok.provider.as_str(), ok.host.as_str(), ok.method.as_str()),
+            ("anthropic", "api.anthropic.com", "POST")
+        );
+        assert_eq!(
+            (ok.path.as_str(), ok.status, ok.session.as_str()),
+            ("/v1/messages", 200, SID)
+        );
+        assert_eq!(refused.status, 401);
+        for e in &got {
+            let line = crate::journal::format(e);
+            assert!(
+                !line.contains(REAL) && !line.contains("beta") && !line.contains("kepr-ph-"),
+                "{line}"
+            );
+        }
     }
 
     #[tokio::test]

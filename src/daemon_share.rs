@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::daemon_handlers::{handle_set, SetFlags};
-use crate::daemon_sharing::kem::{self, Recipient, ShareSecret};
+use crate::daemon_sharing::kem::{self, ShareSecret};
 use crate::store::{cred_path, validate_name};
 use crate::{crypto, expiry};
 
@@ -39,6 +39,10 @@ pub(crate) struct Payload1 {
     pub expires: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_type: Option<String>,
+    /// T11.15: the received copy deletes itself this long after its
+    /// first `get` (older receivers ignore it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_window: Option<u64>,
 }
 
 pub(crate) fn load_secret(uid: u32) -> Result<ShareSecret, String> {
@@ -108,8 +112,9 @@ pub(crate) fn new_payload(
         return Err("--ttl must be 1 second to 30 days".into());
     }
     let _lock = crate::daemon_credlock::lock(uid, upper);
-    crate::daemon_handlers_get::precheck_meta(uid, peer_pid, upper)
-        .map_err(|_| "this credential can't be shared".to_string())?;
+    crate::daemon_handlers_get::precheck_meta(uid, peer_pid, upper).map_err(|e| {
+        crate::daemon_session::reauth::refusal(&e, upper, "this credential can't be shared")
+    })?;
     let meta = expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, upper)))
         .and_then(Result::ok)
         .unwrap_or_default();
@@ -124,7 +129,15 @@ pub(crate) fn new_payload(
         value,
         expires: expiry::now_unix() + ttl,
         record_type: meta.record_type,
+        view_window: None,
     })
+}
+
+/// `share send` options: lifetime and (T11.15) view window.
+#[derive(Default)]
+pub struct SendOptions {
+    pub ttl: Option<u64>,
+    pub view_window: Option<u64>,
 }
 
 pub fn handle_send(
@@ -132,15 +145,19 @@ pub fn handle_send(
     username: &str,
     name: &str,
     to: &str,
-    ttl: Option<u64>,
+    opts: SendOptions,
 ) -> Response {
     let upper = name.to_uppercase();
     let mut out = (String::new(), 0u64);
     let r = (|| {
-        let to = Recipient::parse(to)?;
-        let payload = new_payload((uid, peer_pid), name, ttl)?;
+        crate::daemon_sharing::view::check(opts.view_window)?;
+        // T11.15: `to` is a key or a pinned contact (never anything else).
+        let (to, label) = crate::daemon_sharing::contacts::resolve(uid, to)?;
+        let mut payload = new_payload((uid, peer_pid), name, opts.ttl)?;
+        payload.view_window = opts.view_window;
         let json = Zeroizing::new(serde_json::to_vec(&payload).map_err(|e| e.to_string())?);
         out = (kem::seal(&to, &json)?, payload.expires);
+        crate::daemon_sharing::sent::record_envelope(uid, &payload, label);
         Ok(())
     })();
     audit_r("share-send", uid, username, Some(&upper), &r);
@@ -183,7 +200,8 @@ pub(crate) fn store_payload(
         record_type: p.record_type,
         ..Default::default()
     };
-    match handle_set(uid, username, &name, Some(p.value.as_str()), None, flags) {
+    let stored = handle_set(uid, username, &name, Some(p.value.as_str()), None, flags);
+    match crate::daemon_sharing::view::after_store(uid, username, &name, p.view_window, stored) {
         r @ Response::SetOk { .. } => {
             // T6.05: the sender's ledger row (and a self-destruct).
             crate::daemon_sharing::sent::on_received(&p.id, expiry::now_unix());

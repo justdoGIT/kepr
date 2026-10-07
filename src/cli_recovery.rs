@@ -18,8 +18,8 @@ use crate::cli_extra::flag as flag_value;
 use crate::cli_input::read_masked;
 use crate::{cli_mode, cli_ui, client};
 
-const USAGE: &str =
-    "usage: kepr recovery-kit create [--threshold K] [--shares N] [--out-dir DIR] | restore";
+const USAGE: &str = "usage: kepr recovery-kit create [--threshold K] [--shares N] [--out-dir DIR] \
+                     | restore | create --words | restore --words";
 
 fn number(args: &[String], flag: &str, default: u8) -> Result<u8, Response> {
     match flag_value(args, flag) {
@@ -45,7 +45,9 @@ fn write_share(dir: &str, x: usize, share: &ZeroString) -> Result<String, String
 fn create(args: &[String]) -> Result<Response, Response> {
     let threshold = number(args, "--threshold", 3)?;
     let shares = number(args, "--shares", 5)?;
-    let password = read_masked("  Store passphrase: ");
+    // T4.09: plus the security key's factor when the store has one.
+    let password =
+        crate::cli_seal::fido2::store_passphrase("  Store passphrase: ").map_err(Response::fail)?;
     let r = client::send_request(&Request::RecoveryKitCreate {
         password,
         threshold,
@@ -124,6 +126,14 @@ fn restore() -> Response {
 }
 
 pub fn cmd_recovery_kit(args: &[String]) -> Response {
+    // T4.10: `--words` prints / takes the key as 24 words instead of shares.
+    if crate::cli_seal::wants_words(args) {
+        return match args.first().map(String::as_str) {
+            Some("create") => crate::cli_seal::words::create(),
+            Some("restore") => crate::cli_seal::words::restore(),
+            _ => Response::fail(USAGE),
+        };
+    }
     match args.first().map(String::as_str) {
         Some("create") => create(&args[1..]).unwrap_or_else(|e| e),
         Some("restore") => restore(),

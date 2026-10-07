@@ -95,13 +95,13 @@ pub fn cmd_set(a: &Args) -> Response {
         println!();
         bold(&format!("  Setting: {}", color("1;33", &name)));
 
-        if let Response::GetOk { .. } = dispatch(
+        if crate::cli_session::reauth::exists(dispatch(
             a,
             &Request::Get {
                 name: name.clone(),
                 fido2_assertion: None,
             },
-        ) {
+        )) {
             warn(&format!("'{}' already exists.", name));
             eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
             io::stderr().flush().ok();
@@ -161,7 +161,7 @@ pub fn cmd_set(a: &Args) -> Response {
         sealed: None,
         bindings: None,
     };
-    let resp = dispatch(a, &req);
+    let resp = crate::cli_session::reauth::after_set(a, dispatch(a, &req));
 
     match &resp {
         Response::SetOk {
@@ -194,7 +194,7 @@ pub fn cmd_get(a: &Args) -> Response {
         }
     };
 
-    let resp = dispatch(
+    let resp = crate::cli_session::reauth::dispatch_get(
         a,
         &Request::Get {
             name: name.clone(),
@@ -309,6 +309,8 @@ pub fn cmd_list(a: &Args) -> Response {
                     tail.push_str("  (consent required)");
                 }
                 tail.push_str(&crate::cli_store::list_tail(c));
+                tail.push_str(crate::cli_session::reauth::list_tail(c)); // T11.14
+                tail.push_str(crate::cli_sharing::list_tail(c)); // T6.07
                 println!("  {:<40} {}", color("1", &c.name), color("2", &tail));
             }
             println!();
@@ -411,6 +413,9 @@ pub fn cmd_audit_verify(a: &Args) -> Response {
 }
 
 pub fn cmd_lock(a: &Args) -> Response {
+    if a.lock_fido2 {
+        return crate::cli_seal::fido2::cmd_lock_fido2(a);
+    }
     let first = read_masked("  Lock password: ");
     if first.is_empty() {
         return Response::fail("password cannot be empty");
@@ -431,10 +436,11 @@ pub fn cmd_lock(a: &Args) -> Response {
 }
 
 pub fn cmd_unlock(a: &Args) -> Response {
-    let password = read_masked("  Unlock password: ");
-    if password.is_empty() {
-        return Response::fail("password cannot be empty");
-    }
+    // T4.09: with the security key's factor when the store has one.
+    let password = match crate::cli_seal::fido2::store_passphrase("  Unlock password: ") {
+        Ok(p) => p,
+        Err(e) => return crate::cli_seal::fido2::failed(a, e),
+    };
     let resp = dispatch(a, &Request::Unlock { password });
     if !a.json {
         match &resp {

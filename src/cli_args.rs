@@ -28,6 +28,8 @@ pub struct Args {
     pub exec_argv: Vec<String>,
     /// Explicit `.kepr.toml` path. Falls back to walk-up then no-manifest.
     pub manifest_path: Option<std::path::PathBuf>,
+    /// `kepr exec|env --stage S`: the manifest's `[env.S]` set (T5.02).
+    pub stage: Option<String>,
     /// `kepr set` only: TTL in seconds. Daemon writes sidecar meta; None = no expiry.
     pub ttl_secs: Option<u64>,
     /// `kepr rotate` only: validation hook path. Candidate piped on stdin.
@@ -38,12 +40,16 @@ pub struct Args {
     pub requires_consent: bool,
     /// `kepr set` only: FIDO2 hardware-key assertion gate. Phase 2 η.
     pub requires_fido2: bool,
+    /// `kepr lock --fido2`: the passphrase and a security key (T4.09).
+    pub lock_fido2: bool,
     /// `kepr fido2-register` only: hex credential ID from authenticator.
     pub fido2_credential_id: Option<String>,
     /// `kepr fido2-register` only: hex COSE_Key public key from authenticator.
     pub fido2_public_key_cose: Option<String>,
     /// Flags of the `store` batch on core verbs (`ls --tag/--folder`, …).
     pub store: crate::cli_store::StoreFlags,
+    /// Flags of the `session` batch on core verbs (`set --reauth`).
+    pub session: crate::cli_session::SessionFlags,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -70,6 +76,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut memfd_vars: Vec<String> = Vec::new();
     let mut exec_argv: Vec<String> = Vec::new();
     let mut manifest_path: Option<std::path::PathBuf> = None;
+    let mut stage: Option<String> = None;
     let mut stdin = false;
     let mut mask = false;
     let mut ttl_secs: Option<u64> = None;
@@ -77,9 +84,11 @@ pub fn parse_args() -> Result<Args, String> {
     let mut url: Option<String> = None;
     let mut requires_consent = false;
     let mut requires_fido2 = false;
+    let mut lock_fido2 = false;
     let mut fido2_credential_id: Option<String> = None;
     let mut fido2_public_key_cose: Option<String> = None;
     let mut store = crate::cli_store::StoreFlags::default();
+    let mut session = crate::cli_session::SessionFlags::default();
 
     let mut i = 1usize;
 
@@ -110,6 +119,10 @@ pub fn parse_args() -> Result<Args, String> {
     let command_verb = raw.get(i).ok_or("no command — try: kepr --help")?;
     let command = CliActivity::parse(command_verb)?;
     i += 1;
+    // T9.05: `kepr mcp` parses its own flags (cli_gatex/mcp_tools.rs).
+    if command.as_str() == "mcp" {
+        i = raw.len();
+    }
 
     if i < raw.len() && !raw[i].starts_with('-') {
         name = Some(raw[i].to_uppercase());
@@ -193,6 +206,10 @@ pub fn parse_args() -> Result<Args, String> {
                 manifest_path = Some(std::path::PathBuf::from(p));
                 i += 1;
             }
+            "--stage" => {
+                stage = Some(raw.get(i + 1).ok_or("--stage needs a name")?.clone());
+                i += 2;
+            }
             "--url" => {
                 // Phase 2 ζ. Scheme-prefixed remote URL for
                 // `kepr sync-push|pull`. Validated downstream
@@ -212,6 +229,10 @@ pub fn parse_args() -> Result<Args, String> {
             "--requires-fido2" => {
                 // Phase 2 η. No value: presence flips the flag.
                 requires_fido2 = true;
+                i += 1;
+            }
+            "--fido2" => {
+                lock_fido2 = true; // T4.09: `kepr lock --fido2`
                 i += 1;
             }
             "--hook" => {
@@ -251,6 +272,7 @@ pub fn parse_args() -> Result<Args, String> {
                 break;
             }
             s if crate::cli_store::FLAGS.contains(&s) => i = store.take(&raw, i)?,
+            s if crate::cli_session::FLAGS.contains(&s) => i = session.take(&raw, i)?,
             s if !s.starts_with('-') => {
                 if name.is_none() {
                     name = Some(s.to_uppercase());
@@ -283,13 +305,16 @@ pub fn parse_args() -> Result<Args, String> {
         mask,
         exec_argv,
         manifest_path,
+        stage,
         ttl_secs,
         hook_path,
         url,
         requires_consent,
         requires_fido2,
+        lock_fido2,
         fido2_credential_id,
         fido2_public_key_cose,
         store,
+        session,
     })
 }

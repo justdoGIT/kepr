@@ -47,11 +47,52 @@ pub fn send_request(req: &Request) -> Result<Response, String> {
         serde_json::to_vec(req).map_err(|e| format!("request encoding error: {e}"))?,
     );
 
-    write_frame(&mut stream, &json).map_err(|e| format!("send error: {e}"))?;
+    exchange(&mut stream, &json)
+}
+
+fn exchange(stream: &mut UnixStream, json: &[u8]) -> Result<Response, String> {
+    if let Err(e) = write_frame(stream, json) {
+        // The daemon can refuse before reading the request (rate limit, not
+        // the owner) and close; its reply is still readable, and it names
+        // the real reason better than a broken pipe does.
+        return match read_frame(stream, MAX_MSG_BYTES) {
+            Ok(buf) => {
+                serde_json::from_slice(&Zeroizing::new(buf)).map_err(|_| format!("send error: {e}"))
+            }
+            Err(_) => Err(format!("send error: {e}")),
+        };
+    }
 
     let buf = Zeroizing::new(
-        read_frame(&mut stream, MAX_MSG_BYTES).map_err(|e| format!("receive error: {e}"))?,
+        read_frame(stream, MAX_MSG_BYTES).map_err(|e| format!("receive error: {e}"))?,
     );
 
     serde_json::from_slice(&buf).map_err(|e| format!("response decode error: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reply_sent_before_the_request_is_read_still_arrives() {
+        let (mut client, mut daemon) = UnixStream::pair().unwrap();
+        let reply = serde_json::to_vec(&Response::fail("rate limited")).unwrap();
+        write_frame(&mut daemon, &reply).unwrap();
+        drop(daemon);
+        // Bigger than the socket buffer, so the write hits the closed peer.
+        let big = vec![b' '; 4 << 20];
+        match exchange(&mut client, &big) {
+            Ok(Response::Err { error }) => assert_eq!(error, "rate limited"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_closed_socket_with_no_reply_is_a_send_error() {
+        let (mut client, daemon) = UnixStream::pair().unwrap();
+        drop(daemon);
+        let err = exchange(&mut client, &vec![b' '; 4 << 20]).unwrap_err();
+        assert!(err.starts_with("send error"), "{err}");
+    }
 }

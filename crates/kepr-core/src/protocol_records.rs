@@ -1,5 +1,5 @@
 // protocol_records.rs — wire types of the `records` ticket batch:
-// attachments (T5.03). Wrapped by `Request::Records` / `Response::Records`,
+// attachments (T5.03), record convert (T11.7). Wrapped by `Request::Records` / `Response::Records`,
 // which are `#[serde(untagged)]` and tried after every tagged variant, so
 // the `cmd` / `kind` names here must not repeat one in protocol.rs or
 // protocol_store.rs.
@@ -47,6 +47,16 @@ pub enum RecordsRequest {
     AttachList { name: String },
     /// T5.03: drop one attachment.
     AttachRemove { name: String, file: String },
+    /// T11.7: re-type a record. Fields named in `fields` (the new type's,
+    /// from the caller's type table) stay fields, custom fields with such
+    /// a name become fields again, and every other field becomes a custom
+    /// field. An empty `fields` (an any-fields type) keeps them all.
+    RecordConvert {
+        name: String,
+        record_type: String,
+        #[serde(default)]
+        fields: Vec<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -76,6 +86,19 @@ pub enum RecordsResponse {
     AttachRemoveOk {
         name: String,
         file: String,
+    },
+    /// T11.7. `moved` (now custom fields) and `promoted` (custom fields
+    /// that became fields) are empty for a consent- or FIDO2-gated record,
+    /// whose field names are not reported without a prompt.
+    RecordConvertOk {
+        name: String,
+        record_type: String,
+        #[serde(default)]
+        moved: Vec<String>,
+        #[serde(default)]
+        promoted: Vec<String>,
+        #[serde(default)]
+        gated: bool,
     },
 }
 
@@ -166,6 +189,14 @@ mod tests {
                 },
                 "attach_remove",
             ),
+            (
+                RecordsRequest::RecordConvert {
+                    name: "DOC".into(),
+                    record_type: "wifi".into(),
+                    fields: vec!["ssid".into()],
+                },
+                "record_convert",
+            ),
         ] {
             assert_eq!(req_round_trip(Request::Records(r))["cmd"], json!(cmd));
         }
@@ -202,6 +233,13 @@ mod tests {
             RecordsResponse::AttachRemoveOk {
                 name: "DOC".into(),
                 file: "a.pdf".into(),
+            },
+            RecordsResponse::RecordConvertOk {
+                name: "DOC".into(),
+                record_type: "wifi".into(),
+                moved: vec!["url".into()],
+                promoted: vec![],
+                gated: false,
             },
         ] {
             resp_round_trip(Response::Records(r));

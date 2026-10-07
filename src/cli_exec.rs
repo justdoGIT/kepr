@@ -52,7 +52,8 @@ impl CredFetcher for DaemonFetcher {
             })
             .map_err(|e| format!("daemon unreachable: {e}"))
         };
-        let reply = match get(None)? {
+        // T11.14: ask for the store passphrase when the value needs it.
+        let reply = match crate::cli_session::reauth::get_or_ask(name, || get(None))? {
             Response::Fido2Needed {
                 challenge,
                 credential_ids,

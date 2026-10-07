@@ -110,7 +110,8 @@ pub fn handle_health(uid: u32, username: &str, max_age_days: Option<u32>) -> Res
         // let a caller test guesses against them.
         let gated = meta.sealed == Some(true)
             || meta.requires_consent == Some(true)
-            || meta.requires_fido2 == Some(true);
+            || meta.requires_fido2 == Some(true)
+            || meta.requires_reauth == Some(true); // T11.14
         match (!gated).then(|| crypto::default_backend().decrypt(uid, &name)) {
             None => {}
             Some(Ok(v)) => {
@@ -187,6 +188,8 @@ pub fn handle_breach_check(uid: u32, username: &str, name: &str, suffixes: &[Str
             || meta.share_key == Some(true)
             || meta.requires_consent == Some(true)
             || meta.requires_fido2 == Some(true)
+            || meta.requires_reauth == Some(true)
+        // T11.14
         {
             return Err("credential unavailable".to_string());
         }

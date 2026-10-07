@@ -160,6 +160,10 @@ pub enum Response {
     StatusOk {
         locked: bool,
         password_protected: bool,
+        /// T11.24 (batch: session): mode, profile, backend, sealer, … —
+        /// all optional, absent from older daemons.
+        #[serde(flatten)]
+        info: crate::protocol_session::StatusInfo,
     },
     Err {
         error: String,
@@ -170,6 +174,8 @@ pub enum Response {
     #[serde(untagged)]
     Vault(crate::protocol_vault::VaultResponse),
     // batch: seal
+    #[serde(untagged)]
+    Seal(crate::protocol_seal::SealResponse),
     // batch: store
     #[serde(untagged)]
     Store(crate::protocol_store::StoreResponse),
@@ -192,6 +198,8 @@ pub enum Response {
     Eco(crate::protocol_eco::EcoResponse),
     // batch: platform
     // batch: session
+    #[serde(untagged)]
+    Session(crate::protocol_session::SessionResponse),
     // end of batches
 }
 

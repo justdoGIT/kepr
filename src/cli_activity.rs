@@ -26,7 +26,20 @@ fn resolve_env_for(args: &Args) -> Result<Vec<String>, String> {
     } else {
         cli_manifest::resolve
     };
-    let (resolved, _used) = resolver(&args.env_vars, args.manifest_path.as_deref(), &cwd)?;
+    // T5.02: `--stage`, else $KEPR_STAGE (which is ignored without a manifest).
+    let stage = args
+        .stage
+        .clone()
+        .or_else(|| std::env::var("KEPR_STAGE").ok().filter(|s| !s.is_empty()));
+    let (resolved, used) = resolver(
+        &args.env_vars,
+        args.manifest_path.as_deref(),
+        &cwd,
+        stage.as_deref(),
+    )?;
+    if args.stage.is_some() && used.is_none() {
+        return Err("--stage picks a set from a .kepr.toml: add --manifest PATH (or KEPR_AUTO_MANIFEST=1) and drop --env".into());
+    }
     Ok(resolved)
 }
 

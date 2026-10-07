@@ -17,12 +17,12 @@ pub fn store_dir() -> PathBuf {
     if std::env::var_os("KEPR_SYSTEM_MODE").is_some() {
         PathBuf::from("/etc/credstore.encrypted")
     } else {
-        std::env::var_os("XDG_DATA_HOME")
+        let base = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share")
-            })
-            .join("kepr/credentials")
+            });
+        kepr_core::profile::nest(base.join("kepr")).join("credentials") // T11.16
     }
 }
 

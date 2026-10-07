@@ -108,16 +108,18 @@ pub(crate) fn log(
         Ok(()) => (200, None),
         Err((s, b)) => (*s, *b),
     };
-    journal::emit(&journal::Entry {
-        session: &state.session_id,
+    let host = format!("{}:{}", route.target.host, route.target.port);
+    let entry = journal::Entry {
         provider: route.target.kind.name(),
+        host: &host,
         method,
         path: &route.key,
         status,
         bytes_out: 0,
         ms: start.elapsed().as_millis(),
         blocked,
-    });
+    };
+    journal::emit(state, &entry);
 }
 
 #[cfg(test)]

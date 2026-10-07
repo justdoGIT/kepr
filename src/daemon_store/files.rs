@@ -110,6 +110,7 @@ pub fn readable_without_prompt(meta: &crate::expiry::CredMeta, now: u64) -> bool
         && meta.share_key != Some(true)
         && meta.requires_consent != Some(true)
         && meta.requires_fido2 != Some(true)
+        && meta.requires_reauth != Some(true) // T11.14
         && meta.expires_at_unix.is_none_or(|t| now < t)
 }
 

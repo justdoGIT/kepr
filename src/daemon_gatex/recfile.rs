@@ -319,9 +319,11 @@ pub(super) mod tests {
     pub const SID: &str = "0123456789abcdef";
 
     pub fn root() -> PathBuf {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let d = std::env::temp_dir().join(format!(
-            "kepr-rec-{}-{}",
+            "kepr-rec-{}-{}-{}",
             std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

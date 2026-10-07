@@ -54,6 +54,7 @@ mod version_state;
 // batch: vault
 mod daemon_vault;
 // batch: seal
+mod daemon_seal;
 // batch: store
 mod daemon_store;
 // batch: records
@@ -112,13 +113,13 @@ fn user_mode() -> bool {
 
 fn state_dir() -> std::path::PathBuf {
     if user_mode() {
-        std::env::var_os("XDG_STATE_HOME")
+        let base = std::env::var_os("XDG_STATE_HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
                     .join(".local/state")
-            })
-            .join("kepr")
+            });
+        kepr_core::profile::nest(base.join("kepr")) // T11.16
     } else {
         std::path::PathBuf::from("/var/lib/kepr")
     }
@@ -221,6 +222,7 @@ fn main() {
     } else {
         std::env::set_var("KEPR_SYSTEM_MODE", "1");
     }
+    daemon_session::check_profile_or_exit(); // T11.16
 
     fs::create_dir_all(state_dir()).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot create state directory: {e}");
@@ -254,20 +256,17 @@ fn main() {
         eprintln!("[kepr-daemon] cannot secure credential directory: {e}");
         std::process::exit(1);
     });
-    let sealer: Box<dyn master_key::Sealer> = if user {
-        Box::new(master_key::LocalFileSealer)
-    } else {
-        Box::new(master_key::SystemdCredsSealer)
-    };
     let password_protected = protected_master_key_path().exists();
     let key = if password_protected {
         None
     } else {
         Some(
-            master_key::load_or_generate(&master_key_path(), sealer.as_ref()).unwrap_or_else(|e| {
-                eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
-                std::process::exit(1);
-            }),
+            master_key::sealer_from_env(user, &master_key_path())
+                .and_then(|s| master_key::load_or_generate(&master_key_path(), s.as_ref()))
+                .unwrap_or_else(|e| {
+                    eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
+                    std::process::exit(1);
+                }),
         )
     };
     let versions = std::sync::Arc::new(
