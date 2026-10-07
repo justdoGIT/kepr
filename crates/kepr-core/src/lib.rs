@@ -41,6 +41,7 @@ pub mod seal_factor;
 pub mod protocol_store;
 // batch: records
 pub mod protocol_records;
+pub mod record_types;
 // batch: share
 pub mod protocol_sharing;
 // batch: sync

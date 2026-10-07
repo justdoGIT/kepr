@@ -114,7 +114,8 @@ pub fn entries<F: CredFetcher>(
 pub fn cmd_resolve(args: &[String]) -> Response {
     let [text] = args else {
         return Response::fail(
-            "usage: kepr resolve kepr://NAME[/field[i][sub] | /custom_field/LABEL | /file/FILE]",
+            "usage: kepr resolve kepr://NAME[/field[i][sub] | /custom_field/LABEL | /file/FILE]\n\
+             (a field that links to another record continues: kepr://CARD/billing/city)",
         );
     };
     match resolve_to(text, &resolve::Daemon, &mut std::io::stdout()) {
@@ -125,8 +126,10 @@ pub fn cmd_resolve(args: &[String]) -> Response {
 
 fn resolve_to(text: &str, src: &dyn Source, out: &mut dyn Write) -> Result<(), String> {
     let n = notation::parse(text)?;
-    let written = match &n.sel {
-        Sel::File(f) => out.write_all(&src.file(&n.name, f)?),
+    // One Get per record, though links are followed twice below.
+    let src = &resolve::Cached::new(src);
+    let written = match resolve::follow(&n, src)? {
+        (name, Sel::File(f)) => out.write_all(&src.file(&name, f)?),
         _ => {
             let v = resolve::resolve(&n, src)?;
             out.write_all(v.as_bytes())
@@ -185,6 +188,13 @@ mod tests {
         resolve_to("kepr://R/phone[0][number]", &src, &mut out).unwrap();
         resolve_to("kepr://R/file/key.bin", &src, &mut out).unwrap();
         assert_eq!(out, b"111\n\xff\xfe\0");
+        // T11.6: through a link, each record fetched once.
+        let mut out = Vec::new();
+        resolve_to("kepr://CARD/others[1]/file/key.bin", &src, &mut out).unwrap();
+        resolve_to("kepr://CARD/billing/city", &src, &mut out).unwrap();
+        assert_eq!(out, b"\xff\xfe\0Oslo\n");
+        let e = resolve_to(r"kepr://CARD/custom_field/Bank\/1/x", &src, &mut out).unwrap_err();
+        assert_eq!(e, "credential unavailable");
         // A sealed credential: the daemon's Get refuses it, generically.
         let mut out = Vec::new();
         let e = resolve_to("kepr://SEALED/password", &src, &mut out).unwrap_err();

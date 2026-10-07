@@ -8,12 +8,17 @@
 //   kepr://NAME/field[sub]          [sub] alone = item 0's; [][sub] = all of them
 //   kepr://NAME/custom_field/LABEL  a custom field (`custom` object), same [..]
 //   kepr://NAME/file/FILENAME       an attachment's contents (T5.03)
+//   kepr://NAME/field/...           T11.6: `field` (or `field[i]`, or a custom
+//                                   field) links to another record,
+//                                   `{"ref": "OTHER"}`: the rest selects in OTHER
 //
 // Labels and file names may contain anything but control characters;
 // `\/`, `\[`, `\]` and `\\` escape those characters (`\ ` a space, in
 // templates). Errors name the 1-based column of the whole notation.
 
 pub const PREFIX: &str = "kepr://";
+/// Most links one reference follows.
+pub const MAX_LINKS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Index {
@@ -38,6 +43,8 @@ pub struct Notation {
     /// Upper-case credential name.
     pub name: String,
     pub sel: Sel,
+    /// T11.6: selections in the records `sel`, then each of these, link to.
+    pub links: Vec<Sel>,
 }
 
 fn field_char(c: char) -> bool {
@@ -154,36 +161,57 @@ pub fn parse(s: &str) -> Result<Notation, String> {
     if name.is_empty() {
         return p.err("expected a credential name");
     }
-    let sel = if !p.eat('/') {
-        Sel::Whole
-    } else {
-        let field = p.take_while(field_char).to_string();
-        if field.is_empty() {
-            return p.err("expected a field name (a-z, 0-9, _)");
-        }
-        match (field.as_str(), p.peek()) {
-            ("custom_field", Some('/')) => {
-                p.i += 1;
-                let label = p.label(true)?;
-                Sel::Custom {
-                    label,
-                    index: p.index()?,
-                }
+    let mut sels = Vec::new();
+    if p.eat('/') {
+        loop {
+            let sel = selection(&mut p)?;
+            let file = matches!(sel, Sel::File(_));
+            sels.push(sel);
+            if file || p.peek() != Some('/') {
+                break;
             }
-            ("file", Some('/')) => {
-                p.i += 1;
-                Sel::File(p.label(false)?)
+            if sels.len() > MAX_LINKS {
+                return p.err(&format!("more than {MAX_LINKS} links"));
             }
-            _ => Sel::Field {
-                field,
-                index: p.index()?,
-            },
+            p.i += 1;
         }
-    };
+    }
     if p.i < s.len() {
         return p.err("unexpected character");
     }
-    Ok(Notation { name, sel })
+    let mut sels = sels.into_iter();
+    let sel = sels.next().unwrap_or(Sel::Whole);
+    Ok(Notation {
+        name,
+        sel,
+        links: sels.collect(),
+    })
+}
+
+/// One selection after a `/`: a field, a custom field or a file.
+fn selection(p: &mut P) -> Result<Sel, String> {
+    let field = p.take_while(field_char).to_string();
+    if field.is_empty() {
+        return p.err("expected a field name (a-z, 0-9, _)");
+    }
+    Ok(match (field.as_str(), p.peek()) {
+        ("custom_field", Some('/')) => {
+            p.i += 1;
+            let label = p.label(true)?;
+            Sel::Custom {
+                label,
+                index: p.index()?,
+            }
+        }
+        ("file", Some('/')) => {
+            p.i += 1;
+            Sel::File(p.label(false)?)
+        }
+        _ => Sel::Field {
+            field,
+            index: p.index()?,
+        },
+    })
 }
 
 /// In a template, the reference after a `kepr://` at the start of
@@ -197,7 +225,9 @@ pub fn scan(rest: &str) -> Option<(usize, String)> {
         return None;
     }
     let mut end = p.i;
-    if p.eat('/') && p.peek().is_some_and(field_char) {
+    let mut sels = 0;
+    while sels <= MAX_LINKS && p.eat('/') && p.peek().is_some_and(field_char) {
+        sels += 1;
         let field = p.take_while(field_char).to_string();
         end = p.i;
         if matches!(field.as_str(), "custom_field" | "file") && p.peek() == Some('/') {
@@ -205,6 +235,9 @@ pub fn scan(rest: &str) -> Option<(usize, String)> {
             p.i += 1;
             if template_label(&mut p, field == "custom_field") {
                 end = p.i;
+                if field == "file" {
+                    break;
+                }
             } else {
                 p.i = save;
             }
@@ -212,6 +245,7 @@ pub fn scan(rest: &str) -> Option<(usize, String)> {
         if p.i == end && field != "file" {
             end = bracket_groups(&mut p, end);
         }
+        p.i = end;
     }
     let text = format!(
         "{}{}",
@@ -331,7 +365,28 @@ mod tests {
             let n = parse(text).unwrap_or_else(|e| panic!("{text}: {e}"));
             assert_eq!(n.name, name, "{text}");
             assert_eq!(n.sel, sel, "{text}");
+            assert!(n.links.is_empty(), "{text}");
         }
+    }
+
+    #[test]
+    fn links_continue_into_the_linked_record() {
+        let n = parse(r"kepr://CARD/billing[1]/custom_field/a\/b[0]/file/x/y.pdf");
+        assert!(n.unwrap_err().contains("unexpected character at column 51"));
+        let n = parse(r"kepr://CARD/billing[1]/custom_field/a\/b[0]/file/y.pdf").unwrap();
+        assert_eq!(n.sel, field("billing", Index::At(1)));
+        assert_eq!(
+            n.links,
+            [
+                Sel::Custom {
+                    label: "a/b".into(),
+                    index: Index::At(0),
+                },
+                Sel::File("y.pdf".into()),
+            ]
+        );
+        let n = parse("kepr://C/a/b/c/d/e").unwrap();
+        assert_eq!(n.links.len(), MAX_LINKS);
     }
 
     #[test]
@@ -344,7 +399,9 @@ mod tests {
             ("kepr://DB/url[a b]", 19, "bad index"),
             ("kepr://DB/url[1][2]", 20, "bad index"),
             ("kepr://DB/url[0][a][b]", 20, "too many"),
-            ("kepr://DB/url/x", 14, "unexpected"),
+            ("kepr://DB/file/a/b", 17, "unexpected"),
+            ("kepr://DB/url/", 15, "field name"),
+            ("kepr://A/b/c/d/e/f/g", 19, "more than 4 links"),
             ("kepr://DB/custom_field/", 24, "empty label"),
             (r"kepr://DB/custom_field/a\", 26, "dangling"),
         ] {
@@ -380,12 +437,22 @@ mod tests {
         assert_eq!(s("R/file/notes.txt\n").unwrap().1, "R/file/notes.txt");
         assert_eq!(s("R/file/ x").unwrap().1, "R/file");
         assert_eq!(s("/x"), None);
+        // T11.6: links continue the reference.
+        assert_eq!(s("CARD/billing/city\"").unwrap().1, "CARD/billing/city");
+        assert_eq!(
+            s("C/a[0]/custom_field/x\\/y/file/f.txt z").unwrap().1,
+            "C/a[0]/custom_field/x\\/y/file/f.txt"
+        );
+        assert_eq!(s("C/a/b/c/d/e/f/g").unwrap().1, "C/a/b/c/d/e");
+        assert_eq!(s("C/a/Up").unwrap().1, "C/a");
         // Whatever the scanner keeps parses.
         for t in [
             "L/url[0][host]",
             r"R/custom_field/a\ b",
             "R/file/x.y",
             "DB/user",
+            "C/a/b/c/d/e/f/g",
+            "C/a[0]/custom_field/x/file/f.txt",
         ] {
             let k = scan(t).unwrap().1;
             assert!(parse(&format!("{PREFIX}{k}")).is_ok(), "{k}");
