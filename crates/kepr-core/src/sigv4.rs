@@ -188,19 +188,19 @@ pub fn sign(input: &SigV4Input<'_>) -> SigV4Headers {
     SigV4Headers { headers }
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub fn hex_sha256(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     hex(&h.finalize())
 }
 
-fn hmac(key: &[u8], msg: &[u8]) -> Zeroizing<Vec<u8>> {
+pub(crate) fn hmac(key: &[u8], msg: &[u8]) -> Zeroizing<Vec<u8>> {
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(msg);
     Zeroizing::new(mac.finalize().into_bytes().to_vec())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         out.push_str(&format!("{b:02x}"));
