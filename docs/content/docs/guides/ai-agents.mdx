@@ -146,15 +146,34 @@ cache window (5 minutes, or until the key changes).
 ## MCP: `kepr mcp`
 
 For agent platforms that talk to tools over MCP, `kepr mcp` is a stdio MCP
-server with two tools:
+server with these tools:
 
 - `list_secrets`: names of your sealed keys and the hosts they're bound to;
 - `call_api`: an HTTP call to a provider API (`provider`, `method`, `path`,
   optional `body` and `headers`). The call goes through a gate session, so
   the key is injected by kepr, prompt DLP applies, and the model never sees
   the key.
+- `db_query`: one SQL statement (`target`, `sql`) on a sealed PostgreSQL
+  login (`kepr agent add-db`), through the gate's database proxy: the gate
+  logs in, the model never gets the password.
+- `ssh_run`: a command (`host`, `cmd`) over ssh, signed with a key that
+  stays in the daemon (`kepr ssh generate`). Only for hosts you list with
+  `--ssh`; ssh runs in batch mode, so the host must be in `known_hosts`.
 
-No tool returns a secret value. Example client entry:
+```bash
+kepr mcp --read-only --ssh deploy@web1 \
+  --context "APP_DB=Analytics replica: tables orders, users" \
+  --context "deploy@web1=Ubuntu 24.04, app in /srv/app"
+```
+
+`--read-only` runs every statement read-only (`SET
+default_transaction_read_only = on`, inside a `READ ONLY` transaction): a
+guard against mistakes, not a permission boundary, so give the login a
+read-only role for that. `--context` attaches an `ai_context` note that is
+returned with each result for that target.
+
+No tool returns a secret value, and key-shaped strings in results are
+masked. Example client entry:
 
 ```json
 { "mcpServers": { "kepr": { "command": "kepr", "args": ["mcp"] } } }

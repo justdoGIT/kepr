@@ -110,6 +110,10 @@ pub fn parse_args() -> Result<Args, String> {
     let command_verb = raw.get(i).ok_or("no command — try: kepr --help")?;
     let command = CliActivity::parse(command_verb)?;
     i += 1;
+    // T9.05: `kepr mcp` parses its own flags (cli_gatex/mcp_tools.rs).
+    if command.as_str() == "mcp" {
+        i = raw.len();
+    }
 
     if i < raw.len() && !raw[i].starts_with('-') {
         name = Some(raw[i].to_uppercase());

@@ -3,16 +3,19 @@
 //   list_secrets  names, sealed flag and bound hosts
 //   call_api      make a provider API call; the key is injected by a
 //                 kepr-gate session this server starts on first use
+//   db_query, ssh_run  (T9.05) through the gate's database proxy and
+//                 the daemon's sign-only SSH keys: cli_gatex/mcp_tools.rs
 // Newline-delimited JSON-RPC 2.0, as MCP's stdio transport specifies.
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
+use std::path::Path;
+use std::sync::Arc;
 
-use kepr_core::gate_protocol::GateRoute;
-use kepr_core::protocol::{Request, Response};
+use kepr_core::protocol::Response;
 use serde_json::{json, Value};
 
-use crate::client;
+use crate::cli_gatex::mcp_tools::{self, with_gate, Attempt, Gate, McpConfig};
 
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_BODY: usize = 64 * 1024;
@@ -32,9 +35,21 @@ pub trait Backend {
         body: Option<&str>,
         headers: &HashMap<String, String>,
     ) -> Result<(u16, String), String>;
+    /// T9.05: `kepr mcp`'s flags (read-only, ssh hosts, ai_context notes).
+    fn config(&self) -> &McpConfig {
+        &mcp_tools::NO_CONFIG
+    }
+    /// T9.05: one SQL statement through the gate's database proxy.
+    fn db_query(&mut self, _target: &str, _sql: &str, _read_only: bool) -> Result<String, String> {
+        Err("database tools are not available here".into())
+    }
+    /// T9.05: a command over ssh, signed with a daemon-held key.
+    fn ssh_run(&mut self, _host: &str, _cmd: &str) -> Result<String, String> {
+        Err("ssh tools are not available here".into())
+    }
 }
 
-fn tools() -> Value {
+fn tools(cfg: &McpConfig) -> Value {
     let providers: Vec<&str> = kepr_core::providers::PROVIDERS
         .iter()
         .map(|p| p.name)
@@ -61,6 +76,12 @@ fn tools() -> Value {
             }
         }
     ])
+    .as_array()
+    .into_iter()
+    .flatten()
+    .cloned()
+    .chain(mcp_tools::tools(cfg))
+    .collect()
 }
 
 fn text_result(text: String, is_error: bool) -> Value {
@@ -125,7 +146,8 @@ fn call_tool(backend: &mut dyn Backend, name: &str, args: &Value) -> Value {
                 Err(e) => text_result(e, true),
             }
         }
-        other => text_result(format!("unknown tool {other}"), true),
+        other => mcp_tools::call(backend, other, args)
+            .unwrap_or_else(|| text_result(format!("unknown tool {other}"), true)),
     }
 }
 
@@ -154,7 +176,7 @@ pub fn handle(backend: &mut dyn Backend, msg: &Value) -> Option<Value> {
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({"tools": tools()}),
+        "tools/list" => json!({"tools": tools(backend.config())}),
         "tools/call" => {
             let name = params
                 .get("name")
@@ -176,118 +198,59 @@ pub fn handle(backend: &mut dyn Backend, msg: &Value) -> Option<Value> {
 }
 
 /// Production backend: the daemon for listing; a lazily started gate
-/// session (owned by this process) for API calls.
-struct GateSession {
-    port: u16,
-    /// provider → placeholder
-    placeholders: HashMap<String, String>,
-}
-
+/// session (owned by this process) for API calls and database queries;
+/// an in-process ssh-agent socket for ssh_run.
 #[derive(Default)]
 struct Live {
-    gate: Option<GateSession>,
+    gate: Option<Gate>,
+    cfg: McpConfig,
+    ssh: Option<crate::cli_gatex::mcp_ssh::Agent>,
 }
 
 fn list_sealed() -> Result<Vec<SecretInfo>, String> {
-    match client::send_request(&Request::List)? {
-        Response::ListOk { credentials, .. } => Ok(credentials
-            .into_iter()
-            .filter(|c| c.sealed == Some(true))
-            .map(|c| SecretInfo {
-                name: c.name,
-                hosts: c.bound_hosts.unwrap_or_default(),
-            })
-            .collect()),
-        Response::Err { error } => Err(error),
-        _ => Err("unexpected daemon response".into()),
-    }
+    Ok(mcp_tools::sealed()?
+        .into_iter()
+        .map(|c| SecretInfo {
+            name: c.name,
+            hosts: c.bound_hosts.unwrap_or_default(),
+        })
+        .collect())
 }
 
-impl Live {
-    fn ensure_gate(&mut self) -> Result<(), String> {
-        if self.gate.is_some() {
-            return Ok(());
-        }
-        let mut routes = Vec::new();
-        let mut by_provider = HashMap::new();
-        for s in list_sealed()? {
-            for h in &s.hosts {
-                let host = h.split(':').next().unwrap_or_default();
-                if let Some(p) = kepr_core::providers::by_host(host) {
-                    if !by_provider.contains_key(p.name) {
-                        by_provider.insert(p.name.to_string(), s.name.clone());
-                        routes.push(GateRoute {
-                            provider: p.name.into(),
-                            cred: s.name.clone(),
-                            slot: routes.len() as u16,
-                            target: None,
-                        });
-                    }
-                }
-            }
-        }
-        if routes.is_empty() {
-            return Err("no sealed provider keys; add one with `kepr agent add`".into());
-        }
-        match client::send_request(&Request::StartGate {
-            routes,
-            port: None,
-            limits: Default::default(),
-            tunnel: false,
-            record: false,
-        })? {
-            Response::GateStarted {
-                port, placeholders, ..
-            } => {
-                self.gate = Some(GateSession { port, placeholders });
-                Ok(())
-            }
-            Response::Err { error } => Err(error),
-            _ => Err("unexpected daemon response".into()),
+fn http_attempt(
+    gate: &Gate,
+    provider: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    headers: &HashMap<String, String>,
+) -> Result<Attempt<(u16, String)>, String> {
+    let ph = gate
+        .placeholders
+        .get(provider)
+        .ok_or_else(|| format!("no sealed key for provider {provider}"))?;
+    let port = gate.port;
+    let mut req = ureq::request(method, &format!("http://127.0.0.1:{port}/{provider}{path}"));
+    for (k, v) in headers {
+        if !matches!(
+            k.as_str(),
+            "authorization" | "x-api-key" | "x-goog-api-key" | "host"
+        ) {
+            req = req.set(k, v);
         }
     }
-}
-
-enum Attempt {
-    Done(u16, String),
-    /// The gate is not answering (stopped by `kepr panic`, crashed).
-    GateGone,
-}
-
-impl Live {
-    fn attempt(
-        &self,
-        provider: &str,
-        method: &str,
-        path: &str,
-        body: Option<&str>,
-        headers: &HashMap<String, String>,
-    ) -> Result<Attempt, String> {
-        let GateSession { port, placeholders } = self.gate.as_ref().ok_or("no gate session")?;
-        let ph = placeholders
-            .get(provider)
-            .ok_or_else(|| format!("no sealed key for provider {provider}"))?;
-        let mut req = ureq::request(method, &format!("http://127.0.0.1:{port}/{provider}{path}"));
-        for (k, v) in headers {
-            if !matches!(
-                k.as_str(),
-                "authorization" | "x-api-key" | "x-goog-api-key" | "host"
-            ) {
-                req = req.set(k, v);
-            }
+    req = req.set("authorization", &format!("Bearer {ph}"));
+    let resp = match body {
+        Some(b) => req.send_string(b),
+        None => req.call(),
+    };
+    match resp {
+        Ok(r) | Err(ureq::Error::Status(_, r)) => {
+            let status = r.status();
+            Ok(Attempt::Done((status, r.into_string().unwrap_or_default())))
         }
-        req = req.set("authorization", &format!("Bearer {ph}"));
-        let resp = match body {
-            Some(b) => req.send_string(b),
-            None => req.call(),
-        };
-        match resp {
-            Ok(r) | Err(ureq::Error::Status(_, r)) => {
-                let status = r.status();
-                Ok(Attempt::Done(status, r.into_string().unwrap_or_default()))
-            }
-            Err(ureq::Error::Transport(_)) => Ok(Attempt::GateGone),
-        }
+        // The gate is not answering (stopped by `kepr panic`, crashed).
+        Err(ureq::Error::Transport(_)) => Ok(Attempt::Restart(mcp_tools::GATE_GONE.into())),
     }
 }
 
@@ -304,19 +267,38 @@ impl Backend for Live {
         body: Option<&str>,
         headers: &HashMap<String, String>,
     ) -> Result<(u16, String), String> {
-        for _ in 0..2 {
-            self.ensure_gate()?;
-            match self.attempt(provider, method, path, body, headers)? {
-                Attempt::Done(status, text) => return Ok((status, text)),
-                Attempt::GateGone => self.gate = None, // start a fresh session and retry once
-            }
-        }
-        Err("kepr gate unavailable; is the store locked? (`kepr unlock`)".into())
+        with_gate(&mut self.gate, |g| {
+            http_attempt(g, provider, method, path, body, headers)
+        })
+    }
+
+    fn config(&self) -> &McpConfig {
+        &self.cfg
+    }
+
+    fn db_query(&mut self, target: &str, sql: &str, read_only: bool) -> Result<String, String> {
+        with_gate(&mut self.gate, |g| {
+            mcp_tools::db_attempt(g, target, sql, read_only)
+        })
+    }
+
+    fn ssh_run(&mut self, host: &str, cmd: &str) -> Result<String, String> {
+        let keys = || -> Arc<dyn crate::cli_ssh_agent::Keys + Send + Sync> {
+            Arc::new(crate::cli_ssh_agent::Daemon)
+        };
+        crate::cli_gatex::mcp_ssh::ssh_run(&mut self.ssh, keys, Path::new("ssh"), host, cmd)
     }
 }
 
 pub fn cmd_mcp() -> Response {
-    let mut backend = Live::default();
+    let cfg = match McpConfig::parse(&mcp_tools::own_args()) {
+        Ok(c) => c,
+        Err(e) => return Response::fail(e),
+    };
+    let mut backend = Live {
+        cfg,
+        ..Live::default()
+    };
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -392,7 +374,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["list_secrets", "call_api"]);
+        assert_eq!(names, vec!["list_secrets", "call_api", "db_query"]);
         assert!(handle(
             &mut b,
             &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
