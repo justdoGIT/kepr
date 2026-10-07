@@ -9,7 +9,7 @@
 //   kepr history NAME
 //   kepr restore NAME --version N
 //   kepr usage [--days N]
-//   kepr health [--max-age DAYS] [--breach]
+//   kepr health [--max-age DAYS | --period N] [--policy FILE] [--breach]
 //   kepr leaked NAME [--yes]
 //   kepr record add|show|get|types        see cli_record.rs
 //   kepr share key|send|receive           see cli_share.rs
@@ -130,16 +130,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 },
                 None => crate::cli_usage::cmd_usage(None),
             },
-            "health" => {
-                let max_age = match value_of(args, &["--max-age"]).map_err(Response::fail)? {
-                    Some(d) => Some(
-                        d.parse()
-                            .map_err(|_| Response::fail("--max-age needs a number of days"))?,
-                    ),
-                    None => None,
-                };
-                crate::cli_health::cmd_health(max_age, args.iter().any(|a| a == "--breach"))
-            }
+            "health" => crate::cli_health::cmd(args), // T11.11: flags parsed there
             "import" => {
                 let file = one_name(args, verb, &["--format", "--prefix"])?;
                 let flag = |f: &str| args.iter().any(|a| a == f);

@@ -38,6 +38,7 @@ pub mod protocol_vault;
 pub mod protocol_store;
 // batch: records
 pub mod generate_profile;
+pub mod health_policy;
 pub mod protocol_records;
 pub mod record_types;
 pub mod strength;

@@ -3,11 +3,13 @@
 // `kepr resolve` (T5.06), manifest stages (T5.02), linked records (T11.6),
 // record types and convert (T11.7), record add/show/template with field
 // options, --from-file and --clone (T11.8), generator profiles and
-// `kepr strength` (T5.04). Registered in cli_more.rs.
+// `kepr strength` (T5.04), `kepr health --period / --policy` reports
+// (T11.11). Registered in cli_more.rs.
 // (`cli_record.rs` already holds `kepr record`, hence the x.)
 
 mod attach;
 pub mod generate;
+pub mod health;
 pub mod notation;
 pub mod record_add;
 mod record_fields;
@@ -43,6 +45,8 @@ pub const HELP: &str = "\
                                        length, classes, symbols, words, separator)
   record add KEY ... --generate FIELD  fill FIELD from --profile P, else the url/host's or type's
   strength                             estimate the bits of a value (typed hidden, or on stdin)
+  health --period N[d|w|m|y]           aging report: keys unchanged for longer, oldest first
+  health --policy FILE                 check min_length / classes / max_age_days, and [tag.T] rules
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
