@@ -114,7 +114,8 @@ pub fn resolve_for_gate(
     // T9.01: a sealed credential flagged --requires-consent is released
     // only after polkit approves the agent process (fail-closed).
     let needs_consent = meta.as_ref().and_then(|m| m.requires_consent) == Some(true);
-    if needs_consent && !crate::daemon_polkit::consent_granted(owner.pid) {
+    let consent = |m: &expiry::CredMeta| crate::daemon_policy::consent(uid, owner.pid, &upper, m); // T9.04
+    if needs_consent && !meta.as_ref().is_some_and(consent) {
         return fail("resolve: consent denied".to_string());
     }
     match crypto::default_backend().decrypt(uid, &upper) {
