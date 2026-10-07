@@ -96,9 +96,11 @@ pub fn handle_create(uid: u32, username: &str, password: &[u8], k: u8, n: u8) ->
         if crate::daemon_gate_registry::gates_for(uid) > 0 {
             return Err("stop running agent sessions first (kepr panic)".into());
         }
-        let envelope = std::fs::read(crate::protected_master_key_path())
-            .map_err(|_| "set a passphrase first (kepr lock), then retry")?;
-        let key = key_unlock::unwrap(&envelope, password)?;
+        if !crate::protected_master_key_path().exists() {
+            return Err("set a passphrase first (kepr lock), then retry".into());
+        }
+        // T11.13: the passphrase check is rate-limited like `kepr unlock`.
+        let key = crate::daemon_session::unlock_guard::unwrap_guarded(password, uid, username)?;
         let live = crypto::snapshot_key()?;
         if *key != *live {
             return Err("the passphrase does not match the running store".into());
