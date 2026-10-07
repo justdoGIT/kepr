@@ -49,6 +49,11 @@ const GROUPS: &[Group] = &[
         crate::cli_sharing::dispatch,
     ),
     // batch: sync
+    (
+        crate::cli_syncx::VERBS,
+        crate::cli_syncx::HELP,
+        crate::cli_syncx::dispatch,
+    ),
     // batch: policy
     (
         crate::cli_policy::VERBS,
