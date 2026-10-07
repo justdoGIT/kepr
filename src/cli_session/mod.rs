@@ -2,20 +2,22 @@
 // `kepr set --reauth` (T11.14), `kepr --profile` (T11.16, applied first
 // thing in main.rs), `kepr batch` (T11.18), `kepr discover` rules
 // (T11.20, called from cli_discover.rs), `kepr ssh rotate` (T11.21, from
-// cli_ssh.rs). Registered in cli_more.rs;
+// cli_ssh.rs), `kepr serve` (T11.19). Registered in cli_more.rs;
 // flags on core verbs are parsed by cli_args.rs (`FLAGS` / `SessionFlags`).
 
 pub mod batch;
 pub mod discover_rules;
 pub mod profile;
 pub mod reauth;
+pub mod serve;
+pub mod serve_route;
 pub mod ssh_rotate;
 
 use kepr_core::protocol::Response;
 
 pub use reauth::{SessionFlags, FLAGS};
 
-pub const VERBS: &[&str] = &["reauth", "batch"];
+pub const VERBS: &[&str] = &["reauth", "batch", "serve"];
 
 pub const HELP: &str = "\
   set KEY --reauth                     revealing KEY (get, copy, exec, record show --reveal) asks
@@ -29,6 +31,9 @@ pub const HELP: &str = "\
   ssh rotate KEY --host [USER@]HOST [--port N]
                                        new key on the host (logged in with the old one), checks
                                        a login with it, removes the old line, replaces KEY
+  serve --listen 127.0.0.1:PORT|--socket PATH --allow list,get [--rate N]
+                                       local REST API: GET /v1/secrets[/NAME]; bearer token from
+                                       KEPR_SERVE_TOKEN_FILE; loopback only; never sealed/SSH keys
   --profile NAME COMMAND               run COMMAND on profile NAME: its own store, state and
                                        daemon (same as KEPR_PROFILE=NAME)
 ";
@@ -38,6 +43,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
     match verb {
         "reauth" => reauth::cmd_reauth(&args),
         "batch" => batch::cmd_batch(&args),
+        "serve" => serve::cmd_serve(&args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

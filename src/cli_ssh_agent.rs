@@ -46,7 +46,7 @@ pub fn default_socket() -> Result<PathBuf, String> {
 }
 
 /// The connecting process runs as us (SO_PEERCRED).
-fn same_user(s: &UnixStream) -> bool {
+pub(crate) fn same_user(s: &UnixStream) -> bool {
     use std::os::fd::AsRawFd;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
