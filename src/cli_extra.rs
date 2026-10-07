@@ -9,7 +9,7 @@
 //   kepr history NAME
 //   kepr restore NAME --version N
 //   kepr usage [--days N]
-//   kepr health [--max-age DAYS] [--breach]
+//   kepr health [--max-age DAYS] [--breach] [--notify URL [--format F]]
 //   kepr leaked NAME [--yes]
 //   kepr record add|show|get|types        see cli_record.rs
 //   kepr share key|send|receive           see cli_share.rs
@@ -138,7 +138,10 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                     ),
                     None => None,
                 };
-                crate::cli_health::cmd_health(max_age, args.iter().any(|a| a == "--breach"))
+                let notify = crate::cli_policy::health_notify(args).map_err(Response::fail)?; // T6.08
+                let r =
+                    crate::cli_health::cmd_health(max_age, args.iter().any(|a| a == "--breach"));
+                crate::cli_policy::after_health(notify, r)
             }
             "import" => {
                 let file = one_name(args, verb, &["--format", "--prefix"])?;

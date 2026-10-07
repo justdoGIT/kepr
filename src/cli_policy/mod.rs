@@ -1,6 +1,9 @@
 // cli_policy/ — the `policy` ticket batch, CLI side: `kepr policy`
-// (T6.11), `kepr report access` (T6.12). Registered in cli_more.rs.
+// (T6.11), `kepr report access` (T6.12), webhooks (`notify`) and
+// `kepr health --notify` (T6.08). Registered in cli_more.rs.
 
+mod health;
+mod notify;
 mod policy;
 mod report;
 
@@ -14,6 +17,8 @@ pub const HELP: &str = "  policy test FILE                     run the [[test]] 
                                        /etc/kepr/policy.toml); deny by default once the file exists
   report access KEY                    every path KEY can take: gate bindings, shares sent, agent
                                        gates and reads (audit log), aliases, sync devices, policy
+  health … --notify URL [--format F]   post findings (names and flags only) to a webhook; F: slack,
+                                       teams, discord, ntfy or json (guessed from URL); URL may be kepr:NAME
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -23,6 +28,10 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         other => Response::fail(format!("unknown command: {other}")),
     }
 }
+
+/// `kepr health` hook (T6.08): `--notify URL [--format F]`, checked
+/// before the health run.
+pub use health::{after as after_health, parse as health_notify};
 
 fn send(req: PolicyRequest) -> Response {
     crate::client::send_request(&Request::Policy(req)).unwrap_or_else(Response::fail)
