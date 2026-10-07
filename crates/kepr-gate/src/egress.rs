@@ -26,16 +26,17 @@ fn ok() -> Response<Body> {
 }
 
 fn log(state: &State, target: &str, status: StatusCode, blocked: Option<&str>, start: Instant) {
-    journal::emit(&journal::Entry {
-        session: &state.session_id,
+    let entry = journal::Entry {
         provider: "egress",
+        host: target,
         method: "CONNECT",
-        path: target,
+        path: "",
         status: status.as_u16(),
         bytes_out: 0,
         ms: start.elapsed().as_millis(),
         blocked,
-    });
+    };
+    journal::emit(state, &entry);
 }
 
 /// The provider name if `host:port` is bound in this session.

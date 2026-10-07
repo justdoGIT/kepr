@@ -3,6 +3,7 @@
 // `Response::Gatex` (untagged, after every tagged variant), so the
 // command names here must not collide with any other `cmd` / `kind`.
 
+use crate::gate_journal::JournalEntry;
 use crate::gate_record::RecChunk;
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +22,25 @@ pub enum GatexRequest {
         #[serde(default)]
         offset: u64,
     },
+    /// T11.22: the caller's gate request journal (`kepr agent logs`),
+    /// only `session`'s entries when given. Read on from `from`; without
+    /// it, from the start, or from the last `last` entries.
+    AgentLogs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<LogCursor>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last: Option<u32>,
+    },
+}
+
+/// Where a `kepr agent logs` reader is: journal file generation and byte
+/// offset in it. `Default` is the start of the journal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogCursor {
+    pub gen: u64,
+    pub offset: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,6 +63,14 @@ pub enum GatexResponse {
         /// Where the next frame starts.
         #[serde(default)]
         offset: u64,
+    },
+    AgentLogsOk {
+        entries: Vec<JournalEntry>,
+        /// Ask from here for what comes next.
+        next: LogCursor,
+        /// More is there already (the reply was full): ask again now.
+        #[serde(default)]
+        more: bool,
     },
 }
 
@@ -85,6 +113,16 @@ mod tests {
                 frame: 3,
                 offset: 1234,
             },
+            GatexRequest::AgentLogs {
+                session: Some("0123456789abcdef".into()),
+                from: Some(LogCursor { gen: 2, offset: 9 }),
+                last: Some(100),
+            },
+            GatexRequest::AgentLogs {
+                session: None,
+                from: None,
+                last: None,
+            },
         ];
         for r in reqs {
             let json = serde_json::to_string(&Request::Gatex(r)).unwrap();
@@ -108,6 +146,30 @@ mod tests {
                 dropped: 0,
                 next: Some(1),
                 offset: 99,
+            },
+            GatexResponse::AgentLogsOk {
+                entries: vec![JournalEntry {
+                    ts: 1,
+                    session: "0123456789abcdef".into(),
+                    provider: "anthropic".into(),
+                    host: "api.anthropic.com".into(),
+                    method: "POST".into(),
+                    path: "/v1/messages".into(),
+                    status: 403,
+                    bytes_out: 2,
+                    ms: 3,
+                    blocked: Some("dlp".into()),
+                }],
+                next: LogCursor {
+                    gen: 1,
+                    offset: 200,
+                },
+                more: true,
+            },
+            GatexResponse::AgentLogsOk {
+                entries: vec![],
+                next: LogCursor::default(),
+                more: false,
             },
         ];
         for r in resps {

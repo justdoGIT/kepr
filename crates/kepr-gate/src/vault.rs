@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use kepr_core::binding::Inject;
 use kepr_core::framing::{read_frame, write_frame};
+use kepr_core::gate_journal::JournalEntry;
 use kepr_core::gate_protocol::{GateRequest, GateResponse};
 use kepr_core::gate_record::GateRecord;
 use kepr_core::generate::ZeroString;
@@ -36,6 +37,10 @@ pub trait Resolve: Send + Sync {
     /// T7.09: hand recorded chunks to the daemon.
     fn record(&self, _record: GateRecord) -> Result<(), String> {
         Err("recording is not available".into())
+    }
+    /// T11.22: hand request journal entries to the daemon.
+    fn journal(&self, _entries: Vec<JournalEntry>) -> Result<(), String> {
+        Err("journal is not available".into())
     }
 }
 
@@ -106,6 +111,14 @@ impl Resolve for FdResolver {
 
     fn record(&self, record: GateRecord) -> Result<(), String> {
         match self.call(|id| GateRequest::Record { id, record })? {
+            GateResponse::Recorded { .. } => Ok(()),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
+
+    fn journal(&self, entries: Vec<JournalEntry>) -> Result<(), String> {
+        match self.call(|id| GateRequest::Journal { id, entries })? {
             GateResponse::Recorded { .. } => Ok(()),
             GateResponse::Err { error, .. } => Err(error),
             _ => Err("daemon channel: unexpected reply".into()),
@@ -195,6 +208,11 @@ impl Cache {
     /// T7.09: pass recorded chunks to the daemon (not cached).
     pub fn record(&self, record: GateRecord) -> Result<(), String> {
         self.resolver.record(record)
+    }
+
+    /// T11.22: pass request journal entries to the daemon.
+    pub fn journal(&self, entries: Vec<JournalEntry>) -> Result<(), String> {
+        self.resolver.journal(entries)
     }
 
     pub fn clear(&self) {

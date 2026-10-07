@@ -2,6 +2,7 @@
 // `Request::Gatex` arrives here from daemon_extra.rs; the uid is the
 // caller's SO_PEERCRED uid, never one from the request.
 
+pub mod logs;
 pub mod recfile;
 pub mod recording;
 pub mod spawn;
@@ -17,5 +18,10 @@ pub fn dispatch(uid: u32, _peer_pid: i32, _username: &str, request: GatexRequest
             frame,
             offset,
         } => recording::handle_replay(uid, &session, (frame, offset)),
+        GatexRequest::AgentLogs {
+            session,
+            from,
+            last,
+        } => logs::handle_logs(uid, session, from, last),
     }
 }

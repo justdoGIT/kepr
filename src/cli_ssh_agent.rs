@@ -41,7 +41,7 @@ pub fn default_socket() -> Result<PathBuf, String> {
 }
 
 /// The connecting process runs as us (SO_PEERCRED).
-fn same_user(s: &UnixStream) -> bool {
+pub(crate) fn same_user(s: &UnixStream) -> bool {
     use std::os::fd::AsRawFd;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -65,7 +65,7 @@ pub trait Keys {
     fn sign(&self, name: &str, data: &[u8]) -> Result<Vec<u8>, String>;
 }
 
-struct Daemon;
+pub(crate) struct Daemon;
 impl Keys for Daemon {
     fn list(&self) -> Result<Vec<SshKeyInfo>, String> {
         match client::send_request(&Request::SshList)? {
@@ -135,7 +135,7 @@ pub fn answer(keys: &dyn Keys, msg: &[u8]) -> Vec<u8> {
     }
 }
 
-fn serve_conn(mut s: UnixStream) {
+pub(crate) fn serve_conn(mut s: UnixStream, keys: &dyn Keys) {
     loop {
         let mut len = [0u8; 4];
         if s.read_exact(&mut len).is_err() {
@@ -149,7 +149,7 @@ fn serve_conn(mut s: UnixStream) {
         if s.read_exact(&mut msg).is_err() {
             return;
         }
-        let reply = answer(&Daemon, &msg);
+        let reply = answer(keys, &msg);
         let mut framed = (reply.len() as u32).to_be_bytes().to_vec();
         framed.extend_from_slice(&reply);
         if s.write_all(&framed).is_err() {
@@ -172,7 +172,7 @@ fn serve(path: &PathBuf) -> Response {
     };
     for conn in listener.incoming().flatten() {
         if same_user(&conn) {
-            std::thread::spawn(move || serve_conn(conn));
+            std::thread::spawn(move || serve_conn(conn, &Daemon));
         }
     }
     Response::Pong
