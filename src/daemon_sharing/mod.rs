@@ -13,6 +13,7 @@ pub mod devices;
 pub mod emergency;
 pub mod emergency_proof;
 pub mod emergency_release;
+pub mod escrow;
 pub mod kem;
 pub mod link;
 pub mod report;
@@ -201,5 +202,12 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SharingRequest
         SharingRequest::BreakGlass { name, shares } => {
             breakglass::handle(uid, username, &name, &shares)
         }
+        SharingRequest::EscrowEnable {
+            admin_key,
+            password,
+        } => escrow::handle_enable(uid, username, &admin_key, password.as_bytes()),
+        SharingRequest::EscrowDisable => escrow::handle_disable(uid, username),
+        SharingRequest::EscrowStatus => escrow::handle_status(),
+        SharingRequest::EscrowOpen { escrow } => escrow::handle_open(uid, username, &escrow),
     }
 }

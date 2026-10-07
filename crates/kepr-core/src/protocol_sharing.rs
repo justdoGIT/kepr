@@ -109,6 +109,20 @@ pub enum SharingRequest {
         name: String,
         shares: Vec<ZeroString>,
     },
+    /// T6.14: wrap the master key to an administrator's share key
+    /// (`escrow.bin`). Needs the store passphrase, like the recovery kit.
+    EscrowEnable {
+        admin_key: String,
+        password: ZeroString,
+    },
+    EscrowDisable,
+    EscrowStatus,
+    /// T6.14 (admin's machine): open an escrow file with the caller's
+    /// share key; replies `Response::RecoveryKitOk` (a 2-of-2 kit for
+    /// `kepr recovery-kit restore` next to the old credential files).
+    EscrowOpen {
+        escrow: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -159,6 +173,16 @@ pub enum SharingResponse {
     /// T6.06: share envelopes (each opens only with its contact's key).
     EmergencyEnvelopes {
         envelopes: Vec<String>,
+    },
+    /// T6.14: is the master key escrowed, and to whom?
+    EscrowState {
+        enabled: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        admin: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        admin_fingerprint: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        since: Option<String>,
     },
 }
 
@@ -305,6 +329,15 @@ mod tests {
                 name: "A".into(),
                 shares: vec!["kepr1-x".into()],
             },
+            SharingRequest::EscrowEnable {
+                admin_key: "kepr-pk2-x".into(),
+                password: "pw".into(),
+            },
+            SharingRequest::EscrowDisable,
+            SharingRequest::EscrowStatus,
+            SharingRequest::EscrowOpen {
+                escrow: "{}".into(),
+            },
             SharingRequest::ShareLinkOpened { id: "i".into() },
             SharingRequest::ShareLinkOpen {
                 blob: "kepr-link1-x".into(),
@@ -377,6 +410,12 @@ mod tests {
             },
             SharingResponse::EmergencyEnvelopes {
                 envelopes: vec!["kepr-share2-x".into()],
+            },
+            SharingResponse::EscrowState {
+                enabled: true,
+                admin: Some("it-admin".into()),
+                admin_fingerprint: Some("ab".into()),
+                since: Some("t".into()),
             },
         ];
         for r in resps {
