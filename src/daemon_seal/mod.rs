@@ -11,6 +11,7 @@
 //              (used by key_unlock.rs; the CLI drives the device)
 //   kms        T4.11 bring your own key: `KekSealer`, the blob header
 //   kms_aws    T4.11 AWS KMS (SigV4)
+//   kms_cloud  T4.12 GCP Cloud KMS and Azure Key Vault (bearer tokens)
 //   http       the key services' HTTPS transport (fake / loopback in tests)
 //
 // `sealer_for` picks a sealer from the environment for
@@ -20,6 +21,7 @@ pub mod fido2_kek;
 mod http;
 mod kms;
 mod kms_aws;
+mod kms_cloud;
 mod recovery;
 mod runner;
 mod tpm;
@@ -39,6 +41,8 @@ pub fn sealer_for(seal: Option<&str>, work: &Path) -> Result<Option<Box<dyn Seal
     let (kind, key) = seal.and_then(|s| s.split_once(':')).unwrap_or_default();
     let byok: Option<Box<dyn Sealer>> = match kind {
         "aws-kms" => Some(Box::new(kms::KmsSealer(kms_aws::AwsKms::from_env(key)?))),
+        "gcp-kms" => Some(Box::new(kms::KmsSealer(kms_cloud::GcpKms::from_env(key)?))),
+        "azure-kv" => Some(Box::new(kms::KmsSealer(kms_cloud::AzureKv::from_env(key)?))),
         _ => None,
     };
     if byok.is_some() {
