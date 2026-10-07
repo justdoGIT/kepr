@@ -41,9 +41,9 @@ pub const HELP: &str = "  policy test FILE                     run the [[test]] 
   alerts check | alerts run [--once]   post audit events matching ~/.config/kepr/alerts.toml rules
                                        to Slack / Teams / Discord / ntfy webhooks, throttled per rule
                                        [--file F] [--interval SECS] [--state FILE]
-  anomaly check | anomaly run --journal FILE|-   gate journal anomalies (~/.config/kepr/rules.toml): new
-                                       path, volume spike, off hours, error burst → webhook, optional
-                                       kepr panic [--rules F] [--once] [--interval SECS] [--state FILE]
+  anomaly check | anomaly run          gate journal anomalies (~/.config/kepr/rules.toml): new path,
+                                       volume spike, off hours, error burst → webhook, optional kepr
+                                       panic [--journal daemon|FILE|-] [--rules F] [--once] [--state F]
   approvals set KEY --via desktop|ntfy|any   answer KEY's consent prompts from a notification
                                        (--off: polkit again); needs kepr approvals serve running
   approvals serve [--desktop] [--ntfy URL --listen ADDR:PORT [--callback-url URL]]

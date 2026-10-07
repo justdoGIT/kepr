@@ -32,6 +32,20 @@ pub struct GateEvent {
     pub blocked: Option<String>,
 }
 
+impl From<&kepr_core::gate_journal::JournalEntry> for GateEvent {
+    fn from(e: &kepr_core::gate_journal::JournalEntry) -> Self {
+        GateEvent {
+            ts: e.ts,
+            session: e.session.clone(),
+            provider: e.provider.clone(),
+            method: e.method.clone(),
+            path: e.path.clone(),
+            status: e.status,
+            blocked: e.blocked.clone(),
+        }
+    }
+}
+
 /// A journal line, alone or after a log prefix (`journalctl -o short`).
 pub fn parse_line(line: &str) -> Option<GateEvent> {
     serde_json::from_str(&line[line.find('{')?..]).ok()

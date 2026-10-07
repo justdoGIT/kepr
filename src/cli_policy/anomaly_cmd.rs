@@ -1,13 +1,14 @@
-// cli_policy/anomaly_cmd.rs — `kepr anomaly check|run` (T7.13): feed gate
-// journal lines through the anomaly rules in ~/.config/kepr/rules.toml.
+// cli_policy/anomaly_cmd.rs — `kepr anomaly check|run` (T7.13): feed the
+// gate request journal through the anomaly rules in ~/.config/kepr/rules.toml.
 //
-// The gate writes its journal to stderr, which lands in the system
-// journal; point `--journal` at a file of those lines, or at `-` and pipe
-// them in (`journalctl -f -o cat -u kepr-gate | kepr anomaly run
-// --journal -`). Hits are printed, posted to the rules' webhook through
-// notify.rs (throttled per rule kind × provider), and with `revoke =
-// true` answered with `kepr panic`. What was learned (paths, hourly
-// volume) and the file offset persist in a state file between runs.
+// By default the journal comes from the daemon, which keeps every gate's
+// entries for `kepr agent logs` (followed with its cursor); `--journal
+// FILE` reads JSON lines from a file (e.g. the gate's stderr), `-` from
+// stdin. Hits are printed, posted to the rules' webhook through notify.rs
+// (throttled per rule kind × provider), and with `revoke = true` answered
+// with `kepr panic`. Entries older than FRESH_SECS only teach the
+// baseline: replaying history never alerts or revokes. What was learned
+// and the read position persist in a state file between runs.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Read, Seek, SeekFrom};
@@ -17,13 +18,16 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use kepr_core::protocol::{Request, Response};
+use kepr_core::protocol_gatex::{GatexRequest, GatexResponse, LogCursor};
 
 use super::anomaly::{parse_line, Baseline, Finding, GateEvent, Rules};
 use super::notify::{self, Format, Note};
 use super::{siem, tail};
 use crate::{cli_mode, cli_ui};
 
-const USAGE: &str = "usage: kepr anomaly check | anomaly run --journal FILE|- [--rules FILE] [--once] [--interval SECS] [--state FILE]";
+const USAGE: &str = "usage: kepr anomaly check | anomaly run [--journal daemon|FILE|-] [--rules FILE] [--once] [--interval SECS] [--state FILE]";
+/// Older entries teach the baseline but raise nothing.
+const FRESH_SECS: u64 = 600;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct State {
@@ -35,6 +39,9 @@ pub struct State {
     /// Bytes of the journal file already read.
     #[serde(default)]
     pub offset: u64,
+    /// Where the daemon's journal was read up to.
+    #[serde(default)]
+    pub cursor: Option<LogCursor>,
 }
 
 /// What a hit does beyond being printed.
@@ -44,6 +51,7 @@ pub struct Act<'a> {
     /// `kepr panic`, when the rules ask for it.
     pub revoke: Option<&'a dyn Fn() -> Result<String, String>>,
     pub utc_offset: &'a dyn Fn(u64) -> i64,
+    pub now: &'a dyn Fn() -> u64,
 }
 
 fn note(f: &Finding, ev: &GateEvent, revoked: Option<&str>) -> Note {
@@ -63,7 +71,11 @@ fn note(f: &Finding, ev: &GateEvent, revoked: Option<&str>) -> Note {
 /// Run `ev` through the rules; returns the hits that were not throttled.
 pub fn handle(rules: &Rules, st: &mut State, ev: &GateEvent, act: &Act) -> Vec<Finding> {
     let mut fresh = Vec::new();
-    for f in st.baseline.observe(rules, ev, (act.utc_offset)(ev.ts)) {
+    let found = st.baseline.observe(rules, ev, (act.utc_offset)(ev.ts));
+    if (act.now)().saturating_sub(ev.ts) > FRESH_SECS {
+        return fresh; // history: learned, not acted on
+    }
+    for f in found {
         let key = format!("{} {}", f.kind, f.provider);
         let last = st.sent.get(&key).copied();
         if last.is_some_and(|l| ev.ts < l.saturating_add(act.throttle_secs)) {
@@ -106,6 +118,33 @@ pub fn read_new(path: &Path, st: &mut State) -> Result<Vec<String>, String> {
         .lines()
         .map(String::from)
         .collect())
+}
+
+/// New entries from the daemon's gate journal (`kepr agent logs`).
+fn daemon_entries(st: &mut State) -> Result<Vec<GateEvent>, String> {
+    let mut out = Vec::new();
+    loop {
+        let req = Request::Gatex(GatexRequest::AgentLogs {
+            session: None,
+            from: Some(st.cursor.unwrap_or_default()),
+            last: None,
+        });
+        match crate::client::send_request(&req)? {
+            Response::Gatex(GatexResponse::AgentLogsOk {
+                entries,
+                next,
+                more,
+            }) => {
+                out.extend(entries.iter().map(GateEvent::from));
+                st.cursor = Some(next);
+                if !more {
+                    return Ok(out);
+                }
+            }
+            Response::Err { error } => return Err(error),
+            _ => return Err("unexpected daemon response".into()),
+        }
+    }
 }
 
 /// `tm_gmtoff` of local time at `ts`.
@@ -183,7 +222,7 @@ pub fn cmd_anomaly(args: &[String]) -> Response {
 }
 
 fn run(args: &[String], file: &Path, rules: &Rules, throttle_secs: u64) -> Result<usize, String> {
-    let journal = crate::cli_extra::flag(args, "--journal").ok_or(USAGE)?;
+    let journal = crate::cli_extra::flag(args, "--journal").unwrap_or("daemon");
     let interval = match crate::cli_extra::flag(args, "--interval").map(str::parse::<u64>) {
         None => 10,
         Some(Ok(n)) if n > 0 => n,
@@ -209,6 +248,7 @@ fn run(args: &[String], file: &Path, rules: &Rules, throttle_secs: u64) -> Resul
         send: &send,
         revoke: rules.revoke.then_some(revoke),
         utc_offset: &utc_offset,
+        now: &tail::now_unix,
     };
     let state = crate::cli_extra::flag(args, "--state")
         .map(PathBuf::from)
@@ -235,10 +275,15 @@ fn run(args: &[String], file: &Path, rules: &Rules, throttle_secs: u64) -> Resul
         return Ok(hits);
     }
     loop {
-        for line in read_new(Path::new(journal), &mut st)? {
-            if let Some(ev) = parse_line(&line) {
-                hits += handle(rules, &mut st, &ev, &act).len();
-            }
+        let events: Vec<GateEvent> = match journal {
+            "daemon" => daemon_entries(&mut st)?,
+            path => read_new(Path::new(path), &mut st)?
+                .iter()
+                .filter_map(|l| parse_line(l))
+                .collect(),
+        };
+        for ev in &events {
+            hits += handle(rules, &mut st, ev, &act).len();
         }
         tail::save(&state, &st)?;
         if args.iter().any(|a| a == "--once") {
@@ -276,6 +321,7 @@ mod tests {
             send: &send,
             revoke: Some(&revoke),
             utc_offset: &|_| 0,
+            now: &|| 1_500,
         };
         let mut st = State::default();
         let mut hits = 0;
@@ -293,6 +339,15 @@ mod tests {
             hits += handle(&r, &mut st, &ev(1000 + t, "openai", "/v1/x", 500), &act).len();
         }
         assert_eq!(hits, 2);
+        // History (older than FRESH_SECS) only teaches the baseline.
+        let old = Act {
+            now: &|| 1_000_000,
+            ..act
+        };
+        for t in [900, 901] {
+            hits += handle(&r, &mut st, &ev(1000 + t, "openai", "/v1/x", 500), &old).len();
+        }
+        assert_eq!((hits, panics.get()), (2, 2));
     }
 
     #[test]
