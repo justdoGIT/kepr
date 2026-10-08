@@ -1,4 +1,5 @@
-// daemon_platform/pki.rs — `kepr pki init | issue | ls` (T10.10).
+// daemon_platform/pki.rs — `kepr pki init | issue | ls` (T10.10); svid.rs
+// signs SPIFFE SVIDs through `issue_leaf` (T10.11).
 //
 // The CA key is the credential `KEPR_PKI_CA`, stored sealed with no
 // bindings: `Get` refuses it, no gate can resolve it (no host), history
@@ -83,6 +84,7 @@ pub fn handle_init(uid: u32, username: &str, days: Option<u32>, force: bool) -> 
             pki: Some(PkiState {
                 ca: new.ca.clone(),
                 issued: Vec::new(),
+                tpm: None,
             }),
             health_ignore: Some(vec!["old".into()]),
             ..Default::default()
@@ -126,17 +128,26 @@ pub fn track(state: &mut PkiState, cert: PkiCert, now: u64) {
     state.issued.drain(..extra);
 }
 
+/// Who a leaf is for: DNS names / IPs, or (T10.11) a SPIFFE ID.
+pub struct Subject<'a> {
+    pub sans: &'a [String],
+    pub uri: Option<&'a str>,
+}
+
 /// Sign and record one leaf (shared by `issue` and T10.11 `svid`).
+/// `check` runs on the CA state under the CA's lock before anything is signed.
 pub fn issue_leaf(
     uid: u32,
     public_key: &str,
-    sans: &[String],
-    uri: Option<&str>,
+    who: Subject<'_>,
     (not_before, not_after): (u64, u64),
+    check: &dyn Fn(&PkiState) -> Result<(), String>,
 ) -> Result<(String, PkiCert, String), String> {
     let pk = P256Public::from_hex(public_key)?;
     let _lock = crate::daemon_credlock::lock(uid, CA_NAME);
     let (mut meta, mut state) = read_state(uid)?;
+    check(&state)?;
+    let Subject { sans, uri } = who;
     if not_after > state.ca.not_after {
         return Err("the CA expires before that; use a shorter validity".into());
     }
@@ -164,6 +175,19 @@ pub fn issue_leaf(
     Ok((pem, cert, ca_pem))
 }
 
+/// Change the PKI record under the CA's lock (T10.11 TPM enrolment).
+pub fn update_state<T>(
+    uid: u32,
+    f: impl FnOnce(&mut PkiState) -> Result<T, String>,
+) -> Result<T, String> {
+    let _lock = crate::daemon_credlock::lock(uid, CA_NAME);
+    let (mut meta, mut state) = read_state(uid)?;
+    let out = f(&mut state)?;
+    meta.pki = Some(state);
+    expiry::write_meta(&meta_path(uid), &meta)?;
+    Ok(out)
+}
+
 pub fn handle_issue(
     uid: u32,
     username: &str,
@@ -179,7 +203,11 @@ pub fn handle_issue(
         }
         let now = expiry::now_unix();
         let window = leaf_window(now, days, u64::MAX)?;
-        issue_leaf(uid, public_key, &sans, None, window)
+        let who = Subject {
+            sans: &sans,
+            uri: None,
+        };
+        issue_leaf(uid, public_key, who, window, &|_| Ok(()))
     })();
     audit("pki-issue", uid, username, &r);
     match r {
@@ -196,7 +224,9 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
     let r = read_state(uid).map(|(_, s)| s);
     audit("pki-ls", uid, username, &r);
     match r {
-        Ok(state) => Response::Platform(PlatformResponse::PkiListOk { state }),
+        Ok(state) => Response::Platform(PlatformResponse::PkiListOk {
+            state: Box::new(state),
+        }),
         Err(e) => Response::fail(e),
     }
 }
@@ -209,7 +239,7 @@ pub fn health_issues(meta: &CredMeta, now: u64) -> Vec<String> {
     }
 }
 
-fn audit<T>(op: &'static str, uid: u32, username: &str, r: &Result<T, String>) {
+pub fn audit<T>(op: &'static str, uid: u32, username: &str, r: &Result<T, String>) {
     crate::daemon_session::audit_op(
         op,
         Some(CA_NAME),
@@ -253,6 +283,7 @@ mod tests {
                 not_after: now + 10 * DAY,
             },
             issued: vec![cert("old", now - 31 * DAY), cert("recent", now - DAY)],
+            tpm: None,
         };
         track(&mut st, cert("new", now + DAY), now);
         let serials: Vec<&str> = st.issued.iter().map(|c| c.serial.as_str()).collect();
@@ -340,6 +371,7 @@ mod tests {
                 not_after: now + 5 * DAY,
             },
             issued: vec![],
+            tpm: None,
         };
         let sealed = CredMeta {
             sealed: Some(true),

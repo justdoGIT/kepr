@@ -39,6 +39,25 @@ pub enum PlatformRequest {
     },
     /// T10.10: the CA certificate and the certificates it issued.
     PkiList,
+    /// T10.11: a single-use nonce (2 min) for a TPM2 quote.
+    PkiNonce,
+    /// T10.11: an X.509 SVID for `spiffe_id` (URI SAN, empty subject).
+    /// With a TPM enrolled, `quote` must cover PCR 7 over a fresh nonce.
+    PkiSvid {
+        spiffe_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_secs: Option<u64>,
+        public_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quote: Option<crate::pki::TpmQuote>,
+    },
+    /// T10.11: tie SVIDs to this attestation key and PCR 7 value (trust on
+    /// first use; the quote proves the key signs over that PCR state).
+    PkiTpmEnroll {
+        ak_public: String,
+        pcr7: String,
+        quote: crate::pki::TpmQuote,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +85,12 @@ pub enum PlatformResponse {
         cert: Box<crate::pki::PkiCert>,
     },
     /// T10.10: `kepr pki ls`.
-    PkiListOk { state: crate::pki::PkiState },
+    /// Boxed to keep `Response` small.
+    PkiListOk { state: Box<crate::pki::PkiState> },
+    /// T10.11: hex nonce for `tpm2_quote -q`.
+    PkiNonceOk { nonce: String },
+    /// T10.11: the enrolled policy.
+    PkiTpmEnrolled { policy: crate::pki::TpmPolicy },
 }
 
 #[cfg(test)]
@@ -197,9 +221,60 @@ mod tests {
                 cert: Box::new(cert.clone()),
             },
             PlatformResponse::PkiListOk {
-                state: PkiState {
+                state: Box::new(PkiState {
                     ca,
                     issued: vec![cert],
+                    tpm: None,
+                }),
+            },
+        ] {
+            let back = round_trip(Response::Platform(r.clone()));
+            assert!(matches!(back, Response::Platform(p) if p == r));
+        }
+    }
+
+    #[test]
+    fn svid_messages_round_trip() {
+        use crate::pki::{TpmPolicy, TpmQuote};
+        use crate::protocol::Request;
+        let quote = TpmQuote {
+            nonce: "00".into(),
+            attest: "ff".into(),
+            signature: "18".into(),
+        };
+        let wire = serde_json::to_string(&Request::Platform(PlatformRequest::PkiSvid {
+            spiffe_id: "spiffe://td/w".into(),
+            ttl_secs: Some(600),
+            public_key: "04".into(),
+            quote: Some(quote.clone()),
+        }))
+        .unwrap();
+        assert!(wire.starts_with(r#"{"cmd":"pki_svid""#));
+        assert!(matches!(
+            serde_json::from_str::<Request>(&wire).unwrap(),
+            Request::Platform(PlatformRequest::PkiSvid { ttl_secs: Some(600), quote: Some(q), .. })
+                if q == quote
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"cmd":"pki_nonce"}"#).unwrap(),
+            Request::Platform(PlatformRequest::PkiNonce)
+        ));
+        let wire = serde_json::to_string(&Request::Platform(PlatformRequest::PkiTpmEnroll {
+            ak_public: "04".into(),
+            pcr7: "aa".into(),
+            quote,
+        }))
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Request>(&wire).unwrap(),
+            Request::Platform(PlatformRequest::PkiTpmEnroll { pcr7, .. }) if pcr7 == "aa"
+        ));
+        for r in [
+            PlatformResponse::PkiNonceOk { nonce: "ab".into() },
+            PlatformResponse::PkiTpmEnrolled {
+                policy: TpmPolicy {
+                    ak_public: "04".into(),
+                    pcr7: "aa".into(),
                 },
             },
         ] {

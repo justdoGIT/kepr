@@ -5,6 +5,7 @@
 //   kepr pki issue NAME... [--days 30] [--out DIR] [--force]
 //                                              NAME.crt (leaf + CA) and NAME.key (0600)
 //   kepr pki ls                                CA and issued certificates with expiry
+//   kepr pki svid | tpm-enroll                 SPIFFE SVIDs (T10.11, svid.rs)
 //
 // The leaf key is generated here and written straight to NAME.key; the
 // daemon only sees its public key.
@@ -19,7 +20,8 @@ use zeroize::Zeroizing;
 
 use super::args;
 
-const USAGE: &str = "usage: kepr pki init [--days N] [--force] | ca | issue NAME... [--days N] [--out DIR] [--force] | ls";
+const USAGE: &str = "usage: kepr pki init [--days N] [--force] | ca | issue NAME... [--days N] [--out DIR] [--force] | ls\n       \
+                     kepr pki svid SPIFFE_ID [--ttl 1h] [--out DIR] [--force] [--ak HANDLE|CTX] | tpm-enroll --ak-pub PEM --ak HANDLE|CTX";
 
 pub fn send(r: PlatformRequest) -> Response {
     crate::client::send_request(&Request::Platform(r)).unwrap_or_else(Response::fail)
@@ -47,6 +49,8 @@ pub fn cmd_pki(argv: &[String]) -> Response {
         "ca" => ca(),
         "issue" => issue(rest),
         "ls" | "list" => ls(),
+        "svid" => super::svid::svid(rest),
+        "tpm-enroll" => super::svid::tpm_enroll(rest),
         _ => Err(USAGE.into()),
     };
     r.unwrap_or_else(Response::fail)
@@ -77,7 +81,7 @@ fn init(argv: &[String]) -> Result<Response, String> {
 
 fn list() -> Result<PkiState, String> {
     match send(PlatformRequest::PkiList) {
-        Response::Platform(PlatformResponse::PkiListOk { state }) => Ok(state),
+        Response::Platform(PlatformResponse::PkiListOk { state }) => Ok(*state),
         Response::Err { error } => Err(error),
         _ => Err("unexpected daemon response".into()),
     }
@@ -209,6 +213,8 @@ pub fn render(state: &PkiState, now: u64) -> String {
     let left = |t: u64| {
         if t <= now {
             "expired".to_string()
+        } else if t - now < 86_400 {
+            format!("{} h", (t - now).div_ceil(3600))
         } else {
             format!("{} d", (t - now).div_ceil(86_400))
         }
@@ -244,7 +250,9 @@ fn ls() -> Result<Response, String> {
             crate::cli_ui::warn(&line);
         }
     }
-    Ok(Response::Platform(PlatformResponse::PkiListOk { state }))
+    Ok(Response::Platform(PlatformResponse::PkiListOk {
+        state: Box::new(state),
+    }))
 }
 
 #[cfg(test)]
@@ -311,6 +319,7 @@ mod tests {
                 issued_at: now,
                 spiffe_id: None,
             }],
+            tpm: None,
         };
         let r = render(&st, now);
         assert!(r.contains("(365 d)"));

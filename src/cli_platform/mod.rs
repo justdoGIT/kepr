@@ -7,12 +7,14 @@
 //   fingerprint    `kepr unlock --fingerprint`, doctor's fprintd check (T10.03)
 //   exe            `kepr set --exe`, `kepr exe` binary-identity bindings (T10.09)
 //   pki            `kepr pki init|ca|issue|ls` local CA (T10.10)
+//   svid           `kepr pki svid|tpm-enroll` SPIFFE SVIDs, TPM2 quotes (T10.11)
 
 mod args;
 pub mod exe;
 pub mod fingerprint;
 mod keyring;
 mod pki;
+mod svid;
 mod systemd_cred;
 
 use kepr_core::protocol::Response;
@@ -38,6 +40,11 @@ pub const HELP: &str = "  systemd-cred KEY [--name CRED] [--tpm2]
   pki issue NAME... [--days 30] [--out DIR] [--force]
                                        NAME.crt (leaf + CA) and NAME.key (0600) for DNS names / IPs
   pki ls                               the CA and issued certificates; health warns 14 days ahead
+  pki svid spiffe://TD/PATH [--ttl 1h] [--out DIR] [--force] [--ak HANDLE|CTX]
+                                       X.509 SVID (URI SAN, at most 24 h): svid.pem, svid_key.pem,
+                                       svid_bundle.pem; with a TPM enrolled, --ak quotes PCR 7 first
+  pki tpm-enroll --ak-pub ak.pem --ak HANDLE|CTX
+                                       SVIDs only while PCR 7 (Secure Boot state) matches, via tpm2_quote
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {

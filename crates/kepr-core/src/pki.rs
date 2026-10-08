@@ -45,6 +45,94 @@ pub struct PkiState {
     pub ca: PkiCa,
     #[serde(default)]
     pub issued: Vec<PkiCert>,
+    /// T10.11: once enrolled, every SVID needs a TPM2 quote over PCR 7
+    /// that matches this policy.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tpm: Option<TpmPolicy>,
+}
+
+/// T10.11: the attestation key and PCR 7 value SVIDs are tied to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TpmPolicy {
+    /// Uncompressed P-256 point of the TPM attestation key (hex).
+    pub ak_public: String,
+    /// SHA-256 bank PCR 7 (Secure Boot state), hex.
+    pub pcr7: String,
+}
+
+/// T10.11: a quote as `tpm2_quote -m MSG -s SIG` writes it (TPMS_ATTEST
+/// and TPMT_SIGNATURE, both TSS-marshalled), over a daemon nonce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TpmQuote {
+    pub nonce: String,
+    pub attest: String,
+    pub signature: String,
+}
+
+/// SVID lifetimes: default and cap (T10.11).
+pub const DEFAULT_SVID_TTL: u64 = 3600;
+pub const MAX_SVID_TTL: u64 = 24 * 3600;
+
+/// A SPIFFE ID for a workload: `spiffe://TRUST-DOMAIN/PATH` (SPIFFE ID
+/// spec: lower-case trust domain of `[a-z0-9._-]`, a non-empty path of
+/// `[A-Za-z0-9._-]` segments, no `.`/`..` segments, no trailing `/`, no
+/// port, user info, query or fragment).
+pub fn validate_spiffe_id(id: &str) -> Result<(), String> {
+    let bad = |why: &str| format!("not a SPIFFE ID ({why}): {id}");
+    if id.len() > 2048 {
+        return Err(bad("longer than 2048 bytes"));
+    }
+    let rest = id
+        .strip_prefix("spiffe://")
+        .ok_or_else(|| bad("must start with spiffe://"))?;
+    let (td, path) = rest.split_once('/').ok_or_else(|| bad("needs a path"))?;
+    if td.is_empty()
+        || td.len() > 255
+        || !td
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+    {
+        return Err(bad(
+            "trust domain: lower-case letters, digits, '.', '-', '_'",
+        ));
+    }
+    for seg in path.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            return Err(bad("empty, '.' or '..' path segment"));
+        }
+        if !seg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        {
+            return Err(bad("path: letters, digits, '.', '-', '_'"));
+        }
+    }
+    Ok(())
+}
+
+/// `90s`, `15m`, `1h`, `1d` or seconds; capped at `MAX_SVID_TTL`.
+pub fn parse_svid_ttl(s: Option<&str>) -> Result<u64, String> {
+    let Some(s) = s else {
+        return Ok(DEFAULT_SVID_TTL);
+    };
+    let s = s.trim();
+    let (num, mult) = match s.char_indices().last() {
+        Some((i, 's')) => (&s[..i], 1),
+        Some((i, 'm')) => (&s[..i], 60),
+        Some((i, 'h')) => (&s[..i], 3600),
+        Some((i, 'd')) => (&s[..i], 86_400),
+        _ => (s, 1),
+    };
+    let secs = num
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(mult))
+        .filter(|n| *n >= 60)
+        .ok_or_else(|| format!("--ttl: at least 60 s, e.g. 1h or 30m (got {s})"))?;
+    if secs > MAX_SVID_TTL {
+        return Err(format!("--ttl: at most {} h", MAX_SVID_TTL / 3600));
+    }
+    Ok(secs)
 }
 
 /// `YYYY-MM-DD` (UTC) for `kepr pki ls`.
@@ -103,7 +191,8 @@ pub fn normalize_sans(sans: &[String]) -> Result<Vec<String>, String> {
 }
 
 /// `kepr health` lines for certificates expiring within `WARN_DAYS` (or
-/// expired in the last 30 days). Each starts with "certificate".
+/// expired in the last 30 days). Each starts with "certificate". SVIDs are
+/// left out: they live an hour or so by design and are re-issued, not renewed.
 pub fn expiry_issues(state: &PkiState, now: u64) -> Vec<String> {
     let day = 86_400;
     let line = |what: &str, not_after: u64| -> Option<String> {
@@ -118,8 +207,8 @@ pub fn expiry_issues(state: &PkiState, now: u64) -> Vec<String> {
     let mut out: Vec<String> = line(&format!("\"{}\"", state.ca.cn), state.ca.not_after)
         .into_iter()
         .collect();
-    for c in &state.issued {
-        let who = c.spiffe_id.as_deref().unwrap_or(c.sans[0].as_str());
+    for c in state.issued.iter().filter(|c| c.spiffe_id.is_none()) {
+        let who = c.sans.first().map(String::as_str).unwrap_or("?");
         out.extend(line(&format!("{who} (serial {})", c.serial), c.not_after));
     }
     out
@@ -156,6 +245,51 @@ mod tests {
     }
 
     #[test]
+    fn spiffe_ids() {
+        for ok in [
+            "spiffe://example.org/ns/prod/sa/api",
+            "spiffe://td/w",
+            "spiffe://a-b_c.d/x.y-z_1/A",
+        ] {
+            assert!(validate_spiffe_id(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "https://example.org/x",
+            "spiffe://example.org",
+            "spiffe://example.org/",
+            "spiffe://example.org/a/",
+            "spiffe://example.org//a",
+            "spiffe://example.org/./a",
+            "spiffe://example.org/a/..",
+            "spiffe://Example.org/a",
+            "spiffe://ex:8080/a",
+            "spiffe://u@ex/a",
+            "spiffe://ex/a?b",
+            "spiffe://ex/a#b",
+            "spiffe://ex/a b",
+            "spiffe:///a",
+        ] {
+            assert!(validate_spiffe_id(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_spiffe_id(&format!("spiffe://t/{}", "a".repeat(2048))).is_err());
+    }
+
+    #[test]
+    fn svid_ttl_is_capped() {
+        assert_eq!(parse_svid_ttl(None), Ok(3600));
+        assert_eq!(parse_svid_ttl(Some("1h")), Ok(3600));
+        assert_eq!(parse_svid_ttl(Some("30m")), Ok(1800));
+        assert_eq!(parse_svid_ttl(Some("90")), Ok(90));
+        assert_eq!(parse_svid_ttl(Some("24h")), Ok(MAX_SVID_TTL));
+        assert!(parse_svid_ttl(Some("25h")).is_err());
+        assert!(parse_svid_ttl(Some("2d")).is_err());
+        assert!(parse_svid_ttl(Some("59s")).is_err());
+        assert!(parse_svid_ttl(Some("soon")).is_err());
+        assert!(parse_svid_ttl(Some("99999999999999999999h")).is_err());
+    }
+
+    #[test]
     fn dates() {
         assert_eq!(date(0), "1970-01-01");
         assert_eq!(date(1_791_462_896), "2026-10-08");
@@ -183,7 +317,12 @@ mod tests {
                 cert(&["later.test"], now + 20 * day),
                 cert(&["gone.test"], now - 2 * day),
                 cert(&["old.test"], now - 40 * day),
+                PkiCert {
+                    spiffe_id: Some("spiffe://td/w".into()),
+                    ..cert(&[], now + day / 2)
+                },
             ],
+            tpm: None,
         };
         let issues = expiry_issues(&st, now);
         assert_eq!(
@@ -200,6 +339,7 @@ mod tests {
                 ..st.ca.clone()
             },
             issued: vec![],
+            tpm: None,
         };
         assert_eq!(
             expiry_issues(&ca_soon, now),
