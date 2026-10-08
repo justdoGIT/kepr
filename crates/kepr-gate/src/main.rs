@@ -8,6 +8,7 @@
 
 mod aws_egress;
 mod ca;
+mod canary;
 mod db;
 mod dlp;
 mod egress;

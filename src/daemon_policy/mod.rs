@@ -1,7 +1,8 @@
 // daemon_policy/ — the `policy` ticket batch, daemon side: the access
 // policy (T6.11), access reports (T6.12), the audit feed for the CLI-side
 // forwarders and alerts (T7.14), approval notifications (T9.04), per-day
-// caps across gate sessions (T9.06), the usage report (T9.07).
+// caps across gate sessions (T9.06), the usage report (T9.07),
+// honeytokens (T9.08).
 // Requests arrive as
 // `Request::Policy` via daemon_extra.rs; `enforce` runs before every request in
 // daemon_dispatch.rs, `init` once at start in daemon.rs.
@@ -9,6 +10,7 @@
 mod approvals;
 mod approve;
 mod caller;
+mod canary;
 mod daily;
 mod enforce;
 mod events;
@@ -47,6 +49,11 @@ pub fn day_usage(
         tokens,
     }
 }
+/// T9.08 honeytokens: the `.meta` record and the Get / gate hooks.
+pub use canary::{
+    gate_check as canary_gate_check, read as canary_read, refuse_release as canary_refuse,
+    CanaryMeta,
+};
 /// Pre-dispatch hook: `Some(refusal)` stops the request.
 pub use enforce::enforce;
 /// Load the policy file; reload on SIGHUP.
@@ -76,6 +83,14 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: PolicyRequest) -> Re
         PolicyRequest::UsageReport { days, unused_days } => {
             usage::handle_report(uid, username, days, unused_days)
         }
+        PolicyRequest::CanaryPlant {
+            name,
+            provider,
+            planted_in,
+        } => canary::handle_plant(uid, username, &name, &provider, planted_in),
+        PolicyRequest::CanaryList => canary::handle_list(uid),
+        PolicyRequest::CanaryRemove { name } => canary::handle_remove(uid, username, &name),
+        PolicyRequest::CanaryTrip { trip_id } => canary::handle_webhook(uid, username, &trip_id),
     }
 }
 

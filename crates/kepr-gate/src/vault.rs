@@ -46,6 +46,10 @@ pub trait Resolve: Send + Sync {
     fn day_usage(&self, _name: &str, _requests: u64, _tokens: u64) -> Result<(u64, u64), String> {
         Err("daily usage is not available".into())
     }
+    /// T9.08: is one of these fingerprints a planted canary?
+    fn canary(&self, _fingerprints: Vec<String>) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 pub struct FdResolver {
@@ -144,6 +148,14 @@ impl Resolve for FdResolver {
             _ => Err("daemon channel: unexpected reply".into()),
         }
     }
+
+    fn canary(&self, fingerprints: Vec<String>) -> Result<bool, String> {
+        match self.call(|id| GateRequest::Canary { id, fingerprints })? {
+            GateResponse::CanaryChecked { tripped, .. } => Ok(tripped),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
 }
 
 type Key = (String, String, u16);
@@ -233,6 +245,11 @@ impl Cache {
     /// T11.22: pass request journal entries to the daemon.
     pub fn journal(&self, entries: Vec<JournalEntry>) -> Result<(), String> {
         self.resolver.journal(entries)
+    }
+
+    /// T9.08: ask the daemon about canary fingerprints (not cached).
+    pub fn canary(&self, fingerprints: Vec<String>) -> Result<bool, String> {
+        self.resolver.canary(fingerprints)
     }
 
     /// T9.06: report usage of `name` to the daemon (not cached).

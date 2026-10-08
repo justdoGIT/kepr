@@ -208,6 +208,23 @@ pub fn looks_like_key(text: &[u8]) -> bool {
     !find_all(text).is_empty()
 }
 
+/// Most key-shaped strings one request is checked for as canaries.
+pub const MAX_CANARY_PROBES: usize = 16;
+
+/// T9.08: the canary fingerprints of the key-shaped strings in `text`
+/// (private-key headers aside), for the daemon to match against the
+/// decoys it planted; a hit means someone is using a honeytoken.
+pub fn canary_probes(text: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = find_all(text)
+        .iter()
+        .filter(|h| h.kind != "private key")
+        .map(|h| crate::canary::fingerprint(&text[h.offset..h.offset + h.len]))
+        .collect();
+    out.dedup();
+    out.truncate(MAX_CANARY_PROBES);
+    out
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -240,6 +257,16 @@ mod tests {
         assert!(!looks_like_key(
             b"kepr-ph-0123456789abcdef-0000-0123456789abcdef"
         ));
+    }
+
+    #[test]
+    fn a_planted_decoy_is_probed_exactly() {
+        let decoy = crate::canary::make("openai").unwrap();
+        let req = format!("{{\"auth\":\"Bearer {decoy}\",\"n\":1}}");
+        let probes = canary_probes(req.as_bytes());
+        assert_eq!(probes, vec![crate::canary::fingerprint(decoy.as_bytes())]);
+        assert!(canary_probes(b"kepr-ph-0123456789abcdef-0000-0123456789abcdef").is_empty());
+        assert!(canary_probes(b"-----BEGIN PRIVATE KEY-----").is_empty());
     }
 
     #[test]

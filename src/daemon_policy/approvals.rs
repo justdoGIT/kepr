@@ -65,7 +65,7 @@ fn random_hex(n: usize) -> Result<String, String> {
     Ok(hex::encode(&*b))
 }
 
-fn ct_eq(a: &str, b: &str) -> bool {
+pub(super) fn ct_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
