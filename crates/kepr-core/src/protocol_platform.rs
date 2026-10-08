@@ -1,11 +1,22 @@
 // protocol_platform.rs — wire types for the P10 platform batch (`platform`).
 // batch: platform
 //
-// Carried inside `Response::Platform` (untagged), so the JSON is flat:
-// `{"kind":"systemd_cred_ok",...}`. CLI-only verbs use these variants for
-// their `--json` output.
+// Carried inside `Request::Platform` / `Response::Platform` (untagged), so
+// the JSON is flat: `{"cmd":"fingerprint_unlock"}`,
+// `{"kind":"systemd_cred_ok",...}`. CLI-only verbs use the response
+// variants for their `--json` output.
 
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum PlatformRequest {
+    /// T10.03: `kepr unlock --fingerprint` — reopen a store that the idle
+    /// timer or the sleep watcher locked, after polkit (`io.kepr.unlock`,
+    /// fingerprint through pam_fprintd) authorises the calling process.
+    /// Answered with `Response::UnlockedOk`.
+    FingerprintUnlock,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -59,6 +70,22 @@ mod tests {
         };
         let back = round_trip(Response::Platform(added.clone()));
         assert!(matches!(back, Response::Platform(p) if p == added));
+    }
+
+    #[test]
+    fn fingerprint_unlock_round_trips_and_core_requests_keep_their_variants() {
+        use crate::protocol::Request;
+        let r = Request::Platform(PlatformRequest::FingerprintUnlock);
+        let wire = serde_json::to_string(&r).unwrap();
+        assert_eq!(wire, r#"{"cmd":"fingerprint_unlock"}"#);
+        assert!(matches!(
+            serde_json::from_str::<Request>(&wire).unwrap(),
+            Request::Platform(PlatformRequest::FingerprintUnlock)
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"cmd":"ping"}"#).unwrap(),
+            Request::Ping
+        ));
     }
 
     #[test]

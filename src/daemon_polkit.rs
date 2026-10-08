@@ -52,7 +52,7 @@ use std::process::Command;
 /// rename both — pkcheck's exit code on an unregistered action
 /// is the same as a denied action, so a typo here silently
 /// denies every consent-flagged credential.
-const ACTION_ID: &str = "io.kepr.read-credential";
+pub(crate) const ACTION_ID: &str = "io.kepr.read-credential";
 
 /// Path to the pkcheck binary. Hardcoded against
 /// /usr/bin/pkcheck rather than relying on $PATH so a
@@ -72,6 +72,11 @@ const PKCHECK_BIN: &str = "/usr/bin/pkcheck";
 /// the revert in #78; this function takes the peer pid by name
 /// to make the contract explicit at every call site.
 pub fn consent_granted(peer_pid: i32) -> bool {
+    authorized(peer_pid, ACTION_ID)
+}
+
+/// The same check for any kepr polkit action (T10.03: `io.kepr.unlock`).
+pub fn authorized(peer_pid: i32, action_id: &str) -> bool {
     // Read /proc/<pid>/stat to get the process start-time. Pair
     // it with the pid so a kernel pid-reuse between the
     // SO_PEERCRED capture and the pkcheck call can't authorise
@@ -83,7 +88,7 @@ pub fn consent_granted(peer_pid: i32) -> bool {
     let subject = format!("{peer_pid},{start_time}");
     let child = Command::new(PKCHECK_BIN)
         .arg("--action-id")
-        .arg(ACTION_ID)
+        .arg(action_id)
         .arg("--allow-user-interaction")
         .arg("--process")
         .arg(&subject)

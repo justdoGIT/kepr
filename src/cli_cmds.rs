@@ -438,6 +438,9 @@ pub fn cmd_lock(a: &Args) -> Response {
 }
 
 pub fn cmd_unlock(a: &Args) -> Response {
+    if let Some(r) = crate::cli_platform::fingerprint::cmd_unlock(a) {
+        return r; // T10.03
+    }
     // T4.09: with the security key's factor when the store has one.
     let password = match crate::cli_seal::fido2::store_passphrase("  Unlock password: ") {
         Ok(p) => p,
