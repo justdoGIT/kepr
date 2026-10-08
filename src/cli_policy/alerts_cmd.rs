@@ -80,13 +80,6 @@ fn read_rules(path: &Path) -> Result<Vec<Rule>, String> {
     alerts::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 pub fn cmd_alerts(args: &[String]) -> Response {
     let a = super::plain_args(args);
     let file = crate::cli_extra::flag(args, "--file")
@@ -134,7 +127,7 @@ fn run(args: &[String], file: &Path, rules: &[Rule]) -> Response {
         .map(PathBuf::from)
         .unwrap_or_else(|| tail::state_file("alerts", &file.to_string_lossy()));
     if args.iter().any(|a| a == "--once") {
-        return match pass(&tail::Daemon, rules, &send, &state, now()) {
+        return match pass(&tail::Daemon, rules, &send, &state, tail::now_unix()) {
             Ok(n) => super::done(format!("{n} alert(s) sent")),
             Err(e) => Response::fail(format!("alerts: {e}")),
         };
@@ -146,7 +139,7 @@ fn run(args: &[String], file: &Path, rules: &[Rule]) -> Response {
         ));
     }
     loop {
-        match pass(&tail::Daemon, rules, &send, &state, now()) {
+        match pass(&tail::Daemon, rules, &send, &state, tail::now_unix()) {
             Ok(0) => {}
             Ok(n) => cli_ui::dim(&format!("{n} alert(s) sent")),
             Err(e) => cli_ui::warn(&format!("alerts: {e}; retrying")),

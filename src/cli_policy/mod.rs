@@ -1,13 +1,15 @@
 // cli_policy/ — the `policy` ticket batch, CLI side: `kepr policy`
 // (T6.11), `kepr report access` (T6.12), webhooks (`notify`) and
 // `kepr health --notify` (T6.08), `kepr audit forward` (T7.14),
-// `kepr alerts` (T7.15), `kepr anomaly` (T7.13).
+// `kepr alerts` (T7.15), `kepr anomaly` (T7.13), `kepr approvals` (T9.04).
 // Registered in cli_more.rs.
 
 mod alerts;
 mod alerts_cmd;
 mod anomaly;
 mod anomaly_cmd;
+mod approvals_cmd;
+mod approve_notify;
 mod forward;
 mod health;
 mod notify;
@@ -19,7 +21,14 @@ mod tail;
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_policy::{PolicyRequest, PolicyResponse};
 
-pub const VERBS: &[&str] = &["policy", "report", "audit", "alerts", "anomaly"];
+pub const VERBS: &[&str] = &[
+    "policy",
+    "report",
+    "audit",
+    "alerts",
+    "anomaly",
+    "approvals",
+];
 
 pub const HELP: &str = "  policy test FILE                     run the [[test]] cases of a policy.toml (allow / deny per case)
   policy status | policy reload        the policy the daemon enforces (~/.config/kepr/policy.toml or
@@ -32,9 +41,14 @@ pub const HELP: &str = "  policy test FILE                     run the [[test]] 
   alerts check | alerts run [--once]   post audit events matching ~/.config/kepr/alerts.toml rules
                                        to Slack / Teams / Discord / ntfy webhooks, throttled per rule
                                        [--file F] [--interval SECS] [--state FILE]
-  anomaly check | anomaly run --journal FILE|-   gate journal anomalies (~/.config/kepr/rules.toml): new
-                                       path, volume spike, off hours, error burst → webhook, optional
-                                       kepr panic [--rules F] [--once] [--interval SECS] [--state FILE]
+  anomaly check | anomaly run          gate journal anomalies (~/.config/kepr/rules.toml): new path,
+                                       volume spike, off hours, error burst → webhook, optional kepr
+                                       panic [--journal daemon|FILE|-] [--rules F] [--once] [--state F]
+  approvals set KEY --via desktop|ntfy|any   answer KEY's consent prompts from a notification
+                                       (--off: polkit again); needs kepr approvals serve running
+  approvals serve [--desktop] [--ntfy URL --listen ADDR:PORT [--callback-url URL]]
+                                       ask on the desktop / on a phone (ntfy buttons call back here);
+                                       unanswered = denied
   health … --notify URL [--format F]   post findings (names and flags only) to a webhook; F: slack,
                                        teams, discord, ntfy or json (guessed from URL); URL may be kepr:NAME
 ";
@@ -46,6 +60,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "audit" => forward::cmd_audit(args),
         "alerts" => alerts_cmd::cmd_alerts(args),
         "anomaly" => anomaly_cmd::cmd_anomaly(args),
+        "approvals" => approvals_cmd::cmd_approvals(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

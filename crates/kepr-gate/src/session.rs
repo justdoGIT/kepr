@@ -135,10 +135,16 @@ pub fn run() -> Result<(), String> {
         .filter_map(|r| kepr_core::providers::lookup(&r.provider))
         .map(|p| p.host.to_string())
         .collect();
+    // T2.02: AWS keys may be bound to any *.amazonaws.com host; the
+    // egress proxy asks the daemon per host (aws_egress.rs).
+    let aws = cfg.routes.iter().any(|r| r.provider.starts_with("aws:"));
+    let suffixes: &[&str] = if aws { &["amazonaws.com"] } else { &[] };
     // A database-only session has no HTTPS host, hence no CA.
-    let ca = match hosts.is_empty() {
+    let ca = match hosts.is_empty() && !aws {
         true => None,
-        false => Some(Arc::new(crate::ca::SessionCa::new(&hosts)?)),
+        false => Some(Arc::new(crate::ca::SessionCa::with_suffixes(
+            &hosts, suffixes,
+        )?)),
     };
     let ca_pem = ca.as_ref().map(|c| c.pem().to_string());
     let recorder = Arc::new(crate::recording::Recorder::new(cfg.record));

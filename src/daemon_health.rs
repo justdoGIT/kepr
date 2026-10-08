@@ -78,9 +78,18 @@ fn sha1_hex(v: &str) -> String {
     hex::encode_upper(Sha1::digest(v.as_bytes()))
 }
 
+/// Days since the value was last written: the record's write time on the
+/// image backend, the file's mtime otherwise.
 fn file_age_days(path: &std::path::Path) -> Option<u64> {
+    if let Some((_, updated)) = crate::daemon_vault::stat(path) {
+        return Some(days_since(updated, crate::expiry::now_unix()));
+    }
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     Some(modified.elapsed().ok()?.as_secs() / 86_400)
+}
+
+fn days_since(then_unix: u64, now_unix: u64) -> u64 {
+    now_unix.saturating_sub(then_unix) / 86_400
 }
 
 fn audit_ok(op: &'static str, uid: u32, username: &str, name: Option<&str>) {
@@ -258,6 +267,13 @@ mod tests {
             Response::HealthOk { items } => items.into_iter().map(|i| (i.name, i.issues)).collect(),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn days_since_counts_whole_days_and_never_underflows() {
+        assert_eq!(days_since(1_000, 1_000 + 86_399), 0);
+        assert_eq!(days_since(1_000, 1_000 + 120 * 86_400 + 5), 120);
+        assert_eq!(days_since(2_000, 1_000), 0);
     }
 
     fn age(uid: u32, name: &str, days: u64) {

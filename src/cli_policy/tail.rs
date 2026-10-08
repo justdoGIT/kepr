@@ -55,6 +55,13 @@ fn home_base(var: &str, fallback: &str) -> PathBuf {
     }
 }
 
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// `~/.local/state/kepr` (or `$XDG_STATE_HOME/kepr`).
 pub fn state_dir() -> PathBuf {
     home_base("XDG_STATE_HOME", ".local/state").join("kepr")

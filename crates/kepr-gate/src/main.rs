@@ -6,6 +6,7 @@
 //! ready line, then forwards provider API calls, replacing the session
 //! placeholder with the real key. See docs/content/docs/agent-vault-plan.mdx.
 
+mod aws_egress;
 mod ca;
 mod db;
 mod dlp;
@@ -28,6 +29,7 @@ mod routes;
 mod scram;
 mod service;
 mod session;
+mod sigv4_resign;
 mod tls_provider;
 mod tunnel;
 mod vault;

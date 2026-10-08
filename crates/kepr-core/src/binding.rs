@@ -29,6 +29,11 @@ pub enum Inject {
     /// T7.02: a MySQL login (`kind: mysql`); the gate completes the
     /// server handshake for the agent.
     Mysql,
+    /// T2.02: an AWS access key (JSON `{"access_key_id","secret_access_key",
+    /// "session_token"?}`). The gate checks the agent's SigV4 signature
+    /// (made with the session placeholder) and signs again with the key;
+    /// `*.amazonaws.com` hosts only.
+    Sigv4,
 }
 
 impl Inject {
@@ -109,6 +114,9 @@ pub fn validate_binding(b: &Binding) -> Result<(), String> {
         Inject::Query { param } if !valid_token(param) => {
             Err("query parameter must be 1-64 chars of A-Z a-z 0-9 - _".to_string())
         }
+        Inject::Sigv4 if !b.host.ends_with(".amazonaws.com") || b.port != 443 => {
+            Err("sigv4 binds only *.amazonaws.com hosts on port 443".to_string())
+        }
         _ => Ok(()),
     }
 }
@@ -117,6 +125,7 @@ fn parse_inject(s: &str) -> Result<Inject, String> {
     match s {
         "bearer" => Ok(Inject::Bearer),
         "basic" => Ok(Inject::Basic),
+        "sigv4" => Ok(Inject::Sigv4),
         _ => {
             if let Some(n) = s.strip_prefix("header=") {
                 Ok(Inject::Header {
@@ -128,7 +137,7 @@ fn parse_inject(s: &str) -> Result<Inject, String> {
                 })
             } else {
                 Err(format!(
-                    "unknown inject '{s}' (use bearer, basic, header=NAME or query=NAME)"
+                    "unknown inject '{s}' (use bearer, basic, sigv4, header=NAME or query=NAME)"
                 ))
             }
         }
@@ -235,6 +244,26 @@ mod tests {
         };
         assert!(validate_binding(&b("x.com", 443, bad_header)).is_err());
         assert!(validate_binding(&b("api.openai.com", 443, Inject::Bearer)).is_ok());
+    }
+
+    #[test]
+    fn sigv4_binds_only_amazonaws_hosts() {
+        assert_eq!(
+            parse_binding("sts.amazonaws.com:sigv4").unwrap(),
+            b("sts.amazonaws.com", 443, Inject::Sigv4)
+        );
+        assert!(parse_binding("s3.eu-west-1.amazonaws.com:sigv4").is_ok());
+        for bad in [
+            "api.example.com:sigv4",
+            "amazonaws.com:sigv4",
+            "evilamazonaws.com:sigv4",
+            "sts.amazonaws.com.evil.com:sigv4",
+            "sts.amazonaws.com:8443:sigv4",
+        ] {
+            assert!(parse_binding(bad).is_err(), "{bad}");
+        }
+        let j = serde_json::to_string(&b("sts.amazonaws.com", 443, Inject::Sigv4)).unwrap();
+        assert!(j.contains(r#"{"kind":"sigv4"}"#), "{j}");
     }
 
     #[test]

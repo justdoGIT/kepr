@@ -24,6 +24,26 @@ pub enum PolicyRequest {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         after: Option<String>,
     },
+    /// T9.04: let the registered approver answer consent prompts for
+    /// `name` (`via`: desktop | ntfy | any); `None` clears it.
+    ApproveVia {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        via: Option<String>,
+    },
+    /// T9.04: make the calling process the user's approver (polkit
+    /// confirms it once); replies `ApproverKey`.
+    ApproverRegister,
+    /// T9.04: the requests waiting for the approver (`key` from
+    /// `ApproverKey`; the same process must ask).
+    ApprovalPoll { key: String },
+    /// T9.04: answer one waiting request with its one-time token.
+    ApprovalAnswer {
+        key: String,
+        id: String,
+        token: String,
+        allow: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +70,14 @@ pub enum PolicyResponse {
         name: String,
         rows: Vec<AccessRow>,
     },
+    ApproverKey {
+        key: String,
+        /// How long a request waits for an answer.
+        timeout_secs: u64,
+    },
+    ApprovalsPending {
+        pending: Vec<PendingApproval>,
+    },
     AuditTailOk {
         events: Vec<AuditRecord>,
         /// More entries follow: ask again after the last one.
@@ -59,6 +87,19 @@ pub enum PolicyResponse {
         #[serde(default)]
         reset: bool,
     },
+}
+
+/// T9.04: a consent request waiting for the approver. `token` is the
+/// one-time answer token; `requester` the program that asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingApproval {
+    pub id: String,
+    pub token: String,
+    pub name: String,
+    pub via: String,
+    pub requester: String,
+    /// Unix seconds; unanswered by then = denied.
+    pub expires_at: u64,
 }
 
 /// One audit-chain entry as the forwarders see it: what happened, never
@@ -170,6 +211,48 @@ mod tests {
         });
         round_trip_resp(PolicyResponse::PolicyDone {
             message: "forwarded 3 audit event(s)".into(),
+        });
+    }
+
+    #[test]
+    fn approvals_round_trip() {
+        round_trip_req(
+            PolicyRequest::ApproveVia {
+                name: "K".into(),
+                via: Some("ntfy".into()),
+            },
+            r#"{"cmd":"approve_via","name":"K","via":"ntfy"}"#,
+        );
+        round_trip_req(
+            PolicyRequest::ApproverRegister,
+            r#"{"cmd":"approver_register"}"#,
+        );
+        round_trip_req(
+            PolicyRequest::ApprovalPoll { key: "k".into() },
+            r#"{"cmd":"approval_poll","key":"k"}"#,
+        );
+        round_trip_req(
+            PolicyRequest::ApprovalAnswer {
+                key: "k".into(),
+                id: "i".into(),
+                token: "t".into(),
+                allow: true,
+            },
+            r#"{"cmd":"approval_answer","key":"k","id":"i","token":"t","allow":true}"#,
+        );
+        round_trip_resp(PolicyResponse::ApproverKey {
+            key: "k".into(),
+            timeout_secs: 60,
+        });
+        round_trip_resp(PolicyResponse::ApprovalsPending {
+            pending: vec![PendingApproval {
+                id: "i".into(),
+                token: "t".into(),
+                name: "K".into(),
+                via: "any".into(),
+                requester: "/usr/bin/x (pid 1)".into(),
+                expires_at: 5,
+            }],
         });
     }
 
