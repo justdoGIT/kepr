@@ -1,9 +1,11 @@
 // daemon_session/ — the `session` ticket batch, daemon side: idle
 // auto-lock (T11.12), unlock backoff and opt-in wipe (T11.13),
 // re-authentication before reveal (T11.14), `kepr status` (T11.24),
-// profiles (T11.16), `kepr ssh rotate` commit (T11.21). Requests arrive
+// profiles (T11.16), `kepr ssh rotate` commit (T11.21), `GetQuiet` for
+// `kepr serve` (T11.19), `FetchFd` (T3.06). Requests arrive
 // as `Request::Session` via daemon_extra.rs.
 
+pub mod fetchfd;
 pub mod idle;
 pub mod quiet;
 pub mod reauth;
@@ -28,6 +30,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: SessionRequest) -> R
         SessionRequest::GetQuiet { name } => {
             quiet::handle_get_quiet(uid, peer_pid, username, &name)
         }
+        SessionRequest::FetchFd { name } => fetchfd::handle(uid, peer_pid, username, &name),
     }
 }
 

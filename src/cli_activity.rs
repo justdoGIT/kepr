@@ -94,6 +94,7 @@ impl CliActivity {
             "unlock" => cli_cmds::cmd_unlock(args),
             "status" => cli_cmds::cmd_status(args),
             "exec" => match resolve_env_for(args) {
+                Ok(vars) if !args.session.pull.is_empty() => crate::cli_session::pull::cmd_exec(&vars, args), // T3.06
                 Ok(vars) => cli_exec::cmd_exec(&vars, &args.memfd_vars, &args.exec_argv, args.mask),
                 Err(e) => Response::fail(e),
             },

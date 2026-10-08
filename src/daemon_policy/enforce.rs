@@ -120,8 +120,11 @@ fn governed(
     get_op: impl FnOnce() -> &'static str,
 ) -> Option<Governed> {
     Some(match request {
-        // `kepr serve` (T11.19) reads through `GetQuiet`: the same read.
-        Request::Get { name, .. } | Request::Session(SessionRequest::GetQuiet { name }) => {
+        // `kepr serve` (T11.19) reads through `GetQuiet`, `--pull` (T3.06)
+        // through `FetchFd`: the same read.
+        Request::Get { name, .. }
+        | Request::Session(SessionRequest::GetQuiet { name })
+        | Request::Session(SessionRequest::FetchFd { name }) => {
             let upper = name.to_uppercase();
             let target = crate::daemon_store::resolve_alias(uid, &upper);
             let mut names = vec![upper];
@@ -250,6 +253,9 @@ mod tests {
         let quiet = Request::Session(SessionRequest::GetQuiet { name: "a".into() });
         let (op, names, _, _) = governed(4242, &quiet, || "get").unwrap();
         assert_eq!((op, names), ("get", vec!["A".to_string()]));
+        let pull = Request::Session(SessionRequest::FetchFd { name: "b".into() });
+        let (op, names, _, _) = governed(4242, &pull, || "get").unwrap();
+        assert_eq!((op, names), ("get", vec!["B".to_string()]));
         let set = Request::Set {
             name: "k".into(),
             value: Some(ZeroString::from_string("v".into())),

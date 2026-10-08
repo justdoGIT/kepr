@@ -2,12 +2,14 @@
 // `kepr set --reauth` (T11.14), `kepr --profile` (T11.16, applied first
 // thing in main.rs), `kepr batch` (T11.18), `kepr discover` rules
 // (T11.20, called from cli_discover.rs), `kepr ssh rotate` (T11.21, from
-// cli_ssh.rs), `kepr serve` (T11.19). Registered in cli_more.rs;
+// cli_ssh.rs), `kepr serve` (T11.19), `kepr exec --pull` (T3.06, from
+// cli_activity.rs). Registered in cli_more.rs;
 // flags on core verbs are parsed by cli_args.rs (`FLAGS` / `SessionFlags`).
 
 pub mod batch;
 pub mod discover_rules;
 pub mod profile;
+pub mod pull;
 pub mod reauth;
 pub mod serve;
 pub mod serve_route;
@@ -34,6 +36,9 @@ pub const HELP: &str = "\
   serve --listen 127.0.0.1:PORT|--socket PATH --allow list,get [--rate N]
                                        local REST API: GET /v1/secrets[/NAME]; bearer token from
                                        KEPR_SERVE_TOKEN_FILE; loopback only; never sealed/SSH keys
+  exec --pull KEY[,KEY…] -- CMD        CMD fetches each KEY itself, when needed, as a sealed fd
+                                       (names in KEPR_PULL; kepr_core::fdfetch) that its own
+                                       children never inherit
   --profile NAME COMMAND               run COMMAND on profile NAME: its own store, state and
                                        daemon (same as KEPR_PROFILE=NAME)
 ";
