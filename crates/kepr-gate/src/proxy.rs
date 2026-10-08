@@ -17,7 +17,7 @@ use kepr_core::secmem::SplitKey;
 
 use crate::dlp;
 use crate::journal::Log;
-use crate::limits::{Limiter, Refusal, UsageMeter};
+use crate::limits::{reports_usage, Limiter, Refusal, UsageMeter};
 use crate::placeholder;
 use crate::rewrite::{placeholders_in, upstream_headers, upstream_query};
 use crate::routes;
@@ -288,13 +288,16 @@ pub async fn proxy_request(
         Ok(resp) => {
             let (mut p, b) = resp.into_parts();
             crate::rewrite::clean_response(&mut p.headers, &inject);
-            log.emit(p.status, bytes.len(), None);
+            let line = log.line(p.status, bytes.len(), None);
             let status = p.status.as_u16();
             let b = (state.recorder).http_response(conn, pname, status, b.boxed(), &state.cache);
-            if !state.limiter.meters_tokens() {
+            if !state.limiter.meters_tokens() && !reports_usage(&p.headers) {
+                crate::journal::push(&state.journal, line);
                 return Ok(Response::from_parts(p, b));
             }
-            let mut meter = UsageMeter::new(state.limiter.clone()).daily(&state.cache, &route.cred);
+            let mut meter = UsageMeter::new(state.limiter.clone())
+                .daily(&state.cache, &route.cred)
+                .journal(state.journal.clone(), line); // T9.07
             let b = b.map_frame(move |f| {
                 if let Some(d) = f.data_ref() {
                     meter.observe(d);
@@ -584,6 +587,23 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_metered_response_journals_its_tokens() {
+        const USAGE: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 48\r\n\r\n{\"usage\":{\"input_tokens\":30,\"output_tokens\":12}}";
+        let (up, _rx) = fake_upstream_with(Some(USAGE)).await;
+        let journal = Arc::new(crate::journal::Queue::default());
+        let rec = Arc::new(crate::recording::Recorder::new(false));
+        let gate = start_gate_journal(up, Default::default(), rec, journal.clone()).await;
+        let ph = placeholder::make(&KEY, SID, 0);
+        let r = send(&gate, &ph, "{}").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        r.into_body().collect().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let got = journal.take();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!((got[0].status, got[0].tokens), (200, Some(42)));
     }
 
     #[tokio::test]

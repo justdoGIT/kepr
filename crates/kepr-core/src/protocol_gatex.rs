@@ -159,6 +159,7 @@ mod tests {
                     bytes_out: 2,
                     ms: 3,
                     blocked: Some("dlp".into()),
+                    tokens: None,
                 }],
                 next: LogCursor {
                     gen: 1,

@@ -18,9 +18,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use hyper::header::{HeaderMap, CONTENT_TYPE};
+use kepr_core::gate_journal::JournalEntry;
 use kepr_core::gate_protocol::GateLimits;
 
+use crate::journal::Queue;
 use crate::vault::Cache;
+
+type Report = Box<dyn FnOnce(u64) + Send + Sync>;
 
 /// Why a request was refused.
 #[derive(Debug, PartialEq, Eq)]
@@ -176,8 +181,9 @@ fn max_after(buf: &[u8], keys: &[&[u8]]) -> u64 {
 /// largest value per kind and adds only the growth.
 pub struct UsageMeter {
     limiter: Arc<Limiter>,
-    /// T9.06: where the response's tokens go when it ends.
-    report: Option<Box<dyn FnOnce(u64) + Send + Sync>>,
+    /// Where the response's tokens go when it ends (T9.06 daily
+    /// counter, T9.07 journal line).
+    reports: Vec<Report>,
     carry: Vec<u8>,
     input: u64,
     output: u64,
@@ -189,7 +195,7 @@ impl UsageMeter {
     pub fn new(limiter: Arc<Limiter>) -> Self {
         Self {
             limiter,
-            report: None,
+            reports: Vec::new(),
             carry: Vec::new(),
             input: 0,
             output: 0,
@@ -203,12 +209,22 @@ impl UsageMeter {
     pub fn daily(mut self, cache: &Arc<Cache>, cred: &str) -> Self {
         if self.limiter.cfg.max_tokens_day.is_some() {
             let (cache, cred) = (cache.clone(), cred.to_string());
-            self.report = Some(Box::new(move |n| {
-                if let Ok(h) = tokio::runtime::Handle::try_current() {
+            self.reports.push(Box::new(move |n| {
+                let h = tokio::runtime::Handle::try_current();
+                if let (true, Ok(h)) = (n > 0, h) {
                     h.spawn_blocking(move || cache.day_usage(&cred, 0, n));
                 }
             }));
         }
+        self
+    }
+
+    /// T9.07: journal `line` when the response ends, with its tokens.
+    pub fn journal(mut self, q: Arc<Queue>, mut line: JournalEntry) -> Self {
+        self.reports.push(Box::new(move |n| {
+            line.tokens = (n > 0).then_some(n);
+            crate::journal::push(&q, line);
+        }));
         self
     }
 
@@ -230,10 +246,19 @@ impl UsageMeter {
 
 impl Drop for UsageMeter {
     fn drop(&mut self) {
-        if let Some(report) = self.report.take().filter(|_| self.counted > 0) {
+        for report in self.reports.drain(..) {
             report(self.counted);
         }
     }
+}
+
+/// T9.07: responses that can carry a provider's `usage` block (JSON or
+/// server-sent events) are metered for the journal even without a cap.
+pub fn reports_usage(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.contains("json") || t.contains("event-stream"))
 }
 
 #[cfg(test)]
@@ -279,7 +304,7 @@ mod tests {
         let got = Arc::new(Mutex::new(Vec::new()));
         let mut m = UsageMeter::new(l);
         let g = got.clone();
-        m.report = Some(Box::new(move |n| g.lock().unwrap().push(n)));
+        m.reports.push(Box::new(move |n| g.lock().unwrap().push(n)));
         m.observe(&Bytes::from_static(
             br#"{"usage":{"input_tokens":30,"output_tokens":12}}"#,
         ));

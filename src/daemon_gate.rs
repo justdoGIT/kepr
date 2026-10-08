@@ -249,6 +249,7 @@ fn start(
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
     let gate_pid = key.max(0);
+    crate::daemon_policy::session_started(uid, &session, routes); // T9.07
     Ok(Response::GateStarted {
         port: ready.port,
         placeholders: ready.placeholders,

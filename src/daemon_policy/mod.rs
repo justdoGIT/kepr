@@ -1,7 +1,7 @@
 // daemon_policy/ — the `policy` ticket batch, daemon side: the access
 // policy (T6.11), access reports (T6.12), the audit feed for the CLI-side
 // forwarders and alerts (T7.14), approval notifications (T9.04), per-day
-// caps across gate sessions (T9.06).
+// caps across gate sessions (T9.06), the usage report (T9.07).
 // Requests arrive as
 // `Request::Policy` via daemon_extra.rs; `enforce` runs before every request in
 // daemon_dispatch.rs, `init` once at start in daemon.rs.
@@ -13,6 +13,8 @@ mod daily;
 mod enforce;
 mod events;
 mod report;
+mod sessions;
+mod usage;
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_policy::{PolicyRequest, PolicyResponse};
@@ -49,6 +51,8 @@ pub fn day_usage(
 pub use enforce::enforce;
 /// Load the policy file; reload on SIGHUP.
 pub use enforce::init;
+/// T9.07: record a started gate session's routes (daemon_gate.rs).
+pub use sessions::started as session_started;
 
 pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: PolicyRequest) -> Response {
     match r {
@@ -66,6 +70,12 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: PolicyRequest) -> Re
             token,
             allow,
         } => approve::handle_answer(uid, peer_pid, username, (&key, &id, &token), allow),
+        PolicyRequest::SessionHarness { session, harness } => {
+            sessions::handle_harness(uid, &session, &harness)
+        }
+        PolicyRequest::UsageReport { days, unused_days } => {
+            usage::handle_report(uid, username, days, unused_days)
+        }
     }
 }
 

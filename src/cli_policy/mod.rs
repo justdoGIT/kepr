@@ -1,7 +1,8 @@
 // cli_policy/ — the `policy` ticket batch, CLI side: `kepr policy`
 // (T6.11), `kepr report access` (T6.12), webhooks (`notify`) and
 // `kepr health --notify` (T6.08), `kepr audit forward` (T7.14),
-// `kepr alerts` (T7.15), `kepr anomaly` (T7.13), `kepr approvals` (T9.04).
+// `kepr alerts` (T7.15), `kepr anomaly` (T7.13), `kepr approvals` (T9.04),
+// `kepr usage --report` (T9.07).
 // Registered in cli_more.rs.
 
 mod alerts;
@@ -17,6 +18,7 @@ mod policy;
 mod report;
 mod siem;
 mod tail;
+mod usage_report;
 
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_policy::{PolicyRequest, PolicyResponse};
@@ -49,6 +51,9 @@ pub const HELP: &str = "  policy test FILE                     run the [[test]] 
   approvals serve [--desktop] [--ntfy URL --listen ADDR:PORT [--callback-url URL]]
                                        ask on the desktop / on a phone (ntfy buttons call back here);
                                        unanswered = denied
+  usage --report [--days N] [--unused-days N] [--prices FILE]
+                                       agent traffic per harness × key × host, estimated cost
+                                       (~/.config/kepr/prices), bound hosts never used (over-scoped)
   health … --notify URL [--format F]   post findings (names and flags only) to a webhook; F: slack,
                                        teams, discord, ntfy or json (guessed from URL); URL may be kepr:NAME
 ";
@@ -64,6 +69,9 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         other => Response::fail(format!("unknown command: {other}")),
     }
 }
+
+/// `kepr usage --report` and `kepr agent run`'s session label (T9.07).
+pub use usage_report::{cmd_report as usage_report, label_session};
 
 /// `kepr health` hook (T6.08): `--notify URL [--format F]`, checked
 /// before the health run.

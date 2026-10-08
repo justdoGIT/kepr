@@ -160,6 +160,14 @@ fn wanted(line: &[u8], session: Option<&str>) -> Option<JournalEntry> {
     session.is_none_or(|s| e.session == s).then_some(e)
 }
 
+/// Every entry `uid`'s journal still holds, oldest first (T9.07's usage
+/// report; the journal is bounded, see MAX_FILE).
+pub fn all_entries(uid: u32) -> Vec<JournalEntry> {
+    let dir = user_dir(&crate::state_dir(), uid);
+    let lines = gens(&dir).into_iter().flat_map(|g| lines_from(&dir, g, 0));
+    lines.filter_map(|(l, _)| wanted(&l, None)).collect()
+}
+
 /// Where to start for the last `n` entries (of `session`).
 fn last_cursor(dir: &Path, session: Option<&str>, n: u32) -> LogCursor {
     let mut starts = Vec::new();
@@ -268,6 +276,7 @@ mod tests {
             bytes_out: 2,
             ms: 3,
             blocked: None,
+            tokens: None,
         }
     }
 
