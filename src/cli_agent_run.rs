@@ -144,6 +144,7 @@ pub fn cmd_run(
         let names: HashSet<String> = creds.iter().map(|c| c.name.clone()).collect();
         let mut routes = routes_for(adapter, &names)?;
         routes.extend(crate::cli_agent_egress::extra_routes(&routes, &creds));
+        routes.extend(crate::cli_aws::session::routes(&routes, &creds)); // T2.02
         let db = crate::cli_agent_db::routes(&routes, &creds);
         routes.extend(db);
         let tunnels = crate::cli_gatex::tunnel::routes(&routes, &session.tunnels)?;
@@ -186,6 +187,7 @@ pub fn cmd_run(
             && !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
             && !crate::cli_agent_db::DB_VARS.contains(&k.as_str())
             && !shadowed.contains(&k.as_str())
+            && !crate::cli_aws::session::shadowed(&placeholders, k)
     }));
     if !withheld.is_empty() {
         crate::cli_ui::warn(&format!(
@@ -213,6 +215,8 @@ pub fn cmd_run(
             Err(e) => return Response::fail(e),
         }
     }
+    let aws_env = crate::cli_aws::session::env(&placeholders, &env); // T2.02
+    env.extend(aws_env);
     let default_argv = [adapter.program.to_string()];
     let argv = if argv.is_empty() {
         &default_argv[..]

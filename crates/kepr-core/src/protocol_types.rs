@@ -135,6 +135,10 @@ pub struct CredInfo {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub db_kind: Option<String>,
     // batch: aws
+    /// T2.02: a sealed AWS key the gate re-signs SigV4 requests with, so
+    /// `kepr agent run` gives the session an AWS placeholder pair.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub aws_sigv4: Option<bool>,
     // batch: eco
     // batch: platform
     // batch: session

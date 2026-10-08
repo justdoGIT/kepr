@@ -46,6 +46,50 @@ fn bound_provider(state: &State, host: &str, port: u16) -> Option<&'static str> 
     (port == 443 && ca.covers(host) && state.routes.contains_key(p.name)).then_some(p.name)
 }
 
+/// Who serves an intercepted connection's requests.
+#[derive(Clone)]
+enum To {
+    Provider(&'static str),
+    Aws(String),
+}
+
+/// Accept the agent's TLS with a session-CA leaf for `host` and serve the
+/// requests inside it.
+fn intercept(
+    state: Arc<State>,
+    req: Request<Incoming>,
+    (host, target): (&str, &str),
+    start: Instant,
+    to: To,
+) -> Response<Body> {
+    let Some(cfg) = state.ca.as_ref().and_then(|ca| ca.server_config(host).ok()) else {
+        return kepr_error(StatusCode::BAD_GATEWAY, "kepr", "no certificate for host");
+    };
+    log(&state, target, StatusCode::OK, Some("intercepted"), start);
+    tokio::spawn(async move {
+        let Ok(up) = hyper::upgrade::on(req).await else {
+            return;
+        };
+        let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
+        let Ok(tls) = acceptor.accept(TokioIo::new(up)).await else {
+            return;
+        };
+        let svc = hyper::service::service_fn(move |r: Request<Incoming>| {
+            let (st, to, path) = (state.clone(), to.clone(), r.uri().path().to_string());
+            async move {
+                match to {
+                    To::Provider(pname) => proxy_request(st, pname, &path, r).await,
+                    To::Aws(h) => crate::aws_egress::handle(st, h, r).await,
+                }
+            }
+        });
+        let _ = hyper::server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(tls), svc)
+            .await;
+    });
+    ok()
+}
+
 pub async fn connect(state: Arc<State>, req: Request<Incoming>) -> Response<Body> {
     let start = Instant::now();
     let Some(auth) = req.uri().authority().cloned() else {
@@ -56,31 +100,12 @@ pub async fn connect(state: Arc<State>, req: Request<Incoming>) -> Response<Body
     let target = format!("{host}:{port}");
 
     if let Some(pname) = bound_provider(&state, &host, port) {
-        let Some(cfg) = state
-            .ca
-            .as_ref()
-            .and_then(|ca| ca.server_config(&host).ok())
-        else {
-            return kepr_error(StatusCode::BAD_GATEWAY, "kepr", "no certificate for host");
-        };
-        log(&state, &target, StatusCode::OK, Some("intercepted"), start);
-        tokio::spawn(async move {
-            let Ok(up) = hyper::upgrade::on(req).await else {
-                return;
-            };
-            let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
-            let Ok(tls) = acceptor.accept(TokioIo::new(up)).await else {
-                return;
-            };
-            let svc = hyper::service::service_fn(move |r: Request<Incoming>| {
-                let (st, path) = (state.clone(), r.uri().path().to_string());
-                async move { proxy_request(st, pname, &path, r).await }
-            });
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(tls), svc)
-                .await;
-        });
-        return ok();
+        return intercept(state, req, (&host, &target), start, To::Provider(pname));
+    }
+    // T2.02: an AWS host one of the session's AWS keys is bound to.
+    if crate::aws_egress::bound(&state, &host, port).await {
+        let to = To::Aws(host.clone());
+        return intercept(state, req, (&host, &target), start, to);
     }
 
     if !state.tunnel && !crate::tunnel::allowed(&state, &host, port) {

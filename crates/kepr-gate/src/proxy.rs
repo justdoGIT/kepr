@@ -134,7 +134,7 @@ pub fn kepr_error(status: StatusCode, kind: &str, message: &str) -> Response<Bod
 
 /// A session cap is final (403, so harnesses don't retry); the rate
 /// limit is a 429 with `Retry-After`.
-fn limit_response(refusal: Refusal) -> Response<Body> {
+pub(crate) fn limit_response(refusal: Refusal) -> Response<Body> {
     match refusal {
         Refusal::Cap(why) => kepr_error(
             StatusCode::FORBIDDEN,

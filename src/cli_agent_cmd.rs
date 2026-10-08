@@ -11,9 +11,11 @@
 
 use std::io::{BufRead, IsTerminal};
 
+use kepr_core::binding::Inject;
 use kepr_core::gate_protocol::GateLimits;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
+use kepr_core::sigv4_req::AwsKey;
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
@@ -145,6 +147,10 @@ fn cmd_add(a: &AgentArgs) -> Response {
         Ok(b) => b,
         Err(e) => return Response::fail(e),
     };
+    let sigv4 = bindings.iter().any(|b| b.inject == Inject::Sigv4); // T2.02
+    if let (true, Err(e)) = (sigv4, AwsKey::parse(value.as_str())) {
+        return Response::fail(e);
+    }
     let hosts: Vec<String> = bindings.iter().map(|b| b.host.clone()).collect();
     let req = Request::Set {
         name: name.clone(),

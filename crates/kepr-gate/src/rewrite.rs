@@ -120,8 +120,9 @@ pub fn upstream_headers(
             out.insert(AUTHORIZATION, sensitive(format!("Basic {enc}"))?);
         }
         Inject::Query { .. } => {}
-        // A database login is never sent as an HTTP header.
-        Inject::Postgres | Inject::Redis | Inject::Mysql => {
+        // A database login is never sent as an HTTP header; an AWS key
+        // signs requests instead (sigv4_resign.rs).
+        Inject::Postgres | Inject::Redis | Inject::Mysql | Inject::Sigv4 => {
             return Err("not an HTTP credential".into())
         }
     }

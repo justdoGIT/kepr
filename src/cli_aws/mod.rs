@@ -2,11 +2,13 @@
 // batch: aws
 //
 //   sts        STS / Query-API client on kepr_core::sigv4_req (T7.06)
+//   session    `aws:<NAME>` gate routes and the placeholder pair (T2.02)
 //
 // Network calls to providers happen here, in the user's CLI process: the
 // root daemon's unit has no TCP. Values reach the store only through the
 // normal `set` path.
 
+pub mod session;
 pub mod sts;
 
 #[cfg(test)]
