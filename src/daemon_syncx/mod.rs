@@ -11,6 +11,9 @@
 //   folder_bundle  T6.02 shared-folder bundles: folder key, signed manifest
 //   folder         T6.02 FolderExport
 //   folder_import  T6.02 FolderImport: pinned sender, changed values only
+//   quorum         T7.12 M-of-N approvals: requirement, requests, windows
+//   quorum_cmd     T7.12 Quorum* requests
+//   quorum_device  T7.12 approvals signed by enrolled devices
 
 mod bundle;
 mod device_bundle;
@@ -19,8 +22,13 @@ mod folder;
 mod folder_bundle;
 mod folder_import;
 mod import;
+mod quorum;
+mod quorum_cmd;
+mod quorum_device;
 mod sync_merge;
 mod sync_state;
+#[cfg(test)]
+mod testutil;
 mod transfer;
 
 use kepr_core::protocol::Response;
@@ -28,6 +36,13 @@ use kepr_core::protocol_syncx::{SyncxRequest, SyncxResponse};
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::expiry::now_unix;
+
+/// T7.12 hooks: `get` / gate resolves check `quorum_gate`; `set` keeps
+/// the requirement; the expiry sweeper closes windows.
+pub fn quorum_gate(uid: u32, name: &str, meta: &crate::expiry::CredMeta) -> Result<(), String> {
+    quorum::gate(uid, name, meta, now_unix())
+}
+pub use quorum::{carry_over as quorum_carry_over, sweep as quorum_sweep};
 
 pub(crate) fn audit_r<T>(
     op: &str,
@@ -113,5 +128,26 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: SyncxRequest) -> Res
                 start,
             },
         ),
+        SyncxRequest::QuorumSet { name, approvals } => {
+            quorum_cmd::handle_set(uid, username, &name, approvals, now_unix())
+        }
+        SyncxRequest::QuorumRequest { name, secs } => {
+            quorum_cmd::handle_request(uid, username, &name, secs, now_unix())
+        }
+        SyncxRequest::QuorumApprove { id, approval } => quorum_cmd::handle_approve(
+            uid,
+            username,
+            (&id, approval.as_deref()),
+            || crate::daemon_polkit::consent_granted(peer_pid),
+            now_unix(),
+        ),
+        SyncxRequest::QuorumSign { request } => quorum_cmd::handle_sign(
+            uid,
+            username,
+            &request,
+            || crate::daemon_polkit::consent_granted(peer_pid),
+            now_unix(),
+        ),
+        SyncxRequest::QuorumList => quorum_cmd::handle_list(uid, now_unix()),
     }
 }

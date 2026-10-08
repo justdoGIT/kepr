@@ -79,6 +79,10 @@ pub struct CredMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub must_rotate: Option<bool>,
     // batch: sync
+    /// T7.12: approvals (2-9) needed before each use window opens
+    /// (`kepr quorum`). Kept across `set`; lowered only by a quorum.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub approvals: Option<u8>,
     // batch: policy
     /// T9.04: consent prompts for this credential may be answered by the
     /// registered approver (`kepr approvals serve`): desktop | ntfy | any.

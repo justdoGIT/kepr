@@ -36,6 +36,8 @@ pub(crate) fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result
         Ok(m) => m,
         Err(e) => return Err(format!("meta parse: {e}")),
     };
+    // T7.12 (batch: sync): M-of-N approvals.
+    crate::daemon_syncx::quorum_gate(uid, name_upper, &meta)?;
     // T11.14 (batch: session): is a re-auth window open for it?
     let reauth_open = crate::daemon_session::reauth::window_open(uid, name_upper);
     meta_gate(&meta, expiry::now_unix(), reauth_open, || {

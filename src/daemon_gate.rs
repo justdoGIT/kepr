@@ -111,6 +111,12 @@ pub fn resolve_for_gate(
         Ok(i) => i,
         Err(reason) => return fail(reason),
     };
+    if let Some(Err(e)) = meta
+        .as_ref()
+        .map(|m| crate::daemon_syncx::quorum_gate(uid, &upper, m))
+    {
+        return fail(format!("resolve: {e}")); // T7.12: M-of-N approvals
+    }
     // T9.01: a sealed credential flagged --requires-consent is released
     // only after polkit approves the agent process (fail-closed).
     let needs_consent = meta.as_ref().and_then(|m| m.requires_consent) == Some(true);

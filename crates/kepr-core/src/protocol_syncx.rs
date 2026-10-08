@@ -93,6 +93,23 @@ pub enum SyncxRequest {
         #[serde(default)]
         start: u32,
     },
+    /// T7.12: `name` needs `approvals` (2-9, 0 = off) approvals per use
+    /// window. Raising applies at once (`QuorumSetOk`); lowering opens an
+    /// approval request (`QuorumStatus`).
+    QuorumSet { name: String, approvals: u32 },
+    /// T7.12: ask for a use window of `secs` for `name`.
+    QuorumRequest { name: String, secs: u64 },
+    /// T7.12: approve request `id`: with `approval` from an enrolled
+    /// device, else as the owner here (polkit).
+    QuorumApprove {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<String>,
+    },
+    /// T7.12: on another enrolled device: approve a printed request.
+    QuorumSign { request: String },
+    /// T7.12: requirements, open requests and windows.
+    QuorumList,
 }
 
 impl From<SyncxRequest> for crate::protocol::Request {
@@ -149,6 +166,18 @@ pub enum SyncxResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next: Option<u32>,
     },
+    /// T7.12: where an approval request stands (boxed: keeps `Response`
+    /// small).
+    QuorumStatus(Box<QuorumState>),
+    /// T7.12: the requirement is now `approvals` (0 = none).
+    QuorumSetOk { name: String, approvals: u32 },
+    /// T7.12: this device's approval, to carry back to the owner.
+    QuorumApproval { approval: String },
+    /// T7.12: `kepr quorum ls`.
+    QuorumList {
+        keys: Vec<QuorumKey>,
+        open: Vec<QuorumOpen>,
+    },
     /// T6.10 (CLI-local): `kepr sync remote add|ls|rm`.
     SyncRemotes { remotes: Vec<String> },
     /// T6.10 (CLI-local): `kepr sync now`: what the merges changed, and
@@ -159,6 +188,42 @@ pub enum SyncxResponse {
         unchanged: u32,
         ignored: Vec<String>,
     },
+}
+
+/// T7.12: an approval request; `request` is its text for other devices
+/// (`kepr quorum sign`). `done`: approved (`until`: the window it opened).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuorumState {
+    pub id: String,
+    pub name: String,
+    pub action: String,
+    pub have: u32,
+    pub need: u32,
+    pub expires_at: u64,
+    pub request: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
+    pub done: bool,
+}
+
+/// T7.12: a credential that needs approvals, and its open window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuorumKey {
+    pub name: String,
+    pub approvals: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
+}
+
+/// T7.12: an open approval request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuorumOpen {
+    pub id: String,
+    pub name: String,
+    pub action: String,
+    pub have: u32,
+    pub need: u32,
+    pub expires_at: u64,
 }
 
 /// T6.09: rows in one bundle reply (keeps it inside a frame).
@@ -275,6 +340,34 @@ mod tests {
             },
             "folder_import",
         );
+        req_round_trip(
+            SyncxRequest::QuorumSet {
+                name: "API".into(),
+                approvals: 2,
+            },
+            "quorum_set",
+        );
+        req_round_trip(
+            SyncxRequest::QuorumRequest {
+                name: "API".into(),
+                secs: 3600,
+            },
+            "quorum_request",
+        );
+        req_round_trip(
+            SyncxRequest::QuorumApprove {
+                id: "0a1b2c3d".into(),
+                approval: None,
+            },
+            "quorum_approve",
+        );
+        req_round_trip(
+            SyncxRequest::QuorumSign {
+                request: "kepr-quorum1-x".into(),
+            },
+            "quorum_sign",
+        );
+        req_round_trip(SyncxRequest::QuorumList, "quorum_list");
     }
 
     #[test]
@@ -355,6 +448,51 @@ mod tests {
             rows: vec![],
             unchanged: 2,
             next: None,
+        });
+        round_trip(SyncxResponse::QuorumStatus(Box::new(QuorumState {
+            id: "0a1b2c3d".into(),
+            name: "API".into(),
+            action: "use for 1h".into(),
+            have: 1,
+            need: 2,
+            expires_at: 9,
+            request: "kepr-quorum1-x".into(),
+            until: None,
+            done: false,
+        })));
+        // Flat on the wire, like the other kinds.
+        let v = serde_json::to_value(Response::from(SyncxResponse::QuorumStatus(Box::new(
+            QuorumState {
+                id: "1".into(),
+                name: "A".into(),
+                action: "x".into(),
+                have: 0,
+                need: 2,
+                expires_at: 1,
+                request: "r".into(),
+                until: None,
+                done: false,
+            },
+        ))))
+        .unwrap();
+        assert_eq!(
+            (v["kind"].as_str(), v["need"].as_u64()),
+            (Some("quorum_status"), Some(2))
+        );
+        round_trip(SyncxResponse::QuorumSetOk {
+            name: "API".into(),
+            approvals: 2,
+        });
+        round_trip(SyncxResponse::QuorumApproval {
+            approval: "kepr-approval1-x".into(),
+        });
+        round_trip(SyncxResponse::QuorumList {
+            keys: vec![QuorumKey {
+                name: "API".into(),
+                approvals: 2,
+                until: Some(5),
+            }],
+            open: vec![],
         });
         round_trip(SyncxResponse::SyncRemotes {
             remotes: vec!["dir:/x".into()],

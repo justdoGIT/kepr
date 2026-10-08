@@ -182,3 +182,34 @@ fn a_folder_shared_with_a_pinned_contact() {
         "{again}"
     );
 }
+
+#[test]
+fn a_key_with_approvals_is_locked_until_approved() {
+    let d = start();
+    ok(&d, &["share", "key"]);
+    ok(&d, &["set", "QUORUM_KEY", "--value", "v"]);
+    assert_eq!(get(&d, "QUORUM_KEY").as_deref(), Some("v"));
+    ok(&d, &["quorum", "set", "QUORUM_KEY", "2"]);
+    assert_eq!(get(&d, "QUORUM_KEY"), None);
+    // A new value keeps the requirement; turning it off is a request.
+    ok(&d, &["set", "QUORUM_KEY", "--value", "w"]);
+    assert_eq!(get(&d, "QUORUM_KEY"), None);
+    let off = ok(&d, &["--json", "quorum", "set", "QUORUM_KEY", "off"]);
+    let v: serde_json::Value = serde_json::from_str(&off).unwrap();
+    assert_eq!(
+        (v["kind"].as_str(), v["need"].as_u64()),
+        (Some("quorum_status"), Some(2)),
+        "{off}"
+    );
+    let req = ok(&d, &["quorum", "request", "QUORUM_KEY", "--for", "30m"]);
+    assert!(
+        req.contains("kepr-quorum1-") && req.contains("0 of 2"),
+        "{req}"
+    );
+    let ls = ok(&d, &["quorum", "ls"]);
+    assert!(
+        ls.contains("QUORUM_KEY") && ls.contains("use for 30m"),
+        "{ls}"
+    );
+    assert_eq!(get(&d, "QUORUM_KEY"), None);
+}
