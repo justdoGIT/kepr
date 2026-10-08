@@ -52,6 +52,8 @@ pub struct Args {
     pub store: crate::cli_store::StoreFlags,
     /// Flags of the `session` batch on core verbs (`set --reauth`).
     pub session: crate::cli_session::SessionFlags,
+    /// Flags of the `aws` batch on core verbs (`rotate --aws-iam`).
+    pub aws: crate::cli_aws::AwsFlags,
 }
 
 pub fn parse_args() -> Result<Args, String> {
@@ -92,6 +94,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut fido2_public_key_cose: Option<String> = None;
     let mut store = crate::cli_store::StoreFlags::default();
     let mut session = crate::cli_session::SessionFlags::default();
+    let mut aws = crate::cli_aws::AwsFlags::default();
 
     let mut i = 1usize;
 
@@ -281,6 +284,7 @@ pub fn parse_args() -> Result<Args, String> {
             }
             s if crate::cli_store::FLAGS.contains(&s) => i = store.take(&raw, i)?,
             s if crate::cli_session::FLAGS.contains(&s) => i = session.take(&raw, i)?,
+            s if crate::cli_aws::FLAGS.contains(&s) => i = aws.take(&raw, i)?,
             s if !s.starts_with('-') => {
                 if name.is_none() {
                     name = Some(s.to_uppercase());
@@ -325,5 +329,6 @@ pub fn parse_args() -> Result<Args, String> {
         fido2_public_key_cose,
         store,
         session,
+        aws,
     })
 }

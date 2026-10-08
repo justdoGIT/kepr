@@ -4,14 +4,22 @@
 //   sts        STS / Query-API client on kepr_core::sigv4_req (T7.06)
 //   session    `aws:<NAME>` gate routes and the placeholder pair (T2.02)
 //   credproc   `kepr aws credential-process` (T2.03)
+//   iam        IAM Query API: list / create / delete access keys (T7.05)
+//   rotate_iam `kepr rotate NAME --aws-iam` (T7.05)
+//   flags      this batch's flags on the core `rotate` verb
 //
 // Network calls to providers happen here, in the user's CLI process: the
 // root daemon's unit has no TCP. Values reach the store only through the
 // normal `set` path.
 
 pub mod credproc;
+pub mod flags;
+pub mod iam;
+pub mod rotate_iam;
 pub mod session;
 pub mod sts;
+
+pub use flags::{AwsFlags, FLAGS};
 
 #[cfg(test)]
 pub mod fake;
@@ -31,6 +39,8 @@ pub const HELP: &str = "\
                                        for ~/.aws/config `credential_process`: STS temporary
                                        credentials (900-43200 s); inside `kepr agent run` the
                                        session's placeholder pair. Never the long-lived key
+  rotate KEY --aws-iam                 new IAM access key for the stored KEY: created, verified
+                                       (STS), stored, then the old key deleted (2-key limit)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -75,7 +85,7 @@ pub fn load_key(name: &str, fetcher: &dyn CredFetcher) -> Result<AwsKey, String>
         .any(|c| c.name == name)
     {
         return Err(format!(
-            "{name} is sealed: its key never leaves the agent gate; use it inside `kepr agent run`"
+            "{name} is sealed: its key never leaves the agent gate (only `kepr agent run` uses it)"
         ));
     }
     let value: ZeroString = fetcher.fetch(&name)?;

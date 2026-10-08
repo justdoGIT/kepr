@@ -42,7 +42,6 @@ impl Endpoint {
     }
 
     /// IAM is global, signed for us-east-1.
-    #[allow(dead_code)] // until T7.05 (IAM rotator)
     pub fn iam() -> Self {
         Self {
             url: "https://iam.amazonaws.com/".into(),
