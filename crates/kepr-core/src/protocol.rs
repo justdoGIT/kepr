@@ -296,6 +296,8 @@ pub enum Request {
     #[serde(untagged)]
     Gatex(crate::protocol_gatex::GatexRequest),
     // batch: aws
+    #[serde(untagged)]
+    Aws(crate::protocol_aws::AwsRequest),
     // batch: eco
     #[serde(untagged)]
     Eco(crate::protocol_eco::EcoRequest),

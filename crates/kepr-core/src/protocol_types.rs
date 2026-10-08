@@ -139,6 +139,16 @@ pub struct CredInfo {
     /// `kepr agent run` gives the session an AWS placeholder pair.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub aws_sigv4: Option<bool>,
+    /// T7.07: scheduled rotation: every N seconds, how (`rotate_via`),
+    /// when next (unix seconds) and failed tries since the last success.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_every_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_via: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_next_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_failures: Option<u32>,
     // batch: eco
     // batch: platform
     // batch: session

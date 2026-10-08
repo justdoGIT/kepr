@@ -86,6 +86,19 @@ pub struct CredMeta {
     pub approve_via: Option<String>,
     // batch: gate
     // batch: aws
+    /// T7.07: `kepr rotate NAME --every`: rotate every this many seconds,
+    /// the way `rotate_via` says (`protocol_aws::valid_rotate_via`). Kept
+    /// across `set`; a `set` moves `rotate_next_at` and clears failures.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_every_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_via: Option<String>,
+    /// T7.07: when the next scheduled rotation is due (unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_next_at: Option<u64>,
+    /// T7.07: failed scheduled tries since the last success (backoff).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_failures: Option<u32>,
     // batch: eco
     // batch: platform
     // batch: session

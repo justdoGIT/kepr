@@ -61,6 +61,7 @@ pub mod mysql_wire;
 pub mod protocol_gatex;
 // batch: aws
 pub mod github_app;
+pub mod protocol_aws;
 pub mod sigv4_req;
 // batch: eco
 pub mod protocol_eco;

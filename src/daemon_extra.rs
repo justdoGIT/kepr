@@ -106,6 +106,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         // batch: gate
         Request::Gatex(r) => crate::daemon_gatex::dispatch(uid, peer_pid, username, r),
         // batch: aws
+        Request::Aws(r) => crate::daemon_aws::dispatch(uid, peer_pid, username, r),
         // batch: eco
         Request::Eco(r) => crate::daemon_eco::dispatch(uid, peer_pid, username, r),
         // batch: platform
