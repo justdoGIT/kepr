@@ -55,7 +55,7 @@ pub fn human(secs: u64) -> String {
 }
 
 /// A rough "in …" for a wait: the nearest day, hour or minute.
-fn rough(secs: u64) -> String {
+pub fn rough(secs: u64) -> String {
     match secs {
         s if s >= 86_400 => format!("{}d", (s + 43_200) / 86_400),
         s if s >= 3600 => format!("{}h", (s + 1800) / 3600),
@@ -187,7 +187,7 @@ pub fn list_tail(c: &CredInfo) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    tail_at(c, now)
+    format!("{}{}", tail_at(c, now), super::grant::list_tail(c)) // T7.10
 }
 
 #[cfg(test)]

@@ -163,6 +163,7 @@ pub fn cmd_run(
         limits,
         tunnel: !isolate_net,
         record: session.record,
+        harness: Some(adapter.harness.to_string()), // T7.10
     };
     let (gate_port, placeholders, ca_pem, db_ports) = match client::send_request(&req) {
         Ok(Response::GateStarted {

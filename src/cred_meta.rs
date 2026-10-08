@@ -99,6 +99,12 @@ pub struct CredMeta {
     /// T7.07: failed scheduled tries since the last success (backoff).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub rotate_failures: Option<u32>,
+    /// T7.10: just-in-time: a gate resolves this sealed credential only
+    /// for a session whose harness has an open grant. Kept across `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub jit: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub grants: Option<Vec<kepr_core::protocol_aws::Grant>>,
     // batch: eco
     // batch: platform
     // batch: session

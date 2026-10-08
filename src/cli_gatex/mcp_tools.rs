@@ -284,6 +284,7 @@ impl Gate {
             limits: Default::default(),
             tunnel: false,
             record: false,
+            harness: None, // T7.10: no harness, so no just-in-time credential
         };
         match client::send_request(&req)? {
             Response::GateStarted {

@@ -149,6 +149,11 @@ pub struct CredInfo {
     pub rotate_next_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub rotate_failures: Option<u32>,
+    /// T7.10: just-in-time: agent sessions need an open grant.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub jit: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub grants: Option<Vec<crate::protocol_aws::Grant>>,
     // batch: eco
     // batch: platform
     // batch: session

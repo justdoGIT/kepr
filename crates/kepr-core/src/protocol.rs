@@ -116,6 +116,10 @@ pub enum Request {
         /// T7.09: keep the session's bodies, encrypted (`--record`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         record: bool,
+        /// T7.10: the harness the session runs (`kepr agent run NAME`),
+        /// matched against just-in-time grants. Claimed by the caller.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        harness: Option<String>,
     },
     Get {
         name: String,
