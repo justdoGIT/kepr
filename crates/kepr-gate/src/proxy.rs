@@ -227,6 +227,15 @@ pub async fn proxy_request(
                 return Ok(log.reply(r, 0, None));
             }
         };
+    // T7.08: a GitHub App key becomes an installation token here.
+    let Ok((value, inject)) = crate::github_app::swap(&state, value, inject).await else {
+        let r = kepr_error(
+            StatusCode::BAD_GATEWAY,
+            "kepr",
+            "kepr could not obtain a token",
+        );
+        return Ok(log.reply(r, 0, None));
+    };
 
     let (parts, body) = req.into_parts();
     let bytes = match Limited::new(body, MAX_BODY).collect().await {

@@ -121,10 +121,13 @@ pub fn upstream_headers(
         }
         Inject::Query { .. } => {}
         // A database login is never sent as an HTTP header; an AWS key
-        // signs requests instead (sigv4_resign.rs).
-        Inject::Postgres | Inject::Redis | Inject::Mysql | Inject::Sigv4 => {
-            return Err("not an HTTP credential".into())
-        }
+        // signs requests instead (sigv4_resign.rs); a GitHub App key is
+        // swapped for an installation token first (github_app.rs).
+        Inject::Postgres
+        | Inject::Redis
+        | Inject::Mysql
+        | Inject::Sigv4
+        | Inject::GithubApp { .. } => return Err("not an HTTP credential".into()),
     }
     Ok(out)
 }

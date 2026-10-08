@@ -11,6 +11,7 @@ mod ca;
 mod db;
 mod dlp;
 mod egress;
+mod github_app;
 mod journal;
 mod limits;
 mod mysql;
