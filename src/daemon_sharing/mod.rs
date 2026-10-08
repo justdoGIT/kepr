@@ -206,7 +206,9 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SharingRequest
             admin_key,
             password,
         } => escrow::handle_enable(uid, username, &admin_key, password.as_bytes()),
-        SharingRequest::EscrowDisable => escrow::handle_disable(uid, username),
+        SharingRequest::EscrowDisable { password } => {
+            escrow::handle_disable(uid, username, password.as_bytes())
+        }
         SharingRequest::EscrowStatus => escrow::handle_status(),
         SharingRequest::EscrowOpen { escrow } => escrow::handle_open(uid, username, &escrow),
     }

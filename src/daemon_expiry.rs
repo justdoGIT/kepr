@@ -277,6 +277,7 @@ fn spawn_sweeper_with_interval(versions: Arc<VersionState>, interval: Duration) 
             crate::daemon_vault::sweep_expired(now); // T4.06: the image store
             crate::daemon_sharing::sweep(now); // T6.05 self-destruct, T6.06 release
             crate::daemon_aws::sweep(now); // T7.07 scheduled rotation
+            crate::daemon_syncx::quorum_sweep(now); // T7.12: closed approval windows
         })
         .expect("spawn kepr-expiry thread");
 }

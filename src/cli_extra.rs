@@ -124,6 +124,9 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                     None => Response::fail("usage: kepr restore NAME --version N"),
                 }
             }
+            "usage" if args.iter().any(|a| a == "--report") => {
+                crate::cli_policy::usage_report(args)
+            }
             "usage" => match value_of(args, &["--days"]).map_err(Response::fail)? {
                 Some(d) => match d.parse() {
                     Ok(n) => crate::cli_usage::cmd_usage(Some(n)),

@@ -56,6 +56,20 @@ pub fn handle_conn(
     cb: &mut Callbacks,
     answer: &dyn Fn(&str, &str, bool) -> Result<(), String>,
 ) {
+    let (method, path) = request_line(&mut s);
+    let mut r = cb.handle(&method, &path, Instant::now());
+    if let Some((id, token, allow)) = &r.verdict {
+        if answer(id, token, *allow).is_err() {
+            r.status = 410;
+            r.text = "expired: the request was denied";
+        }
+    }
+    reply(&mut s, r.status, r.text);
+}
+
+/// Method and path of one request (head read with a 2 s timeout, 8 KiB
+/// at most; the body is never read).
+pub fn request_line(s: &mut TcpStream) -> (String, String) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
@@ -67,20 +81,16 @@ pub fn handle_conn(
     }
     let head = String::from_utf8_lossy(&buf);
     let mut first = head.lines().next().unwrap_or_default().split(' ');
-    let (method, path) = (first.next().unwrap_or(""), first.next().unwrap_or(""));
-    let mut r = cb.handle(method, path, Instant::now());
-    if let Some((id, token, allow)) = &r.verdict {
-        if answer(id, token, *allow).is_err() {
-            r.status = 410;
-            r.text = "expired: the request was denied";
-        }
-    }
+    let method = first.next().unwrap_or("").to_string();
+    (method, first.next().unwrap_or("").to_string())
+}
+
+/// A plain-text answer, then close.
+pub fn reply(s: &mut TcpStream, status: u16, text: &str) {
     let _ = write!(
         s,
-        "HTTP/1.1 {} kepr\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        r.status,
-        r.text.len(),
-        r.text
+        "HTTP/1.1 {status} kepr\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+        text.len()
     );
 }
 

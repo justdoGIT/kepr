@@ -17,9 +17,17 @@
 // process of the same uid can start a session and claim a name. What a
 // grant does bound is *when* a credential can be used at all: outside
 // every window no session resolves it, whatever it calls itself.
+//
+// T7.12 (M-of-N approvals) opens its window here when the credential is
+// just-in-time: `open_approved` writes a grant for every harness
+// (`ANY_HARNESS`) marked `approved`, which is the only kind that
+// satisfies an `approvals` requirement — the owner's own `kepr grant`
+// never does. A closed window stops the next resolve; a value a gate
+// already cached goes when its cache does (vault.rs `DEFAULT_TTL`),
+// like any other sealed value.
 
 use kepr_core::protocol::Response;
-use kepr_core::protocol_aws::{valid_harness, Grant, GrantOp, GRANT_MAX_SECS};
+use kepr_core::protocol_aws::{valid_harness, Grant, GrantOp, ANY_HARNESS, GRANT_MAX_SECS};
 
 use crate::expiry::{self, CredMeta};
 use crate::store::{cred_path, validate_name};
@@ -31,19 +39,25 @@ pub fn check(meta: &CredMeta, harness: Option<&str>, now: u64) -> Result<(), Str
     if meta.jit != Some(true) {
         return Ok(());
     }
-    let Some(h) = harness else {
-        return Err("resolve: just-in-time, session has no harness".to_string());
-    };
-    let open = meta
-        .grants
+    let open = meta.grants.iter().flatten().any(|g| {
+        g.until > now && (g.harness == ANY_HARNESS || harness.is_some_and(|h| g.harness == h))
+    });
+    match (open, harness) {
+        (true, _) => Ok(()),
+        (false, None) => Err("resolve: just-in-time, session has no harness".to_string()),
+        (false, Some(_)) => Err("resolve: no grant open".to_string()),
+    }
+}
+
+/// T7.12: until when a window an approved M-of-N request opened runs
+/// (`daemon_syncx::quorum::window` reports it as that credential's).
+pub fn approved_until(meta: &CredMeta) -> Option<u64> {
+    meta.grants
         .iter()
         .flatten()
-        .any(|g| g.harness == h && g.until > now);
-    if open {
-        Ok(())
-    } else {
-        Err("resolve: no grant open".to_string())
-    }
+        .filter(|g| g.approved)
+        .map(|g| g.until)
+        .max()
 }
 
 /// Drop the windows that have closed.
@@ -69,6 +83,7 @@ fn apply(m: &CredMeta, op: &GrantOp, now: u64) -> Result<(Option<bool>, Vec<Gran
             grants.push(Grant {
                 harness: harness.clone(),
                 until: now.saturating_add(*for_secs),
+                approved: false,
             });
             Ok((Some(true), grants))
         }
@@ -110,7 +125,37 @@ fn grant(uid: u32, upper: &str, op: &GrantOp, now: u64) -> Result<(bool, Vec<Gra
     } else {
         expiry::write_meta(&mp, &m)?;
     }
+    // A closed window must stop a gate that cached the value.
+    crate::daemon_gate::bump_generation();
     Ok((jit == Some(true), grants))
+}
+
+/// T7.12: an approved M-of-N request opens the window of a just-in-time
+/// credential here, for any harness. `Ok(false)` when the credential is
+/// not just-in-time and the caller keeps its own window.
+pub fn open_approved(uid: u32, upper: &str, secs: u64, now: u64) -> Result<bool, String> {
+    let _lock = crate::daemon_credlock::lock(uid, upper);
+    let mp = expiry::meta_path_for(&cred_path(uid, upper));
+    let Some(Ok(mut m)) = expiry::read_meta(&mp) else {
+        return Ok(false);
+    };
+    if m.jit != Some(true) {
+        return Ok(false);
+    }
+    let mut grants = prune(m.grants.take().unwrap_or_default(), now);
+    let until = now.saturating_add(secs);
+    grants.retain(|g| g.harness != ANY_HARNESS || g.until > until);
+    if !grants.iter().any(|g| g.harness == ANY_HARNESS) {
+        grants.push(Grant {
+            harness: ANY_HARNESS.to_string(),
+            until,
+            approved: true,
+        });
+    }
+    m.grants = Some(grants);
+    expiry::write_meta(&mp, &m)?;
+    crate::daemon_gate::bump_generation();
+    Ok(true)
 }
 
 pub fn handle_grant(uid: u32, username: &str, name: &str, op: GrantOp) -> Response {
@@ -276,6 +321,36 @@ mod tests {
         assert!(resolve(None).is_ok());
     }
 
+    /// T7.12: only an approved window satisfies an `approvals` rule.
+    #[test]
+    fn an_approved_window_is_for_any_harness_and_the_owners_is_not() {
+        let uid = testkit::uid();
+        testkit::set_sealed(uid, "Q", "v");
+        let now = expiry::now_unix();
+        assert_eq!(open_approved(uid, "Q", 3600, now), Ok(false), "not jit yet");
+        assert!(handle_grant(uid, "t", "Q", GrantOp::Jit { on: true }).is_success());
+        assert!(handle_grant(uid, "t", "Q", open("claude", 3600)).is_success());
+        let m = testkit::meta(uid, "Q");
+        assert!(check(&m, Some("claude"), now).is_ok());
+        assert_eq!(approved_until(&m), None, "the owner's own grant");
+        assert_eq!(open_approved(uid, "Q", 60, now), Ok(true));
+        let m = testkit::meta(uid, "Q");
+        assert_eq!(approved_until(&m), Some(now + 60));
+        // Any session, named or not, for as long as the window lasts.
+        assert!(check(&m, None, now).is_ok() && check(&m, Some("codex"), now).is_ok());
+        assert!(check(&m, None, now + 60).is_err());
+        assert!(
+            check(&m, Some("claude"), now + 60).is_ok(),
+            "its own window"
+        );
+        // A longer approved window wins; a shorter one doesn't shrink it.
+        assert_eq!(open_approved(uid, "Q", 600, now), Ok(true));
+        assert_eq!(open_approved(uid, "Q", 1, now), Ok(true));
+        let m = testkit::meta(uid, "Q");
+        assert_eq!(approved_until(&m), Some(now + 600));
+        assert_eq!(m.grants.unwrap().iter().filter(|g| g.approved).count(), 1);
+    }
+
     #[test]
     fn closed_windows_are_dropped_on_the_next_change() {
         let m = CredMeta {
@@ -285,10 +360,12 @@ mod tests {
                 Grant {
                     harness: "old".into(),
                     until: 500,
+                    approved: false,
                 },
                 Grant {
                     harness: "live".into(),
                     until: 2000,
+                    approved: false,
                 },
             ]),
             ..Default::default()

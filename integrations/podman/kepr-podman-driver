@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# kepr-podman-driver — Podman "shell" secret driver backed by kepr (T10.07).
+#
+#   kepr-podman-driver list | lookup | store | delete
+#
+# Podman runs each operation through /bin/sh with SECRET_ID (its own hex
+# secret id) in the environment; `store` gets the secret on stdin and
+# `lookup` prints it on stdout. The value lives in kepr as PODMAN_<ID>, in
+# the namespace of the user running podman.
+#
+# A secret whose data is exactly `kepr://NAME` is a reference: `lookup`
+# returns the current value of the kepr credential NAME, so rotating NAME
+# reaches the next container start without re-creating the secret.
+#
+# KEPR (default: kepr on PATH) names the kepr binary.
+set -euo pipefail
+
+KEPR="${KEPR:-kepr}"
+PREFIX=PODMAN_
+
+die() {
+	echo "kepr-podman-driver: $*" >&2
+	exit 1
+}
+
+# The kepr credential name for SECRET_ID. Podman ids are lowercase hex;
+# anything else is refused so the id can't steer kepr to another name.
+cred_name() {
+	local id="${SECRET_ID:-}"
+	[[ "$id" =~ ^[0-9a-f]{1,100}$ ]] || die "SECRET_ID must be a podman secret id (hex)"
+	printf '%s%s' "$PREFIX" "$(printf '%s' "$id" | tr 'a-f' 'A-F')"
+}
+
+# `kepr get --quiet` adds one newline; drop exactly that one.
+get_value() {
+	local v
+	v="$("$KEPR" get "$1" --quiet && printf x)" || die "lookup failed"
+	v="${v%x}"
+	printf '%s' "${v%$'\n'}"
+}
+
+op_list() {
+	local out
+	out="$("$KEPR" list --json)" || die "list failed"
+	# `kepr list --json` is pretty-printed; names are [A-Z0-9_] only.
+	grep -oE "\"name\": *\"${PREFIX}[0-9A-F]+\"" <<<"$out" |
+		sed -E -e "s/^\"name\": *\"${PREFIX}//" -e 's/"$//' | tr 'A-F' 'a-f' || true
+}
+
+op_lookup() {
+	local name v ref
+	name="$(cred_name)"
+	v="$(get_value "$name" && printf x)"
+	v="${v%x}"
+	if [[ "$v" =~ ^kepr://([A-Za-z0-9_]{1,128})$ ]]; then
+		ref="${BASH_REMATCH[1]}"
+		get_value "$ref"
+	else
+		printf '%s' "$v"
+	fi
+}
+
+op_store() {
+	local name
+	name="$(cred_name)"
+	# kepr set --stdin drops one trailing newline and needs UTF-8.
+	"$KEPR" set "$name" --stdin >/dev/null || die "store failed"
+}
+
+op_delete() {
+	local name
+	name="$(cred_name)"
+	"$KEPR" delete "$name" --force >/dev/null || die "delete failed"
+}
+
+case "${1:-}" in
+list) op_list ;;
+lookup) op_lookup ;;
+store) op_store ;;
+delete) op_delete ;;
+*) die "usage: kepr-podman-driver list|lookup|store|delete" ;;
+esac

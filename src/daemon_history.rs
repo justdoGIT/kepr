@@ -252,6 +252,33 @@ pub fn version_value(uid: u32, upper: &str, version: u32) -> Result<(ZeroString,
     ))
 }
 
+/// T6.09 (bundle export): the readable history values of `upper`, oldest
+/// first. A version saved while sealed is never returned.
+pub(crate) fn export_versions(uid: u32, upper: &str) -> Vec<ZeroString> {
+    let mut out: Vec<ZeroString> = slots(uid, upper)
+        .into_iter()
+        .filter(|s| s.2 > 0 && s.1 & FLAG_SEALED == 0)
+        .filter_map(|(slot, ..)| {
+            let plain = crypto::default_backend()
+                .decrypt(uid, &slot_name(upper, slot))
+                .ok()?;
+            let (flags, _, _, secret) = decode(plain.as_str())?;
+            (flags & FLAG_SEALED == 0).then(|| ZeroString::from_string(secret.to_string()))
+        })
+        .collect();
+    out.reverse();
+    out
+}
+
+/// T6.09 (bundle import, before the value is created): save `value` as
+/// the newest history version of `upper`.
+pub(crate) fn import_version(uid: u32, upper: &str, value: &str) -> Result<(), String> {
+    let newest = slots(uid, upper).first().map_or(0, |s| s.2);
+    let slot = slot_name(upper, next_slot(uid, upper));
+    let plain = encode(0, now_ns().max(newest + 1), "-", value);
+    crypto::default_backend().encrypt(uid, &slot, plain.as_bytes())
+}
+
 /// Decrypt history version `version` (1 = most recent) and check it may
 /// go back under the current policy. The value stays in the daemon.
 fn pick(uid: u32, upper: &str, version: u32) -> Result<ZeroString, String> {

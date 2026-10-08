@@ -110,6 +110,9 @@ pub fn resolve_for_gate(
         Some(Err(e)) => return fail(format!("resolve: meta parse: {e}")),
         None => None,
     };
+    if crate::daemon_policy::canary_refuse(uid, username, &upper, meta.as_ref()) {
+        return Err(()); // T9.08: never released; asking trips it
+    }
     let inject = match check_resolvable(meta.as_ref(), expiry::now_unix(), host, port) {
         Ok(i) => i,
         Err(reason) => return fail(reason),
@@ -121,6 +124,12 @@ pub fn resolve_for_gate(
         .map(|m| crate::daemon_aws::grant::check(m, owner.harness.as_deref(), expiry::now_unix()));
     if let Some(Err(reason)) = jit {
         return fail(reason);
+    }
+    if let Some(Err(e)) = meta
+        .as_ref()
+        .map(|m| crate::daemon_syncx::quorum_gate(uid, &upper, m))
+    {
+        return fail(format!("resolve: {e}")); // T7.12: M-of-N approvals
     }
     // T9.01: a sealed credential flagged --requires-consent is released
     // only after polkit approves the agent process (fail-closed).
@@ -175,6 +184,26 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
                 owner.rec.session(),
                 id,
                 entries,
+            ),
+            Ok(GateRequest::Canary { id, fingerprints }) => {
+                crate::daemon_policy::canary_gate_check(
+                    owner.uid,
+                    &owner.username,
+                    id,
+                    &fingerprints,
+                )
+            }
+            Ok(GateRequest::DayUsage {
+                id,
+                name,
+                requests,
+                tokens,
+            }) => crate::daemon_policy::day_usage(
+                &owner.creds,
+                owner.uid,
+                id,
+                &name,
+                (requests, tokens),
             ),
             Err(_) => GateResponse::Err {
                 id: 0,
@@ -250,6 +279,7 @@ fn start(
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
     let gate_pid = key.max(0);
+    crate::daemon_policy::session_started(uid, &session, routes); // T9.07
     Ok(Response::GateStarted {
         port: ready.port,
         placeholders: ready.placeholders,

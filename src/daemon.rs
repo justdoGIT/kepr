@@ -62,6 +62,7 @@ mod daemon_recordsx;
 // batch: share
 mod daemon_sharing;
 // batch: sync
+mod daemon_syncx;
 // batch: policy
 mod daemon_policy;
 // batch: gate
@@ -71,6 +72,7 @@ mod daemon_aws;
 // batch: eco
 mod daemon_eco;
 // batch: platform
+mod daemon_platform;
 // batch: session
 mod daemon_session;
 // end of batches
@@ -383,6 +385,7 @@ fn handle_client(mut stream: UnixStream) {
     let username = username_for_uid(peer_uid);
     let response = daemon_dispatch::dispatch(peer_uid, peer_pid, &username, request);
     send_response(&mut stream, &response);
+    daemon_session::fetchfd::send_pending(&stream, &response); // T3.06
 }
 
 fn send_response(stream: &mut UnixStream, resp: &Response) {

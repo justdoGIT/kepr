@@ -79,11 +79,19 @@ pub struct CredMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub must_rotate: Option<bool>,
     // batch: sync
+    /// T7.12: approvals (2-9) needed before each use window opens
+    /// (`kepr quorum`). Kept across `set`; lowered only by a quorum.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub approvals: Option<u8>,
     // batch: policy
     /// T9.04: consent prompts for this credential may be answered by the
     /// registered approver (`kepr approvals serve`): desktop | ntfy | any.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub approve_via: Option<String>,
+    /// T9.08: the value is a decoy (`kepr canary plant`): reading it,
+    /// or a gate seeing it, raises the alarm; gates never release it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub canary: Option<crate::daemon_policy::CanaryMeta>,
     // batch: gate
     // batch: aws
     /// T7.07: `kepr rotate NAME --every`: rotate every this many seconds,
@@ -107,6 +115,10 @@ pub struct CredMeta {
     pub grants: Option<Vec<kepr_core::protocol_aws::Grant>>,
     // batch: eco
     // batch: platform
+    /// T10.09: identities (`kepr_core::exe_digest`) of the executables
+    /// allowed to read the value through `Get`. Kept across `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub exe_digests: Option<Vec<String>>,
     // batch: session
     /// T11.14: `get` / `copy` / `record show --reveal` need the store
     /// passphrase again (a 60 s window per credential). Kept across `set`;

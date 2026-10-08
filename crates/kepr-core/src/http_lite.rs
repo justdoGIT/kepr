@@ -79,9 +79,18 @@ impl<S: TimedStream> Read for Deadline<'_, S> {
 
 /// Parse one request with a body of at most `max_body` bytes.
 pub fn parse_request<S: TimedStream>(stream: &S, max_body: usize) -> Result<HttpRequest, String> {
+    parse_request_within(stream, max_body, REQUEST_DEADLINE)
+}
+
+/// [`parse_request`] with the whole request due within `within`.
+pub fn parse_request_within<S: TimedStream>(
+    stream: &S,
+    max_body: usize,
+    within: Duration,
+) -> Result<HttpRequest, String> {
     let deadline = Deadline {
         stream,
-        until: Instant::now() + REQUEST_DEADLINE,
+        until: Instant::now() + within,
     };
     let mut reader = BufReader::new(deadline);
 

@@ -68,11 +68,14 @@ pub fn describe(jit: bool, grants: &[Grant], now: u64) -> String {
         .iter()
         .filter(|g| g.until > now)
         .map(|g| {
-            format!(
-                "{} for {}",
-                g.harness,
-                super::rotate_sched::rough(g.until - now)
-            )
+            let who = if g.harness == kepr_core::protocol_aws::ANY_HARNESS {
+                "any session" // T7.12: an approved M-of-N window
+            } else {
+                g.harness.as_str()
+            };
+            let how = if g.approved { " (approved)" } else { "" };
+            let left = super::rotate_sched::rough(g.until - now);
+            format!("{who} for {left}{how}")
         })
         .collect();
     open.sort_unstable();
@@ -200,6 +203,7 @@ mod tests {
         let g = |h: &str, until: u64| Grant {
             harness: h.into(),
             until,
+            approved: false,
         };
         assert_eq!(
             describe(true, &[g("claude", 1000 + 7200)], 1000),
@@ -208,6 +212,15 @@ mod tests {
         assert!(describe(true, &[g("claude", 999)], 1000).contains("no window open"));
         assert!(describe(false, &[], 0).contains("not just-in-time"));
         assert!(describe(false, &[g("a", 9_999_999_999)], 0).contains("windows kept: a for"));
+        let approved = Grant {
+            harness: kepr_core::protocol_aws::ANY_HARNESS.into(),
+            until: 7200,
+            approved: true,
+        };
+        assert_eq!(
+            describe(true, &[approved], 0),
+            "just-in-time, open to any session for 2h (approved)"
+        );
         let mut c = CredInfo {
             name: "K".into(),
             ..Default::default()

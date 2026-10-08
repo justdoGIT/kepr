@@ -13,8 +13,10 @@
 
 pub mod auth;
 pub mod binding;
+pub mod canary;
 pub mod fdpass;
 pub mod framing;
+pub mod gate_limits;
 pub mod gate_protocol;
 pub mod generate;
 pub mod keyring;
@@ -66,7 +68,10 @@ pub mod sigv4_req;
 // batch: eco
 pub mod protocol_eco;
 // batch: platform
+pub mod exe_digest;
+pub mod protocol_platform;
 // batch: session
+pub mod fdfetch;
 pub mod http_lite;
 pub mod profile;
 pub mod protocol_session;

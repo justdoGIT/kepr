@@ -29,11 +29,19 @@ pub const ROTATE_EVERY_MAX_SECS: u64 = 10 * 365 * 86_400;
 
 /// T7.10: a window in which agent sessions of `harness` may use a
 /// just-in-time (`jit`) sealed credential. `until` is unix seconds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant {
     pub harness: String,
     pub until: u64,
+    /// T7.12: opened by an approved M-of-N request, not by the owner
+    /// alone — which is what satisfies an `approvals` requirement.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved: bool,
 }
+
+/// A grant for every harness of the session. `valid_harness` rejects it,
+/// so only the daemon writes one (T7.12's approved windows).
+pub const ANY_HARNESS: &str = "*";
 
 /// Longest `kepr grant --for`.
 pub const GRANT_MAX_SECS: u64 = 7 * 86_400;
@@ -120,7 +128,7 @@ mod tests {
         for ok in ["claude", "codex-cli", "omp_1", "a.b"] {
             assert!(valid_harness(ok), "{ok}");
         }
-        for bad in ["", "a b", "../x", "a/b", &"x".repeat(65)] {
+        for bad in ["", "a b", "../x", "a/b", ANY_HARNESS, &"x".repeat(65)] {
             assert!(!valid_harness(bad), "{bad}");
         }
         let r = Request::Aws(AwsRequest::AwsGrant {
@@ -140,6 +148,7 @@ mod tests {
             grants: vec![Grant {
                 harness: "claude".into(),
                 until: 9,
+                approved: false,
             }],
         });
         let wire = serde_json::to_string(&resp).unwrap();

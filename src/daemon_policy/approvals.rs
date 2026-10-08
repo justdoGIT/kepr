@@ -65,7 +65,7 @@ fn random_hex(n: usize) -> Result<String, String> {
     Ok(hex::encode(&*b))
 }
 
-fn ct_eq(a: &str, b: &str) -> bool {
+pub(super) fn ct_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
@@ -178,7 +178,9 @@ pub fn ask(
     });
     loop {
         let r = g.get_or_insert_with(Reg::default);
-        let i = r.pending.iter().position(|p| p.id == id)?;
+        let Some(i) = r.pending.iter().position(|p| p.id == id) else {
+            return Some(false); // expired and swept by another ask: deny
+        };
         let now = Instant::now();
         if let Some(a) = r.pending[i].answer {
             r.pending.remove(i);
@@ -218,6 +220,22 @@ mod tests {
             Some(false)
         );
         assert!(t.elapsed() >= Duration::from_millis(50));
+    }
+
+    /// Another ask sweeps expired entries; an ask whose own entry went
+    /// that way timed out, so it is a deny, not "no approver" (which
+    /// would fall back to polkit).
+    #[test]
+    fn a_timed_out_ask_swept_by_another_is_still_deny() {
+        let _k = key_for(9_005);
+        let asker =
+            std::thread::spawn(|| ask(9_005, ("K", "any", "x".into()), Duration::from_millis(30)));
+        std::thread::sleep(Duration::from_millis(10));
+        with(|r| {
+            std::thread::sleep(Duration::from_millis(60)); // past its deadline
+            r.pending.retain(|p| p.deadline > Instant::now());
+        });
+        assert_eq!(asker.join().unwrap(), Some(false));
     }
 
     #[test]

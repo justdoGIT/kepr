@@ -19,7 +19,9 @@
 // checked again, the owner only (root in system mode), refused while any
 // agent gate runs, audited (`escrow-enable`, `escrow-disable`,
 // `escrow-open`). Opening needs the admin's own share key, no running
-// gate of theirs, and the key fingerprint to match.
+// gate of theirs, and the key fingerprint to match. Disabling needs the
+// passphrase as well, and says what it can't do: a copy of escrow.bin
+// already handed out still opens the key.
 
 use std::path::PathBuf;
 
@@ -144,17 +146,37 @@ pub fn handle_enable(uid: u32, username: &str, admin_key: &str, password: &[u8])
     super::reply(r)
 }
 
-pub fn handle_disable(uid: u32, username: &str) -> Response {
-    let r = (|| {
-        fences(uid, crate::user_mode(), false, true)?;
-        match std::fs::remove_file(path()) {
-            Ok(()) => Ok("escrow off: escrow.bin deleted".to_string()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err("escrow is not on".into()),
-            Err(e) => Err(format!("cannot delete escrow.bin: {e}")),
+pub const DISABLED: &str = "escrow off: escrow.bin deleted. This is not a revocation: \
+                            a copy already handed to the administrator still opens this \
+                            store's key";
+
+pub fn handle_disable(uid: u32, username: &str, password: &[u8]) -> Response {
+    let r = disable_with(uid, || {
+        if !crate::protected_master_key_path().exists() {
+            return Ok(()); // no passphrase to check
         }
-    })();
+        // Rate-limited like `kepr unlock`.
+        let key = crate::daemon_session::unlock_guard::unwrap_guarded(password, uid, username)?;
+        if *key != *crate::crypto::snapshot_key()? {
+            return Err("the passphrase does not match the running store".into());
+        }
+        Ok(())
+    });
     audit_r("escrow-disable", uid, username, None, &r);
     super::reply(r)
+}
+
+fn disable_with(uid: u32, check: impl FnOnce() -> Result<(), String>) -> Result<String, String> {
+    fences(uid, crate::user_mode(), false, true)?;
+    if !path().exists() {
+        return Err("escrow is not on".into());
+    }
+    check()?;
+    match std::fs::remove_file(path()) {
+        Ok(()) => Ok(DISABLED.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err("escrow is not on".into()),
+        Err(e) => Err(format!("cannot delete escrow.bin: {e}")),
+    }
 }
 
 pub fn handle_status() -> Response {
@@ -273,10 +295,17 @@ mod tests {
         // Another user's key can't, nor the admin while a gate runs.
         assert!(open_with(other, &text, false).is_err());
         assert!(open_with(admin, &text, true).is_err());
-        // Disabling deletes the file.
-        assert!(handle_disable(0, "root").is_success());
+        // Disabling needs the passphrase check to pass, deletes the file
+        // and says copies handed out still work.
+        assert_eq!(
+            disable_with(0, || Err("wrong".into())),
+            Err("wrong".to_string())
+        );
+        assert!(path().exists());
+        assert_eq!(disable_with(0, || Ok(())), Ok(DISABLED.to_string()));
+        assert!(DISABLED.contains("not a revocation"));
         assert!(!path().exists());
-        assert!(!handle_disable(0, "root").is_success());
+        assert!(!handle_disable(0, "root", b"pw").is_success());
         let Response::Sharing(SharingResponse::EscrowState { enabled, .. }) = handle_status()
         else {
             panic!("no status");

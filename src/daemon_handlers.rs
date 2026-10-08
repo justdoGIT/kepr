@@ -75,7 +75,9 @@ pub fn handle_set(
         crate::daemon_store::carry_over(uid, &upper, &mut m); // T5.01: keep tags / folder
         crate::daemon_recordsx::carry_over(uid, &upper, &mut m); // T5.03: attachments
         crate::daemon_session::reauth::carry_over(uid, &upper, &mut m); // T11.14
-        crate::daemon_aws::carry_over(uid, &upper, &mut m); // T7.07: rotation schedule
+        crate::daemon_aws::carry_over(uid, &upper, &mut m); // T7.07, T7.10
+        crate::daemon_platform::exe::carry_over(uid, &upper, &mut m); // T10.09
+        crate::daemon_syncx::quorum_carry_over(uid, &upper, &mut m); // T7.12
         m
     }) {
         Ok(m) => m,

@@ -293,6 +293,8 @@ pub enum Request {
     #[serde(untagged)]
     Sharing(crate::protocol_sharing::SharingRequest),
     // batch: sync
+    #[serde(untagged)]
+    Syncx(crate::protocol_syncx::SyncxRequest),
     // batch: policy
     #[serde(untagged)]
     Policy(crate::protocol_policy::PolicyRequest),
@@ -306,6 +308,8 @@ pub enum Request {
     #[serde(untagged)]
     Eco(crate::protocol_eco::EcoRequest),
     // batch: platform
+    #[serde(untagged)]
+    Platform(crate::protocol_platform::PlatformRequest),
     // batch: session
     #[serde(untagged)]
     Session(crate::protocol_session::SessionRequest),

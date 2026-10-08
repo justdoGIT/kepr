@@ -79,6 +79,11 @@ const GROUPS: &[Group] = &[
         crate::cli_eco::dispatch,
     ),
     // batch: platform
+    (
+        crate::cli_platform::VERBS,
+        crate::cli_platform::HELP,
+        crate::cli_platform::dispatch,
+    ),
     // batch: session
     (
         crate::cli_session::VERBS,

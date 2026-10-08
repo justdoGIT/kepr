@@ -125,6 +125,10 @@ jobs:
         run: shellcheck integrations/ci/*.sh
       - name: kepr-ci.sh tests (masking, export, OIDC exchange, GitLab copy)
         run: bash integrations/ci/test_kepr_ci.sh
+      - name: Podman secret driver (shellcheck + fake-kepr tests)
+        run: |
+          shellcheck integrations/podman/kepr-podman-driver integrations/podman/*.sh
+          bash integrations/podman/test_kepr_podman_driver.sh
       - name: GitLab template parses
         run: |
           python3 -m pip install --quiet pyyaml

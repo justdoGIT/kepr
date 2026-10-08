@@ -173,6 +173,7 @@ pub fn cmd_run(
             ..
         }) => {
             session.announce(extras.session.as_deref());
+            crate::cli_policy::label_session(extras.session.as_deref(), harness); // T9.07
             (port, placeholders, extras.ca_pem, extras.db_ports)
         }
         Ok(Response::Err { error }) => return Response::fail(error),
