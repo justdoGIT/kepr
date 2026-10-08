@@ -85,6 +85,9 @@ fn store(e: &Entry, seal: bool) -> Result<bool, String> {
 }
 
 pub fn cmd_import(file: &str, o: &Opts) -> Response {
+    if crate::cli_syncx::is_bundle(file) {
+        return crate::cli_syncx::import_bundle(file, o); // T6.09
+    }
     let text = match std::fs::read_to_string(file) {
         Ok(t) => Zeroizing::new(t),
         Err(e) => return Response::fail(format!("{file}: {e}")),

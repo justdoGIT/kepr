@@ -67,6 +67,7 @@ pub fn verb_op(args: &[String]) -> &'static str {
     match rest.next().map(String::as_str) {
         Some("exec") => "exec",
         Some("env") => "export",
+        Some("export") => "export", // T6.09: kepr export --encrypted
         Some("get") if rest.any(|a| a == "--export") => "export",
         _ => "get",
     }
@@ -145,6 +146,10 @@ mod tests {
             "exec"
         );
         assert_eq!(verb_op(&v(&["kepr", "env", "--env", "A"])), "export");
+        assert_eq!(
+            verb_op(&v(&["kepr", "export", "--encrypted", "-o", "b"])),
+            "export"
+        );
         assert_eq!(verb_op(&v(&["kepr", "inject", "-i", "t"])), "get");
         assert_eq!(verb_op(&v(&["kepr"])), "get");
     }
