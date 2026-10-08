@@ -223,6 +223,7 @@ mod tests {
             bytes_out: 1234,
             ms: 56,
             blocked: None,
+            tokens: None,
         }
     }
 

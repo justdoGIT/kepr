@@ -44,6 +44,17 @@ pub enum PolicyRequest {
         token: String,
         allow: bool,
     },
+    /// T9.07: name the harness of one of the caller's gate sessions
+    /// (`kepr agent run` sends it once; the first name stays).
+    SessionHarness { session: String, harness: String },
+    /// T9.07: `kepr usage --report`: gate-journal counts per harness ×
+    /// credential × host over `days` (everything kept when absent), and
+    /// bound hosts no request reached in `unused_days`.
+    UsageReport {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        days: Option<u32>,
+        unused_days: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +98,43 @@ pub enum PolicyResponse {
         #[serde(default)]
         reset: bool,
     },
+    UsageReportOk {
+        /// Start of the window, `YYYY-MM-DD HH:MM` UTC; absent = all kept.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        since: Option<String>,
+        rows: Vec<UsageRow>,
+        /// Over-scoped bindings: bound hosts unused for `unused_days`.
+        unused: Vec<UnusedBinding>,
+        unused_days: u32,
+        /// Rows beyond what one reply holds were left out.
+        #[serde(default)]
+        truncated: bool,
+    },
+}
+
+/// T9.07: one harness × credential × host line of the usage report.
+/// `cred` is `-` for traffic no credential was added to (tunnels).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageRow {
+    pub harness: String,
+    pub cred: String,
+    pub host: String,
+    pub requests: u64,
+    /// Refused by the gate (DLP, limits).
+    pub blocked: u64,
+    /// As the providers reported them.
+    pub tokens: u64,
+}
+
+/// T9.07: a host a sealed credential is bound to that no request
+/// reached in the window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnusedBinding {
+    pub cred: String,
+    pub host: String,
+    /// Last request in the journal kept, `YYYY-MM-DD HH:MM` UTC.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_used: Option<String>,
 }
 
 /// T9.04: a consent request waiting for the approver. `token` is the
@@ -148,6 +196,42 @@ mod tests {
             Response::Policy(back) => assert_eq!(back, r),
             other => panic!("decoded as {other:?}"),
         }
+    }
+
+    #[test]
+    fn usage_report_round_trips() {
+        round_trip_req(
+            PolicyRequest::UsageReport {
+                days: Some(7),
+                unused_days: 30,
+            },
+            r#"{"cmd":"usage_report","days":7,"unused_days":30}"#,
+        );
+        round_trip_req(
+            PolicyRequest::SessionHarness {
+                session: "0123456789abcdef".into(),
+                harness: "claude".into(),
+            },
+            r#"{"cmd":"session_harness","session":"0123456789abcdef","harness":"claude"}"#,
+        );
+        round_trip_resp(PolicyResponse::UsageReportOk {
+            since: None,
+            rows: vec![UsageRow {
+                harness: "claude".into(),
+                cred: "ANTHROPIC_API_KEY".into(),
+                host: "api.anthropic.com".into(),
+                requests: 3,
+                blocked: 1,
+                tokens: 900,
+            }],
+            unused: vec![UnusedBinding {
+                cred: "GH".into(),
+                host: "uploads.github.com".into(),
+                last_used: None,
+            }],
+            unused_days: 30,
+            truncated: false,
+        });
     }
 
     #[test]

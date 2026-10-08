@@ -6,6 +6,7 @@
 //! sealed value.
 
 use crate::binding::Inject;
+pub use crate::gate_limits::GateLimits;
 use crate::generate::ZeroString;
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,14 @@ pub enum GateRequest {
         id: u64,
         entries: Vec<crate::gate_journal::JournalEntry>,
     },
+    /// T9.06: add to today's usage of credential `name` (shared by every
+    /// session of the user); answered with `UsageToday`.
+    DayUsage {
+        id: u64,
+        name: String,
+        requests: u64,
+        tokens: u64,
+    },
 }
 
 /// Daemon → gate.
@@ -54,6 +63,12 @@ pub enum GateResponse {
     Recorded {
         id: u64,
     },
+    /// T9.06: the credential's totals today, this report included.
+    UsageToday {
+        id: u64,
+        requests: u64,
+        tokens: u64,
+    },
     Err {
         id: u64,
         error: String,
@@ -66,6 +81,7 @@ impl GateResponse {
             Self::ResolveOk { id, .. }
             | Self::Generation { id, .. }
             | Self::Recorded { id }
+            | Self::UsageToday { id, .. }
             | Self::Err { id, .. } => *id,
         }
     }
@@ -241,37 +257,6 @@ pub struct SessionConfig {
     /// T7.09: send what the agent sends and receives to the daemon.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub record: bool,
-}
-
-/// Per-session caps the gate enforces (P9.5). `None` = no cap.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GateLimits {
-    /// Total forwarded requests.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub max_requests: Option<u64>,
-    /// Total tokens, as reported in the providers' `usage` fields.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub max_tokens: Option<u64>,
-    /// Requests per rolling minute.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub per_minute: Option<u32>,
-}
-
-impl GateLimits {
-    pub fn is_none(&self) -> bool {
-        *self == Self::default()
-    }
-
-    /// Caps must be positive; the per-minute rate at most 10 000.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.max_requests == Some(0) || self.max_tokens == Some(0) {
-            return Err("request and token limits must be at least 1".into());
-        }
-        if self.per_minute.is_some_and(|r| r == 0 || r > 10_000) {
-            return Err("the per-minute rate must be 1-10000".into());
-        }
-        Ok(())
-    }
 }
 
 /// System-mode daemon → kepr-gate service (T1.19), sent after the
@@ -509,6 +494,7 @@ mod tests {
             max_requests: r,
             max_tokens: t,
             per_minute: m,
+            ..Default::default()
         };
         assert!(l(Some(10), Some(1000), Some(60)).validate().is_ok());
         assert!(l(Some(0), None, None).validate().is_err());
@@ -519,6 +505,43 @@ mod tests {
             serde_json::from_str(r#"{"session_id":"a","session_key_hex":"b","routes":[]}"#)
                 .unwrap();
         assert!(cfg.limits.is_none());
+    }
+
+    #[test]
+    fn daily_caps_and_usage_reports() {
+        let day = GateLimits {
+            max_requests_day: Some(100),
+            max_tokens_day: Some(50_000),
+            ..Default::default()
+        };
+        assert!(day.validate().is_ok() && !day.is_none());
+        let zero = GateLimits {
+            max_tokens_day: Some(0),
+            ..Default::default()
+        };
+        assert!(zero.validate().is_err());
+        let wire = serde_json::to_string(&GateRequest::DayUsage {
+            id: 7,
+            name: "K".into(),
+            requests: 1,
+            tokens: 0,
+        })
+        .unwrap();
+        assert_eq!(
+            wire,
+            r#"{"cmd":"dayusage","id":7,"name":"K","requests":1,"tokens":0}"#
+        );
+        assert!(serde_json::from_str::<crate::protocol::Request>(&wire).is_err());
+        let back: GateResponse = serde_json::from_str(
+            &serde_json::to_string(&GateResponse::UsageToday {
+                id: 7,
+                requests: 3,
+                tokens: 9,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(back.id(), 7);
     }
 
     #[test]

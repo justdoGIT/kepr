@@ -165,6 +165,18 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
                 id,
                 entries,
             ),
+            Ok(GateRequest::DayUsage {
+                id,
+                name,
+                requests,
+                tokens,
+            }) => crate::daemon_policy::day_usage(
+                &owner.creds,
+                owner.uid,
+                id,
+                &name,
+                (requests, tokens),
+            ),
             Err(_) => GateResponse::Err {
                 id: 0,
                 error: "malformed request".into(),
@@ -237,6 +249,7 @@ fn start(
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
     let gate_pid = key.max(0);
+    crate::daemon_policy::session_started(uid, &session, routes); // T9.07
     Ok(Response::GateStarted {
         port: ready.port,
         placeholders: ready.placeholders,
