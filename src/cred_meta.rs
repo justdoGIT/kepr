@@ -92,6 +92,10 @@ pub struct CredMeta {
     /// allowed to read the value through `Get`. Kept across `set`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub exe_digests: Option<Vec<String>>,
+    /// T10.10: on `KEPR_PKI_CA` (sealed): the CA certificate and the
+    /// certificates it issued (public data; the key is the value).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pki: Option<kepr_core::pki::PkiState>,
     // batch: session
     /// T11.14: `get` / `copy` / `record show --reveal` need the store
     /// passphrase again (a 60 s window per credential). Kept across `set`;

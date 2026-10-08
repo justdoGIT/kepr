@@ -6,18 +6,20 @@
 //   keyring        `kepr keyring add` (T10.05)
 //   fingerprint    `kepr unlock --fingerprint`, doctor's fprintd check (T10.03)
 //   exe            `kepr set --exe`, `kepr exe` binary-identity bindings (T10.09)
+//   pki            `kepr pki init|ca|issue|ls` local CA (T10.10)
 
 mod args;
 pub mod exe;
 pub mod fingerprint;
 mod keyring;
+mod pki;
 mod systemd_cred;
 
 use kepr_core::protocol::Response;
 
 pub use fingerprint::{PlatformFlags, FLAGS};
 
-pub const VERBS: &[&str] = &["systemd-cred", "keyring", "exe"];
+pub const VERBS: &[&str] = &["systemd-cred", "keyring", "exe", "pki"];
 
 pub const HELP: &str = "  systemd-cred KEY [--name CRED] [--tpm2]
                                        print a SetCredentialEncrypted= line for a unit file (value
@@ -31,6 +33,11 @@ pub const HELP: &str = "  systemd-cred KEY [--name CRED] [--tpm2]
                                        connects: kepr itself for get/exec, or your SDK program) may read it
   exe KEY [--allow PATH]... [--clear]  show, replace or drop KEY's program binding (changing it needs
                                        an allowed program; otherwise delete and re-create KEY)
+  pki init [--days N] [--force]        local CA (P-256); its key is sealed in the store, never shown
+  pki ca                               print the CA certificate, to add to trust stores
+  pki issue NAME... [--days 30] [--out DIR] [--force]
+                                       NAME.crt (leaf + CA) and NAME.key (0600) for DNS names / IPs
+  pki ls                               the CA and issued certificates; health warns 14 days ahead
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -38,6 +45,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "systemd-cred" => systemd_cred::cmd_systemd_cred(args),
         "keyring" => keyring::cmd_keyring(args),
         "exe" => exe::cmd_exe(args),
+        "pki" => pki::cmd_pki(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

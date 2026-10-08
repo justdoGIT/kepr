@@ -65,7 +65,9 @@ pub mod sigv4_req;
 pub mod protocol_eco;
 // batch: platform
 pub mod exe_digest;
+pub mod pki;
 pub mod protocol_platform;
+pub mod x509_build;
 // batch: session
 pub mod http_lite;
 pub mod profile;

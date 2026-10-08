@@ -22,6 +22,23 @@ pub enum PlatformRequest {
     ExeBind { name: String, digests: Vec<String> },
     /// T10.09: the identities NAME is bound to.
     ExeShow { name: String },
+    /// T10.10: create the local CA (`--force` replaces an existing one).
+    PkiInit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        days: Option<u32>,
+        #[serde(default)]
+        force: bool,
+    },
+    /// T10.10: sign a leaf for `public_key` (hex SEC1 P-256 point; the
+    /// CLI keeps the private key) with these DNS names / IP addresses.
+    PkiIssue {
+        sans: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        days: Option<u32>,
+        public_key: String,
+    },
+    /// T10.10: the CA certificate and the certificates it issued.
+    PkiList,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +56,17 @@ pub enum PlatformResponse {
     },
     /// T10.09: NAME's executable identities after `ExeBind` / `ExeShow`.
     ExeBindings { name: String, digests: Vec<String> },
+    /// T10.10: the new CA (certificate only; the key stays sealed).
+    PkiCaOk { ca: crate::pki::PkiCa },
+    /// T10.10: a signed leaf, with the CA certificate for the chain.
+    PkiIssued {
+        cert_pem: String,
+        ca_pem: String,
+        /// Boxed to keep `Response` small.
+        cert: Box<crate::pki::PkiCert>,
+    },
+    /// T10.10: `kepr pki ls`.
+    PkiListOk { state: crate::pki::PkiState },
 }
 
 #[cfg(test)]
@@ -122,6 +150,62 @@ mod tests {
         };
         let back = round_trip(Response::Platform(resp.clone()));
         assert!(matches!(back, Response::Platform(p) if p == resp));
+    }
+
+    #[test]
+    fn pki_messages_round_trip() {
+        use crate::pki::{PkiCa, PkiCert, PkiState};
+        use crate::protocol::Request;
+        let wire = serde_json::to_string(&Request::Platform(PlatformRequest::PkiIssue {
+            sans: vec!["a.test".into()],
+            days: Some(30),
+            public_key: "04ab".into(),
+        }))
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Request>(&wire).unwrap(),
+            Request::Platform(PlatformRequest::PkiIssue { days: Some(30), .. })
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"cmd":"pki_init"}"#).unwrap(),
+            Request::Platform(PlatformRequest::PkiInit {
+                days: None,
+                force: false
+            })
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"cmd":"pki_list"}"#).unwrap(),
+            Request::Platform(PlatformRequest::PkiList)
+        ));
+        let ca = PkiCa {
+            cn: "c".into(),
+            cert_pem: "p".into(),
+            not_after: 9,
+        };
+        let cert = PkiCert {
+            serial: "01".into(),
+            sans: vec!["a.test".into()],
+            not_after: 5,
+            issued_at: 1,
+            spiffe_id: None,
+        };
+        for r in [
+            PlatformResponse::PkiCaOk { ca: ca.clone() },
+            PlatformResponse::PkiIssued {
+                cert_pem: "x".into(),
+                ca_pem: "p".into(),
+                cert: Box::new(cert.clone()),
+            },
+            PlatformResponse::PkiListOk {
+                state: PkiState {
+                    ca,
+                    issued: vec![cert],
+                },
+            },
+        ] {
+            let back = round_trip(Response::Platform(r.clone()));
+            assert!(matches!(back, Response::Platform(p) if p == r));
+        }
     }
 
     #[test]
