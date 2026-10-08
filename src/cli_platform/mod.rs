@@ -8,10 +8,14 @@
 //   exe            `kepr set --exe`, `kepr exe` binary-identity bindings (T10.09)
 //   pki            `kepr pki init|ca|issue|ls` local CA (T10.10)
 //   svid           `kepr pki svid|tpm-enroll` SPIFFE SVIDs, TPM2 quotes (T10.11)
+//   kdbx*          `kepr import vault.kdbx` KeePass KDBX 4 (T10.02)
 
 mod args;
 pub mod exe;
 pub mod fingerprint;
+pub mod kdbx;
+mod kdbx_keys;
+mod kdbx_xml;
 mod keyring;
 mod pki;
 mod svid;
@@ -45,6 +49,9 @@ pub const HELP: &str = "  systemd-cred KEY [--name CRED] [--tpm2]
                                        svid_bundle.pem; with a TPM enrolled, --ak quotes PCR 7 first
   pki tpm-enroll --ak-pub ak.pem --ak HANDLE|CTX
                                        SVIDs only while PCR 7 (Secure Boot state) matches, via tpm2_quote
+  import vault.kdbx [--prefix P] [--seal] [--overwrite] [--yes]
+                                       KeePass KDBX 4 (asks for its password; Argon2 KDF, AES-256 or
+                                       ChaCha20; key files not supported)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
