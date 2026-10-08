@@ -62,6 +62,7 @@ mod daemon_recordsx;
 // batch: share
 mod daemon_sharing;
 // batch: sync
+mod daemon_syncx;
 // batch: policy
 mod daemon_policy;
 // batch: gate

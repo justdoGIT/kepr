@@ -7,6 +7,8 @@
 //   azure_kv    T8.05  azure-kv:VAULT/SECRET (AZURE_ACCESS_TOKEN)
 //   map         T11.17 kepr sync push --map FILE [--dry-run]
 //   import      T11.17 kepr sync import --from SRC [--prefix P]
+//   bundle      T6.09  kepr export --encrypted -o FILE; kepr import FILE
+//                      (cli_import.rs hands a bundle file over here)
 //
 // Sync is client-side: the daemon never sees a cloud token and the
 // cloud never sees kepr's master key. Sealed, SSH and share-key
@@ -18,6 +20,7 @@
 #[path = "../atomic_file.rs"]
 mod atomic_file;
 pub mod azure_kv;
+mod bundle;
 mod import;
 pub mod json_file;
 mod map;
@@ -29,7 +32,9 @@ use kepr_core::protocol::Response;
 /// Most pages any listing follows.
 const MAX_PAGES: usize = 50;
 
-pub const VERBS: &[&str] = &["sync"];
+pub use bundle::{cmd_import as import_bundle, is_bundle};
+
+pub const VERBS: &[&str] = &["sync", "export"];
 
 pub const HELP: &str = "\
   sync-push|sync-pull KEY --url azure-kv:VAULT/SECRET
@@ -44,6 +49,11 @@ pub const HELP: &str = "\
                                        import a remote store's secrets (SRC: aws-sm,
                                        gcp-sm:projects/P, vault:MOUNT[/PATH], azure-kv:VAULT,
                                        json:FILE); names only until --yes
+  export --encrypted -o FILE           every credential `get` can read now (values, history,
+                                       attachments) in a passphrase-encrypted bundle; sealed,
+                                       SSH and gated ones are listed by name only
+  import BUNDLE [--prefix P] [--overwrite] [--yes]
+                                       open a bundle: create / update / unchanged per credential
 ";
 
 /// Refuse flags a subcommand doesn't know: a typo like `--dryrun` must
@@ -63,8 +73,10 @@ fn check_flags(args: &[String], value_flags: &[&str], switches: &[&str]) -> Resu
 }
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
-    if verb != "sync" {
-        return Response::fail(format!("unknown command: {verb}"));
+    match verb {
+        "sync" => {}
+        "export" => return bundle::cmd_export(args),
+        _ => return Response::fail(format!("unknown command: {verb}")),
     }
     let rest = args.get(1..).unwrap_or_default();
     let r = match args.first().map(String::as_str) {
