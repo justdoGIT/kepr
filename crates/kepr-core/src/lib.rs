@@ -34,13 +34,22 @@ pub mod ssh_wire;
 // batch: vault
 pub mod protocol_vault;
 // batch: seal
+pub mod protocol_seal;
+pub mod recovery_words;
+pub mod seal_factor;
 // batch: store
 pub mod protocol_store;
 // batch: records
+pub mod generate_profile;
+pub mod health_policy;
 pub mod protocol_records;
+pub mod record_types;
+pub mod strength;
 // batch: share
 pub mod protocol_sharing;
+pub mod protocol_sharing_types;
 // batch: sync
+pub mod protocol_syncx;
 // batch: policy
 pub mod policy;
 pub mod protocol_policy;
@@ -56,5 +65,7 @@ pub mod sigv4_req;
 pub mod protocol_eco;
 // batch: platform
 // batch: session
+pub mod http_lite;
+pub mod profile;
 pub mod protocol_session;
 // end of batches

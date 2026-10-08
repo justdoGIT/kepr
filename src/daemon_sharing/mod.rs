@@ -7,10 +7,18 @@
 // ledger, emergency contacts) is one small JSON file per uid in the
 // daemon's state directory, written through atomic_file under `LOCK`.
 
+pub mod breakglass;
+pub mod contacts;
 pub mod devices;
+pub mod emergency;
+pub mod emergency_proof;
+pub mod emergency_release;
+pub mod escrow;
 pub mod kem;
 pub mod link;
+pub mod report;
 pub mod sent;
+pub mod view;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -113,6 +121,14 @@ pub(crate) fn audited(uid: u32, op: &str, name: &str) -> bool {
 /// Called by the expiry sweeper (daemon_expiry.rs) once per tick.
 pub fn sweep(now: u64) {
     sent::sweep(now);
+    emergency_release::sweep(now);
+}
+
+pub(crate) fn reply(r: Result<String, String>) -> Response {
+    match r {
+        Ok(message) => done(message),
+        Err(e) => Response::fail(e),
+    }
 }
 
 pub(crate) fn done(message: impl Into<String>) -> Response {
@@ -137,18 +153,61 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SharingRequest
             ttl_secs,
             self_destruct,
             relay,
+            view_window_secs,
         } => link::handle_create(
             (uid, peer_pid),
             username,
             &name,
-            ttl_secs,
-            self_destruct == Some(true),
-            relay,
+            link::Options {
+                ttl: ttl_secs,
+                self_destruct: self_destruct == Some(true),
+                relay,
+                view_window: view_window_secs,
+            },
         ),
         SharingRequest::ShareLinkOpen { blob, key, name } => {
             link::handle_open(uid, username, &blob, key.as_str(), name.as_deref())
         }
         SharingRequest::ShareSentList => sent::handle_list(uid),
         SharingRequest::ShareLinkOpened { id } => sent::handle_opened(uid, username, &id),
+        SharingRequest::ShareContactAdd { name, key } => {
+            contacts::handle_add(uid, username, &name, &key)
+        }
+        SharingRequest::ShareContactList => contacts::handle_list(uid),
+        SharingRequest::ShareContactRemove { name } => {
+            contacts::handle_remove(uid, username, &name)
+        }
+        SharingRequest::ShareReport => {
+            report::handle_report(uid, username, &crate::audit_chain_path())
+        }
+        SharingRequest::EmergencyAdd {
+            contact,
+            delay_secs,
+            names,
+        } => emergency::handle_add(uid, username, &contact, delay_secs, names),
+        SharingRequest::EmergencyList => emergency::handle_list(uid),
+        SharingRequest::EmergencyRemove { contact } => {
+            emergency::handle_remove(uid, username, &contact)
+        }
+        SharingRequest::EmergencyDeny { contact } => {
+            emergency::handle_deny(uid, username, &contact)
+        }
+        SharingRequest::EmergencyProve { owner } => {
+            emergency_release::handle_prove(uid, username, &owner)
+        }
+        SharingRequest::EmergencyRequest { proof } => {
+            emergency_release::handle_request(uid, username, &proof)
+        }
+        SharingRequest::EmergencyRelease => emergency_release::handle_release(uid, username),
+        SharingRequest::BreakGlass { name, shares } => {
+            breakglass::handle(uid, username, &name, &shares)
+        }
+        SharingRequest::EscrowEnable {
+            admin_key,
+            password,
+        } => escrow::handle_enable(uid, username, &admin_key, password.as_bytes()),
+        SharingRequest::EscrowDisable => escrow::handle_disable(uid, username),
+        SharingRequest::EscrowStatus => escrow::handle_status(),
+        SharingRequest::EscrowOpen { escrow } => escrow::handle_open(uid, username, &escrow),
     }
 }

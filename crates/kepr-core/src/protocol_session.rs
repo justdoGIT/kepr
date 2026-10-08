@@ -1,5 +1,6 @@
 // protocol_session.rs — wire types of the `session` ticket batch:
-// re-authentication before reveal (T11.14). Wrapped by
+// re-authentication before reveal (T11.14), `kepr status` details
+// (T11.24), `kepr batch` (T11.18), `kepr ssh rotate` (T11.21). Wrapped by
 // `Request::Session` / `Response::Session`, which are
 // `#[serde(untagged)]` and tried after every tagged variant, so the
 // `cmd` / `kind` names here must not repeat one in protocol.rs.
@@ -30,6 +31,9 @@ pub enum SessionRequest {
     /// T11.14: require re-authentication before `name` is revealed, or
     /// stop requiring it (`on: false` needs an open window).
     ReauthFlag { name: String, on: bool },
+    /// T11.21 `kepr ssh rotate`: after the host accepted `next`, make
+    /// `next`'s key `name`'s and delete `next`. Answers `SshKeyOk`.
+    SshRotateCommit { name: String, next: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,6 +43,8 @@ pub enum SessionResponse {
     ReauthOk { name: String, valid_secs: u64 },
     /// `name` now does (`on`) or doesn't require re-authentication.
     ReauthFlagOk { name: String, on: bool },
+    /// T11.18 (CLI only, for `--json`): every line of `kepr batch` ran.
+    BatchOk { ran: u32 },
 }
 
 /// T11.24: what `kepr status` shows beyond the lock state, flattened into
@@ -131,6 +137,10 @@ mod tests {
                 name: "K".into(),
                 on: true,
             }),
+            Request::Session(SessionRequest::SshRotateCommit {
+                name: "K".into(),
+                next: "K_NEXT".into(),
+            }),
         ];
         for r in reqs {
             let wire = serde_json::to_string(&r).unwrap();
@@ -156,6 +166,7 @@ mod tests {
                 name: "K".into(),
                 on: false,
             }),
+            Response::Session(SessionResponse::BatchOk { ran: 3 }),
         ];
         for r in resps {
             let wire = serde_json::to_string(&r).unwrap();

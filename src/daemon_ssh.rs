@@ -121,7 +121,9 @@ fn sign(uid: u32, peer_pid: i32, username: &str, name: &str, data_b64: &str) -> 
     {
         return fail("expired".into());
     }
-    if meta.requires_consent == Some(true) && !crate::daemon_polkit::consent_granted(peer_pid) {
+    if meta.requires_consent == Some(true)
+        && !crate::daemon_policy::consent(uid, peer_pid, &upper, &meta)
+    {
         return fail("consent denied".into());
     }
     let Some(data) = ssh_wire::unb64(data_b64) else {

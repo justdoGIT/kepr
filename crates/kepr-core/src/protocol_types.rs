@@ -50,6 +50,13 @@ pub struct KeyHealth {
     /// range lookup. Absent for sealed credentials.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub hibp_prefix: Option<String>,
+    /// T11.23: findings the owner chose to ignore (moved out of `issues`).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub ignored: Vec<String>,
+    /// T11.23: the finding kinds ignored for this credential, so a client
+    /// can apply them to findings it adds itself (breaches).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub ignore: Vec<String>,
 }
 
 /// Optional parts of `GateStarted` (P2.1 egress CA, P7.1 database ports).
@@ -117,6 +124,9 @@ pub struct CredInfo {
     pub alias_of: Option<String>,
     // batch: records
     // batch: share
+    /// T6.07: revealed by break-glass; rotate it (cleared by the next set).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub must_rotate: Option<bool>,
     // batch: sync
     // batch: policy
     // batch: gate

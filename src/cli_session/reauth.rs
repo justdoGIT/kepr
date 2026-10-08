@@ -2,7 +2,7 @@
 // (T11.14). When the daemon answers a read with exactly `REAUTH_NEEDED`,
 // ask for the store passphrase on the terminal, send `Reauth` (which
 // opens a 60 s window for that credential) and retry once. Without a
-// terminal (scripts, MCP) nothing is asked: the error says to
+// terminal (scripts, `kepr ui`, MCP) nothing is asked: the error says to
 // run `kepr reauth NAME` first.
 
 use std::io::IsTerminal;
@@ -46,6 +46,14 @@ pub fn ask_and_open(name: &str) -> Result<(), String> {
     }
 }
 
+static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Did a read in this process run into re-authentication? Its errors
+/// already say what to do, so `kepr get` skips its "Set it with" hint.
+pub fn asked() -> bool {
+    ASKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `get()`, and once more after the passphrase if the daemon asks for it.
 pub fn get_or_ask(
     name: &str,
@@ -55,6 +63,7 @@ pub fn get_or_ask(
     if !is_needed(&first) {
         return Ok(first);
     }
+    ASKED.store(true, std::sync::atomic::Ordering::Relaxed);
     ask_and_open(name)?;
     get()
 }

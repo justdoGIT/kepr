@@ -122,6 +122,13 @@ impl Syncer for VaultSyncer {
     }
 
     fn pull(&self) -> Result<String, String> {
+        match self.fetch()? {
+            Some(v) => Ok(v.as_str().to_string()),
+            None => Err("vault pull: HTTP 404 ".into()),
+        }
+    }
+
+    fn fetch(&self) -> Result<Option<zeroize::Zeroizing<String>>, String> {
         let (addr, token) = Self::read_env()?;
         let endpoint = self.kv_v2_endpoint()?;
         let url = format!("{addr}/v1/{endpoint}");
@@ -130,6 +137,8 @@ impl Syncer for VaultSyncer {
             .set("X-Vault-Token", token.as_str());
         let text = match crate::sync_http::send(req, None) {
             Ok((200, b)) => zeroize::Zeroizing::new(b),
+            // T11.17: no such secret (create, for a dry run).
+            Ok((404, _)) => return Ok(None),
             Ok((code, b)) => {
                 return Err(format!(
                     "vault pull: HTTP {code} {}",
@@ -149,8 +158,78 @@ impl Syncer for VaultSyncer {
                  was the secret written by `kepr sync push`?"
                     .to_string()
             })?;
-        Ok(value.to_string())
+        Ok(Some(zeroize::Zeroizing::new(value.to_string())))
     }
+}
+
+/// T11.17: the keys of one KV v2 metadata LIST reply (`dir/` is a folder).
+pub fn parse_list(body: &str) -> Result<Vec<String>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "vault list: reply is not JSON")?;
+    let keys = v
+        .pointer("/data/keys")
+        .and_then(|k| k.as_array())
+        .ok_or("vault list: reply has no data.keys")?;
+    Ok(keys
+        .iter()
+        .filter_map(|k| k.as_str())
+        // A key never climbs out of the folder it was listed in.
+        .filter(|k| !k.is_empty() && !k.starts_with('/') && !k.split('/').any(|s| s == ".."))
+        .map(str::to_string)
+        .collect())
+}
+
+/// T11.17: every secret under `from` (`MOUNT[/PATH]`) whose path below
+/// it starts with `prefix`, as `(path, vault:MOUNT/PATH/path)`. Folders
+/// are walked (at most 200 LIST calls).
+pub fn list(from: &str, prefix: &str) -> Result<Vec<(String, String)>, String> {
+    let (addr, token) = VaultSyncer::read_env()?;
+    let from = from.trim_end_matches('/');
+    let (mount, base) = from.split_once('/').unwrap_or((from, ""));
+    let join = |a: &str, b: &str| match (a.is_empty(), b.is_empty()) {
+        (true, _) => b.to_string(),
+        (_, true) => a.to_string(),
+        _ => format!("{a}/{b}"),
+    };
+    // Start in the deepest folder the prefix names.
+    let start = prefix.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let mut folders = vec![start.to_string()];
+    let (mut out, mut calls) = (Vec::new(), 0);
+    while let Some(dir) = folders.pop() {
+        calls += 1;
+        if calls > 200 {
+            return Err("vault list: too many folders".into());
+        }
+        let path = join(base, &dir);
+        let url = format!("{addr}/v1/{mount}/metadata/{path}?list=true");
+        let req = crate::sync_http::agent()
+            .get(&url)
+            .set("X-Vault-Token", token.as_str());
+        let body = match crate::sync_http::send(req, None) {
+            Ok((200, b)) => b,
+            Ok((404, _)) => continue, // an empty folder
+            Ok((code, b)) => {
+                return Err(format!(
+                    "vault list: HTTP {code} {}",
+                    crate::sync_http::error_summary(&b)
+                ))
+            }
+            Err(e) => return Err(format!("vault list: {e}")),
+        };
+        for key in parse_list(&body)? {
+            let rel = join(&dir, key.trim_end_matches('/'));
+            if key.ends_with('/') {
+                if rel.starts_with(prefix) || prefix.starts_with(&format!("{rel}/")) {
+                    folders.push(rel);
+                }
+            } else if rel.starts_with(prefix) {
+                let url = format!("vault:{}", join(from, &rel));
+                out.push((rel, url));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -216,6 +295,15 @@ mod tests {
             Some(v) => std::env::set_var("VAULT_TOKEN", v),
             None => std::env::remove_var("VAULT_TOKEN"),
         }
+    }
+
+    #[test]
+    fn list_replies_parse_keys_and_folders() {
+        let body =
+            r#"{"request_id":"x","data":{"keys":["db","api-key","team/","../up","/abs",""]}}"#;
+        assert_eq!(parse_list(body).unwrap(), ["db", "api-key", "team/"]);
+        assert!(parse_list(r#"{"errors":[]}"#).is_err());
+        assert!(parse_list("nope").is_err());
     }
 
     #[test]

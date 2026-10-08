@@ -17,6 +17,11 @@ pub fn socket_path() -> std::path::PathBuf {
     if std::env::var_os("KEPR_SYSTEM_MODE").is_some() {
         return std::path::PathBuf::from("/run/kepr/kepr.sock");
     }
+    crate::profile::nest(runtime_root()).join("kepr.sock") // T11.16
+}
+
+/// User mode: `$XDG_RUNTIME_DIR/kepr`, which holds every profile's socket.
+pub fn runtime_root() -> std::path::PathBuf {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -25,7 +30,7 @@ pub fn socket_path() -> std::path::PathBuf {
                 .unwrap_or_else(std::env::temp_dir)
                 .join(".local/state/kepr/runtime")
         });
-    runtime.join("kepr").join("kepr.sock")
+    runtime.join("kepr")
 }
 
 pub fn socket_dir() -> std::path::PathBuf {
@@ -197,6 +202,9 @@ pub enum Request {
     Health {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         max_age_days: Option<u32>,
+        /// T11.11 `kepr health --policy FILE`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        policy: Option<crate::health_policy::HealthPolicy>,
     },
     /// P6.4: is `name`'s SHA-1 among these breach-list suffixes (the
     /// public range for the prefix `Health` returned)?
@@ -229,9 +237,14 @@ pub enum Request {
     /// P6.2: encrypt `name` to the public key `to` (expires after ttl).
     ShareSend {
         name: String,
+        /// A share public key, or (T11.15) a pinned contact's name.
         to: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         ttl_secs: Option<u64>,
+        /// T11.15: the received copy deletes itself this long after its
+        /// first `get`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        view_window_secs: Option<u64>,
     },
     /// P6.2: decrypt and store a share (single use), optionally renamed.
     ShareReceive {
@@ -264,6 +277,8 @@ pub enum Request {
     #[serde(untagged)]
     Vault(crate::protocol_vault::VaultRequest),
     // batch: seal
+    #[serde(untagged)]
+    Seal(crate::protocol_seal::SealRequest),
     // batch: store
     #[serde(untagged)]
     Store(crate::protocol_store::StoreRequest),

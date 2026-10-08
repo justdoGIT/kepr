@@ -174,6 +174,8 @@ pub enum Response {
     #[serde(untagged)]
     Vault(crate::protocol_vault::VaultResponse),
     // batch: seal
+    #[serde(untagged)]
+    Seal(crate::protocol_seal::SealResponse),
     // batch: store
     #[serde(untagged)]
     Store(crate::protocol_store::StoreResponse),
@@ -184,6 +186,8 @@ pub enum Response {
     #[serde(untagged)]
     Sharing(crate::protocol_sharing::SharingResponse),
     // batch: sync
+    #[serde(untagged)]
+    Syncx(crate::protocol_syncx::SyncxResponse),
     // batch: policy
     #[serde(untagged)]
     Policy(crate::protocol_policy::PolicyResponse),

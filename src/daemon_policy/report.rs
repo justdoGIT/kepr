@@ -25,6 +25,7 @@ pub struct Facts {
 /// Audit ops that are a use of the value, as (op, kind, wording).
 const USES: &[(&str, &str, &str)] = &[
     ("share-send", "share", "sent in a share envelope"),
+    ("share-link", "share", "put in a one-time share link"),
     ("resolve", "agent", "released to an agent gate"),
     ("get", "read", "read (get / exec / env / inject / copy)"),
     ("ssh-sign", "ssh", "signed with (ssh-agent)"),
@@ -173,6 +174,21 @@ mod tests {
             r[2].detail,
             "read (get / exec / env / inject / copy) 2 time(s), last 1970-01-01 00:06 UTC"
         );
+    }
+
+    #[test]
+    fn one_time_links_count_as_shares() {
+        let r = rows(
+            "K",
+            1,
+            &[e(1, 60, "share-link", "K", "ok")],
+            &Facts::default(),
+        );
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].kind, "share");
+        assert!(r[0]
+            .detail
+            .starts_with("put in a one-time share link 1 time(s)"));
     }
 
     #[test]

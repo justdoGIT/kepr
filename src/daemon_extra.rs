@@ -29,9 +29,10 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         Request::Usage { days } => {
             daemon_usage::handle_usage(uid, username, &crate::audit_chain_path(), days)
         }
-        Request::Health { max_age_days } => {
-            daemon_health::handle_health(uid, username, max_age_days)
-        }
+        Request::Health {
+            max_age_days,
+            policy,
+        } => daemon_health::handle_health(uid, username, max_age_days, policy.as_ref()),
         Request::BreachCheck { name, suffixes } => {
             daemon_health::handle_breach_check(uid, username, &name, &suffixes)
         }
@@ -69,8 +70,17 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
             (requires_consent, seal),
         ),
         Request::ShareKey { create } => crate::daemon_share::handle_key(uid, username, create),
-        Request::ShareSend { name, to, ttl_secs } => {
-            crate::daemon_share::handle_send((uid, peer_pid), username, &name, &to, ttl_secs)
+        Request::ShareSend {
+            name,
+            to,
+            ttl_secs,
+            view_window_secs,
+        } => {
+            let opts = crate::daemon_share::SendOptions {
+                ttl: ttl_secs,
+                view_window: view_window_secs,
+            };
+            crate::daemon_share::handle_send((uid, peer_pid), username, &name, &to, opts)
         }
         Request::ShareReceive { envelope, name } => {
             crate::daemon_share::handle_receive(uid, username, &envelope, name.as_deref())
@@ -83,6 +93,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         // batch: vault
         Request::Vault(r) => crate::daemon_vault::dispatch(uid, peer_pid, username, r),
         // batch: seal
+        Request::Seal(r) => crate::daemon_seal::dispatch(uid, peer_pid, username, r),
         // batch: store
         Request::Store(r) => crate::daemon_store::dispatch(uid, peer_pid, username, r),
         // batch: records

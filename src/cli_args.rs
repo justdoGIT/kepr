@@ -12,6 +12,8 @@ pub struct Args {
     pub value: Option<String>,
     pub generate: bool,
     pub gen_kind: GenKind,
+    /// `kepr set --profile P` (T5.04): generate from a profile; implies --generate.
+    pub profile: Option<String>,
     pub quiet: bool,
     pub export: bool,
     pub json: bool,
@@ -40,6 +42,8 @@ pub struct Args {
     pub requires_consent: bool,
     /// `kepr set` only: FIDO2 hardware-key assertion gate. Phase 2 η.
     pub requires_fido2: bool,
+    /// `kepr lock --fido2`: the passphrase and a security key (T4.09).
+    pub lock_fido2: bool,
     /// `kepr fido2-register` only: hex credential ID from authenticator.
     pub fido2_credential_id: Option<String>,
     /// `kepr fido2-register` only: hex COSE_Key public key from authenticator.
@@ -66,6 +70,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut value: Option<String> = None;
     let mut generate = false;
     let mut gen_kind = GenKind::Hex;
+    let mut profile: Option<String> = None;
     let mut quiet = false;
     let mut export = false;
     let mut json = false;
@@ -82,6 +87,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut url: Option<String> = None;
     let mut requires_consent = false;
     let mut requires_fido2 = false;
+    let mut lock_fido2 = false;
     let mut fido2_credential_id: Option<String> = None;
     let mut fido2_public_key_cose: Option<String> = None;
     let mut store = crate::cli_store::StoreFlags::default();
@@ -175,6 +181,11 @@ pub fn parse_args() -> Result<Args, String> {
                 ))?;
                 i += 1;
             }
+            "--profile" => {
+                profile = Some(raw.get(i + 1).ok_or("--profile needs a name")?.clone());
+                generate = true;
+                i += 2;
+            }
             "--env" => {
                 // `kepr exec --env VAR1,VAR2` — defer the CSV split
                 // and validation to cli_exec::parse_env_csv so the
@@ -226,6 +237,10 @@ pub fn parse_args() -> Result<Args, String> {
             "--requires-fido2" => {
                 // Phase 2 η. No value: presence flips the flag.
                 requires_fido2 = true;
+                i += 1;
+            }
+            "--fido2" => {
+                lock_fido2 = true; // T4.09: `kepr lock --fido2`
                 i += 1;
             }
             "--hook" => {
@@ -288,6 +303,7 @@ pub fn parse_args() -> Result<Args, String> {
         value,
         generate,
         gen_kind,
+        profile,
         quiet,
         export,
         json,
@@ -304,6 +320,7 @@ pub fn parse_args() -> Result<Args, String> {
         url,
         requires_consent,
         requires_fido2,
+        lock_fido2,
         fido2_credential_id,
         fido2_public_key_cose,
         store,

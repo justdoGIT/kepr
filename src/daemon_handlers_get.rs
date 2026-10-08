@@ -39,7 +39,7 @@ pub(crate) fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result
     // T11.14 (batch: session): is a re-auth window open for it?
     let reauth_open = crate::daemon_session::reauth::window_open(uid, name_upper);
     meta_gate(&meta, expiry::now_unix(), reauth_open, || {
-        crate::daemon_polkit::consent_granted(peer_pid)
+        crate::daemon_policy::consent(uid, peer_pid, name_upper, &meta) // T9.04
     })
 }
 
@@ -184,6 +184,11 @@ pub fn handle_get(
             }
             return Response::fail("credential unavailable");
         }
+    }
+
+    // T11.15: a received share's view window starts at its first read.
+    if crate::daemon_sharing::view::start(uid, &upper).is_err() {
+        return Response::fail("credential unavailable");
     }
 
     match crypto::default_backend().decrypt(uid, &upper) {
