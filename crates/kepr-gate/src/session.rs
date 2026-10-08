@@ -138,12 +138,19 @@ pub fn run() -> Result<(), String> {
     // T2.02: AWS keys may be bound to any *.amazonaws.com host; the
     // egress proxy asks the daemon per host (aws_egress.rs).
     let aws = cfg.routes.iter().any(|r| r.provider.starts_with("aws:"));
-    let suffixes: &[&str] = if aws { &["amazonaws.com"] } else { &[] };
+    let mut suffixes: Vec<&str> = if aws { vec!["amazonaws.com"] } else { vec![] };
+    // T2.04: keys bound to hosts under a provider domain (gcloud).
+    let domains = kepr_core::providers::DOMAINS.iter();
+    suffixes.extend(
+        domains
+            .filter(|(p, _)| cfg.routes.iter().any(|r| r.provider == *p))
+            .map(|(_, d)| *d),
+    );
     // A database-only session has no HTTPS host, hence no CA.
-    let ca = match hosts.is_empty() && !aws {
+    let ca = match hosts.is_empty() && suffixes.is_empty() {
         true => None,
         false => Some(Arc::new(crate::ca::SessionCa::with_suffixes(
-            &hosts, suffixes,
+            &hosts, &suffixes,
         )?)),
     };
     let ca_pem = ca.as_ref().map(|c| c.pem().to_string());

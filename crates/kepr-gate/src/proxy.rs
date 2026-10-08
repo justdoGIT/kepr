@@ -185,15 +185,28 @@ pub async fn proxy_request(
     rest: &str,
     req: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
+    proxy_request_to(state, pname, None, rest, req).await
+}
+
+/// `proxy_request` toward `host` instead of the provider's own host
+/// (T2.04: a bound host under a provider domain, e.g. gcloud's).
+pub async fn proxy_request_to(
+    state: Arc<State>,
+    pname: &str,
+    host: Option<String>,
+    rest: &str,
+    req: Request<Incoming>,
+) -> Result<Response<Body>, Infallible> {
     let not_found = || kepr_error(StatusCode::NOT_FOUND, "kepr", "unknown kepr route");
     let (Some(provider), Some(route)) = (routes::lookup(pname), state.routes.get(pname)) else {
         return Ok(not_found());
     };
+    let host = host.unwrap_or_else(|| provider.host.to_string());
     let method = req.method().to_string();
     let log = Log {
         state: &state,
         provider: pname,
-        host: provider.host,
+        host: &host,
         method: &method,
         path: rest,
         start: Instant::now(),
@@ -214,19 +227,19 @@ pub async fn proxy_request(
         return Ok(log.reply(limit_response(refusal), 0, Some("limit")));
     }
 
-    let (cache, cred, host) = (state.cache.clone(), route.cred.clone(), provider.host);
-    let (value, inject) =
-        match tokio::task::spawn_blocking(move || cache.get(&cred, host, 443)).await {
-            Ok(Ok(v)) => v,
-            _ => {
-                let r = kepr_error(
-                    StatusCode::BAD_GATEWAY,
-                    "kepr",
-                    "kepr could not obtain the credential",
-                );
-                return Ok(log.reply(r, 0, None));
-            }
-        };
+    let (cache, cred, h) = (state.cache.clone(), route.cred.clone(), host.clone());
+    let (value, inject) = match tokio::task::spawn_blocking(move || cache.get(&cred, &h, 443)).await
+    {
+        Ok(Ok(v)) => v,
+        _ => {
+            let r = kepr_error(
+                StatusCode::BAD_GATEWAY,
+                "kepr",
+                "kepr could not obtain the credential",
+            );
+            return Ok(log.reply(r, 0, None));
+        }
+    };
     // T7.08: a GitHub App key becomes an installation token here.
     let Ok((value, inject)) = crate::github_app::swap(&state, value, inject).await else {
         let r = kepr_error(

@@ -27,7 +27,10 @@ const SYSTEM_BUNDLES: &[&str] = &[
 pub fn extra_routes(existing: &[GateRoute], sealed: &[CredInfo]) -> Vec<GateRoute> {
     let mut out = Vec::new();
     let mut slot = existing.iter().map(|r| r.slot + 1).max().unwrap_or(0);
-    for p in PROVIDERS.iter().filter(|p| !p.egress_env.is_empty()) {
+    for p in PROVIDERS
+        .iter()
+        .filter(|p| crate::cli_aws::presets::routed(p))
+    {
         if existing
             .iter()
             .chain(&out)
@@ -55,14 +58,16 @@ pub fn extra_routes(existing: &[GateRoute], sealed: &[CredInfo]) -> Vec<GateRout
 /// Variables the harness must not inherit: the real keys the egress
 /// placeholders stand in for.
 pub fn shadowed(placeholders: &HashMap<String, String>) -> Vec<&'static str> {
-    placeholders
+    let mut out: Vec<&'static str> = placeholders
         .keys()
         .filter_map(|p| providers::lookup(p))
         .flat_map(|p| p.egress_env.iter().copied())
-        .collect()
+        .collect();
+    out.extend(crate::cli_aws::presets::shadowed(placeholders)); // T2.04
+    out
 }
 
-fn write_private(path: &PathBuf, data: &[u8]) -> Result<(), String> {
+pub(crate) fn write_private(path: &PathBuf, data: &[u8]) -> Result<(), String> {
     let _ = std::fs::remove_file(path);
     std::fs::OpenOptions::new()
         .write(true)
@@ -106,9 +111,9 @@ pub fn env(
     ca_pem: &str,
     placeholders: &HashMap<String, String>,
 ) -> Result<Vec<(String, String)>, String> {
-    let (ca, bundle) = write_ca(ca_pem)?;
+    let (ca, bundle_path) = write_ca(ca_pem)?;
     let proxy = format!("http://127.0.0.1:{port}");
-    let bundle = bundle.display().to_string();
+    let bundle = bundle_path.display().to_string();
     let mut env = vec![
         ("HTTPS_PROXY".to_string(), proxy.clone()),
         ("https_proxy".to_string(), proxy),
@@ -129,6 +134,13 @@ pub fn env(
             env.push((var.to_string(), ph.clone()));
         }
     }
+    // T2.04: .npmrc / docker config.json beside the CA, placeholders only.
+    let dir = ca.parent().ok_or("session directory missing")?;
+    env.extend(crate::cli_aws::presets::write(
+        dir,
+        &bundle_path,
+        placeholders,
+    )?);
     Ok(env)
 }
 
@@ -184,6 +196,33 @@ mod tests {
             ("github", "GH", 1)
         );
         assert!(extra_routes(&existing, &creds[..1]).is_empty());
+    }
+
+    #[test]
+    fn preset_providers_get_egress_routes() {
+        let creds = [
+            cred("NPM_TOKEN", &["registry.npmjs.org:443"]),
+            cred("DOCKERHUB", &["auth.docker.io:443"]),
+            cred("STRIPE_KEY", &["api.stripe.com:443"]),
+        ];
+        let mut got: Vec<(String, String)> = extra_routes(&[], &creds)
+            .into_iter()
+            .map(|r| (r.provider, r.cred))
+            .collect();
+        got.sort();
+        let want = [
+            ("docker", "DOCKERHUB"),
+            ("npm", "NPM_TOKEN"),
+            ("stripe", "STRIPE_KEY"),
+        ];
+        let want: Vec<(String, String)> = want
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        assert_eq!(got, want);
+        let ph: HashMap<String, String> = [("npm".to_string(), "kepr-ph-x".to_string())].into();
+        assert!(shadowed(&ph).contains(&"NPM_CONFIG_USERCONFIG"));
+        assert!(shadowed(&ph).contains(&"NPM_TOKEN"));
     }
 
     #[test]

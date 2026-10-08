@@ -35,6 +35,8 @@ pub fn placeholders_in(headers: &HeaderMap, query: Option<&str>) -> Vec<String> 
                 .filter(|t| t.starts_with(PREFIX))
             {
                 out.push(tok.to_string());
+            } else if let Some(ph) = basic_placeholder(s) {
+                out.push(ph);
             }
         }
     }
@@ -46,6 +48,21 @@ pub fn placeholders_in(headers: &HeaderMap, query: Option<&str>) -> Vec<String> 
         }
     }
     out
+}
+
+/// T2.04: the placeholder in `Basic base64(user:placeholder)` (docker
+/// and registry clients log in this way).
+pub fn basic_placeholder(header: &str) -> Option<String> {
+    let (scheme, b64) = header.trim().split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()?;
+    let text = String::from_utf8(raw).ok()?;
+    let (_, pass) = text.split_once(':')?;
+    pass.starts_with(PREFIX).then(|| pass.to_string())
 }
 
 fn pct_encode(s: &str) -> String {
@@ -90,7 +107,9 @@ pub fn upstream_headers(
     let mut out = HeaderMap::new();
     for (k, v) in src {
         let name = k.as_str();
-        let carries_placeholder = v.to_str().is_ok_and(|s| s.contains(PREFIX));
+        let carries_placeholder = v
+            .to_str()
+            .is_ok_and(|s| s.contains(PREFIX) || basic_placeholder(s).is_some());
         if HOP_BY_HOP.contains(&name)
             || name == "host"
             || name == "content-length"
@@ -197,6 +216,29 @@ mod tests {
         );
         clean_response(&mut h, &inject);
         assert_eq!(h[hyper::header::LOCATION], "https://api.example/v1/");
+    }
+
+    #[test]
+    fn placeholders_inside_basic_credentials() {
+        let ph = "kepr-ph-0123456789abcdef-0001-0011223344556677";
+        let enc = base64::engine::general_purpose::STANDARD.encode(format!("me:{ph}"));
+        let mut src = HeaderMap::new();
+        let basic = HeaderValue::from_str(&format!("Basic {enc}")).unwrap();
+        src.insert(AUTHORIZATION, basic);
+        src.insert("x-other", HeaderValue::from_static("ok"));
+        assert_eq!(placeholders_in(&src, None), [ph]);
+        let out = upstream_headers(&src, &Inject::Header { name: "x-k".into() }, "REAL").unwrap();
+        assert!(
+            out.get(AUTHORIZATION).is_none(),
+            "the placeholder login is dropped"
+        );
+        assert_eq!(out["x-k"], "REAL");
+        let out = upstream_headers(&src, &Inject::Basic, "user:REAL").unwrap();
+        let want = base64::engine::general_purpose::STANDARD.encode("user:REAL");
+        assert_eq!(out[AUTHORIZATION], format!("Basic {want}").as_str());
+        for other in ["Basic !!!", "Basic bWU6cGFzcw==", "Bearer x", "basic"] {
+            assert_eq!(basic_placeholder(other), None, "{other}");
+        }
     }
 
     #[test]

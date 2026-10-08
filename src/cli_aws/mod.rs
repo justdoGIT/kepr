@@ -9,6 +9,7 @@
 //   flags      this batch's flags on the core `rotate` verb
 //   leaked     `kepr leaked NAME --rotate`: provider-API rotation (T9.09)
 //   github_app `kepr github-app add`: sealed GitHub App keys (T7.08)
+//   presets    npm / docker files for agent sessions (T2.04)
 //
 // Network calls to providers happen here, in the user's CLI process: the
 // root daemon's unit has no TCP. Values reach the store only through the
@@ -19,6 +20,7 @@ pub mod flags;
 pub mod github_app;
 pub mod iam;
 pub mod leaked;
+pub mod presets;
 pub mod rotate_iam;
 pub mod session;
 pub mod sts;

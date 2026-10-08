@@ -19,7 +19,7 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 
 use crate::journal;
-use crate::proxy::{kepr_error, proxy_request, Body, State};
+use crate::proxy::{kepr_error, proxy_request, proxy_request_to, Body, State};
 
 fn ok() -> Response<Body> {
     Response::new(Empty::<Bytes>::new().map_err(|n| match n {}).boxed())
@@ -46,11 +46,28 @@ fn bound_provider(state: &State, host: &str, port: u16) -> Option<&'static str> 
     (port == 443 && ca.covers(host) && state.routes.contains_key(p.name)).then_some(p.name)
 }
 
+/// T2.04: the provider whose domain `host` is under (gcloud:
+/// `*.googleapis.com`), when the daemon releases this session's key for
+/// that exact host.
+async fn domain_bound(state: &Arc<State>, host: &str, port: u16) -> Option<&'static str> {
+    let pname = kepr_core::providers::under_domain(host)?;
+    let route = state.routes.get(pname)?;
+    if port != 443 || !state.ca.as_ref().is_some_and(|c| c.covers(host)) {
+        return None;
+    }
+    let (cache, cred, h) = (state.cache.clone(), route.cred.clone(), host.to_string());
+    match tokio::task::spawn_blocking(move || cache.get(&cred, &h, 443)).await {
+        Ok(Ok(_)) => Some(pname),
+        _ => None,
+    }
+}
+
 /// Who serves an intercepted connection's requests.
 #[derive(Clone)]
 enum To {
     Provider(&'static str),
     Aws(String),
+    Domain(&'static str, String),
 }
 
 /// Accept the agent's TLS with a session-CA leaf for `host` and serve the
@@ -80,6 +97,7 @@ fn intercept(
                 match to {
                     To::Provider(pname) => proxy_request(st, pname, &path, r).await,
                     To::Aws(h) => crate::aws_egress::handle(st, h, r).await,
+                    To::Domain(p, h) => proxy_request_to(st, p, Some(h), &path, r).await,
                 }
             }
         });
@@ -101,6 +119,10 @@ pub async fn connect(state: Arc<State>, req: Request<Incoming>) -> Response<Body
 
     if let Some(pname) = bound_provider(&state, &host, port) {
         return intercept(state, req, (&host, &target), start, To::Provider(pname));
+    }
+    if let Some(pname) = domain_bound(&state, &host, port).await {
+        let to = To::Domain(pname, host.clone());
+        return intercept(state, req, (&host, &target), start, to);
     }
     // T2.02: an AWS host one of the session's AWS keys is bound to.
     if crate::aws_egress::bound(&state, &host, port).await {
@@ -140,4 +162,139 @@ pub async fn connect(state: Arc<State>, req: Request<Incoming>) -> Response<Body
         }
     });
     ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proxy::{build_client, Route};
+    use crate::vault::{Cache, Resolve, DEFAULT_TTL};
+    use http_body_util::Full;
+    use kepr_core::binding::Inject;
+    use kepr_core::generate::ZeroString;
+    use kepr_core::secmem::SplitKey;
+    use std::sync::Mutex;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    const SID: &str = "0123456789abcdef";
+    const KEY: [u8; 32] = [3u8; 32];
+
+    /// The daemon's view: the gcloud key is bound to storage.googleapis.com
+    /// only. Records every host it is asked about.
+    struct Bound(Arc<Mutex<Vec<String>>>);
+    impl Resolve for Bound {
+        fn generation(&self) -> Result<u64, String> {
+            Ok(1)
+        }
+        fn resolve(&self, _: &str, host: &str, _: u16) -> Result<(ZeroString, Inject), String> {
+            self.0.lock().unwrap().push(host.to_string());
+            match host {
+                "storage.googleapis.com" => Ok((ZeroString::from("REAL-TOKEN"), Inject::Bearer)),
+                _ => Err("credential unavailable".into()),
+            }
+        }
+    }
+
+    async fn upstream() -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                    .await;
+            }
+        });
+        (base, rx)
+    }
+
+    async fn gate(base: String) -> (String, Arc<crate::ca::SessionCa>, Arc<Mutex<Vec<String>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let cache = Arc::new(Cache::new(Box::new(Bound(asked.clone())), DEFAULT_TTL));
+        let ca = Arc::new(crate::ca::SessionCa::with_suffixes(&[], &["googleapis.com"]).unwrap());
+        let routes = [(
+            "gcloud".to_string(),
+            Route {
+                cred: "GCP_TOKEN".into(),
+                slot: 0,
+            },
+        )]
+        .into();
+        let mut st = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
+            .with_egress(Some(ca.clone()), false);
+        st.client = build_client(true);
+        st.base_override = Some(base);
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        tokio::spawn(crate::proxy::serve(l, Arc::new(st)));
+        (addr, ca, asked)
+    }
+
+    async fn connect(gate: &str, target: &str) -> (TcpStream, String) {
+        let mut s = TcpStream::connect(gate).await.unwrap();
+        let line = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n");
+        s.write_all(line.as_bytes()).await.unwrap();
+        let mut r = tokio::io::BufReader::new(&mut s);
+        let mut status = String::new();
+        r.read_line(&mut status).await.unwrap();
+        loop {
+            let mut l = String::new();
+            r.read_line(&mut l).await.unwrap();
+            if l == "\r\n" || l.is_empty() {
+                break;
+            }
+        }
+        (s, status)
+    }
+
+    #[tokio::test]
+    async fn gcloud_bound_hosts_under_googleapis_are_intercepted() {
+        let (base, mut rx) = upstream().await;
+        let (gate, ca, asked) = gate(base).await;
+        // Not bound for this host: the daemon refuses, nothing is intercepted.
+        let (_s, status) = connect(&gate, "evil.googleapis.com:443").await;
+        assert!(status.contains("403"), "{status}");
+        let (_s, status) = connect(&gate, "evilgoogleapis.com:443").await;
+        assert!(status.contains("403"), "{status}");
+        let (_s, status) = connect(&gate, "storage.googleapis.com:8443").await;
+        assert!(status.contains("403"), "{status}");
+        let (stream, status) = connect(&gate, "storage.googleapis.com:443").await;
+        assert!(status.contains("200"), "{status}");
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca.ca_der()).unwrap();
+        let cfg =
+            rustls::ClientConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg))
+            .connect("storage.googleapis.com".try_into().unwrap(), stream)
+            .await
+            .expect("TLS with the session CA");
+        let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .unwrap();
+        tokio::spawn(conn);
+        let ph = crate::placeholder::make(&KEY, SID, 0);
+        let req = Request::get("/storage/v1/b?project=p")
+            .header("host", "storage.googleapis.com")
+            .header("authorization", format!("Bearer {ph}"))
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        assert_eq!(tx.send_request(req).await.unwrap().status(), StatusCode::OK);
+        let seen = rx.recv().await.unwrap();
+        assert!(seen.starts_with("GET /storage/v1/b?project=p "), "{seen}");
+        assert!(seen.contains("authorization: Bearer REAL-TOKEN"), "{seen}");
+        assert!(!seen.contains("kepr-ph-"));
+        let asked = asked.lock().unwrap().clone();
+        assert!(asked.iter().all(|h| h.ends_with(".googleapis.com")));
+        assert!(asked.contains(&"evil.googleapis.com".to_string()));
+        assert!(!asked.contains(&"evilgoogleapis.com".to_string()));
+    }
 }
