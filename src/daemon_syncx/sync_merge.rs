@@ -272,56 +272,18 @@ pub fn handle_merge(who: (u32, i32), username: &str, upload: &str, start: u32) -
 
 #[cfg(test)]
 mod tests {
+    use super::super::testutil::{device, enroll, pair};
     use super::*;
     use crate::daemon_handlers::{handle_set, SetFlags};
     use crate::daemon_store::testkit;
     use base64::Engine;
-    use kepr_core::protocol_sharing::{EnrolRequest, SharingRequest, SharingResponse};
+    use kepr_core::protocol_sharing::SharingRequest;
     use kepr_core::protocol_syncx::{SyncxRequest, BUNDLE_CHUNK_BYTES};
 
     const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
     fn call(uid: u32, r: SyncxRequest) -> Response {
         super::super::dispatch(uid, 0, "t", r)
-    }
-
-    /// A device: a uid with a share key.
-    fn device() -> u32 {
-        let uid = testkit::uid();
-        assert!(crate::daemon_share::handle_key(uid, "t", true).is_success());
-        uid
-    }
-
-    fn public(uid: u32) -> String {
-        crate::daemon_share::load_secret(uid)
-            .unwrap()
-            .recipient()
-            .text()
-    }
-
-    /// `kepr device add` on `on`, `kepr device enroll` from `other`.
-    fn enroll(on: u32, other: u32) {
-        let sharing = |r| crate::daemon_sharing::dispatch(on, 0, "t", r);
-        let add = SharingRequest::DeviceAdd {
-            label: format!("d{other}"),
-            oidc_issuer: None,
-        };
-        let Response::Sharing(SharingResponse::DeviceToken { token, .. }) = sharing(add) else {
-            panic!("no token");
-        };
-        let req = EnrolRequest::new(token.as_str(), "host", &public(other), None);
-        let enrol = SharingRequest::DeviceEnroll {
-            request: serde_json::to_string(&req).unwrap(),
-            oidc: None,
-        };
-        assert!(sharing(enrol).is_success());
-    }
-
-    fn pair() -> (u32, u32) {
-        let (a, b) = (device(), device());
-        enroll(a, b);
-        enroll(b, a);
-        (a, b)
     }
 
     fn build(uid: u32) -> Result<Vec<u8>, String> {

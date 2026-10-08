@@ -146,3 +146,70 @@ fn two_devices_sync_through_a_directory() {
     ok(&a, &["sync", "remote", "rm", &url]);
     assert!(!kepr(&a, &["sync", "now"]).status.success());
 }
+
+#[test]
+fn a_folder_shared_with_a_pinned_contact() {
+    let (a, b) = (start(), start());
+    let key_a = ok(&a, &["share", "key"]).trim().to_string();
+    let key_b = ok(&b, &["share", "key"]).trim().to_string();
+    ok(&a, &["share", "contact", "add", "bob", &key_b]);
+    ok(&a, &["set", "TEAM_TOKEN", "--value", "team-value"]);
+    ok(&a, &["set", "SOLO_TOKEN", "--value", "solo-value"]);
+    ok(&a, &["mv", "TEAM_TOKEN", "team"]);
+    let file = a.home.path().join("team.bundle");
+    let f = file.to_str().unwrap();
+    ok(&a, &["folder", "share", "team", "--to", "bob", "-o", f]);
+    let text = String::from_utf8_lossy(&std::fs::read(&file).unwrap()).into_owned();
+    assert!(text.contains("TEAM_TOKEN") && !text.contains("team-value") && !text.contains("SOLO"));
+
+    // Not pinned yet: refused. Pinned: a plan, then the import.
+    let o = kepr(&b, &["folder", "import", f, "--yes"]);
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("pinned"),
+        "{o:?}"
+    );
+    ok(&b, &["share", "contact", "add", "alice", &key_a]);
+    assert!(ok(&b, &["import", f]).contains("create"));
+    assert_eq!(get(&b, "TEAM_TOKEN"), None);
+    ok(&b, &["folder", "import", f, "--yes"]);
+    assert_eq!(get(&b, "TEAM_TOKEN").as_deref(), Some("team-value"));
+    assert_eq!(get(&b, "SOLO_TOKEN"), None);
+    let again = ok(&b, &["--json", "folder", "import", f, "--yes"]);
+    let v: serde_json::Value = serde_json::from_str(&again).unwrap();
+    assert_eq!(
+        (v["from"].as_str(), v["unchanged"].as_u64()),
+        (Some("alice"), Some(1)),
+        "{again}"
+    );
+}
+
+#[test]
+fn a_key_with_approvals_is_locked_until_approved() {
+    let d = start();
+    ok(&d, &["share", "key"]);
+    ok(&d, &["set", "QUORUM_KEY", "--value", "v"]);
+    assert_eq!(get(&d, "QUORUM_KEY").as_deref(), Some("v"));
+    ok(&d, &["quorum", "set", "QUORUM_KEY", "2"]);
+    assert_eq!(get(&d, "QUORUM_KEY"), None);
+    // A new value keeps the requirement; turning it off is a request.
+    ok(&d, &["set", "QUORUM_KEY", "--value", "w"]);
+    assert_eq!(get(&d, "QUORUM_KEY"), None);
+    let off = ok(&d, &["--json", "quorum", "set", "QUORUM_KEY", "off"]);
+    let v: serde_json::Value = serde_json::from_str(&off).unwrap();
+    assert_eq!(
+        (v["kind"].as_str(), v["need"].as_u64()),
+        (Some("quorum_status"), Some(2)),
+        "{off}"
+    );
+    let req = ok(&d, &["quorum", "request", "QUORUM_KEY", "--for", "30m"]);
+    assert!(
+        req.contains("kepr-quorum1-") && req.contains("0 of 2"),
+        "{req}"
+    );
+    let ls = ok(&d, &["quorum", "ls"]);
+    assert!(
+        ls.contains("QUORUM_KEY") && ls.contains("use for 30m"),
+        "{ls}"
+    );
+    assert_eq!(get(&d, "QUORUM_KEY"), None);
+}

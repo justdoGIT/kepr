@@ -10,6 +10,8 @@
 //   bundle      T6.09  kepr export --encrypted -o FILE; kepr import FILE
 //                      (cli_import.rs hands a bundle file over here)
 //   sync_now    T6.10  kepr sync remote add|ls|rm, kepr sync now
+//   folder      T6.02  kepr folder share FOLDER --to …; kepr folder import FILE
+//   quorum      T7.12  kepr quorum set|request|approve|sign|ls
 //   transport,  T6.10  where device bundles live: dir:, git:, s3:
 //   s3
 //
@@ -24,9 +26,11 @@
 mod atomic_file;
 pub mod azure_kv;
 mod bundle;
+mod folder;
 mod import;
 pub mod json_file;
 mod map;
+mod quorum;
 mod s3;
 mod sync_now;
 #[cfg(test)]
@@ -40,7 +44,7 @@ const MAX_PAGES: usize = 50;
 
 pub use bundle::{cmd_import as import_bundle, is_bundle};
 
-pub const VERBS: &[&str] = &["sync", "export"];
+pub const VERBS: &[&str] = &["sync", "export", "folder", "quorum"];
 
 pub const HELP: &str = "\
   sync-push|sync-pull KEY --url azure-kv:VAULT/SECRET
@@ -65,6 +69,17 @@ pub const HELP: &str = "\
                                        s3:BUCKET[/PREFIX] (AWS_* env; KEPR_S3_ENDPOINT)
   sync now [--remote URL]              merge the other enrolled devices' bundles (newest change
                                        wins), then push this device's, encrypted to them
+  folder share FOLDER --to NAME|KEY [--to …] -o FILE [--sealed]
+                                       FOLDER's readable keys for those share keys, signed by you;
+                                       --sealed: importers store them sealed (agent use only)
+  folder import FILE [--overwrite] [--yes]
+                                       a folder bundle from a pinned contact; again later: only
+                                       what changed in it is updated
+  quorum set KEY N|off                 KEY needs N (2-9) approvals before each use window;
+                                       lowering it or off needs the current N
+  quorum request KEY [--for 1h]        ask (prints a request for enrolled devices, 15 min)
+  quorum approve ID [--with APPROVAL]  approve as the owner here (polkit), or add a device's
+  quorum sign REQUEST | quorum ls      on an enrolled device: approve and print the approval
 ";
 
 /// Refuse flags a subcommand doesn't know: a typo like `--dryrun` must
@@ -87,6 +102,8 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
     match verb {
         "sync" => {}
         "export" => return bundle::cmd_export(args),
+        "folder" => return folder::cmd_folder(args),
+        "quorum" => return quorum::cmd_quorum(args),
         _ => return Response::fail(format!("unknown command: {verb}")),
     }
     let rest = args.get(1..).unwrap_or_default();

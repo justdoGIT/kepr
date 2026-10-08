@@ -1,9 +1,10 @@
 // daemon_session/quiet.rs — `GetQuiet`, the `Get` behind `kepr serve`
 // (T11.19). It never prompts: a credential needing consent (polkit or a
-// T9.04 approval), FIDO2 or re-authentication reads as unavailable, even
-// while a reveal window is open, so an HTTP client holding the serve
-// token can't borrow a prompt or a window meant for the user's own
-// `kepr get`, and can't hold a daemon worker on a prompt.
+// T9.04 approval), FIDO2, re-authentication or M-of-N approvals (T7.12)
+// reads as unavailable, even while a reveal or use window is open, so an
+// HTTP client holding the serve token can't borrow a prompt or a window
+// meant for the user's own `kepr get`, and can't hold a daemon worker on
+// a prompt.
 
 use kepr_core::protocol::Response;
 
@@ -31,6 +32,7 @@ pub fn handle_get_quiet(uid: u32, peer_pid: i32, username: &str, name: &str) -> 
 
 fn needs_prompt(m: &CredMeta) -> bool {
     [m.requires_consent, m.requires_fido2, m.requires_reauth].contains(&Some(true))
+        || m.approvals.is_some()
 }
 
 #[cfg(test)]
@@ -53,6 +55,10 @@ mod tests {
             },
             CredMeta {
                 requires_reauth: Some(true),
+                ..Default::default()
+            },
+            CredMeta {
+                approvals: Some(2),
                 ..Default::default()
             },
         ] {
