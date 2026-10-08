@@ -123,6 +123,14 @@ if command -v python3 >/dev/null; then
     e=$(python3 -c "import ctypes;l=ctypes.CDLL(None,use_errno=True);l.ptrace(0,0,0,0);print(ctypes.get_errno())")
     [ "$e" = 1 ] && r ok "ptrace denied (seccomp)" || r bad "ptrace errno $e"
 fi
+if command -v python3 >/dev/null; then
+    ll=$(python3 -c 'import ctypes, os, sys
+if ctypes.CDLL(None, use_errno=True).syscall(444, None, 0, 1) < 1: print("skip")
+else:
+    try: os.listdir(sys.argv[1]); print("open")
+    except PermissionError: print("denied")' "$HOME/.local/share/kepr")
+    case "$ll" in denied) r ok "Landlock denies the store dir";; open) r bad "store dir listable under Landlock";; esac
+fi
 grep -q "CapEff:	0000000000000000" /proc/self/status && r ok "no capabilities" || r bad "capabilities present"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: wrong' "$ANTHROPIC_BASE_URL/v1/messages" -d '{}')
 [ "$code" = 401 ] && r ok "gate reachable from the sandbox" || r bad "gate unreachable ($code)"

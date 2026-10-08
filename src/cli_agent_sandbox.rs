@@ -8,7 +8,8 @@
 //        │      socket dirs; fresh /proc (host processes invisible)
 //        ├ acceptor [--isolate-net]: listens on 127.0.0.1:PORT inside the
 //        │   netns and hands each connection to the relay (SCM_RIGHTS)
-//        └ harness: no capabilities, no_new_privs, seccomp filter
+//        └ harness: no capabilities, no_new_privs, Landlock (T1.23),
+//                   seccomp filter
 //
 // Without --isolate-net the harness keeps host networking (package
 // installs keep working) but still cannot see the vault, the daemon
@@ -218,6 +219,9 @@ fn exec_harness(plan: &Plan) -> ! {
         libc::signal(libc::SIGQUIT, libc::SIG_DFL);
     }
     sys::drop_all_caps();
+    if let Err(e) = crate::cli_sandbox_landlock::enforce(&plan.hide) {
+        die(&e); // T1.23
+    }
     if let Err(e) = seccomp::install(&plan.filter) {
         die(e);
     }
