@@ -124,6 +124,8 @@ mod tests {
             issues: issues.iter().map(|s| s.to_string()).collect(),
             age_days: 400,
             hibp_prefix: Some("5BAA6".into()),
+            ignored: Vec::new(),
+            ignore: Vec::new(),
         }
     }
 

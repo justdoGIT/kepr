@@ -84,6 +84,7 @@ mod cli_aws;
 // batch: eco
 mod cli_eco;
 // batch: platform
+mod cli_platform;
 // batch: session
 mod cli_session;
 // end of batches
