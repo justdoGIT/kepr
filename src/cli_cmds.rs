@@ -161,7 +161,8 @@ pub fn cmd_set(a: &Args) -> Response {
         sealed: None,
         bindings: None,
     };
-    let resp = crate::cli_session::reauth::after_set(a, dispatch(a, &req));
+    let resp = crate::cli_platform::exe::after_set(a, dispatch(a, &req)); // T10.09
+    let resp = crate::cli_session::reauth::after_set(a, resp);
 
     match &resp {
         Response::SetOk {

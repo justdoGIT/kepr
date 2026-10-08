@@ -64,6 +64,7 @@ pub mod sigv4_req;
 // batch: eco
 pub mod protocol_eco;
 // batch: platform
+pub mod exe_digest;
 pub mod protocol_platform;
 // batch: session
 pub mod http_lite;

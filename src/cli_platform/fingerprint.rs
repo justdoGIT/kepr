@@ -19,12 +19,15 @@ use crate::cli_args::Args;
 use crate::cli_doctor_hardening::{Finding, Level};
 
 /// Flags of the `platform` batch on core verbs (parsed by cli_args.rs).
-pub const FLAGS: &[&str] = &["--fingerprint"];
+pub const FLAGS: &[&str] = &["--fingerprint", "--exe"];
 
 #[derive(Debug, Default)]
 pub struct PlatformFlags {
     /// `unlock --fingerprint` (T10.03).
     pub fingerprint: bool,
+    /// `set --exe PATH` (T10.09): identities of the allowed programs,
+    /// hashed while parsing so a bad path fails before anything is sent.
+    pub exe: Vec<String>,
 }
 
 impl PlatformFlags {
@@ -32,6 +35,15 @@ impl PlatformFlags {
     pub fn take(&mut self, raw: &[String], i: usize) -> Result<usize, String> {
         match raw[i].as_str() {
             "--fingerprint" => self.fingerprint = true,
+            "--exe" => {
+                let path = raw.get(i + 1).ok_or("--exe needs a program path")?;
+                for id in super::exe::identities(path)? {
+                    if !self.exe.contains(&id) {
+                        self.exe.push(id);
+                    }
+                }
+                return Ok(i + 2);
+            }
             other => return Err(format!("unknown flag: {other}")),
         }
         Ok(i + 1)
@@ -309,5 +321,12 @@ User alice has no fingers enrolled for Goodix MOC Fingerprint Sensor.
         let mut f = PlatformFlags::default();
         assert_eq!(f.take(&raw, 2), Ok(3));
         assert!(f.fingerprint);
+        let raw: Vec<String> = ["kepr", "set", "K", "--exe", "/bin/sh", "--exe"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(f.take(&raw, 3), Ok(5));
+        assert!(!f.exe.is_empty() && f.exe[0].starts_with("sha256:"));
+        assert!(f.take(&raw, 5).is_err(), "--exe without a path");
     }
 }

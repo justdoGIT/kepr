@@ -16,6 +16,12 @@ pub enum PlatformRequest {
     /// fingerprint through pam_fprintd) authorises the calling process.
     /// Answered with `Response::UnlockedOk`.
     FingerprintUnlock,
+    /// T10.09: replace the executables allowed to `get` NAME
+    /// (`kepr_core::exe_digest` identities; empty = clear). Only a caller
+    /// the current binding allows may change it.
+    ExeBind { name: String, digests: Vec<String> },
+    /// T10.09: the identities NAME is bound to.
+    ExeShow { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +37,8 @@ pub enum PlatformResponse {
         keyring: String,
         serial: i32,
     },
+    /// T10.09: NAME's executable identities after `ExeBind` / `ExeShow`.
+    ExeBindings { name: String, digests: Vec<String> },
 }
 
 #[cfg(test)]
@@ -86,6 +94,34 @@ mod tests {
             serde_json::from_str::<Request>(r#"{"cmd":"ping"}"#).unwrap(),
             Request::Ping
         ));
+    }
+
+    #[test]
+    fn exe_binding_messages_round_trip() {
+        use crate::protocol::Request;
+        let req = Request::Platform(PlatformRequest::ExeBind {
+            name: "K".into(),
+            digests: vec!["sha256:00".into()],
+        });
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(wire.starts_with(r#"{"cmd":"exe_bind""#));
+        assert!(matches!(
+            serde_json::from_str::<Request>(&wire).unwrap(),
+            Request::Platform(PlatformRequest::ExeBind { name, digests })
+                if name == "K" && digests == ["sha256:00"]
+        ));
+        let show = Request::Platform(PlatformRequest::ExeShow { name: "K".into() });
+        let wire = serde_json::to_string(&show).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Request>(&wire).unwrap(),
+            Request::Platform(PlatformRequest::ExeShow { name }) if name == "K"
+        ));
+        let resp = PlatformResponse::ExeBindings {
+            name: "K".into(),
+            digests: vec![],
+        };
+        let back = round_trip(Response::Platform(resp.clone()));
+        assert!(matches!(back, Response::Platform(p) if p == resp));
     }
 
     #[test]
