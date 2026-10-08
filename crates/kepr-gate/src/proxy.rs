@@ -213,6 +213,12 @@ pub async fn proxy_request(
     if let Err(refusal) = state.limiter.admit(Instant::now()) {
         return Ok(log.reply(limit_response(refusal), 0, Some("limit")));
     }
+    let today = state
+        .limiter
+        .admit_today(state.cache.clone(), route.cred.clone());
+    if let Err(refusal) = today.await {
+        return Ok(log.reply(limit_response(refusal), 0, Some("limit"))); // T9.06
+    }
 
     let (cache, cred, host) = (state.cache.clone(), route.cred.clone(), provider.host);
     let (value, inject) =
@@ -288,7 +294,7 @@ pub async fn proxy_request(
             if !state.limiter.meters_tokens() {
                 return Ok(Response::from_parts(p, b));
             }
-            let mut meter = UsageMeter::new(state.limiter.clone());
+            let mut meter = UsageMeter::new(state.limiter.clone()).daily(&state.cache, &route.cred);
             let b = b.map_frame(move |f| {
                 if let Some(d) = f.data_ref() {
                     meter.observe(d);
@@ -643,6 +649,63 @@ mod tests {
         assert_eq!(r.status(), StatusCode::OK);
         r.into_body().collect().await.unwrap(); // the meter sees the body
         assert_eq!(send(&gate, &ph, "{}").await.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// T9.06: the daemon's per-day counters, shared by every session.
+    #[derive(Clone, Default)]
+    struct Daily(Arc<std::sync::Mutex<HashMap<String, (u64, u64)>>>);
+    impl Resolve for Daily {
+        fn generation(&self) -> Result<u64, String> {
+            Fixed.generation()
+        }
+        fn resolve(&self, n: &str, h: &str, p: u16) -> Result<(ZeroString, Inject), String> {
+            Fixed.resolve(n, h, p)
+        }
+        fn day_usage(&self, name: &str, r: u64, t: u64) -> Result<(u64, u64), String> {
+            let mut m = self.0.lock().unwrap();
+            let e = m.entry(name.to_string()).or_default();
+            *e = (e.0 + r, e.1 + t);
+            Ok(*e)
+        }
+    }
+
+    async fn start_daily_gate(upstream: String, day: Daily) -> String {
+        let cache = Arc::new(Cache::new(Box::new(day), DEFAULT_TTL));
+        let mut routes = HashMap::new();
+        let cred = "ANTHROPIC_API_KEY".to_string();
+        routes.insert("anthropic".to_string(), Route { cred, slot: 0 });
+        let limits = kepr_core::gate_protocol::GateLimits {
+            max_requests_day: Some(2),
+            ..Default::default()
+        };
+        let state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
+            .with_test_upstream(upstream)
+            .with_limits(limits);
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(serve(l, Arc::new(state)));
+        addr
+    }
+
+    #[tokio::test]
+    async fn daily_cap_holds_across_sessions() {
+        let (up, _rx) =
+            fake_upstream_with(Some(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")).await;
+        let day = Daily::default();
+        let a = start_daily_gate(up.clone(), day.clone()).await;
+        let b = start_daily_gate(up, day.clone()).await;
+        let ph = placeholder::make(&KEY, SID, 0);
+        assert_eq!(send(&a, &ph, "{}").await.status(), StatusCode::OK);
+        assert_eq!(send(&b, &ph, "{}").await.status(), StatusCode::OK);
+        let r = send(&a, &ph, "{}").await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let body =
+            String::from_utf8(r.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(
+            body.contains("kepr_limit") && body.contains("daily limit of 2"),
+            "{body}"
+        );
+        assert_eq!(day.0.lock().unwrap()["ANTHROPIC_API_KEY"].0, 3);
     }
 
     async fn start_egress_gate(

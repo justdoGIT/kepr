@@ -1,6 +1,7 @@
 // daemon_policy/ — the `policy` ticket batch, daemon side: the access
 // policy (T6.11), access reports (T6.12), the audit feed for the CLI-side
-// forwarders and alerts (T7.14), approval notifications (T9.04).
+// forwarders and alerts (T7.14), approval notifications (T9.04), per-day
+// caps across gate sessions (T9.06).
 // Requests arrive as
 // `Request::Policy` via daemon_extra.rs; `enforce` runs before every request in
 // daemon_dispatch.rs, `init` once at start in daemon.rs.
@@ -8,6 +9,7 @@
 mod approvals;
 mod approve;
 mod caller;
+mod daily;
 mod enforce;
 mod events;
 mod report;
@@ -19,6 +21,30 @@ use crate::audit::{self, AuditEvent, AuditResult};
 
 /// The consent check for consent-gated credentials (T9.04: approver or polkit).
 pub use approve::consent;
+
+/// T9.06: a gate reports usage of one of its session's credentials;
+/// the reply carries the day's totals across the user's sessions.
+pub fn day_usage(
+    creds: &std::collections::HashSet<String>,
+    uid: u32,
+    id: u64,
+    name: &str,
+    (requests, tokens): (u64, u64),
+) -> kepr_core::gate_protocol::GateResponse {
+    use kepr_core::gate_protocol::GateResponse;
+    if !creds.contains(name) {
+        return GateResponse::Err {
+            id,
+            error: "credential unavailable".into(),
+        };
+    }
+    let (requests, tokens) = daily::record(uid, name, requests, tokens);
+    GateResponse::UsageToday {
+        id,
+        requests,
+        tokens,
+    }
+}
 /// Pre-dispatch hook: `Some(refusal)` stops the request.
 pub use enforce::enforce;
 /// Load the policy file; reload on SIGHUP.

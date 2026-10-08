@@ -165,6 +165,18 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
                 id,
                 entries,
             ),
+            Ok(GateRequest::DayUsage {
+                id,
+                name,
+                requests,
+                tokens,
+            }) => crate::daemon_policy::day_usage(
+                &owner.creds,
+                owner.uid,
+                id,
+                &name,
+                (requests, tokens),
+            ),
             Err(_) => GateResponse::Err {
                 id: 0,
                 error: "malformed request".into(),
