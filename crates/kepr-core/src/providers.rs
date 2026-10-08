@@ -10,7 +10,8 @@ pub struct Provider {
     pub name: &'static str,
     /// Upstream TLS host (port 443).
     pub host: &'static str,
-    /// `None` = `Authorization: Bearer`; `Some(h)` = header `h`.
+    /// `None` = `Authorization: Bearer`; `Some(h)` = header `h`;
+    /// `Some(BASIC_AUTH)` = `Authorization: Basic` (value `user:password`).
     pub header: Option<&'static str>,
     /// Key prefixes that identify this provider unambiguously.
     pub prefixes: &'static [&'static str],
@@ -106,7 +107,91 @@ pub const PROVIDERS: &[Provider] = &[
         keys_url: "https://github.com/settings/tokens",
         egress_env: &["GH_TOKEN", "GITHUB_TOKEN"],
     },
+    // T2.04 (batch: aws): presets for common CLIs through the egress proxy.
+    Provider {
+        name: "stripe",
+        host: "api.stripe.com",
+        header: None,
+        prefixes: &["sk_live_", "sk_test_", "rk_live_", "rk_test_"],
+        name_hints: &["STRIPE"],
+        keys_url: "https://dashboard.stripe.com/apikeys",
+        egress_env: &["STRIPE_API_KEY"],
+    },
+    Provider {
+        name: "npm",
+        host: "registry.npmjs.org",
+        header: None,
+        prefixes: &["npm_"],
+        name_hints: &["NPM"],
+        keys_url: "https://docs.npmjs.com/revoking-access-tokens",
+        egress_env: &["NPM_TOKEN"],
+    },
+    Provider {
+        // `kepr agent add --for gcloud` also binds GCLOUD_HOSTS; the gate
+        // intercepts any bound host under googleapis.com (DOMAINS).
+        name: "gcloud",
+        host: "www.googleapis.com",
+        header: None,
+        prefixes: &["ya29."],
+        name_hints: &["GCLOUD", "GCP", "CLOUDSDK"],
+        keys_url: "https://console.cloud.google.com/apis/credentials",
+        egress_env: &["CLOUDSDK_AUTH_ACCESS_TOKEN"],
+    },
+    Provider {
+        // Docker Hub's token service: registry clients send the login
+        // (`user:token`, Basic) here and use the short-lived token it
+        // returns on registry-1.docker.io.
+        name: "docker",
+        host: "auth.docker.io",
+        header: Some(BASIC_AUTH),
+        prefixes: &["dckr_pat_"],
+        name_hints: &["DOCKER", "DOCKERHUB"],
+        keys_url: "https://app.docker.com/settings/personal-access-tokens",
+        egress_env: &[],
+    },
 ];
+
+/// `Provider::header` sentinel for `Authorization: Basic`: a colon never
+/// appears in a header name, so it can't clash with a real header.
+pub const BASIC_AUTH: &str = ":basic";
+
+/// T2.04: providers whose key works on every host under a domain. The
+/// gate intercepts a CONNECT to such a host when the session's key for
+/// the provider is bound to that exact host (the daemon decides).
+pub const DOMAINS: &[(&str, &str)] = &[("gcloud", "googleapis.com")];
+
+/// More hosts `--for gcloud` binds besides `www.googleapis.com`: the
+/// services `gcloud` most often calls.
+pub const GCLOUD_HOSTS: &[&str] = &[
+    "cloudresourcemanager.googleapis.com",
+    "compute.googleapis.com",
+    "storage.googleapis.com",
+    "iam.googleapis.com",
+    "serviceusage.googleapis.com",
+    "container.googleapis.com",
+    "run.googleapis.com",
+    "cloudfunctions.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "secretmanager.googleapis.com",
+    "logging.googleapis.com",
+    "monitoring.googleapis.com",
+    "pubsub.googleapis.com",
+    "bigquery.googleapis.com",
+    "sqladmin.googleapis.com",
+];
+
+/// The `DOMAINS` provider `host` is under, if any (never the bare domain).
+pub fn under_domain(host: &str) -> Option<&'static str> {
+    DOMAINS
+        .iter()
+        .find(|(_, d)| {
+            host.strip_suffix(d)
+                .and_then(|h| h.strip_suffix('.'))
+                .is_some_and(|sub| !sub.is_empty())
+        })
+        .map(|(p, _)| *p)
+}
 
 pub fn lookup(name: &str) -> Option<&'static Provider> {
     PROVIDERS.iter().find(|p| p.name == name)
@@ -124,6 +209,7 @@ impl Provider {
             port: 443,
             inject: match self.header {
                 None => Inject::Bearer,
+                Some(BASIC_AUTH) => Inject::Basic,
                 Some(h) => Inject::Header {
                     name: h.to_string(),
                 },
@@ -187,5 +273,38 @@ mod tests {
         );
         assert_eq!(d(Some("MISTRAL_KEY"), "abc"), Some("mistral"));
         assert_eq!(d(Some("MY_KEY"), "abc"), None);
+    }
+
+    #[test]
+    fn cli_presets() {
+        let d = |n: Option<&str>, v: &str| detect(n, v).map(|p| p.name);
+        assert_eq!(d(None, "sk_live_51Habc"), Some("stripe"));
+        assert_eq!(d(None, "sk_test_51Habc"), Some("stripe"));
+        assert_eq!(d(None, "rk_live_51Habc"), Some("stripe"));
+        assert_eq!(
+            d(None, "npm_abcdefghijklmnopqrstuvwxyz0123456789"),
+            Some("npm")
+        );
+        assert_eq!(d(None, "ya29.a0AfB_byC"), Some("gcloud"));
+        assert_eq!(d(None, "dckr_pat_abcdef"), Some("docker"));
+        assert_eq!(d(Some("NPM_TOKEN"), "legacy-uuid"), Some("npm"));
+        assert_eq!(d(Some("DOCKERHUB_LOGIN"), "me:pat"), Some("docker"));
+        assert_eq!(lookup("docker").unwrap().binding().inject, Inject::Basic);
+        assert_eq!(lookup("npm").unwrap().binding().inject, Inject::Bearer);
+        assert_eq!(lookup("stripe").unwrap().egress_env, ["STRIPE_API_KEY"]);
+        assert_eq!(under_domain("storage.googleapis.com"), Some("gcloud"));
+        assert_eq!(under_domain("a.b.googleapis.com"), Some("gcloud"));
+        for h in [
+            "googleapis.com",
+            "evilgoogleapis.com",
+            "googleapis.com.evil.com",
+            ".googleapis.com",
+        ] {
+            assert_eq!(under_domain(h), None, "{h}");
+        }
+        for h in GCLOUD_HOSTS {
+            assert_eq!(under_domain(h), Some("gcloud"));
+            assert!(crate::binding::validate_host(h).is_ok());
+        }
     }
 }

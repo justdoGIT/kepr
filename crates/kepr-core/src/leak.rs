@@ -156,6 +156,49 @@ pub const PATTERNS: &[Pattern] = &[
         min: 20,
         exact: false,
     },
+    // T2.04 (batch: aws): the CLI presets' key shapes.
+    Pattern {
+        kind: "Stripe test key",
+        prefix: b"sk_test_",
+        body: alnum,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
+        kind: "Stripe restricted key",
+        prefix: b"rk_live_",
+        body: alnum,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
+        kind: "Stripe restricted test key",
+        prefix: b"rk_test_",
+        body: alnum,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
+        kind: "npm token",
+        prefix: b"npm_",
+        body: alnum,
+        min: 36,
+        exact: true,
+    },
+    Pattern {
+        kind: "Google OAuth access token",
+        prefix: b"ya29.",
+        body: key_char,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
+        kind: "Docker access token",
+        prefix: b"dckr_pat_",
+        body: key_char,
+        min: 20,
+        exact: false,
+    },
     Pattern {
         kind: "private key",
         prefix: b"-----BEGIN ",
@@ -244,6 +287,21 @@ mod tests {
         }
     }
     use super::*;
+
+    #[test]
+    fn cli_preset_shapes() {
+        for k in [
+            "sk_test_51HabcdefghijklmnopqrstUV",
+            "rk_live_51HabcdefghijklmnopqrstUV",
+            "npm_abcdefghijklmnopqrstuvwxyz0123456789",
+            "ya29.a0AfB_byCabcdefghijklmnop",
+            "dckr_pat_abcdefghijklmnopqrstu",
+        ] {
+            assert!(looks_like_key(format!("x {k} y").as_bytes()), "{k}");
+        }
+        assert!(!looks_like_key(b"npm_install"));
+        assert!(!looks_like_key(b"ya29.short"));
+    }
 
     #[test]
     fn known_shapes() {

@@ -8,6 +8,8 @@
 //   rotate_iam `kepr rotate NAME --aws-iam` (T7.05)
 //   flags      this batch's flags on the core `rotate` verb
 //   leaked     `kepr leaked NAME --rotate`: provider-API rotation (T9.09)
+//   github_app `kepr github-app add`: sealed GitHub App keys (T7.08)
+//   presets    npm / docker files for agent sessions (T2.04)
 //
 // Network calls to providers happen here, in the user's CLI process: the
 // root daemon's unit has no TCP. Values reach the store only through the
@@ -15,8 +17,10 @@
 
 pub mod credproc;
 pub mod flags;
+pub mod github_app;
 pub mod iam;
 pub mod leaked;
+pub mod presets;
 pub mod rotate_iam;
 pub mod session;
 pub mod sts;
@@ -32,7 +36,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::cli_exec::{CredFetcher, DaemonFetcher};
 
-pub const VERBS: &[&str] = &["aws"];
+pub const VERBS: &[&str] = &["aws", "github-app"];
 
 pub const HELP: &str = "\
   aws whoami KEY [--region R]          which AWS account and principal the stored key KEY is
@@ -43,6 +47,9 @@ pub const HELP: &str = "\
                                        session's placeholder pair. Never the long-lived key
   rotate KEY --aws-iam                 new IAM access key for the stored KEY: created, verified
                                        (STS), stored, then the old key deleted (2-key limit)
+  github-app add KEY --app-id N --installation-id N [--key-file PEM]
+                                       store a GitHub App private key sealed; agent sessions get
+                                       1-hour installation tokens for gh / GH_TOKEN (gate-minted)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -54,6 +61,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
     match (verb, args.first().copied()) {
         ("aws", Some("whoami")) => cmd_whoami(&args[1..]),
         ("aws", Some("credential-process")) => credproc::cmd(&args[1..]),
+        ("github-app", _) => github_app::cmd(&args),
         _ => Response::fail(format!("usage:\n{HELP}")),
     }
 }

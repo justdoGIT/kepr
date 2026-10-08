@@ -149,10 +149,10 @@ fn cmd_add(a: &AgentArgs) -> Response {
     };
     let bindings = match specs
         .iter()
-        .map(|s| cli_agent_detect::binding_for(s))
+        .map(|s| cli_agent_detect::bindings_for(s)) // T2.04: presets may bind more hosts
         .collect::<Result<Vec<_>, _>>()
     {
-        Ok(b) => b,
+        Ok(b) => b.concat(),
         Err(e) => return Response::fail(e),
     };
     let sigv4 = bindings.iter().any(|b| b.inject == Inject::Sigv4); // T2.02
