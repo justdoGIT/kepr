@@ -200,12 +200,13 @@ pub fn handle_get(
                 username,
                 result: AuditResult::Ok,
             });
-            // Move the ZeroString directly into the response — the
-            // protocol field is `value: ZeroString`, so the secret
-            // bytes never touch a non-zeroising String on the way
-            // out. The previous `secret.to_owned_string()` cloned
-            // into a plain String that the serializer would then
-            // walk; that String dropped without zeroizing.
+            crate::daemon_policy::canary_read(uid, peer_pid, username, &upper); // T9.08
+                                                                                // Move the ZeroString directly into the response — the
+                                                                                // protocol field is `value: ZeroString`, so the secret
+                                                                                // bytes never touch a non-zeroising String on the way
+                                                                                // out. The previous `secret.to_owned_string()` cloned
+                                                                                // into a plain String that the serializer would then
+                                                                                // walk; that String dropped without zeroizing.
             Response::GetOk {
                 name: asked,
                 value: secret,

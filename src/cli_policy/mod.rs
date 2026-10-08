@@ -2,7 +2,7 @@
 // (T6.11), `kepr report access` (T6.12), webhooks (`notify`) and
 // `kepr health --notify` (T6.08), `kepr audit forward` (T7.14),
 // `kepr alerts` (T7.15), `kepr anomaly` (T7.13), `kepr approvals` (T9.04),
-// `kepr usage --report` (T9.07).
+// `kepr usage --report` (T9.07), `kepr canary` (T9.08).
 // Registered in cli_more.rs.
 
 mod alerts;
@@ -11,6 +11,7 @@ mod anomaly;
 mod anomaly_cmd;
 mod approvals_cmd;
 mod approve_notify;
+mod canary;
 mod forward;
 mod health;
 mod notify;
@@ -30,6 +31,7 @@ pub const VERBS: &[&str] = &[
     "alerts",
     "anomaly",
     "approvals",
+    "canary",
 ];
 
 pub const HELP: &str = "  policy test FILE                     run the [[test]] cases of a policy.toml (allow / deny per case)
@@ -51,6 +53,9 @@ pub const HELP: &str = "  policy test FILE                     run the [[test]] 
   approvals serve [--desktop] [--ntfy URL --listen ADDR:PORT [--callback-url URL]]
                                        ask on the desktop / on a phone (ntfy buttons call back here);
                                        unanswered = denied
+  canary plant [--for PROVIDER] [--name NAME] [--in FILE|DIR]   plant a decoy key (stored in kepr,
+                                       written to .env / rc file); a read, gate use or webhook logs
+                                       canary-tripped [canary ls | rm NAME | listen --listen ADDR:PORT]
   usage --report [--days N] [--unused-days N] [--prices FILE]
                                        agent traffic per harness × key × host, estimated cost
                                        (~/.config/kepr/prices), bound hosts never used (over-scoped)
@@ -66,6 +71,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "alerts" => alerts_cmd::cmd_alerts(args),
         "anomaly" => anomaly_cmd::cmd_anomaly(args),
         "approvals" => approvals_cmd::cmd_approvals(args),
+        "canary" => canary::cmd_canary(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

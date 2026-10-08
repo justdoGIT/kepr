@@ -17,7 +17,9 @@ pub enum PolicyRequest {
         reload: bool,
     },
     /// T6.12: where a credential can go and where it went.
-    ReportAccess { name: String },
+    ReportAccess {
+        name: String,
+    },
     /// T7.14: the caller's audit-chain entries after the one whose hash
     /// is `after` (absent: from the first), oldest first, one page.
     AuditTail {
@@ -36,7 +38,9 @@ pub enum PolicyRequest {
     ApproverRegister,
     /// T9.04: the requests waiting for the approver (`key` from
     /// `ApproverKey`; the same process must ask).
-    ApprovalPoll { key: String },
+    ApprovalPoll {
+        key: String,
+    },
     /// T9.04: answer one waiting request with its one-time token.
     ApprovalAnswer {
         key: String,
@@ -46,7 +50,10 @@ pub enum PolicyRequest {
     },
     /// T9.07: name the harness of one of the caller's gate sessions
     /// (`kepr agent run` sends it once; the first name stays).
-    SessionHarness { session: String, harness: String },
+    SessionHarness {
+        session: String,
+        harness: String,
+    },
     /// T9.07: `kepr usage --report`: gate-journal counts per harness ×
     /// credential × host over `days` (everything kept when absent), and
     /// bound hosts no request reached in `unused_days`.
@@ -54,6 +61,22 @@ pub enum PolicyRequest {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         days: Option<u32>,
         unused_days: u32,
+    },
+    /// T9.08: store a decoy key for `provider` as `name`, to be planted
+    /// in `planted_in` (a path, recorded for `ls` / `rm`).
+    CanaryPlant {
+        name: String,
+        provider: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        planted_in: Option<String>,
+    },
+    CanaryList,
+    CanaryRemove {
+        name: String,
+    },
+    /// T9.08: a provider-side webhook fired for the canary `trip_id`.
+    CanaryTrip {
+        trip_id: String,
     },
 }
 
@@ -110,6 +133,36 @@ pub enum PolicyResponse {
         #[serde(default)]
         truncated: bool,
     },
+    /// `value` is the decoy (never a working key), for the CLI to plant;
+    /// `trip_id` names its webhook (`/kepr-canary/<trip_id>`).
+    CanaryPlanted {
+        name: String,
+        value: String,
+        trip_id: String,
+    },
+    CanaryListing {
+        canaries: Vec<CanaryEntry>,
+    },
+    CanaryRemoved {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        planted_in: Option<String>,
+    },
+}
+
+/// T9.08: one planted canary and how often it tripped (audit log).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanaryEntry {
+    pub name: String,
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub planted_in: Option<String>,
+    /// `YYYY-MM-DD HH:MM` UTC.
+    pub created: String,
+    pub trip_id: String,
+    pub tripped: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_tripped: Option<String>,
 }
 
 /// T9.07: one harness × credential × host line of the usage report.
@@ -231,6 +284,40 @@ mod tests {
             }],
             unused_days: 30,
             truncated: false,
+        });
+    }
+
+    #[test]
+    fn canary_round_trips() {
+        round_trip_req(
+            PolicyRequest::CanaryPlant {
+                name: "OPENAI_API_KEY".into(),
+                provider: "openai".into(),
+                planted_in: Some("/home/a/.env".into()),
+            },
+            r#"{"cmd":"canary_plant","name":"OPENAI_API_KEY","provider":"openai","planted_in":"/home/a/.env"}"#,
+        );
+        round_trip_req(PolicyRequest::CanaryList, r#"{"cmd":"canary_list"}"#);
+        round_trip_req(
+            PolicyRequest::CanaryTrip {
+                trip_id: "ab".into(),
+            },
+            r#"{"cmd":"canary_trip","trip_id":"ab"}"#,
+        );
+        round_trip_resp(PolicyResponse::CanaryListing {
+            canaries: vec![CanaryEntry {
+                name: "K".into(),
+                provider: "xai".into(),
+                planted_in: None,
+                created: "2026-10-08 00:00".into(),
+                trip_id: "ab".into(),
+                tripped: 2,
+                last_tripped: Some("2026-10-08 01:00".into()),
+            }],
+        });
+        round_trip_resp(PolicyResponse::CanaryRemoved {
+            name: "K".into(),
+            planted_in: Some("/x/.env".into()),
         });
     }
 

@@ -107,6 +107,9 @@ pub fn resolve_for_gate(
         Some(Err(e)) => return fail(format!("resolve: meta parse: {e}")),
         None => None,
     };
+    if crate::daemon_policy::canary_refuse(uid, username, &upper, meta.as_ref()) {
+        return Err(()); // T9.08: never released; asking trips it
+    }
     let inject = match check_resolvable(meta.as_ref(), expiry::now_unix(), host, port) {
         Ok(i) => i,
         Err(reason) => return fail(reason),
@@ -165,6 +168,14 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
                 id,
                 entries,
             ),
+            Ok(GateRequest::Canary { id, fingerprints }) => {
+                crate::daemon_policy::canary_gate_check(
+                    owner.uid,
+                    &owner.username,
+                    id,
+                    &fingerprints,
+                )
+            }
             Ok(GateRequest::DayUsage {
                 id,
                 name,

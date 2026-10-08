@@ -199,6 +199,10 @@ pub async fn proxy_request(
         start: Instant::now(),
     };
     let query = req.uri().query().map(str::to_string);
+    let head = crate::canary::screen(&state.cache, req.headers(), query.as_deref(), None);
+    if let Some(r) = head.await {
+        return Ok(log.reply(r, 0, Some("canary"))); // T9.08
+    }
 
     let phs = placeholders_in(req.headers(), query.as_deref());
     if phs.is_empty() || !phs.iter().all(|p| state.valid_placeholder(p, route.slot)) {
@@ -247,6 +251,10 @@ pub async fn proxy_request(
         }
     };
 
+    let body = crate::canary::screen(&state.cache, &parts.headers, None, Some(&bytes));
+    if let Some(r) = body.await {
+        return Ok(log.reply(r, bytes.len(), Some("canary")));
+    }
     if let Some(msg) = dlp::check(&parts, &bytes, &state.cache.values()) {
         let r = kepr_error(StatusCode::FORBIDDEN, "kepr_blocked", &msg);
         return Ok(log.reply(r, bytes.len(), Some("dlp")));
@@ -690,14 +698,22 @@ mod tests {
     }
 
     async fn start_daily_gate(upstream: String, day: Daily) -> String {
-        let cache = Arc::new(Cache::new(Box::new(day), DEFAULT_TTL));
-        let mut routes = HashMap::new();
-        let cred = "ANTHROPIC_API_KEY".to_string();
-        routes.insert("anthropic".to_string(), Route { cred, slot: 0 });
         let limits = kepr_core::gate_protocol::GateLimits {
             max_requests_day: Some(2),
             ..Default::default()
         };
+        start_gate_resolver(upstream, Box::new(day), limits).await
+    }
+
+    async fn start_gate_resolver(
+        upstream: String,
+        resolver: Box<dyn Resolve>,
+        limits: kepr_core::gate_protocol::GateLimits,
+    ) -> String {
+        let cache = Arc::new(Cache::new(resolver, DEFAULT_TTL));
+        let mut routes = HashMap::new();
+        let cred = "ANTHROPIC_API_KEY".to_string();
+        routes.insert("anthropic".to_string(), Route { cred, slot: 0 });
         let state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
             .with_test_upstream(upstream)
             .with_limits(limits);
@@ -726,6 +742,49 @@ mod tests {
             "{body}"
         );
         assert_eq!(day.0.lock().unwrap()["ANTHROPIC_API_KEY"].0, 3);
+    }
+
+    /// T9.08: the daemon's side of the canary check, one decoy planted.
+    #[derive(Clone)]
+    struct Planted(String, Arc<std::sync::Mutex<u32>>);
+    impl Resolve for Planted {
+        fn generation(&self) -> Result<u64, String> {
+            Fixed.generation()
+        }
+        fn resolve(&self, n: &str, h: &str, p: u16) -> Result<(ZeroString, Inject), String> {
+            Fixed.resolve(n, h, p)
+        }
+        fn canary(&self, fps: Vec<String>) -> Result<bool, String> {
+            let hit = fps.contains(&kepr_core::canary::fingerprint(self.0.as_bytes()));
+            *self.1.lock().unwrap() += u32::from(hit);
+            Ok(hit)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_planted_canary_is_refused_and_reported() {
+        let (up, mut rx) =
+            fake_upstream_with(Some(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")).await;
+        let decoy = kepr_core::canary::make("anthropic").unwrap();
+        let planted = Planted(decoy.clone(), Arc::default());
+        let gate = start_gate_resolver(up, Box::new(planted.clone()), Default::default()).await;
+        // Sent where the placeholder goes, and inside a body.
+        let r = send(&gate, &decoy, "{}").await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let body =
+            String::from_utf8(r.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(
+            body.contains("kepr_blocked") && !body.contains("canary"),
+            "{body}"
+        );
+        let ph = placeholder::make(&KEY, SID, 0);
+        let r = send(&gate, &ph, &format!("{{\"note\":\"{decoy}\"}}")).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        assert_eq!(*planted.1.lock().unwrap(), 2, "both reported to the daemon");
+        // A clean request still goes through; the refused ones never left.
+        assert_eq!(send(&gate, &ph, "{}").await.status(), StatusCode::OK);
+        assert!(!rx.recv().await.unwrap().contains(&decoy));
+        assert!(rx.try_recv().is_err());
     }
 
     async fn start_egress_gate(

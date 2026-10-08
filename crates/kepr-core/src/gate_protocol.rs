@@ -45,6 +45,9 @@ pub enum GateRequest {
         requests: u64,
         tokens: u64,
     },
+    /// T9.08: canary fingerprints of key-shaped strings in a request;
+    /// answered with `CanaryChecked` (the daemon raises the alarm).
+    Canary { id: u64, fingerprints: Vec<String> },
 }
 
 /// Daemon → gate.
@@ -69,6 +72,11 @@ pub enum GateResponse {
         requests: u64,
         tokens: u64,
     },
+    /// T9.08: whether one of them is a planted canary.
+    CanaryChecked {
+        id: u64,
+        tripped: bool,
+    },
     Err {
         id: u64,
         error: String,
@@ -82,6 +90,7 @@ impl GateResponse {
             | Self::Generation { id, .. }
             | Self::Recorded { id }
             | Self::UsageToday { id, .. }
+            | Self::CanaryChecked { id, .. }
             | Self::Err { id, .. } => *id,
         }
     }
@@ -529,6 +538,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(back.id(), 7);
+    }
+
+    #[test]
+    fn canary_checks_are_private() {
+        let wire = serde_json::to_string(&GateRequest::Canary {
+            id: 3,
+            fingerprints: vec!["ab".into()],
+        })
+        .unwrap();
+        assert_eq!(wire, r#"{"cmd":"canary","id":3,"fingerprints":["ab"]}"#);
+        assert!(serde_json::from_str::<crate::protocol::Request>(&wire).is_err());
+        let r = GateResponse::CanaryChecked {
+            id: 3,
+            tripped: true,
+        };
+        assert_eq!(r.id(), 3);
     }
 
     #[test]

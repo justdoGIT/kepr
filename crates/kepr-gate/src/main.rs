@@ -7,6 +7,7 @@
 //! placeholder with the real key. See docs/content/docs/agent-vault-plan.mdx.
 
 mod ca;
+mod canary;
 mod db;
 mod dlp;
 mod egress;

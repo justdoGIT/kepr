@@ -80,6 +80,10 @@ pub struct CredMeta {
     /// registered approver (`kepr approvals serve`): desktop | ntfy | any.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub approve_via: Option<String>,
+    /// T9.08: the value is a decoy (`kepr canary plant`): reading it,
+    /// or a gate seeing it, raises the alarm; gates never release it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub canary: Option<crate::daemon_policy::CanaryMeta>,
     // batch: gate
     // batch: aws
     // batch: eco
