@@ -9,8 +9,12 @@
 // TOKEN`; the token file must be private (no group/other access) and at
 // least 16 characters. `--rate` is requests per minute for the token
 // (default 60). Routing and policy: serve_route.rs. Values come from the
-// daemon's own `Get`, which audits each read and never returns sealed,
-// SSH or share-key credentials; nothing here prompts.
+// daemon's `GetQuiet`, which audits each read, never returns sealed, SSH
+// or share-key credentials, and refuses any credential that would prompt
+// (consent, FIDO2, re-authentication) instead of prompting.
+//
+// A client has REQUEST_SECS to send its request; past MAX_CONNS at once,
+// new connections get 503 rather than waiting.
 
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -19,8 +23,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use kepr_core::generate::ZeroString;
-use kepr_core::http_lite::{parse_request, write_response_with, TimedStream};
+use kepr_core::http_lite::{parse_request_within, write_response_with, TimedStream};
 use kepr_core::protocol::{Request, Response};
+use kepr_core::protocol_session::SessionRequest;
 use zeroize::Zeroizing;
 
 use super::serve_route::{Bucket, Policy, Vault};
@@ -28,6 +33,7 @@ use super::serve_route::{Bucket, Policy, Vault};
 const USAGE: &str = "usage: KEPR_SERVE_TOKEN_FILE=FILE kepr serve \
                      (--listen 127.0.0.1:PORT | --socket PATH) --allow list,get [--rate N]";
 const MAX_CONNS: usize = 16;
+const REQUEST_SECS: u64 = 5;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Bind {
@@ -133,12 +139,11 @@ impl Vault for Daemon {
             _ => Err("unexpected reply".into()),
         }
     }
-    /// The plain `Get`: no FIDO2 ceremony, no passphrase prompt.
+    /// `GetQuiet`: the daemon refuses anything that would prompt.
     fn get(&self, name: &str) -> Result<ZeroString, String> {
-        let req = Request::Get {
+        let req = Request::Session(SessionRequest::GetQuiet {
             name: name.to_string(),
-            fido2_assertion: None,
-        };
+        });
         match crate::client::send_request(&req)? {
             Response::GetOk { value, .. } => Ok(value),
             _ => Err("credential unavailable".into()),
@@ -147,11 +152,11 @@ impl Vault for Daemon {
 }
 
 fn serve_one<S: TimedStream + std::io::Write>(mut s: S, policy: &Policy) {
-    let reply = match parse_request(&s, 0) {
+    let within = std::time::Duration::from_secs(REQUEST_SECS);
+    let reply = match parse_request_within(&s, 0, within) {
         Ok(req) => {
             let r = policy.route(&req, Instant::now(), &Daemon);
-            let path = req.path.split('?').next().unwrap_or("");
-            eprintln!("kepr serve: {} {path} {}", req.method, r.status);
+            eprintln!("kepr serve: {}", log_line(&req.method, &req.path, r.status));
             r
         }
         Err(_) => super::serve_route::bad_request(),
@@ -165,13 +170,30 @@ fn serve_one<S: TimedStream + std::io::Write>(mut s: S, policy: &Policy) {
     let _ = write_response_with(&mut s, reply.status, &headers, &reply.body);
 }
 
-fn spawn<S>(s: S, policy: &Arc<Policy>, live: &Arc<AtomicUsize>)
+/// One stderr line per request. Method and path come from an
+/// unauthenticated peer: escaped and truncated so they can't write
+/// terminal control sequences or fake log lines.
+fn log_line(method: &str, path: &str, status: u16) -> String {
+    let clip = |t: &str, n: usize| {
+        t.chars()
+            .take(n)
+            .collect::<String>()
+            .escape_debug()
+            .to_string()
+    };
+    let path = path.split('?').next().unwrap_or("");
+    format!("{} {} {status}", clip(method, 16), clip(path, 160))
+}
+
+fn spawn<S>(mut s: S, policy: &Arc<Policy>, live: &Arc<AtomicUsize>)
 where
     S: TimedStream + std::io::Write + Send + 'static,
 {
     if live.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
         live.fetch_sub(1, Ordering::SeqCst);
-        return; // dropped: too many at once
+        let busy = br#"{"error":"busy"}"#;
+        let _ = write_response_with(&mut s, 503, &[("Retry-After", "1")], busy);
+        return;
     }
     let (p, l) = (Arc::clone(policy), Arc::clone(live));
     std::thread::spawn(move || {
@@ -267,6 +289,36 @@ mod tests {
             "get"
         ])
         .is_err());
+    }
+
+    #[test]
+    fn the_log_line_escapes_what_the_peer_sent() {
+        let line = log_line("GET\x1b[2J", "/v1/secrets/\x1b]0;pwned\x07?q=\x1b", 401);
+        assert!(!line.contains('\x1b') && !line.contains('\x07'), "{line}");
+        assert_eq!(line, "GET\\u{1b}[2J /v1/secrets/\\u{1b}]0;pwned\\u{7} 401");
+        let long = format!("/{}", "a".repeat(1000));
+        assert!(log_line("GET", &long, 404).len() < 200);
+        assert!(!log_line("GET", "/x\nkepr serve: GET /fake 200", 404).contains('\n'));
+    }
+
+    #[test]
+    fn past_the_connection_cap_a_client_gets_503() {
+        use std::io::Read;
+        let policy = Arc::new(Policy {
+            token: Zeroizing::new("t0ken-t0ken-t0ken".into()),
+            allow_list: true,
+            allow_get: true,
+            ok: Mutex::new(Bucket::per_minute(60)),
+            failed: Mutex::new(Bucket::per_minute(30)),
+        });
+        let live = Arc::new(AtomicUsize::new(MAX_CONNS));
+        let (a, mut b) = UnixStream::pair().unwrap();
+        spawn(a, &policy, &live);
+        let mut got = String::new();
+        b.read_to_string(&mut got).unwrap();
+        assert!(got.starts_with("HTTP/1.1 503"), "{got}");
+        assert!(got.contains("Retry-After: 1"), "{got}");
+        assert_eq!(live.load(Ordering::SeqCst), MAX_CONNS);
     }
 
     #[test]

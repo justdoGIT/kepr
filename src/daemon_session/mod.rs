@@ -5,6 +5,7 @@
 // as `Request::Session` via daemon_extra.rs.
 
 pub mod idle;
+pub mod quiet;
 pub mod reauth;
 pub mod ssh_rotate;
 pub mod status;
@@ -15,7 +16,7 @@ use kepr_core::protocol_session::SessionRequest;
 
 use crate::audit::{self, AuditEvent, AuditResult};
 
-pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: SessionRequest) -> Response {
+pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: SessionRequest) -> Response {
     match r {
         SessionRequest::Reauth { name, passphrase } => {
             reauth::handle_reauth(uid, username, &name, &passphrase)
@@ -23,6 +24,9 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: SessionRequest) -> 
         SessionRequest::ReauthFlag { name, on } => reauth::handle_flag(uid, username, &name, on),
         SessionRequest::SshRotateCommit { name, next } => {
             ssh_rotate::handle_commit(uid, username, &name, &next)
+        }
+        SessionRequest::GetQuiet { name } => {
+            quiet::handle_get_quiet(uid, peer_pid, username, &name)
         }
     }
 }

@@ -72,6 +72,10 @@ fn reveal(
     }
     let path = expiry::meta_path_for(&cred_path(uid, upper));
     let mut meta = match expiry::read_meta(&path) {
+        // Never SSH or share keys, even if one were ever marked sealed.
+        Some(Ok(m)) if m.ssh.is_some() || m.share_key == Some(true) => {
+            return Err("credential unavailable".into())
+        }
         Some(Ok(m)) if m.sealed == Some(true) => m,
         Some(Err(_)) => return Err("credential unavailable".into()),
         _ => return Err(format!("{upper} is not sealed: use `kepr get`")),
@@ -196,6 +200,27 @@ mod tests {
         let r = handle(u, "t", "BG_MISSING", &shares);
         assert!(matches!(&r, Response::Err { error } if error == "credential unavailable"));
         assert!(!handle(u, "t", "../x", &shares).is_success());
+        // A sealed credential that is also an SSH or share key: refused.
+        for (name, ssh) in [("BG_SSH", true), ("BG_SHAREKEY", false)] {
+            testkit::set_sealed(u, name, "v");
+            let mp = expiry::meta_path_for(&cred_path(u, name));
+            let mut m = testkit::meta(u, name);
+            if ssh {
+                m.ssh = Some(crate::cred_meta::SshMeta {
+                    public_b64: "AAAA".into(),
+                    comment: "c".into(),
+                });
+            } else {
+                m.share_key = Some(true);
+            }
+            expiry::write_meta(&mp, &m).unwrap();
+            let r = handle(u, "t", name, &shares);
+            assert!(
+                matches!(&r, Response::Err { error } if error == "credential unavailable"),
+                "{name}: {r:?}"
+            );
+            assert_eq!(testkit::meta(u, name).must_rotate, None);
+        }
         testkit::set_sealed(u, "BG_GATED", "v");
         let r = handle_with(u, "t", "BG_GATED", &shares, || true);
         assert!(matches!(&r, Response::Err { error } if error.contains("agent sessions")));

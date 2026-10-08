@@ -64,6 +64,11 @@ pub fn window_open(uid: u32, upper: &str) -> bool {
     windows().is_open(uid, upper, Instant::now())
 }
 
+#[cfg(test)]
+pub(crate) fn open_window_for_test(uid: u32, upper: &str) {
+    windows().open(uid, upper, Instant::now());
+}
+
 /// The `Get` gate (pure): `Err(REAUTH_NEEDED)` while `meta` asks for
 /// re-auth and no window is open.
 pub fn gate(meta: &CredMeta, window_open: bool) -> Result<(), String> {

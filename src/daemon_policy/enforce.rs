@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use kepr_core::policy::{Ctx, Decision, PolicyFile};
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_records::RecordsRequest;
+use kepr_core::protocol_session::SessionRequest;
 use kepr_core::protocol_sharing::SharingRequest;
 
 use crate::audit::{self, AuditEvent, AuditResult};
@@ -119,7 +120,8 @@ fn governed(
     get_op: impl FnOnce() -> &'static str,
 ) -> Option<Governed> {
     Some(match request {
-        Request::Get { name, .. } => {
+        // `kepr serve` (T11.19) reads through `GetQuiet`: the same read.
+        Request::Get { name, .. } | Request::Session(SessionRequest::GetQuiet { name }) => {
             let upper = name.to_uppercase();
             let target = crate::daemon_store::resolve_alias(uid, &upper);
             let mut names = vec![upper];
@@ -245,6 +247,9 @@ mod tests {
     fn governed_requests() {
         let (op, names, _, _) = governed(4242, &get("a"), || "exec").unwrap();
         assert_eq!((op, names), ("exec", vec!["A".to_string()]));
+        let quiet = Request::Session(SessionRequest::GetQuiet { name: "a".into() });
+        let (op, names, _, _) = governed(4242, &quiet, || "get").unwrap();
+        assert_eq!((op, names), ("get", vec!["A".to_string()]));
         let set = Request::Set {
             name: "k".into(),
             value: Some(ZeroString::from_string("v".into())),

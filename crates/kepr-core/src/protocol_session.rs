@@ -34,6 +34,10 @@ pub enum SessionRequest {
     /// T11.21 `kepr ssh rotate`: after the host accepted `next`, make
     /// `next`'s key `name`'s and delete `next`. Answers `SshKeyOk`.
     SshRotateCommit { name: String, next: String },
+    /// T11.19 `kepr serve`: a `Get` that never prompts. A credential
+    /// needing consent, FIDO2 or re-authentication reads as unavailable,
+    /// even while a reveal window is open. Answers like `Get`.
+    GetQuiet { name: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -141,6 +145,7 @@ mod tests {
                 name: "K".into(),
                 next: "K_NEXT".into(),
             }),
+            Request::Session(SessionRequest::GetQuiet { name: "K".into() }),
         ];
         for r in reqs {
             let wire = serde_json::to_string(&r).unwrap();

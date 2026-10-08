@@ -4,7 +4,7 @@
 //   GET /v1/secrets        `list`: credential names (no values; sealed,
 //                          SSH and share keys are left out)
 //   GET /v1/secrets/NAME   `get`: {"name","value"} through the daemon's
-//                          ordinary `Get`, which refuses sealed, SSH and
+//                          `GetQuiet`, which refuses sealed, SSH and
 //                          share-key credentials and anything needing a
 //                          prompt (consent, FIDO2, re-authentication)
 //
@@ -86,6 +86,22 @@ fn reply(status: u16, body: impl Serialize) -> Reply {
     }
 }
 
+/// `{"name","value"}`. The buffer is sized for the worst-case escaping
+/// up front: growing it would free copies of the value unwiped.
+fn secret(name: &str, value: &str) -> Reply {
+    let mut out = Zeroizing::new(Vec::with_capacity(secret_capacity(name, value)));
+    let _ = serde_json::to_writer(&mut *out, &Secret { name, value });
+    Reply {
+        status: 200,
+        retry_after: None,
+        body: out,
+    }
+}
+
+fn secret_capacity(name: &str, value: &str) -> usize {
+    32 + 6 * (name.len() + value.len()) // `\u00XX` is the longest escape
+}
+
 fn error(status: u16, msg: &str) -> Reply {
     reply(status, serde_json::json!({ "error": msg }))
 }
@@ -159,13 +175,7 @@ impl Policy {
                 }
                 let name = name.to_uppercase();
                 match vault.get(&name) {
-                    Ok(v) => reply(
-                        200,
-                        Secret {
-                            name: &name,
-                            value: v.as_str(),
-                        },
-                    ),
+                    Ok(v) => secret(&name, v.as_str()),
                     Err(_) => error(404, "credential unavailable"),
                 }
             }
@@ -190,6 +200,15 @@ mod tests {
                 _ => Err("credential unavailable".into()), // sealed, ssh, missing
             }
         }
+    }
+
+    #[test]
+    fn the_secret_body_never_regrows() {
+        let value: String = (0u8..32).map(char::from).cycle().take(500).collect();
+        let r = secret("DB", &value);
+        assert_eq!(r.body.capacity(), secret_capacity("DB", &value));
+        let back: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(back["value"], value.as_str());
     }
 
     fn policy(list: bool, get: bool, per_min: u32) -> Policy {
