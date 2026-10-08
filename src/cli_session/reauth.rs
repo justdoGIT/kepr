@@ -154,12 +154,14 @@ pub fn cmd_reauth(args: &[&str]) -> Response {
 const USAGE: &str = "usage: kepr reauth KEY [--on|--off]";
 
 /// Flags this batch adds to core verbs, parsed by `cli_args.rs`.
-pub const FLAGS: &[&str] = &["--reauth"];
+pub const FLAGS: &[&str] = &["--reauth", "--pull"];
 
 #[derive(Debug, Default)]
 pub struct SessionFlags {
     /// `set --reauth` (T11.14).
     pub reauth: bool,
+    /// `exec --pull A,B` (T3.06), repeatable.
+    pub pull: Vec<String>,
 }
 
 impl SessionFlags {
@@ -167,6 +169,11 @@ impl SessionFlags {
     pub fn take(&mut self, raw: &[String], i: usize) -> Result<usize, String> {
         match raw[i].as_str() {
             "--reauth" => self.reauth = true,
+            "--pull" => {
+                let csv = raw.get(i + 1).ok_or("--pull needs NAME[,NAME…]")?;
+                self.pull.extend(super::pull::parse(csv)?);
+                return Ok(i + 2);
+            }
             other => return Err(format!("unknown flag: {other}")),
         }
         Ok(i + 1)

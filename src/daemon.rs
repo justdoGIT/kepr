@@ -384,6 +384,7 @@ fn handle_client(mut stream: UnixStream) {
     let username = username_for_uid(peer_uid);
     let response = daemon_dispatch::dispatch(peer_uid, peer_pid, &username, request);
     send_response(&mut stream, &response);
+    daemon_session::fetchfd::send_pending(&stream, &response); // T3.06
 }
 
 fn send_response(stream: &mut UnixStream, resp: &Response) {
