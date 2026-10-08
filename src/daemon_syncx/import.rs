@@ -25,7 +25,7 @@ use crate::daemon_handlers::{handle_set, SetFlags};
 use crate::expiry::now_unix;
 use crate::store::{cred_exists, validate_name};
 
-const ROUND_TIME: Duration = Duration::from_secs(4);
+pub(super) const ROUND_TIME: Duration = Duration::from_secs(4);
 
 pub struct Args<'a> {
     pub upload: &'a str,
@@ -54,6 +54,26 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
+/// Would the policy file (T6.11) let the caller `set` `name`?
+pub(super) fn set_allowed(
+    who: (u32, i32),
+    username: &str,
+    name: &str,
+    expires: Option<u64>,
+) -> bool {
+    let probe = Request::Set {
+        name: name.to_string(),
+        value: None,
+        generate: None,
+        ttl_secs: expires.map(|t| t.saturating_sub(now_unix())),
+        requires_consent: None,
+        requires_fido2: None,
+        sealed: None,
+        bindings: None,
+    };
+    crate::daemon_policy::enforce(who.0, who.1, username, &probe).is_none()
+}
+
 /// What importing `item` as `name` would do now. Caller holds the lock.
 fn plan(
     who: (u32, i32),
@@ -62,24 +82,10 @@ fn plan(
     overwrite: bool,
 ) -> (&'static str, Option<String>) {
     let uid = who.0;
-    let ttl = item
-        .meta
-        .expires_at_unix
-        .map(|t| t.saturating_sub(now_unix()));
-    if ttl == Some(0) {
+    if item.meta.expires_at_unix.is_some_and(|t| t <= now_unix()) {
         return ("skipped", Some("expired".into()));
     }
-    let probe = Request::Set {
-        name: name.to_string(),
-        value: None,
-        generate: None,
-        ttl_secs: ttl,
-        requires_consent: None,
-        requires_fido2: None,
-        sealed: None,
-        bindings: None,
-    };
-    if crate::daemon_policy::enforce(uid, who.1, username, &probe).is_some() {
+    if !set_allowed(who, username, name, item.meta.expires_at_unix) {
         return ("skipped", Some("denied by policy".into()));
     }
     if !cred_exists(uid, name) {
@@ -138,8 +144,9 @@ fn put_file(uid: u32, username: &str, name: &str, f: &File) -> Result<(), String
     Err(format!("attachment {} was not stored", f.file))
 }
 
-/// Write `item` as `name`. Returns notes on parts that didn't apply.
-fn apply(
+/// Write `item` as `name` (`fresh`: it doesn't exist yet). Returns notes
+/// on parts that didn't apply. Caller holds the credential's lock.
+pub(super) fn apply(
     uid: u32,
     username: &str,
     name: &str,

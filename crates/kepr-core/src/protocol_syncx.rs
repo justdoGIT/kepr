@@ -57,6 +57,20 @@ pub enum SyncxRequest {
         #[serde(default)]
         start: u32,
     },
+    /// T6.10: this device's id (its bundle's name on a sync remote) and
+    /// how many devices are enrolled.
+    SyncDevice,
+    /// T6.10: record local changes and build this device's sync bundle
+    /// for every enrolled device; replies `BundleReady`, fetched with
+    /// `ExportChunk`.
+    SyncBuild,
+    /// T6.10: merge another device's bundle, uploaded with `ImportPut`,
+    /// from entry `start` on (last writer wins); replies `BundleImported`.
+    SyncMerge {
+        upload: String,
+        #[serde(default)]
+        start: u32,
+    },
 }
 
 impl From<SyncxRequest> for crate::protocol::Request {
@@ -98,6 +112,18 @@ pub enum SyncxResponse {
         unchanged: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next: Option<u32>,
+    },
+    /// T6.10: this device's id and the number of enrolled devices.
+    SyncDeviceOk { device: String, devices: u32 },
+    /// T6.10 (CLI-local): `kepr sync remote add|ls|rm`.
+    SyncRemotes { remotes: Vec<String> },
+    /// T6.10 (CLI-local): `kepr sync now`: what the merges changed, and
+    /// the bundles left alone (`REMOTE NAME: why`, e.g. an unknown device).
+    SyncDone {
+        device: String,
+        rows: Vec<BundleRow>,
+        unchanged: u32,
+        ignored: Vec<String>,
     },
 }
 
@@ -189,6 +215,15 @@ mod tests {
             },
             "import_bundle",
         );
+        req_round_trip(SyncxRequest::SyncDevice, "sync_device");
+        req_round_trip(SyncxRequest::SyncBuild, "sync_build");
+        req_round_trip(
+            SyncxRequest::SyncMerge {
+                upload: "ab".into(),
+                start: 0,
+            },
+            "sync_merge",
+        );
     }
 
     #[test]
@@ -256,6 +291,19 @@ mod tests {
             }],
             unchanged: 4,
             next: Some(9),
+        });
+        round_trip(SyncxResponse::SyncDeviceOk {
+            device: "0a1b2c3d".into(),
+            devices: 2,
+        });
+        round_trip(SyncxResponse::SyncRemotes {
+            remotes: vec!["dir:/x".into()],
+        });
+        round_trip(SyncxResponse::SyncDone {
+            device: "0a1b2c3d".into(),
+            rows: vec![],
+            unchanged: 1,
+            ignored: vec!["dir:/x ffffffff.bundle: from an unknown device".into()],
         });
     }
 }

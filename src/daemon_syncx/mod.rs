@@ -5,10 +5,16 @@
 //   export     T6.09 ExportBundle: every credential `get` could read now
 //   import     T6.09 ImportBundle: create / update / skip, per credential
 //   transfer   T6.09 chunked transfer of bundles (64 KiB frames)
+//   device_bundle  T6.10 sync bundles: to every enrolled device, MAC'd
+//   sync_state     T6.10 last writer per credential, tombstones
+//   sync_merge     T6.10 SyncDevice / SyncBuild / SyncMerge
 
 mod bundle;
+mod device_bundle;
 mod export;
 mod import;
+mod sync_merge;
+mod sync_state;
 mod transfer;
 
 use kepr_core::protocol::Response;
@@ -76,5 +82,10 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: SyncxRequest) -> Res
                 start,
             },
         ),
+        SyncxRequest::SyncDevice => sync_merge::handle_device(uid),
+        SyncxRequest::SyncBuild => sync_merge::handle_build(who, username),
+        SyncxRequest::SyncMerge { upload, start } => {
+            sync_merge::handle_merge(who, username, &upload, start)
+        }
     }
 }

@@ -28,7 +28,7 @@ const EXPORT_USAGE: &str = "usage: kepr export --encrypted -o FILE";
 
 /// One request, retried while the daemon's rate limit refuses it (a big
 /// bundle takes many chunks).
-fn send(req: SyncxRequest) -> Result<Response, String> {
+pub(super) fn send(req: SyncxRequest) -> Result<Response, String> {
     let req = Request::from(req);
     for _ in 0..50 {
         match client::send_request(&req)? {
@@ -59,7 +59,7 @@ fn out_path(file: &str) -> PathBuf {
     }
 }
 
-fn fetch(id: &str, chunks: u32) -> Result<Vec<u8>, String> {
+pub(super) fn fetch(id: &str, chunks: u32) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     for index in 0..chunks {
         let req = SyncxRequest::ExportChunk {
@@ -122,7 +122,7 @@ pub fn cmd_export(args: &[String]) -> Response {
     r.unwrap_or_else(Response::fail)
 }
 
-fn upload(bytes: &[u8]) -> Result<String, String> {
+pub(super) fn upload(bytes: &[u8]) -> Result<String, String> {
     let parts: Vec<&[u8]> = match bytes.len() {
         0 => vec![&[]],
         _ => bytes.chunks(BUNDLE_CHUNK_BYTES).collect(),
@@ -143,11 +143,11 @@ fn upload(bytes: &[u8]) -> Result<String, String> {
     upload.ok_or_else(|| "nothing was uploaded".into())
 }
 
-fn print_row(r: &BundleRow) {
+pub(super) fn print_row(r: &BundleRow) {
     let why = r.reason.as_deref().map(|w| format!("  ({w})"));
     let line = format!("{:<9}  {}{}", r.change, r.name, why.unwrap_or_default());
     match r.change.as_str() {
-        "create" | "update" => println!("{line}"),
+        "create" | "update" | "delete" => println!("{line}"),
         _ => cli_ui::warn(&line),
     }
 }

@@ -80,6 +80,17 @@ pub(super) fn readable(
     Ok(meta)
 }
 
+/// The `.meta` fields a bundle carries.
+pub(super) fn item_meta(meta: &CredMeta) -> ItemMeta {
+    ItemMeta {
+        record_type: meta.record_type.clone(),
+        tags: meta.tags.clone(),
+        folder: meta.folder.clone(),
+        expires_at_unix: meta.expires_at_unix,
+        requires_reauth: meta.requires_reauth,
+    }
+}
+
 /// An attachment's bytes as base64: its stored chunks' base64, joined
 /// (every chunk but the last is a multiple of 3 bytes, so the joined
 /// text is the whole file's base64).
@@ -122,13 +133,7 @@ fn read_item(
     let mut item = Item {
         name: upper.to_string(),
         value,
-        meta: ItemMeta {
-            record_type: meta.record_type.clone(),
-            tags: meta.tags.clone(),
-            folder: meta.folder.clone(),
-            expires_at_unix: meta.expires_at_unix,
-            requires_reauth: meta.requires_reauth,
-        },
+        meta: item_meta(&meta),
         history: crate::daemon_history::export_versions(uid, upper),
         files: Vec::new(),
     };

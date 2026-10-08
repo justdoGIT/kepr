@@ -9,6 +9,9 @@
 //   import      T11.17 kepr sync import --from SRC [--prefix P]
 //   bundle      T6.09  kepr export --encrypted -o FILE; kepr import FILE
 //                      (cli_import.rs hands a bundle file over here)
+//   sync_now    T6.10  kepr sync remote add|ls|rm, kepr sync now
+//   transport,  T6.10  where device bundles live: dir:, git:, s3:
+//   s3
 //
 // Sync is client-side: the daemon never sees a cloud token and the
 // cloud never sees kepr's master key. Sealed, SSH and share-key
@@ -24,8 +27,11 @@ mod bundle;
 mod import;
 pub mod json_file;
 mod map;
+mod s3;
+mod sync_now;
 #[cfg(test)]
 mod testserver;
+mod transport;
 
 use kepr_core::protocol::Response;
 
@@ -54,6 +60,11 @@ pub const HELP: &str = "\
                                        SSH and gated ones are listed by name only
   import BUNDLE [--prefix P] [--overwrite] [--yes]
                                        open a bundle: create / update / unchanged per credential
+  sync remote add|rm URL | sync remote ls
+                                       where devices meet: dir:PATH, git:URL (git CLI) or
+                                       s3:BUCKET[/PREFIX] (AWS_* env; KEPR_S3_ENDPOINT)
+  sync now [--remote URL]              merge the other enrolled devices' bundles (newest change
+                                       wins), then push this device's, encrypted to them
 ";
 
 /// Refuse flags a subcommand doesn't know: a typo like `--dryrun` must
@@ -94,7 +105,11 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
             &["--seal", "--overwrite", "--yes"],
         )
         .map(|()| import::cmd_import(rest)),
-        _ => Err("usage: kepr sync push --map FILE [--dry-run] | sync import --from SRC".into()),
+        Some("remote") => Ok(sync_now::cmd_remote(rest)),
+        Some("now") => check_flags(rest, &["--remote"], &[]).map(|()| sync_now::cmd_now(rest)),
+        _ => Err("usage: kepr sync push --map FILE [--dry-run] | sync import --from SRC \
+                  | sync remote add|ls|rm | sync now"
+            .into()),
     };
     r.unwrap_or_else(Response::fail)
 }
