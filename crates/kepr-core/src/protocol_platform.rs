@@ -13,6 +13,13 @@ pub enum PlatformResponse {
     /// T10.06 (CLI only): `kepr systemd-cred` — the `SetCredentialEncrypted=`
     /// line for a unit file (ciphertext, safe to print).
     SystemdCredOk { name: String, line: String },
+    /// T10.05 (CLI only): `kepr keyring add` — the new logon key's serial.
+    KeyringAdded {
+        name: String,
+        desc: String,
+        keyring: String,
+        serial: i32,
+    },
 }
 
 #[cfg(test)]
@@ -40,6 +47,18 @@ mod tests {
             }
             other => panic!("decoded as {other:?}"),
         }
+    }
+
+    #[test]
+    fn keyring_added_round_trips() {
+        let added = PlatformResponse::KeyringAdded {
+            name: "VOL".into(),
+            desc: "cryptsetup:vol".into(),
+            keyring: "@u".into(),
+            serial: 42,
+        };
+        let back = round_trip(Response::Platform(added.clone()));
+        assert!(matches!(back, Response::Platform(p) if p == added));
     }
 
     #[test]
