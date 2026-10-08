@@ -3,11 +3,13 @@
 //
 //   sts        STS / Query-API client on kepr_core::sigv4_req (T7.06)
 //   session    `aws:<NAME>` gate routes and the placeholder pair (T2.02)
+//   credproc   `kepr aws credential-process` (T2.03)
 //
 // Network calls to providers happen here, in the user's CLI process: the
 // root daemon's unit has no TCP. Values reach the store only through the
 // normal `set` path.
 
+pub mod credproc;
 pub mod session;
 pub mod sts;
 
@@ -25,6 +27,10 @@ pub const VERBS: &[&str] = &["aws"];
 pub const HELP: &str = "\
   aws whoami KEY [--region R]          which AWS account and principal the stored key KEY is
                                        (STS GetCallerIdentity; KEY holds {access_key_id,...})
+  aws credential-process KEY [--duration SECS] [--region R] [--role-arn ARN]
+                                       for ~/.aws/config `credential_process`: STS temporary
+                                       credentials (900-43200 s); inside `kepr agent run` the
+                                       session's placeholder pair. Never the long-lived key
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -35,7 +41,8 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         .collect();
     match (verb, args.first().copied()) {
         ("aws", Some("whoami")) => cmd_whoami(&args[1..]),
-        _ => Response::fail(format!("usage: kepr aws whoami KEY\n{HELP}")),
+        ("aws", Some("credential-process")) => credproc::cmd(&args[1..]),
+        _ => Response::fail(format!("usage:\n{HELP}")),
     }
 }
 
