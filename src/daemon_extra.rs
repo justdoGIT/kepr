@@ -109,6 +109,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
         // batch: eco
         Request::Eco(r) => crate::daemon_eco::dispatch(uid, peer_pid, username, r),
         // batch: platform
+        Request::Platform(r) => crate::daemon_platform::dispatch(uid, peer_pid, username, r),
         // batch: session
         Request::Session(r) => crate::daemon_session::dispatch(uid, peer_pid, username, r),
         // end of batches

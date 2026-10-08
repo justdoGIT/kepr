@@ -70,6 +70,7 @@ mod daemon_gatex;
 // batch: eco
 mod daemon_eco;
 // batch: platform
+mod daemon_platform;
 // batch: session
 mod daemon_session;
 // end of batches

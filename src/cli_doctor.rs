@@ -232,7 +232,8 @@ pub fn production_checks() -> Vec<Box<dyn Diagnostic>> {
 /// `--json` flag works the same way as for `kepr check`.
 pub fn cmd_doctor(json: bool) -> Response {
     let report = run(&production_checks());
-    let hardening = crate::cli_doctor_hardening::report();
+    let mut hardening = crate::cli_doctor_hardening::report();
+    hardening.push(crate::cli_platform::fingerprint::finding()); // T10.03
     if !json {
         print!("{}", report.render_text());
         print!("{}", crate::cli_doctor_hardening::render(&hardening));

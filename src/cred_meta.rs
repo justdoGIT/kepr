@@ -92,6 +92,10 @@ pub struct CredMeta {
     // batch: aws
     // batch: eco
     // batch: platform
+    /// T10.09: identities (`kepr_core::exe_digest`) of the executables
+    /// allowed to read the value through `Get`. Kept across `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub exe_digests: Option<Vec<String>>,
     // batch: session
     /// T11.14: `get` / `copy` / `record show --reveal` need the store
     /// passphrase again (a 60 s window per credential). Kept across `set`;

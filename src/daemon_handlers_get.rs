@@ -36,7 +36,8 @@ pub(crate) fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result
         Ok(m) => m,
         Err(e) => return Err(format!("meta parse: {e}")),
     };
-    // T11.14 (batch: session): is a re-auth window open for it?
+    crate::daemon_platform::exe::gate(&meta, peer_pid)?; // T10.09 (batch: platform)
+                                                         // T11.14 (batch: session): is a re-auth window open for it?
     let reauth_open = crate::daemon_session::reauth::window_open(uid, name_upper);
     meta_gate(&meta, expiry::now_unix(), reauth_open, || {
         crate::daemon_policy::consent(uid, peer_pid, name_upper, &meta) // T9.04

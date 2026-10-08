@@ -161,7 +161,8 @@ pub fn cmd_set(a: &Args) -> Response {
         sealed: None,
         bindings: None,
     };
-    let resp = crate::cli_session::reauth::after_set(a, dispatch(a, &req));
+    let resp = crate::cli_platform::exe::after_set(a, dispatch(a, &req)); // T10.09
+    let resp = crate::cli_session::reauth::after_set(a, resp);
 
     match &resp {
         Response::SetOk {
@@ -438,6 +439,9 @@ pub fn cmd_lock(a: &Args) -> Response {
 }
 
 pub fn cmd_unlock(a: &Args) -> Response {
+    if let Some(r) = crate::cli_platform::fingerprint::cmd_unlock(a) {
+        return r; // T10.03
+    }
     // T4.09: with the security key's factor when the store has one.
     let password = match crate::cli_seal::fido2::store_passphrase("  Unlock password: ") {
         Ok(p) => p,

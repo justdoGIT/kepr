@@ -49,6 +49,15 @@ impl Args {
             .map(|(_, v)| v.as_str())
     }
 
+    /// Every value given for `flag`, in order.
+    pub fn values(&self, flag: &str) -> Vec<&str> {
+        self.values
+            .iter()
+            .filter(|(f, _)| f == flag)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
     pub fn has(&self, switch: &str) -> bool {
         self.switches.iter().any(|s| s == switch)
     }
@@ -74,6 +83,7 @@ mod tests {
         .unwrap();
         assert_eq!(a.positional, ["X"]);
         assert_eq!(a.value("--name"), Some("c"));
+        assert_eq!(a.values("--name"), ["a", "c"]);
         assert_eq!(a.value("--file"), Some("c=d"));
         assert!(a.has("--tpm2"));
         assert!(!a.has("--json"));

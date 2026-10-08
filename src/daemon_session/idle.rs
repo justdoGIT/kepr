@@ -118,7 +118,7 @@ pub fn spawn(owner_uid: u32) {
             password_protected: crate::protected_master_key_path().exists(),
         };
         if timer.tick(now_secs(), state) {
-            let (_, locked) = crate::daemon_gate_registry::panic_now(owner_uid);
+            let (_, locked) = crate::daemon_platform::fingerprint::soft_lock(owner_uid);
             crate::daemon_session::audit_op(
                 "idle-lock",
                 None,
