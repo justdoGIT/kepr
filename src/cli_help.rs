@@ -49,8 +49,9 @@ COMMANDS:
   recovery-kit create [--threshold K] [--shares N] [--out-dir DIR]
                                        split the master key into K-of-N shares (needs the passphrase)
   recovery-kit restore                 rebuild a lost master key from K shares, under a new passphrase
-  leaked KEY [--yes]                   key exposed: stop agent sessions, delete it + history, log an
-                                       incident, show where to revoke it at the provider
+  leaked KEY [--yes] [--rotate]        key exposed: stop agent sessions, delete it + history, log an
+                                       incident, show where to revoke it at the provider; --rotate:
+                                       replace an AWS IAM key through the IAM API instead
   totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
   inject -i TEMPLATE [-o OUT]          fill kepr:// references (OUT 0600): NAME, NAME/field[i][sub],
                                        NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape)

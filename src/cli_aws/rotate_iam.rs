@@ -94,7 +94,7 @@ fn create_verified(r: &Rotation, old: &AwsKey) -> Result<AwsKey, String> {
         Err(e) => format!("deleting it failed too ({e}): delete it in the IAM console"),
     };
     Err(format!(
-        "the new key {} did not verify ({why}); {cleanup}. The stored key is unchanged",
+        "the new key {} did not verify ({why}); {cleanup}",
         short(&new.access_key_id)
     ))
 }
@@ -151,32 +151,45 @@ fn store_key(name: &str, key: &AwsKey) -> Result<Response, String> {
     }
 }
 
+/// Rotate `old` in production (IAM, STS, the daemon's `set NAME`).
+/// `Ok` carries the daemon's `SetOk`; `Err` says whether the new key
+/// reached the store before the failure.
+pub fn run(name: &str, old: &AwsKey) -> Result<(Rotated, Response), (String, bool)> {
+    let human = !crate::cli_ui::json_mode();
+    let sts_ep = super::sts_endpoint(None).map_err(|e| (e, false))?;
+    let pause = |n: u32| {
+        if human && n == 2 {
+            crate::cli_ui::dim("  waiting for AWS to accept the new key…");
+        }
+        std::thread::sleep(std::time::Duration::from_secs(u64::from((n * 2).min(6))));
+    };
+    let r = Rotation {
+        iam: Endpoint::iam(),
+        sts: sts_ep,
+        now: &sts::now_secs,
+        pause: &pause,
+        attempts: 10,
+    };
+    let mut stored = None;
+    let out = rotate(&r, old, &mut |k| {
+        stored = Some(store_key(name, k)?);
+        Ok(())
+    });
+    match (out, stored) {
+        (Ok(done), Some(resp)) => Ok((done, resp)),
+        (Ok(_), None) => Err(("rotation finished without storing the key".into(), false)),
+        (Err(e), s) => Err((e, s.is_some())),
+    }
+}
+
 pub fn cmd(name: &str) -> Response {
     let name = name.to_uppercase();
     let human = !crate::cli_ui::json_mode();
-    let mut stored = None;
-    let result = super::sts_endpoint(None).and_then(|sts_ep| {
-        let old = super::load_key(&name, &DaemonFetcher)?;
-        let pause = |n: u32| {
-            if human && n == 2 {
-                crate::cli_ui::dim("  waiting for AWS to accept the new key…");
-            }
-            std::thread::sleep(std::time::Duration::from_secs(u64::from((n * 2).min(6))));
-        };
-        let r = Rotation {
-            iam: Endpoint::iam(),
-            sts: sts_ep,
-            now: &sts::now_secs,
-            pause: &pause,
-            attempts: 10,
-        };
-        rotate(&r, &old, &mut |k| {
-            stored = Some(store_key(&name, k)?);
-            Ok(())
-        })
-    });
-    match (result, stored) {
-        (Ok(done), Some(resp)) => {
+    let result = super::load_key(&name, &DaemonFetcher)
+        .map_err(|e| (e, false))
+        .and_then(|old| run(&name, &old));
+    match result {
+        Ok((done, resp)) => {
             if human {
                 crate::cli_ui::ok(&format!(
                     "{name} rotated: new key {} verified and stored; old key {} deleted.",
@@ -186,8 +199,12 @@ pub fn cmd(name: &str) -> Response {
             }
             resp
         }
-        (Ok(_), None) => Response::fail("rotation finished without storing the key"),
-        (Err(e), _) => {
+        Err((e, stored)) => {
+            let e = if stored {
+                e
+            } else {
+                format!("{e} ({name} keeps its old key)")
+            };
             if human {
                 crate::cli_ui::err(&e);
             }
@@ -338,7 +355,7 @@ mod tests {
         );
         let e = out.unwrap_err();
         assert!(
-            e.contains("did not verify") && e.contains("unchanged"),
+            e.contains("did not verify") && e.contains("deleted again"),
             "{e}"
         );
         assert!(stored.is_none(), "the store keeps the old key");

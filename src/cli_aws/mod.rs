@@ -7,6 +7,7 @@
 //   iam        IAM Query API: list / create / delete access keys (T7.05)
 //   rotate_iam `kepr rotate NAME --aws-iam` (T7.05)
 //   flags      this batch's flags on the core `rotate` verb
+//   leaked     `kepr leaked NAME --rotate`: provider-API rotation (T9.09)
 //
 // Network calls to providers happen here, in the user's CLI process: the
 // root daemon's unit has no TCP. Values reach the store only through the
@@ -15,6 +16,7 @@
 pub mod credproc;
 pub mod flags;
 pub mod iam;
+pub mod leaked;
 pub mod rotate_iam;
 pub mod session;
 pub mod sts;
