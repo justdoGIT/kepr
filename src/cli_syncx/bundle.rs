@@ -51,7 +51,7 @@ pub fn is_bundle(file: &str) -> bool {
 }
 
 /// A bare file name has an empty parent: the current directory.
-fn out_path(file: &str) -> PathBuf {
+pub(super) fn out_path(file: &str) -> PathBuf {
     let p = PathBuf::from(file);
     match p.parent() {
         Some(d) if d.as_os_str().is_empty() => PathBuf::from(".").join(p),
@@ -154,6 +154,16 @@ pub(super) fn print_row(r: &BundleRow) {
 
 /// `kepr import FILE` for a bundle file.
 pub fn cmd_import(file: &str, o: &Opts) -> Response {
+    // T6.02: a shared-folder bundle opens with the share key instead.
+    if let Some(bytes) = std::fs::read(file)
+        .ok()
+        .filter(|b| super::folder::is_folder(b))
+    {
+        if o.seal || o.prefix.is_some() {
+            return Response::fail("--seal and --prefix do not apply to a folder bundle");
+        }
+        return super::folder::import_bytes(&bytes, o.overwrite, o.yes);
+    }
     let r = (|| {
         if o.seal {
             return Err("--seal does not apply to a bundle".to_string());

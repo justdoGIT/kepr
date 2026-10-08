@@ -71,6 +71,28 @@ pub enum SyncxRequest {
         #[serde(default)]
         start: u32,
     },
+    /// T6.02: seal every credential of `folder` (and below) that `get`
+    /// could read now for `recipients` (pinned contact names or share
+    /// keys); `sealed`: importers store them sealed. Replies
+    /// `BundleReady`, fetched with `ExportChunk`.
+    FolderExport {
+        folder: String,
+        recipients: Vec<String>,
+        #[serde(default)]
+        sealed: bool,
+    },
+    /// T6.02: open a folder bundle uploaded with `ImportPut` (from a
+    /// pinned contact, signature checked) and import its credentials from
+    /// `start` on (`apply: false`: only report). Replies `FolderImported`.
+    FolderImport {
+        upload: String,
+        #[serde(default)]
+        overwrite: bool,
+        #[serde(default)]
+        apply: bool,
+        #[serde(default)]
+        start: u32,
+    },
 }
 
 impl From<SyncxRequest> for crate::protocol::Request {
@@ -115,6 +137,18 @@ pub enum SyncxResponse {
     },
     /// T6.10: this device's id and the number of enrolled devices.
     SyncDeviceOk { device: String, devices: u32 },
+    /// T6.02: one round of a folder import: who sent it, the folder, and
+    /// whether its credentials are stored sealed; as `BundleImported`.
+    FolderImported {
+        from: String,
+        folder: String,
+        sealed: bool,
+        applied: bool,
+        rows: Vec<BundleRow>,
+        unchanged: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<u32>,
+    },
     /// T6.10 (CLI-local): `kepr sync remote add|ls|rm`.
     SyncRemotes { remotes: Vec<String> },
     /// T6.10 (CLI-local): `kepr sync now`: what the merges changed, and
@@ -224,6 +258,23 @@ mod tests {
             },
             "sync_merge",
         );
+        req_round_trip(
+            SyncxRequest::FolderExport {
+                folder: "team".into(),
+                recipients: vec!["bob".into()],
+                sealed: true,
+            },
+            "folder_export",
+        );
+        req_round_trip(
+            SyncxRequest::FolderImport {
+                upload: "ab".into(),
+                overwrite: false,
+                apply: true,
+                start: 0,
+            },
+            "folder_import",
+        );
     }
 
     #[test]
@@ -295,6 +346,15 @@ mod tests {
         round_trip(SyncxResponse::SyncDeviceOk {
             device: "0a1b2c3d".into(),
             devices: 2,
+        });
+        round_trip(SyncxResponse::FolderImported {
+            from: "alice".into(),
+            folder: "team".into(),
+            sealed: false,
+            applied: true,
+            rows: vec![],
+            unchanged: 2,
+            next: None,
         });
         round_trip(SyncxResponse::SyncRemotes {
             remotes: vec!["dir:/x".into()],

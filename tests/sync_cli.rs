@@ -146,3 +146,39 @@ fn two_devices_sync_through_a_directory() {
     ok(&a, &["sync", "remote", "rm", &url]);
     assert!(!kepr(&a, &["sync", "now"]).status.success());
 }
+
+#[test]
+fn a_folder_shared_with_a_pinned_contact() {
+    let (a, b) = (start(), start());
+    let key_a = ok(&a, &["share", "key"]).trim().to_string();
+    let key_b = ok(&b, &["share", "key"]).trim().to_string();
+    ok(&a, &["share", "contact", "add", "bob", &key_b]);
+    ok(&a, &["set", "TEAM_TOKEN", "--value", "team-value"]);
+    ok(&a, &["set", "SOLO_TOKEN", "--value", "solo-value"]);
+    ok(&a, &["mv", "TEAM_TOKEN", "team"]);
+    let file = a.home.path().join("team.bundle");
+    let f = file.to_str().unwrap();
+    ok(&a, &["folder", "share", "team", "--to", "bob", "-o", f]);
+    let text = String::from_utf8_lossy(&std::fs::read(&file).unwrap()).into_owned();
+    assert!(text.contains("TEAM_TOKEN") && !text.contains("team-value") && !text.contains("SOLO"));
+
+    // Not pinned yet: refused. Pinned: a plan, then the import.
+    let o = kepr(&b, &["folder", "import", f, "--yes"]);
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("pinned"),
+        "{o:?}"
+    );
+    ok(&b, &["share", "contact", "add", "alice", &key_a]);
+    assert!(ok(&b, &["import", f]).contains("create"));
+    assert_eq!(get(&b, "TEAM_TOKEN"), None);
+    ok(&b, &["folder", "import", f, "--yes"]);
+    assert_eq!(get(&b, "TEAM_TOKEN").as_deref(), Some("team-value"));
+    assert_eq!(get(&b, "SOLO_TOKEN"), None);
+    let again = ok(&b, &["--json", "folder", "import", f, "--yes"]);
+    let v: serde_json::Value = serde_json::from_str(&again).unwrap();
+    assert_eq!(
+        (v["from"].as_str(), v["unchanged"].as_u64()),
+        (Some("alice"), Some(1)),
+        "{again}"
+    );
+}

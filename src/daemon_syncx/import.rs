@@ -37,7 +37,7 @@ pub struct Args<'a> {
 }
 
 /// The local name of bundle entry `name`.
-fn local_name(prefix: Option<&str>, name: &str) -> Result<String, String> {
+pub(super) fn local_name(prefix: Option<&str>, name: &str) -> Result<String, String> {
     let n = match prefix {
         Some(p) => format!("{}_{name}", p.to_uppercase()),
         None => name.to_uppercase(),
@@ -201,7 +201,7 @@ pub(super) fn apply(
     Ok(notes)
 }
 
-fn row(name: &str, change: &str, reason: Option<String>) -> BundleRow {
+pub(super) fn row(name: &str, change: &str, reason: Option<String>) -> BundleRow {
     BundleRow {
         name: name.to_string(),
         change: change.to_string(),

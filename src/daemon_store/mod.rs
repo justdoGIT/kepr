@@ -24,6 +24,8 @@ pub use alias::infos as alias_infos;
 pub use alias::resolve as resolve_alias;
 /// `handle_set` hook: keep tags / folder across a value replacement.
 pub use organize::carry_over;
+/// T6.02 (sync batch): `kepr folder share FOLDER` reads folders the same way.
+pub use organize::normalize_folder;
 /// `Request::Delete`: into the trash (T11.2).
 pub use trash::handle_rm;
 /// The expiry sweeper's hook: purge old trash entries.

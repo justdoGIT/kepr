@@ -8,10 +8,16 @@
 //   device_bundle  T6.10 sync bundles: to every enrolled device, MAC'd
 //   sync_state     T6.10 last writer per credential, tombstones
 //   sync_merge     T6.10 SyncDevice / SyncBuild / SyncMerge
+//   folder_bundle  T6.02 shared-folder bundles: folder key, signed manifest
+//   folder         T6.02 FolderExport
+//   folder_import  T6.02 FolderImport: pinned sender, changed values only
 
 mod bundle;
 mod device_bundle;
 mod export;
+mod folder;
+mod folder_bundle;
+mod folder_import;
 mod import;
 mod sync_merge;
 mod sync_state;
@@ -87,5 +93,25 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: SyncxRequest) -> Res
         SyncxRequest::SyncMerge { upload, start } => {
             sync_merge::handle_merge(who, username, &upload, start)
         }
+        SyncxRequest::FolderExport {
+            folder,
+            recipients,
+            sealed,
+        } => folder::handle_export(who, username, &folder, &recipients, sealed),
+        SyncxRequest::FolderImport {
+            upload,
+            overwrite,
+            apply,
+            start,
+        } => folder_import::handle_import(
+            who,
+            username,
+            folder_import::ImportArgs {
+                upload: &upload,
+                overwrite,
+                apply,
+                start,
+            },
+        ),
     }
 }
