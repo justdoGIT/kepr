@@ -113,6 +113,10 @@ pub struct CredMeta {
     pub jit: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub grants: Option<Vec<kepr_core::protocol_aws::Grant>>,
+    /// T7.11: `kepr checkout` holds the credential: one holder at a
+    /// time, and only they can check it back in. Dropped by `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub checkout: Option<kepr_core::protocol_aws::Hold>,
     // batch: eco
     // batch: platform
     /// T10.09: identities (`kepr_core::exe_digest`) of the executables

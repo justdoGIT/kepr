@@ -150,21 +150,21 @@ fn run_hook(upper: &str, kind: &str, path: &str) -> Response {
 }
 
 /// `kepr rotate NAME --scheduled`: run the rotator its schedule names.
+/// Quiet on failure, so a caller can say what the failure means to it
+/// (`kepr checkin --rotate`: the credential stays checked out).
 pub fn run_scheduled(name: &str) -> Response {
     let upper = name.to_uppercase();
     let via = match scheduled_via(&upper) {
         Ok(v) => v,
-        Err(e) => return shout(Response::fail(e)),
+        Err(e) => return Response::fail(e),
     };
     match via.as_str() {
         "aws-iam" => super::rotate_iam::cmd(&upper),
-        "db" => shout(crate::cli_agent_db_rotate::cmd_rotate_db(&[upper])),
-        _ => shout(
-            match via.strip_prefix("hook:").and_then(|r| r.split_once(':')) {
-                Some((kind, path)) => run_hook(&upper, kind, path),
-                None => Response::fail("unknown rotation in the schedule"),
-            },
-        ),
+        "db" => crate::cli_agent_db_rotate::cmd_rotate_db(&[upper]),
+        _ => match via.strip_prefix("hook:").and_then(|r| r.split_once(':')) {
+            Some((kind, path)) => run_hook(&upper, kind, path),
+            None => Response::fail("unknown rotation in the schedule"),
+        },
     }
 }
 
@@ -187,7 +187,13 @@ pub fn list_tail(c: &CredInfo) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    format!("{}{}", tail_at(c, now), super::grant::list_tail(c)) // T7.10
+    // T7.10, T7.11
+    format!(
+        "{}{}{}",
+        tail_at(c, now),
+        super::grant::list_tail(c),
+        super::checkout::list_tail(c)
+    )
 }
 
 #[cfg(test)]

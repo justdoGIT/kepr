@@ -5,7 +5,9 @@
 //                  sweeper hook, `set` carry-over, `kepr list` fields
 //   grant          just-in-time grants (T7.10): the window a sealed
 //                  credential resolves in, checked by daemon_gate.rs
+//   checkout       check-out / check-in (T7.11): one holder at a time
 
+pub mod checkout;
 pub mod grant;
 pub mod rotate_sched;
 
@@ -23,6 +25,14 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: AwsRequest) -
             via,
         } => rotate_sched::handle_schedule(uid, username, &name, every_secs, via.as_deref()),
         AwsRequest::AwsGrant { name, op } => grant::handle_grant(uid, username, &name, op),
+        AwsRequest::AwsCheckout { name, for_secs } => {
+            checkout::handle_checkout(uid, username, &name, for_secs)
+        }
+        AwsRequest::AwsCheckin {
+            name,
+            token,
+            rotated,
+        } => checkout::handle_checkin(uid, username, &name, &token, rotated),
     }
 }
 
@@ -49,6 +59,9 @@ pub(crate) fn audit_op(
 /// Sweeper hook (daemon_expiry.rs).
 pub fn sweep(now: u64) {
     rotate_sched::sweep(now);
+    if crate::user_mode() {
+        checkout::sweep(crate::daemon_socket::effective_uid(), now); // T7.11
+    }
 }
 
 /// `handle_set` hook: keep the rotation schedule and the just-in-time
@@ -56,6 +69,7 @@ pub fn sweep(now: u64) {
 pub fn carry_over(uid: u32, upper: &str, meta: &mut CredMeta) {
     rotate_sched::carry_over(uid, upper, meta, crate::expiry::now_unix());
     grant::carry_over(uid, upper, meta);
+    checkout::carry_over(uid, upper, meta);
 }
 
 /// `handle_list` hook: the batch's `CredInfo` fields from the `.meta`.
@@ -70,6 +84,8 @@ pub fn info(m: Option<&CredMeta>) -> CredInfo {
         rotate_failures: m.rotate_failures,
         jit: m.jit,
         grants: m.grants.clone(),
+        held_by_uid: m.checkout.as_ref().map(|h| h.uid),
+        held_until: m.checkout.as_ref().map(|h| h.until),
         ..CredInfo::default()
     }
 }
@@ -87,6 +103,11 @@ mod tests {
             rotate_next_at: Some(9),
             rotate_failures: Some(2),
             jit: Some(true),
+            checkout: Some(kepr_core::protocol_aws::Hold {
+                uid: 7,
+                token_sha256: "deadbeef".into(),
+                until: 99,
+            }),
             sealed: Some(true),
             ..Default::default()
         };
@@ -100,7 +121,13 @@ mod tests {
             ),
             (Some(3600), Some("db"), Some(9), Some(2))
         );
-        assert_eq!((c.jit, c.grants), (Some(true), None));
+        assert_eq!((c.jit, c.grants.as_ref()), (Some(true), None));
+        assert_eq!((c.held_by_uid, c.held_until), (Some(7), Some(99)));
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(
+            !json.contains("deadbeef") && json.contains("held_by_uid"),
+            "{json}"
+        );
         assert_eq!(c.sealed, None);
     }
 }

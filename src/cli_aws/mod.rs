@@ -12,11 +12,13 @@
 //   github_app `kepr github-app add`: sealed GitHub App keys (T7.08)
 //   presets    npm / docker files for agent sessions (T2.04)
 //   grant      `kepr grant`: just-in-time windows for sealed keys (T7.10)
+//   checkout   `kepr checkout` / `kepr checkin`: one holder (T7.11)
 //
 // Network calls to providers happen here, in the user's CLI process: the
 // root daemon's unit has no TCP. Values reach the store only through the
 // normal `set` path.
 
+pub mod checkout;
 pub mod credproc;
 pub mod flags;
 pub mod github_app;
@@ -41,7 +43,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::cli_exec::{CredFetcher, DaemonFetcher};
 
-pub const VERBS: &[&str] = &["aws", "github-app", "grant"];
+pub const VERBS: &[&str] = &["aws", "github-app", "grant", "checkout", "checkin"];
 
 pub const HELP: &str = "\
   aws whoami KEY [--region R]          which AWS account and principal the stored key KEY is
@@ -64,6 +66,10 @@ pub const HELP: &str = "\
                                        for a window; outside every window none can (just-in-time)
   grant KEY --revoke [--to HARNESS]    close the windows now
   grant KEY --jit on|off               ask for grants at all (`kepr grant KEY` shows the state)
+  checkout KEY [--for 2h]              take KEY: a second checkout is refused until the hold
+                                       runs out, and the printed token is what checks it back in
+  checkin KEY [--token T] [--rotate]   give KEY back (--rotate rotates it first, and keeps the
+                                       hold if that fails)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -77,6 +83,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         ("aws", Some("credential-process")) => credproc::cmd(&args[1..]),
         ("github-app", _) => github_app::cmd(&args),
         ("grant", _) => grant::cmd(&args),
+        (v @ ("checkout" | "checkin"), _) => checkout::cmd(v, &args),
         _ => Response::fail(format!("usage:\n{HELP}")),
     }
 }

@@ -1,5 +1,5 @@
 // protocol_aws.rs — wire types of the `aws` ticket batch: scheduled
-// rotation (T7.07), JIT grants (T7.10). Wrapped by `Request::Aws` / `Response::Aws`, which are
+// rotation (T7.07), JIT grants (T7.10), check-out / check-in (T7.11). Wrapped by `Request::Aws` / `Response::Aws`, which are
 // `#[serde(untagged)]` and tried after every tagged variant, so the `cmd`
 // / `kind` names here must not repeat one in protocol.rs or another
 // batch's file (they all start with `aws_`). Nothing here is secret.
@@ -46,6 +46,22 @@ pub const ANY_HARNESS: &str = "*";
 /// Longest `kepr grant --for`.
 pub const GRANT_MAX_SECS: u64 = 7 * 86_400;
 
+/// T7.11: who holds a credential checked out, in its `.meta`. Only the
+/// daemon writes one; `token_sha256` never leaves it (a `CredInfo`
+/// carries the uid and the deadline, never the hash).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    pub uid: u32,
+    pub token_sha256: String,
+    /// Unix seconds: a hold always runs out, so a lost token can't lock
+    /// a credential for good.
+    pub until: u64,
+}
+
+/// `kepr checkout --for`: the default and the longest hold.
+pub const HOLD_SECS: u64 = 3600;
+pub const HOLD_MAX_SECS: u64 = 24 * 3600;
+
 /// A harness name as `kepr agent run` sends it (StartGate `harness`).
 pub fn valid_harness(h: &str) -> bool {
     !h.is_empty()
@@ -79,6 +95,17 @@ pub enum AwsRequest {
     },
     /// T7.10: `kepr grant`.
     AwsGrant { name: String, op: GrantOp },
+    /// T7.11: take `name` for `for_secs`; the reply carries the token
+    /// `AwsCheckin` needs back.
+    AwsCheckout { name: String, for_secs: u64 },
+    /// T7.11: release `name`. `rotated` only says whether the client
+    /// rotated the value first (for the audit line).
+    AwsCheckin {
+        name: String,
+        token: String,
+        #[serde(default)]
+        rotated: bool,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -93,6 +120,14 @@ pub enum AwsResponse {
         jit: bool,
         grants: Vec<Grant>,
     },
+    /// T7.11: `name` is held until `until`; `token` releases it.
+    AwsCheckedOut {
+        name: String,
+        token: String,
+        until: u64,
+    },
+    /// T7.11: `name` is free again.
+    AwsCheckedIn { name: String, rotated: bool },
 }
 
 #[cfg(test)]
@@ -154,6 +189,41 @@ mod tests {
         let wire = serde_json::to_string(&resp).unwrap();
         let back: Response = serde_json::from_str(&wire).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), wire);
+    }
+
+    #[test]
+    fn checkout_and_checkin_round_trip() {
+        let r = Request::Aws(AwsRequest::AwsCheckout {
+            name: "K".into(),
+            for_secs: HOLD_SECS,
+        });
+        let wire = serde_json::to_string(&r).unwrap();
+        assert!(wire.contains(r#""cmd":"aws_checkout""#), "{wire}");
+        assert_eq!(
+            serde_json::to_string(&serde_json::from_str::<Request>(&wire).unwrap()).unwrap(),
+            wire
+        );
+        let old = r#"{"cmd":"aws_checkin","name":"K","token":"ab"}"#;
+        assert!(matches!(
+            serde_json::from_str::<Request>(old).unwrap(),
+            Request::Aws(AwsRequest::AwsCheckin { rotated: false, .. })
+        ));
+        for resp in [
+            Response::Aws(AwsResponse::AwsCheckedOut {
+                name: "K".into(),
+                token: "ab".into(),
+                until: 9,
+            }),
+            Response::Aws(AwsResponse::AwsCheckedIn {
+                name: "K".into(),
+                rotated: true,
+            }),
+        ] {
+            let wire = serde_json::to_string(&resp).unwrap();
+            let back: Response = serde_json::from_str(&wire).unwrap();
+            assert_eq!(serde_json::to_string(&back).unwrap(), wire);
+            assert!(matches!(back, Response::Aws(_)));
+        }
     }
 
     #[test]

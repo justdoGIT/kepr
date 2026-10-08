@@ -154,6 +154,11 @@ pub struct CredInfo {
     pub jit: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub grants: Option<Vec<crate::protocol_aws::Grant>>,
+    /// T7.11: checked out by this uid until this unix second.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub held_by_uid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub held_until: Option<u64>,
     // batch: eco
     // batch: platform
     // batch: session

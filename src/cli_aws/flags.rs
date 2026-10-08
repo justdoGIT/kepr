@@ -71,7 +71,8 @@ pub fn cmd_rotate(a: &Args) -> Response {
         if f.aws_iam || f.db || a.hook_path.is_some() {
             return fail("--scheduled runs the rotator the schedule names; pass no other");
         }
-        return super::rotate_sched::run_scheduled(name);
+        let r = super::rotate_sched::run_scheduled(name);
+        return super::rotate_sched::shout(r);
     }
     if a.hook_path.is_some() || (f.aws_iam && f.db) {
         return fail("pick one rotator: --hook CMD, --aws-iam or --db");
