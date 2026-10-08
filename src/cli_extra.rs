@@ -11,7 +11,7 @@
 //   kepr usage [--days N]
 //   kepr health [--max-age DAYS | --period N] [--policy FILE] [--breach]
 //               [--notify URL [--format F]]
-//   kepr leaked NAME [--yes]
+//   kepr leaked NAME [--yes] [--rotate]
 //   kepr record add|show|get|types        see cli_record.rs
 //   kepr share key|send|receive           see cli_share.rs
 //   kepr recovery-kit create|restore      see cli_recovery.rs
@@ -164,6 +164,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
             "leaked" => crate::cli_leaked::cmd_leaked(
                 &one_name(args, verb, &[])?,
                 args.iter().any(|a| a == "--yes" || a == "-y"),
+                args.iter().any(|a| a == "--rotate"), // T9.09 (batch: aws)
             ),
             "recovery-kit" => crate::cli_recovery::cmd_recovery_kit(args),
             "record" => crate::cli_record::cmd_record(args),
