@@ -12,6 +12,7 @@ mod anomaly_cmd;
 mod approvals_cmd;
 mod approve_notify;
 mod canary;
+mod canary_skip;
 mod forward;
 mod health;
 mod notify;
@@ -81,6 +82,7 @@ pub use usage_report::{cmd_report as usage_report, label_session};
 
 /// `kepr health` hook (T6.08): `--notify URL [--format F]`, checked
 /// before the health run.
+pub use canary_skip::{Canaries, SKIP as CANARY_SKIP};
 pub use health::{after as after_health, parse as health_notify, rest as health_rest};
 
 /// A CLI-local success: printed here (unless --json), returned for main.

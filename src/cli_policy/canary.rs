@@ -318,6 +318,7 @@ mod tests {
             planted_in: Some("/home/a/.env".into()),
             created: "2026-10-08 00:00".into(),
             trip_id: "ab".into(),
+            fingerprint: String::new(),
             tripped: 2,
             last_tripped: Some("2026-10-08 01:00".into()),
         };

@@ -160,6 +160,10 @@ pub struct CanaryEntry {
     /// `YYYY-MM-DD HH:MM` UTC.
     pub created: String,
     pub trip_id: String,
+    /// `kepr_core::canary::fingerprint` of the decoy, so import / discover
+    /// / adopt can leave it alone without seeing the value.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub fingerprint: String,
     pub tripped: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_tripped: Option<String>,
@@ -311,6 +315,7 @@ mod tests {
                 planted_in: None,
                 created: "2026-10-08 00:00".into(),
                 trip_id: "ab".into(),
+                fingerprint: "f0".into(),
                 tripped: 2,
                 last_tripped: Some("2026-10-08 01:00".into()),
             }],

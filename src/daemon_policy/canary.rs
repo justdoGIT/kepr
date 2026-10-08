@@ -160,6 +160,7 @@ pub fn handle_list(uid: u32) -> Response {
                 planted_in: c.planted_in,
                 created: expiry::format_expires_at(c.created),
                 trip_id: c.trip_id,
+                fingerprint: c.fingerprint,
                 tripped: trips.len() as u64,
                 last_tripped: trips.iter().max().copied().map(expiry::format_expires_at),
                 name,
