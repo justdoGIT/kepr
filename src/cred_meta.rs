@@ -80,6 +80,10 @@ pub struct CredMeta {
     pub must_rotate: Option<bool>,
     // batch: sync
     // batch: policy
+    /// T9.04: consent prompts for this credential may be answered by the
+    /// registered approver (`kepr approvals serve`): desktop | ntfy | any.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub approve_via: Option<String>,
     // batch: gate
     // batch: aws
     // batch: eco
