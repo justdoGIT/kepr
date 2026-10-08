@@ -1,6 +1,7 @@
 // cli_syncx/testserver.rs — test-only loopback HTTP fake for the sync
 // targets: serves canned `(status, body)` replies in order, one request
-// per connection, and hands back each raw request it saw.
+// per connection, and hands back each raw request it saw. `{BASE}` in a
+// reply body becomes the fake's own `http://127.0.0.1:PORT`.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -12,6 +13,7 @@ pub fn serve(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Ve
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     l.set_nonblocking(true).unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
+    let me = base.clone();
     let h = std::thread::spawn(move || {
         let mut seen = Vec::new();
         for (status, body) in replies {
@@ -28,6 +30,7 @@ pub fn serve(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Ve
             s.set_nonblocking(false).unwrap();
             s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
             seen.push(read_request(&mut s));
+            let body = body.replace("{BASE}", &me);
             let _ = write!(
                 s,
                 "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\

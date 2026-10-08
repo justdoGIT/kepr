@@ -41,6 +41,12 @@ pub trait Syncer {
     /// original bytes — pin via integration tests per backend.
     fn pull(&self) -> Result<String, String>;
 
+    /// T11.17: like `pull`, but `Ok(None)` when the remote secret
+    /// doesn't exist (`sync push --map --dry-run` reports "create").
+    fn fetch(&self) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+        self.pull().map(|v| Some(zeroize::Zeroizing::new(v)))
+    }
+
     /// Human-readable name of the backing store. Surfaces in
     /// audit messages and CLI output (e.g. "vault" / "aws-sm").
     fn backend(&self) -> &'static str;
