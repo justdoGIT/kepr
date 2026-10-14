@@ -19,7 +19,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [-- ARGV] | install omp|grok | ls | revoke NAME";
+const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok | ls | revoke NAME";
 
 #[derive(Debug, Default, PartialEq)]
 pub struct AgentArgs {
@@ -86,6 +86,14 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
                 i += 1;
                 a.limits.per_minute = Some(number(raw, i, "--rate")?);
             }
+            "--max-requests-day" => {
+                i += 1;
+                a.limits.max_requests_day = Some(number(raw, i, "--max-requests-day")?);
+            }
+            "--max-tokens-day" => {
+                i += 1;
+                a.limits.max_tokens_day = Some(number(raw, i, "--max-tokens-day")?);
+            }
             f if crate::cli_gatex::SessionOpts::FLAGS.contains(&f) => i = a.session.take(raw, i)?,
             "--stdin" => a.stdin = true,
             "--force" | "-f" => a.force = true,
@@ -141,10 +149,10 @@ fn cmd_add(a: &AgentArgs) -> Response {
     };
     let bindings = match specs
         .iter()
-        .map(|s| cli_agent_detect::binding_for(s))
+        .map(|s| cli_agent_detect::bindings_for(s)) // T2.04: presets may bind more hosts
         .collect::<Result<Vec<_>, _>>()
     {
-        Ok(b) => b,
+        Ok(b) => b.concat(),
         Err(e) => return Response::fail(e),
     };
     let sigv4 = bindings.iter().any(|b| b.inject == Inject::Sigv4); // T2.02
@@ -351,6 +359,24 @@ mod tests {
         assert!(parse(&v(&["run", "claude", "--port", "0"])).is_err());
         assert!(parse(&v(&["add", "a", "b"])).is_err());
         assert!(parse(&[]).is_err());
+    }
+
+    #[test]
+    fn daily_caps_parse() {
+        let r = parse(&v(&[
+            "run",
+            "claude",
+            "--max-requests-day",
+            "500",
+            "--max-tokens-day",
+            "200000",
+        ]))
+        .unwrap();
+        assert_eq!(
+            (r.limits.max_requests_day, r.limits.max_tokens_day),
+            (Some(500), Some(200_000))
+        );
+        assert!(parse(&v(&["run", "claude", "--max-tokens-day", "lots"])).is_err());
     }
 
     #[test]

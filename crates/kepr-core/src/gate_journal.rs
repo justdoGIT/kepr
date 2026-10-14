@@ -40,6 +40,9 @@ pub struct JournalEntry {
     /// Why the gate refused it (`dlp`, `limit`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<String>,
+    /// T9.07: tokens the provider reported in the response's `usage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
 }
 
 /// A path as a template: no query or fragment, and every segment that
@@ -169,6 +172,7 @@ mod tests {
             bytes_out: 3,
             ms: 4,
             blocked: Some("dlp\r".repeat(20)),
+            tokens: None,
         }
         .sanitized();
         assert!(e.provider.chars().count() <= MAX_PROVIDER);
@@ -203,6 +207,7 @@ mod tests {
             bytes_out: u64::MAX,
             ms: u64::MAX,
             status: u16::MAX,
+            tokens: Some(u64::MAX),
         }
         .sanitized();
         let batch = vec![e; MAX_BATCH];

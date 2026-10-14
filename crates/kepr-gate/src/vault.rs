@@ -42,6 +42,14 @@ pub trait Resolve: Send + Sync {
     fn journal(&self, _entries: Vec<JournalEntry>) -> Result<(), String> {
         Err("journal is not available".into())
     }
+    /// T9.06: add to today's usage of `name`; today's (requests, tokens).
+    fn day_usage(&self, _name: &str, _requests: u64, _tokens: u64) -> Result<(u64, u64), String> {
+        Err("daily usage is not available".into())
+    }
+    /// T9.08: is one of these fingerprints a planted canary?
+    fn canary(&self, _fingerprints: Vec<String>) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 pub struct FdResolver {
@@ -120,6 +128,30 @@ impl Resolve for FdResolver {
     fn journal(&self, entries: Vec<JournalEntry>) -> Result<(), String> {
         match self.call(|id| GateRequest::Journal { id, entries })? {
             GateResponse::Recorded { .. } => Ok(()),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
+
+    fn day_usage(&self, name: &str, requests: u64, tokens: u64) -> Result<(u64, u64), String> {
+        let req = |id| GateRequest::DayUsage {
+            id,
+            name: name.to_string(),
+            requests,
+            tokens,
+        };
+        match self.call(req)? {
+            GateResponse::UsageToday {
+                requests, tokens, ..
+            } => Ok((requests, tokens)),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
+
+    fn canary(&self, fingerprints: Vec<String>) -> Result<bool, String> {
+        match self.call(|id| GateRequest::Canary { id, fingerprints })? {
+            GateResponse::CanaryChecked { tripped, .. } => Ok(tripped),
             GateResponse::Err { error, .. } => Err(error),
             _ => Err("daemon channel: unexpected reply".into()),
         }
@@ -213,6 +245,16 @@ impl Cache {
     /// T11.22: pass request journal entries to the daemon.
     pub fn journal(&self, entries: Vec<JournalEntry>) -> Result<(), String> {
         self.resolver.journal(entries)
+    }
+
+    /// T9.08: ask the daemon about canary fingerprints (not cached).
+    pub fn canary(&self, fingerprints: Vec<String>) -> Result<bool, String> {
+        self.resolver.canary(fingerprints)
+    }
+
+    /// T9.06: report usage of `name` to the daemon (not cached).
+    pub fn day_usage(&self, name: &str, requests: u64, tokens: u64) -> Result<(u64, u64), String> {
+        self.resolver.day_usage(name, requests, tokens)
     }
 
     pub fn clear(&self) {

@@ -94,7 +94,7 @@ fn refusal(argv: &[String]) -> Option<&'static str> {
     }
     let mut it = argv.iter().peekable();
     while let Some(a) = it.next() {
-        if a == "--value" || a.starts_with("--value=") {
+        if a == "--value" || a == "-v" || a.starts_with("--value=") {
             return Some("values are typed at the masked prompt: run `set NAME` without --value");
         }
         if a == "--stdin" {
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn inline_secret_values_never_run_or_reach_history() {
         let (ran, sh, out) = drive(
-            "set FOO --value hunter2\nset FOO --value=hunter2\n\
+            "set FOO --value hunter2\nset FOO --value=hunter2\nset FOO -v hunter2\n\
              record add R --type login --field password=hunter2\n\
              set FOO --stdin\nhistory\n",
         );

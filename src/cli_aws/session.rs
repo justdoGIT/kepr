@@ -61,18 +61,30 @@ pub fn placeholders(ph: &HashMap<String, String>) -> Vec<(&str, &str)> {
 }
 
 /// Whether the inherited variable `var` is replaced in this session.
+/// `KEPR_SESSION` / `KEPR_AWS_*` are never inherited: only `kepr agent
+/// run` sets them (T2.03).
 pub fn shadowed(ph: &HashMap<String, String>, var: &str) -> bool {
-    !placeholders(ph).is_empty() && AWS_VARS.contains(&var)
+    var == "KEPR_SESSION"
+        || var.starts_with(PH_VAR_PREFIX)
+        || (!placeholders(ph).is_empty() && AWS_VARS.contains(&var))
 }
 
-/// The placeholder pair (first key by name) and one `KEPR_AWS_<NAME>`
-/// per key; `AWS_CA_BUNDLE` follows the egress CA bundle in `env`.
+/// `KEPR_SESSION` (T2.03: the session id, from any placeholder
+/// `kepr-ph-<session>-…`), the placeholder pair (first key by name) and
+/// one `KEPR_AWS_<NAME>` per key; `AWS_CA_BUNDLE` follows the egress CA
+/// bundle in `env`.
 pub fn env(ph: &HashMap<String, String>, env: &[(String, String)]) -> Vec<(String, String)> {
     let keys = placeholders(ph);
     let mut out: Vec<(String, String)> = keys
         .iter()
         .map(|(n, p)| (format!("{PH_VAR_PREFIX}{n}"), p.to_string()))
         .collect();
+    let session = ph
+        .values()
+        .find_map(|p| p.strip_prefix("kepr-ph-")?.split('-').next());
+    if let Some(s) = session {
+        out.push(("KEPR_SESSION".into(), s.to_string()));
+    }
     if let Some((_, p)) = keys.first() {
         out.push(("AWS_ACCESS_KEY_ID".into(), placeholder_access_key_id(p)));
         out.push(("AWS_SECRET_ACCESS_KEY".into(), p.to_string()));
@@ -137,9 +149,12 @@ mod tests {
         );
         assert_eq!(get("KEPR_AWS_PROD_AWS"), Some("kepr-ph-b"));
         assert_eq!(get("AWS_CA_BUNDLE"), Some("/run/x/ca.pem"));
+        assert!(get("KEPR_SESSION").is_some());
         assert!(shadowed(&ph, "AWS_SESSION_TOKEN") && shadowed(&ph, "AWS_PROFILE"));
         assert!(!shadowed(&ph, "PATH"));
         let none: HashMap<String, String> = HashMap::new();
         assert!(!shadowed(&none, "AWS_PROFILE") && env(&none, &egress).is_empty());
+        // T2.03: an outer shell can't fake a session for credential-process.
+        assert!(shadowed(&none, "KEPR_SESSION") && shadowed(&none, "KEPR_AWS_PROD_AWS"));
     }
 }

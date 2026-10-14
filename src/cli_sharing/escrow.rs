@@ -90,7 +90,10 @@ pub fn cmd_escrow(args: &[String]) -> Response {
                 password,
             }))
         }
-        (Some("disable"), []) => Ok(send(SharingRequest::EscrowDisable)),
+        (Some("disable"), []) => {
+            let password = read_masked("  Store passphrase: ");
+            Ok(send(SharingRequest::EscrowDisable { password }))
+        }
         (Some("status"), []) => Ok(send(SharingRequest::EscrowStatus)),
         (Some("open"), _) => open(rest),
         _ => Err(Response::fail(USAGE)),

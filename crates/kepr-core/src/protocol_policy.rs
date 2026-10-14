@@ -17,7 +17,9 @@ pub enum PolicyRequest {
         reload: bool,
     },
     /// T6.12: where a credential can go and where it went.
-    ReportAccess { name: String },
+    ReportAccess {
+        name: String,
+    },
     /// T7.14: the caller's audit-chain entries after the one whose hash
     /// is `after` (absent: from the first), oldest first, one page.
     AuditTail {
@@ -36,13 +38,45 @@ pub enum PolicyRequest {
     ApproverRegister,
     /// T9.04: the requests waiting for the approver (`key` from
     /// `ApproverKey`; the same process must ask).
-    ApprovalPoll { key: String },
+    ApprovalPoll {
+        key: String,
+    },
     /// T9.04: answer one waiting request with its one-time token.
     ApprovalAnswer {
         key: String,
         id: String,
         token: String,
         allow: bool,
+    },
+    /// T9.07: name the harness of one of the caller's gate sessions
+    /// (`kepr agent run` sends it once; the first name stays).
+    SessionHarness {
+        session: String,
+        harness: String,
+    },
+    /// T9.07: `kepr usage --report`: gate-journal counts per harness ×
+    /// credential × host over `days` (everything kept when absent), and
+    /// bound hosts no request reached in `unused_days`.
+    UsageReport {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        days: Option<u32>,
+        unused_days: u32,
+    },
+    /// T9.08: store a decoy key for `provider` as `name`, to be planted
+    /// in `planted_in` (a path, recorded for `ls` / `rm`).
+    CanaryPlant {
+        name: String,
+        provider: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        planted_in: Option<String>,
+    },
+    CanaryList,
+    CanaryRemove {
+        name: String,
+    },
+    /// T9.08: a provider-side webhook fired for the canary `trip_id`.
+    CanaryTrip {
+        trip_id: String,
     },
 }
 
@@ -87,6 +121,77 @@ pub enum PolicyResponse {
         #[serde(default)]
         reset: bool,
     },
+    UsageReportOk {
+        /// Start of the window, `YYYY-MM-DD HH:MM` UTC; absent = all kept.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        since: Option<String>,
+        rows: Vec<UsageRow>,
+        /// Over-scoped bindings: bound hosts unused for `unused_days`.
+        unused: Vec<UnusedBinding>,
+        unused_days: u32,
+        /// Rows beyond what one reply holds were left out.
+        #[serde(default)]
+        truncated: bool,
+    },
+    /// `value` is the decoy (never a working key), for the CLI to plant;
+    /// `trip_id` names its webhook (`/kepr-canary/<trip_id>`).
+    CanaryPlanted {
+        name: String,
+        value: String,
+        trip_id: String,
+    },
+    CanaryListing {
+        canaries: Vec<CanaryEntry>,
+    },
+    CanaryRemoved {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        planted_in: Option<String>,
+    },
+}
+
+/// T9.08: one planted canary and how often it tripped (audit log).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanaryEntry {
+    pub name: String,
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub planted_in: Option<String>,
+    /// `YYYY-MM-DD HH:MM` UTC.
+    pub created: String,
+    pub trip_id: String,
+    /// `kepr_core::canary::fingerprint` of the decoy, so import / discover
+    /// / adopt can leave it alone without seeing the value.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub fingerprint: String,
+    pub tripped: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_tripped: Option<String>,
+}
+
+/// T9.07: one harness × credential × host line of the usage report.
+/// `cred` is `-` for traffic no credential was added to (tunnels).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageRow {
+    pub harness: String,
+    pub cred: String,
+    pub host: String,
+    pub requests: u64,
+    /// Refused by the gate (DLP, limits).
+    pub blocked: u64,
+    /// As the providers reported them.
+    pub tokens: u64,
+}
+
+/// T9.07: a host a sealed credential is bound to that no request
+/// reached in the window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnusedBinding {
+    pub cred: String,
+    pub host: String,
+    /// Last request in the journal kept, `YYYY-MM-DD HH:MM` UTC.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_used: Option<String>,
 }
 
 /// T9.04: a consent request waiting for the approver. `token` is the
@@ -148,6 +253,77 @@ mod tests {
             Response::Policy(back) => assert_eq!(back, r),
             other => panic!("decoded as {other:?}"),
         }
+    }
+
+    #[test]
+    fn usage_report_round_trips() {
+        round_trip_req(
+            PolicyRequest::UsageReport {
+                days: Some(7),
+                unused_days: 30,
+            },
+            r#"{"cmd":"usage_report","days":7,"unused_days":30}"#,
+        );
+        round_trip_req(
+            PolicyRequest::SessionHarness {
+                session: "0123456789abcdef".into(),
+                harness: "claude".into(),
+            },
+            r#"{"cmd":"session_harness","session":"0123456789abcdef","harness":"claude"}"#,
+        );
+        round_trip_resp(PolicyResponse::UsageReportOk {
+            since: None,
+            rows: vec![UsageRow {
+                harness: "claude".into(),
+                cred: "ANTHROPIC_API_KEY".into(),
+                host: "api.anthropic.com".into(),
+                requests: 3,
+                blocked: 1,
+                tokens: 900,
+            }],
+            unused: vec![UnusedBinding {
+                cred: "GH".into(),
+                host: "uploads.github.com".into(),
+                last_used: None,
+            }],
+            unused_days: 30,
+            truncated: false,
+        });
+    }
+
+    #[test]
+    fn canary_round_trips() {
+        round_trip_req(
+            PolicyRequest::CanaryPlant {
+                name: "OPENAI_API_KEY".into(),
+                provider: "openai".into(),
+                planted_in: Some("/home/a/.env".into()),
+            },
+            r#"{"cmd":"canary_plant","name":"OPENAI_API_KEY","provider":"openai","planted_in":"/home/a/.env"}"#,
+        );
+        round_trip_req(PolicyRequest::CanaryList, r#"{"cmd":"canary_list"}"#);
+        round_trip_req(
+            PolicyRequest::CanaryTrip {
+                trip_id: "ab".into(),
+            },
+            r#"{"cmd":"canary_trip","trip_id":"ab"}"#,
+        );
+        round_trip_resp(PolicyResponse::CanaryListing {
+            canaries: vec![CanaryEntry {
+                name: "K".into(),
+                provider: "xai".into(),
+                planted_in: None,
+                created: "2026-10-08 00:00".into(),
+                trip_id: "ab".into(),
+                fingerprint: "f0".into(),
+                tripped: 2,
+                last_tripped: Some("2026-10-08 01:00".into()),
+            }],
+        });
+        round_trip_resp(PolicyResponse::CanaryRemoved {
+            name: "K".into(),
+            planted_in: Some("/x/.env".into()),
+        });
     }
 
     #[test]

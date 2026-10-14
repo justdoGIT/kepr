@@ -1,6 +1,7 @@
 // protocol_session.rs — wire types of the `session` ticket batch:
 // re-authentication before reveal (T11.14), `kepr status` details
-// (T11.24), `kepr batch` (T11.18), `kepr ssh rotate` (T11.21). Wrapped by
+// (T11.24), `kepr batch` (T11.18), `kepr ssh rotate` (T11.21), fetch as
+// an fd (T3.06). Wrapped by
 // `Request::Session` / `Response::Session`, which are
 // `#[serde(untagged)]` and tried after every tagged variant, so the
 // `cmd` / `kind` names here must not repeat one in protocol.rs.
@@ -34,6 +35,13 @@ pub enum SessionRequest {
     /// T11.21 `kepr ssh rotate`: after the host accepted `next`, make
     /// `next`'s key `name`'s and delete `next`. Answers `SshKeyOk`.
     SshRotateCommit { name: String, next: String },
+    /// T11.19 `kepr serve`: a `Get` that never prompts. A credential
+    /// needing consent, FIDO2 or re-authentication reads as unavailable,
+    /// even while a reveal window is open. Answers like `Get`.
+    GetQuiet { name: String },
+    /// T3.06: `name` under `Get`'s policy, answered with `FdOk` and then
+    /// a sealed read-only memfd (SCM_RIGHTS) instead of the value.
+    FetchFd { name: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,6 +53,8 @@ pub enum SessionResponse {
     ReauthFlagOk { name: String, on: bool },
     /// T11.18 (CLI only, for `--json`): every line of `kepr batch` ran.
     BatchOk { ran: u32 },
+    /// T3.06: the memfd holding `len` bytes follows on the socket.
+    FdOk { len: u64 },
 }
 
 /// T11.24: what `kepr status` shows beyond the lock state, flattened into
@@ -141,6 +151,8 @@ mod tests {
                 name: "K".into(),
                 next: "K_NEXT".into(),
             }),
+            Request::Session(SessionRequest::GetQuiet { name: "K".into() }),
+            Request::Session(SessionRequest::FetchFd { name: "K".into() }),
         ];
         for r in reqs {
             let wire = serde_json::to_string(&r).unwrap();
@@ -148,6 +160,11 @@ mod tests {
             assert_eq!(serde_json::to_string(&back).unwrap(), wire);
             assert!(matches!(back, Request::Session(_)), "{wire}");
         }
+        let wire = r#"{"cmd":"fetch_fd","name":"K"}"#;
+        assert!(matches!(
+            serde_json::from_str::<Request>(wire).unwrap(),
+            Request::Session(SessionRequest::FetchFd { .. })
+        ));
         let wire = r#"{"cmd":"reauth_flag","name":"K","on":false}"#;
         assert!(matches!(
             serde_json::from_str::<Request>(wire).unwrap(),
@@ -167,6 +184,7 @@ mod tests {
                 on: false,
             }),
             Response::Session(SessionResponse::BatchOk { ran: 3 }),
+            Response::Session(SessionResponse::FdOk { len: 12 }),
         ];
         for r in resps {
             let wire = serde_json::to_string(&r).unwrap();

@@ -132,6 +132,7 @@ fn start_gate(name: &str) -> Result<(String, u16, TargetKind), String> {
         limits: GateLimits::default(),
         tunnel: false,
         record: false,
+        harness: None, // T7.10: no harness, so no just-in-time credential
     })? {
         Response::GateStarted {
             placeholders,

@@ -20,10 +20,37 @@ pub fn binding_for(spec: &str) -> Result<Binding, String> {
     })
 }
 
+/// `binding_for`, plus the extra hosts a preset binds (T2.04: `--for
+/// gcloud` also binds the common `*.googleapis.com` services).
+pub fn bindings_for(spec: &str) -> Result<Vec<Binding>, String> {
+    let first = binding_for(spec)?;
+    let extra: &[&str] = match spec {
+        "gcloud" => providers::GCLOUD_HOSTS,
+        _ => &[],
+    };
+    let more = extra.iter().map(|h| Binding {
+        host: h.to_string(),
+        ..first.clone()
+    });
+    Ok(std::iter::once(first.clone()).chain(more).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use kepr_core::binding::Inject;
+
+    #[test]
+    fn gcloud_binds_its_common_hosts() {
+        let b = bindings_for("gcloud").unwrap();
+        assert_eq!(b.len(), 1 + providers::GCLOUD_HOSTS.len());
+        assert_eq!(b[0].host, "www.googleapis.com");
+        assert!(b
+            .iter()
+            .all(|x| x.inject == Inject::Bearer && x.port == 443));
+        assert!(b.iter().any(|x| x.host == "storage.googleapis.com"));
+        assert_eq!(bindings_for("npm").unwrap().len(), 1);
+    }
 
     #[test]
     fn for_provider_and_raw_binding() {

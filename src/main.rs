@@ -86,6 +86,7 @@ mod cli_eco;
 // batch: platform
 mod cli_platform;
 // batch: session
+mod cli_sandbox_landlock; // T1.23
 mod cli_session;
 // end of batches
 

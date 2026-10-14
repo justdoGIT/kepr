@@ -79,13 +79,44 @@ pub struct CredMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub must_rotate: Option<bool>,
     // batch: sync
+    /// T7.12: approvals (2-9) needed before each use window opens
+    /// (`kepr quorum`). Kept across `set`; lowered only by a quorum.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub approvals: Option<u8>,
     // batch: policy
     /// T9.04: consent prompts for this credential may be answered by the
     /// registered approver (`kepr approvals serve`): desktop | ntfy | any.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub approve_via: Option<String>,
+    /// T9.08: the value is a decoy (`kepr canary plant`): reading it,
+    /// or a gate seeing it, raises the alarm; gates never release it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub canary: Option<crate::daemon_policy::CanaryMeta>,
     // batch: gate
     // batch: aws
+    /// T7.07: `kepr rotate NAME --every`: rotate every this many seconds,
+    /// the way `rotate_via` says (`protocol_aws::valid_rotate_via`). Kept
+    /// across `set`; a `set` moves `rotate_next_at` and clears failures.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_every_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_via: Option<String>,
+    /// T7.07: when the next scheduled rotation is due (unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_next_at: Option<u64>,
+    /// T7.07: failed scheduled tries since the last success (backoff).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_failures: Option<u32>,
+    /// T7.10: just-in-time: a gate resolves this sealed credential only
+    /// for a session whose harness has an open grant. Kept across `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub jit: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub grants: Option<Vec<kepr_core::protocol_aws::Grant>>,
+    /// T7.11: `kepr checkout` holds the credential: one holder at a
+    /// time, and only they can check it back in. Dropped by `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub checkout: Option<kepr_core::protocol_aws::Hold>,
     // batch: eco
     // batch: platform
     /// T10.09: identities (`kepr_core::exe_digest`) of the executables

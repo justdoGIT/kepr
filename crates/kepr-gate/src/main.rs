@@ -8,9 +8,11 @@
 
 mod aws_egress;
 mod ca;
+mod canary;
 mod db;
 mod dlp;
 mod egress;
+mod github_app;
 mod journal;
 mod limits;
 mod mysql;
@@ -24,6 +26,7 @@ mod placeholder;
 mod proxy;
 mod recording;
 mod redis;
+mod reply;
 mod rewrite;
 mod routes;
 mod scram;

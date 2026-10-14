@@ -163,6 +163,7 @@ pub fn cmd_run(
         limits,
         tunnel: !isolate_net,
         record: session.record,
+        harness: Some(adapter.harness.to_string()), // T7.10
     };
     let (gate_port, placeholders, ca_pem, db_ports) = match client::send_request(&req) {
         Ok(Response::GateStarted {
@@ -172,6 +173,7 @@ pub fn cmd_run(
             ..
         }) => {
             session.announce(extras.session.as_deref());
+            crate::cli_policy::label_session(extras.session.as_deref(), harness); // T9.07
             (port, placeholders, extras.ca_pem, extras.db_ports)
         }
         Ok(Response::Err { error }) => return Response::fail(error),

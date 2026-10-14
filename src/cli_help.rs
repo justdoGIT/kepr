@@ -34,6 +34,7 @@ COMMANDS:
   agent add KEY [--for PROVIDER] [--requires-consent]  store a write-only key (paste once)
   agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox]
             [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
+            [--max-requests-day N] [--max-tokens-day N]  per key per day, across sessions
                                        run claude|codex|grok-cli|aider|omp|grok sandboxed, with
                                        placeholders; a local gate injects the real key on the wire
   agent add-db KEY --url postgres|mysql|redis[s]://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
@@ -49,8 +50,9 @@ COMMANDS:
   recovery-kit create [--threshold K] [--shares N] [--out-dir DIR]
                                        split the master key into K-of-N shares (needs the passphrase)
   recovery-kit restore                 rebuild a lost master key from K shares, under a new passphrase
-  leaked KEY [--yes]                   key exposed: stop agent sessions, delete it + history, log an
-                                       incident, show where to revoke it at the provider
+  leaked KEY [--yes] [--rotate]        key exposed: stop agent sessions, delete it + history, log an
+                                       incident, show where to revoke it at the provider; --rotate:
+                                       replace an AWS IAM key through the IAM API instead
   totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
   inject -i TEMPLATE [-o OUT]          fill kepr:// references (OUT 0600): NAME, NAME/field[i][sub],
                                        NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape)

@@ -115,7 +115,10 @@ pub enum SharingRequest {
         admin_key: String,
         password: ZeroString,
     },
-    EscrowDisable,
+    /// Needs the store passphrase too: only the owner turns it off.
+    EscrowDisable {
+        password: ZeroString,
+    },
     EscrowStatus,
     /// T6.14 (admin's machine): open an escrow file with the caller's
     /// share key; replies `Response::RecoveryKitOk` (a 2-of-2 kit for
@@ -333,7 +336,9 @@ mod tests {
                 admin_key: "kepr-pk2-x".into(),
                 password: "pw".into(),
             },
-            SharingRequest::EscrowDisable,
+            SharingRequest::EscrowDisable {
+                password: "pw".into(),
+            },
             SharingRequest::EscrowStatus,
             SharingRequest::EscrowOpen {
                 escrow: "{}".into(),

@@ -42,7 +42,6 @@ impl Endpoint {
     }
 
     /// IAM is global, signed for us-east-1.
-    #[allow(dead_code)] // until T7.05 (IAM rotator)
     pub fn iam() -> Self {
         Self {
             url: "https://iam.amazonaws.com/".into(),
@@ -54,7 +53,6 @@ impl Endpoint {
 }
 
 /// Temporary credentials from STS (`key.session_token` is always set).
-#[allow(dead_code)] // until T2.03 (credential-process)
 pub struct TempCreds {
     pub key: AwsKey,
     /// ISO 8601, as STS returns it (`2026-10-07T12:00:00Z`).
@@ -172,7 +170,6 @@ pub fn error_summary(xml: &str) -> String {
 }
 
 /// The `<Credentials>` block of a GetSessionToken / AssumeRole reply.
-#[allow(dead_code)] // until T2.03 (credential-process)
 pub fn parse_credentials(xml: &str) -> Result<TempCreds, String> {
     let block = xml_text(xml, "Credentials").ok_or("STS reply has no credentials")?;
     let block = Zeroizing::new(block);
@@ -197,7 +194,6 @@ pub fn parse_caller_identity(xml: &str) -> Result<CallerIdentity, String> {
     })
 }
 
-#[allow(dead_code)] // until T2.03 (credential-process)
 pub fn get_session_token(
     ep: &Endpoint,
     key: &AwsKey,
@@ -213,7 +209,6 @@ pub fn get_session_token(
     parse_credentials(&call(ep, key, &p, now)?)
 }
 
-#[allow(dead_code)] // until T2.03 (credential-process)
 pub fn assume_role(
     ep: &Endpoint,
     key: &AwsKey,

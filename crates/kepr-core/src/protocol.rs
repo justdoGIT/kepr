@@ -116,6 +116,10 @@ pub enum Request {
         /// T7.09: keep the session's bodies, encrypted (`--record`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         record: bool,
+        /// T7.10: the harness the session runs (`kepr agent run NAME`),
+        /// matched against just-in-time grants. Claimed by the caller.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        harness: Option<String>,
     },
     Get {
         name: String,
@@ -289,6 +293,8 @@ pub enum Request {
     #[serde(untagged)]
     Sharing(crate::protocol_sharing::SharingRequest),
     // batch: sync
+    #[serde(untagged)]
+    Syncx(crate::protocol_syncx::SyncxRequest),
     // batch: policy
     #[serde(untagged)]
     Policy(crate::protocol_policy::PolicyRequest),
@@ -296,6 +302,8 @@ pub enum Request {
     #[serde(untagged)]
     Gatex(crate::protocol_gatex::GatexRequest),
     // batch: aws
+    #[serde(untagged)]
+    Aws(crate::protocol_aws::AwsRequest),
     // batch: eco
     #[serde(untagged)]
     Eco(crate::protocol_eco::EcoRequest),

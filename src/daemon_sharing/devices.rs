@@ -204,7 +204,6 @@ fn info(d: &Device) -> DeviceInfo {
 }
 
 /// Every enrolled device's share key, for multi-device sync (T6.10).
-#[allow(dead_code)] // the sync batch (T6.10) is its consumer
 pub fn sync_recipients(uid: u32) -> Vec<String> {
     load::<Devices>(&state_path("devices", uid)).recipients()
 }

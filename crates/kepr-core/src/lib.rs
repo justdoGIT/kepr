@@ -13,8 +13,10 @@
 
 pub mod auth;
 pub mod binding;
+pub mod canary;
 pub mod fdpass;
 pub mod framing;
+pub mod gate_limits;
 pub mod gate_protocol;
 pub mod generate;
 pub mod keyring;
@@ -60,6 +62,8 @@ pub mod mysql_handshake;
 pub mod mysql_wire;
 pub mod protocol_gatex;
 // batch: aws
+pub mod github_app;
+pub mod protocol_aws;
 pub mod sigv4_req;
 // batch: eco
 pub mod protocol_eco;
@@ -69,6 +73,7 @@ pub mod pki;
 pub mod protocol_platform;
 pub mod x509_build;
 // batch: session
+pub mod fdfetch;
 pub mod http_lite;
 pub mod profile;
 pub mod protocol_session;

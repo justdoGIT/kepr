@@ -60,6 +60,7 @@ pub fn entry(session: &str, e: &Entry, secrets: &[ZeroString]) -> JournalEntry {
         bytes_out: e.bytes_out as u64,
         ms: u64::try_from(e.ms).unwrap_or(u64::MAX),
         blocked: e.blocked.map(str::to_string),
+        tokens: None,
     }
     .sanitized()
 }
@@ -68,12 +69,21 @@ pub fn format(e: &JournalEntry) -> String {
     serde_json::to_string(e).unwrap_or_default()
 }
 
+/// The stored line of one request or connection of this session.
+fn line(state: &State, e: &Entry) -> JournalEntry {
+    let secrets: Vec<ZeroString> = state.cache.values().into_iter().map(|(_, v)| v).collect();
+    entry(&state.session_id, e, &secrets)
+}
+
+/// Print `line` and queue it for the daemon.
+pub fn push(q: &Queue, line: JournalEntry) {
+    eprintln!("{}", format(&line));
+    q.push(line);
+}
+
 /// Journal one request or connection of this session.
 pub fn emit(state: &State, e: &Entry) {
-    let secrets: Vec<ZeroString> = state.cache.values().into_iter().map(|(_, v)| v).collect();
-    let line = entry(&state.session_id, e, &secrets);
-    eprintln!("{}", format(&line));
-    state.journal.push(line);
+    push(&state.journal, line(state, e));
 }
 
 /// Entries on their way to the daemon.
@@ -134,8 +144,15 @@ pub(crate) struct Log<'a> {
 }
 
 impl Log<'_> {
-    pub fn emit(&self, status: StatusCode, bytes_out: usize, blocked: Option<&str>) {
-        emit(
+    /// The line now, to journal later (T9.07: when a metered response's
+    /// tokens are known).
+    pub fn line(
+        &self,
+        status: StatusCode,
+        bytes_out: usize,
+        blocked: Option<&str>,
+    ) -> JournalEntry {
+        line(
             self.state,
             &Entry {
                 provider: self.provider,
@@ -147,7 +164,11 @@ impl Log<'_> {
                 ms: self.start.elapsed().as_millis(),
                 blocked,
             },
-        );
+        )
+    }
+
+    pub fn emit(&self, status: StatusCode, bytes_out: usize, blocked: Option<&str>) {
+        push(&self.state.journal, self.line(status, bytes_out, blocked));
     }
 
     pub fn reply(

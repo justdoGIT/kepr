@@ -37,7 +37,11 @@ pub(crate) fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result
         Err(e) => return Err(format!("meta parse: {e}")),
     };
     crate::daemon_platform::exe::gate(&meta, peer_pid)?; // T10.09 (batch: platform)
-                                                         // T11.14 (batch: session): is a re-auth window open for it?
+                                                         // T7.12 (batch: sync): M-of-N approvals.
+    crate::daemon_syncx::quorum_gate(uid, name_upper, &meta)?;
+    // T7.11 (batch: aws): checked out by another uid.
+    crate::daemon_aws::checkout::gate(&meta, uid, expiry::now_unix())?;
+    // T11.14 (batch: session): is a re-auth window open for it?
     let reauth_open = crate::daemon_session::reauth::window_open(uid, name_upper);
     meta_gate(&meta, expiry::now_unix(), reauth_open, || {
         crate::daemon_policy::consent(uid, peer_pid, name_upper, &meta) // T9.04
@@ -201,12 +205,13 @@ pub fn handle_get(
                 username,
                 result: AuditResult::Ok,
             });
-            // Move the ZeroString directly into the response — the
-            // protocol field is `value: ZeroString`, so the secret
-            // bytes never touch a non-zeroising String on the way
-            // out. The previous `secret.to_owned_string()` cloned
-            // into a plain String that the serializer would then
-            // walk; that String dropped without zeroizing.
+            crate::daemon_policy::canary_read(uid, peer_pid, username, &upper); // T9.08
+                                                                                // Move the ZeroString directly into the response — the
+                                                                                // protocol field is `value: ZeroString`, so the secret
+                                                                                // bytes never touch a non-zeroising String on the way
+                                                                                // out. The previous `secret.to_owned_string()` cloned
+                                                                                // into a plain String that the serializer would then
+                                                                                // walk; that String dropped without zeroizing.
             Response::GetOk {
                 name: asked,
                 value: secret,

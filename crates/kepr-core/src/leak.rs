@@ -156,6 +156,49 @@ pub const PATTERNS: &[Pattern] = &[
         min: 20,
         exact: false,
     },
+    // T2.04 (batch: aws): the CLI presets' key shapes.
+    Pattern {
+        kind: "Stripe test key",
+        prefix: b"sk_test_",
+        body: alnum,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
+        kind: "Stripe restricted key",
+        prefix: b"rk_live_",
+        body: alnum,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
+        kind: "Stripe restricted test key",
+        prefix: b"rk_test_",
+        body: alnum,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
+        kind: "npm token",
+        prefix: b"npm_",
+        body: alnum,
+        min: 36,
+        exact: true,
+    },
+    Pattern {
+        kind: "Google OAuth access token",
+        prefix: b"ya29.",
+        body: key_char,
+        min: 20,
+        exact: false,
+    },
+    Pattern {
+        kind: "Docker access token",
+        prefix: b"dckr_pat_",
+        body: key_char,
+        min: 20,
+        exact: false,
+    },
     Pattern {
         kind: "private key",
         prefix: b"-----BEGIN ",
@@ -208,6 +251,23 @@ pub fn looks_like_key(text: &[u8]) -> bool {
     !find_all(text).is_empty()
 }
 
+/// Most key-shaped strings one request is checked for as canaries.
+pub const MAX_CANARY_PROBES: usize = 16;
+
+/// T9.08: the canary fingerprints of the key-shaped strings in `text`
+/// (private-key headers aside), for the daemon to match against the
+/// decoys it planted; a hit means someone is using a honeytoken.
+pub fn canary_probes(text: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = find_all(text)
+        .iter()
+        .filter(|h| h.kind != "private key")
+        .map(|h| crate::canary::fingerprint(&text[h.offset..h.offset + h.len]))
+        .collect();
+    out.dedup();
+    out.truncate(MAX_CANARY_PROBES);
+    out
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -229,6 +289,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cli_preset_shapes() {
+        for k in [
+            "sk_test_51HabcdefghijklmnopqrstUV",
+            "rk_live_51HabcdefghijklmnopqrstUV",
+            "npm_abcdefghijklmnopqrstuvwxyz0123456789",
+            "ya29.a0AfB_byCabcdefghijklmnop",
+            "dckr_pat_abcdefghijklmnopqrstu",
+        ] {
+            assert!(looks_like_key(format!("x {k} y").as_bytes()), "{k}");
+        }
+        assert!(!looks_like_key(b"npm_install"));
+        assert!(!looks_like_key(b"ya29.short"));
+    }
+
+    #[test]
     fn known_shapes() {
         assert!(looks_like_key(b"x AKIAABCDEFGHIJKLMNOP y"));
         assert!(looks_like_key(b"sk-ant-api03-abcdefghijklmnopqrstu"));
@@ -240,6 +315,16 @@ mod tests {
         assert!(!looks_like_key(
             b"kepr-ph-0123456789abcdef-0000-0123456789abcdef"
         ));
+    }
+
+    #[test]
+    fn a_planted_decoy_is_probed_exactly() {
+        let decoy = crate::canary::make("openai").unwrap();
+        let req = format!("{{\"auth\":\"Bearer {decoy}\",\"n\":1}}");
+        let probes = canary_probes(req.as_bytes());
+        assert_eq!(probes, vec![crate::canary::fingerprint(decoy.as_bytes())]);
+        assert!(canary_probes(b"kepr-ph-0123456789abcdef-0000-0123456789abcdef").is_empty());
+        assert!(canary_probes(b"-----BEGIN PRIVATE KEY-----").is_empty());
     }
 
     #[test]

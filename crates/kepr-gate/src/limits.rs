@@ -7,6 +7,10 @@
 //! `completion_tokens`/`total_tokens`, Gemini `promptTokenCount`/
 //! `candidatesTokenCount`/`totalTokenCount`), so the token cap stops
 //! the *next* request once a response has pushed the total over it.
+//!
+//! T9.06: the per-day caps are per credential and shared by every session
+//! of the user: each request is reported to the daemon, which answers
+//! with today's totals; tokens are reported when a response ends.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,7 +18,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use hyper::header::{HeaderMap, CONTENT_TYPE};
+use kepr_core::gate_journal::JournalEntry;
 use kepr_core::gate_protocol::GateLimits;
+
+use crate::journal::Queue;
+use crate::vault::Cache;
+
+type Report = Box<dyn FnOnce(u64) + Send + Sync>;
 
 /// Why a request was refused.
 #[derive(Debug, PartialEq, Eq)]
@@ -87,7 +98,33 @@ impl Limiter {
 
     /// Only sessions with a token cap pay for scanning responses.
     pub fn meters_tokens(&self) -> bool {
-        self.cfg.max_tokens.is_some()
+        self.cfg.max_tokens.is_some() || self.cfg.max_tokens_day.is_some()
+    }
+
+    /// T9.06: count one request of `cred` with the daemon and check the
+    /// day's totals. A total the daemon can't give refuses (fail closed).
+    pub async fn admit_today(&self, cache: Arc<Cache>, cred: String) -> Result<(), Refusal> {
+        if self.cfg.max_requests_day.is_none() && self.cfg.max_tokens_day.is_none() {
+            return Ok(());
+        }
+        let today = tokio::task::spawn_blocking(move || cache.day_usage(&cred, 1, 0)).await;
+        self.check_today(today.unwrap_or_else(|_| Err(String::new())))
+    }
+
+    pub fn check_today(&self, today: Result<(u64, u64), String>) -> Result<(), Refusal> {
+        let (requests, tokens) =
+            today.map_err(|_| Refusal::Cap("kepr could not check today's usage".into()))?;
+        if let Some(max) = self.cfg.max_tokens_day.filter(|m| tokens >= *m) {
+            return Err(Refusal::Cap(format!(
+                "this key used {tokens} tokens today, over its daily limit of {max} (kepr agent run --max-tokens-day)"
+            )));
+        }
+        if let Some(max) = self.cfg.max_requests_day.filter(|m| requests > *m) {
+            return Err(Refusal::Cap(format!(
+                "this key reached its daily limit of {max} requests (kepr agent run --max-requests-day)"
+            )));
+        }
+        Ok(())
     }
 
     pub fn add_tokens(&self, n: u64) {
@@ -144,6 +181,9 @@ fn max_after(buf: &[u8], keys: &[&[u8]]) -> u64 {
 /// largest value per kind and adds only the growth.
 pub struct UsageMeter {
     limiter: Arc<Limiter>,
+    /// Where the response's tokens go when it ends (T9.06 daily
+    /// counter, T9.07 journal line).
+    reports: Vec<Report>,
     carry: Vec<u8>,
     input: u64,
     output: u64,
@@ -155,12 +195,37 @@ impl UsageMeter {
     pub fn new(limiter: Arc<Limiter>) -> Self {
         Self {
             limiter,
+            reports: Vec::new(),
             carry: Vec::new(),
             input: 0,
             output: 0,
             total: 0,
             counted: 0,
         }
+    }
+
+    /// T9.06: with a daily token cap, report this response's tokens for
+    /// `cred` to the daemon when the response is done.
+    pub fn daily(mut self, cache: &Arc<Cache>, cred: &str) -> Self {
+        if self.limiter.cfg.max_tokens_day.is_some() {
+            let (cache, cred) = (cache.clone(), cred.to_string());
+            self.reports.push(Box::new(move |n| {
+                let h = tokio::runtime::Handle::try_current();
+                if let (true, Ok(h)) = (n > 0, h) {
+                    h.spawn_blocking(move || cache.day_usage(&cred, 0, n));
+                }
+            }));
+        }
+        self
+    }
+
+    /// T9.07: journal `line` when the response ends, with its tokens.
+    pub fn journal(mut self, q: Arc<Queue>, mut line: JournalEntry) -> Self {
+        self.reports.push(Box::new(move |n| {
+            line.tokens = (n > 0).then_some(n);
+            crate::journal::push(&q, line);
+        }));
+        self
     }
 
     pub fn observe(&mut self, chunk: &Bytes) {
@@ -179,6 +244,23 @@ impl UsageMeter {
     }
 }
 
+impl Drop for UsageMeter {
+    fn drop(&mut self) {
+        for report in self.reports.drain(..) {
+            report(self.counted);
+        }
+    }
+}
+
+/// T9.07: responses that can carry a provider's `usage` block (JSON or
+/// server-sent events) are metered for the journal even without a cap.
+pub fn reports_usage(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.contains("json") || t.contains("event-stream"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,7 +270,46 @@ mod tests {
             max_requests: r,
             max_tokens: t,
             per_minute: m,
+            ..Default::default()
         }))
+    }
+
+    #[test]
+    fn daily_caps_refuse_with_the_days_totals() {
+        let l = Limiter::new(GateLimits {
+            max_requests_day: Some(2),
+            max_tokens_day: Some(1_000),
+            ..Default::default()
+        });
+        assert!(l.check_today(Ok((2, 999))).is_ok());
+        assert!(
+            matches!(l.check_today(Ok((3, 0))), Err(Refusal::Cap(m)) if m.contains("daily limit of 2 requests"))
+        );
+        assert!(
+            matches!(l.check_today(Ok((1, 1_000))), Err(Refusal::Cap(m)) if m.contains("daily limit of 1000"))
+        );
+        assert!(matches!(
+            l.check_today(Err("gone".into())),
+            Err(Refusal::Cap(_))
+        ));
+        assert!(l.meters_tokens());
+        assert!(Limiter::new(GateLimits::default())
+            .check_today(Ok((9, 9)))
+            .is_ok());
+    }
+
+    #[test]
+    fn a_metered_response_reports_its_tokens_once() {
+        let l = Arc::new(Limiter::new(GateLimits::default()));
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let mut m = UsageMeter::new(l);
+        let g = got.clone();
+        m.reports.push(Box::new(move |n| g.lock().unwrap().push(n)));
+        m.observe(&Bytes::from_static(
+            br#"{"usage":{"input_tokens":30,"output_tokens":12}}"#,
+        ));
+        drop(m);
+        assert_eq!(*got.lock().unwrap(), [42]);
     }
 
     #[test]

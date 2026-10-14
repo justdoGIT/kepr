@@ -140,6 +140,14 @@ default = []
 # T7.16: route the daemon's crypto through aws-lc-rs (src/daemon_eco/crypto_fips.rs).
 fips = ["dep:aws-lc-rs"]
 
+# Never built (`cfg(any())` matches no target): it only puts the FIPS
+# module's build dependencies into Cargo.lock, so CI's `aws-lc-rs/fips`
+# build uses pinned versions instead of resolving fresh ones. Resolved
+# fresh, aws-lc-fips-sys 0.14.3's bindgen 0.73 got syn 2 next to
+# prettyplease 0.3 (syn 3) and failed to compile.
+[target.'cfg(any())'.dependencies]
+aws-lc-rs = { version = "1.18", features = ["fips"] }
+
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git
 # (proptest writes a `proptest-regressions/` dir on a failure that is

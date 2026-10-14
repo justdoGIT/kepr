@@ -34,6 +34,10 @@ pub enum Inject {
     /// (made with the session placeholder) and signs again with the key;
     /// `*.amazonaws.com` hosts only.
     Sigv4,
+    /// T7.08: a GitHub App private key (PEM). The gate never sends it: it
+    /// signs an app JWT and injects the 1-hour installation token it
+    /// exchanges that for (`Authorization: Bearer`). api.github.com only.
+    GithubApp { app_id: u64, installation_id: u64 },
 }
 
 impl Inject {
@@ -116,6 +120,19 @@ pub fn validate_binding(b: &Binding) -> Result<(), String> {
         }
         Inject::Sigv4 if !b.host.ends_with(".amazonaws.com") || b.port != 443 => {
             Err("sigv4 binds only *.amazonaws.com hosts on port 443".to_string())
+        }
+        Inject::GithubApp {
+            app_id,
+            installation_id,
+        } if b.host != crate::github_app::API_HOST
+            || b.port != 443
+            || *app_id == 0
+            || *installation_id == 0 =>
+        {
+            Err(
+                "a GitHub App key binds only api.github.com:443, with app and installation ids"
+                    .into(),
+            )
         }
         _ => Ok(()),
     }
@@ -264,6 +281,28 @@ mod tests {
         }
         let j = serde_json::to_string(&b("sts.amazonaws.com", 443, Inject::Sigv4)).unwrap();
         assert!(j.contains(r#"{"kind":"sigv4"}"#), "{j}");
+    }
+
+    #[test]
+    fn github_app_binds_only_api_github_com() {
+        let app = |a, i| Inject::GithubApp {
+            app_id: a,
+            installation_id: i,
+        };
+        assert!(validate_binding(&b("api.github.com", 443, app(1, 2))).is_ok());
+        assert!(validate_binding(&b("github.com", 443, app(1, 2))).is_err());
+        assert!(validate_binding(&b("api.github.com", 8443, app(1, 2))).is_err());
+        assert!(validate_binding(&b("api.github.com", 443, app(0, 2))).is_err());
+        assert!(validate_binding(&b("api.github.com", 443, app(1, 0))).is_err());
+        let j = serde_json::to_string(&b("api.github.com", 443, app(7, 9))).unwrap();
+        assert!(
+            j.contains(r#"{"kind":"github_app","app_id":7,"installation_id":9}"#),
+            "{j}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Binding>(&j).unwrap().inject,
+            app(7, 9)
+        );
     }
 
     #[test]

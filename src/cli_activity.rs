@@ -94,6 +94,7 @@ impl CliActivity {
             "unlock" => cli_cmds::cmd_unlock(args),
             "status" => cli_cmds::cmd_status(args),
             "exec" => match resolve_env_for(args) {
+                Ok(vars) if !args.session.pull.is_empty() => crate::cli_session::pull::cmd_exec(&vars, args), // T3.06
                 Ok(vars) => cli_exec::cmd_exec(&vars, &args.memfd_vars, &args.exec_argv, args.mask),
                 Err(e) => Response::fail(e),
             },
@@ -103,6 +104,7 @@ impl CliActivity {
                 Ok(vars) => cli_envdump::cmd_env(&vars),
                 Err(e) => Response::fail(e),
             },
+            "rotate" if args.aws.any() => crate::cli_aws::flags::cmd_rotate(args), // batch: aws
             "rotate" => match (&args.name, &args.hook_path) {
                 (Some(n), Some(h)) => cli_rotate::cmd_rotate(n, args.gen_kind, h),
                 (None, _) => Response::fail("rotate requires NAME"),

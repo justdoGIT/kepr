@@ -68,6 +68,9 @@ pub struct GateOwner {
     pub creds: std::collections::HashSet<String>,
     /// T7.09: stores what the gate records (`kepr agent run --record`).
     pub rec: crate::daemon_gatex::recording::Recorder,
+    /// T7.10: the harness the session claims to run, for just-in-time
+    /// grants (`daemon_aws::grant`). `None` = no grant can match.
+    pub harness: Option<String>,
 }
 
 /// Bumped on every set, delete and expiry sweep; gates compare it
@@ -107,10 +110,27 @@ pub fn resolve_for_gate(
         Some(Err(e)) => return fail(format!("resolve: meta parse: {e}")),
         None => None,
     };
+    if crate::daemon_policy::canary_refuse(uid, username, &upper, meta.as_ref()) {
+        return Err(()); // T9.08: never released; asking trips it
+    }
     let inject = match check_resolvable(meta.as_ref(), expiry::now_unix(), host, port) {
         Ok(i) => i,
         Err(reason) => return fail(reason),
     };
+    // T7.10: a just-in-time credential needs an open grant for this
+    // session's harness.
+    let jit = meta
+        .as_ref()
+        .map(|m| crate::daemon_aws::grant::check(m, owner.harness.as_deref(), expiry::now_unix()));
+    if let Some(Err(reason)) = jit {
+        return fail(reason);
+    }
+    if let Some(Err(e)) = meta
+        .as_ref()
+        .map(|m| crate::daemon_syncx::quorum_gate(uid, &upper, m))
+    {
+        return fail(format!("resolve: {e}")); // T7.12: M-of-N approvals
+    }
     // T9.01: a sealed credential flagged --requires-consent is released
     // only after polkit approves the agent process (fail-closed).
     let needs_consent = meta.as_ref().and_then(|m| m.requires_consent) == Some(true);
@@ -165,6 +185,26 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
                 id,
                 entries,
             ),
+            Ok(GateRequest::Canary { id, fingerprints }) => {
+                crate::daemon_policy::canary_gate_check(
+                    owner.uid,
+                    &owner.username,
+                    id,
+                    &fingerprints,
+                )
+            }
+            Ok(GateRequest::DayUsage {
+                id,
+                name,
+                requests,
+                tokens,
+            }) => crate::daemon_policy::day_usage(
+                &owner.creds,
+                owner.uid,
+                id,
+                &name,
+                (requests, tokens),
+            ),
             Err(_) => GateResponse::Err {
                 id: 0,
                 error: "malformed request".into(),
@@ -193,6 +233,7 @@ fn start(
     username: &str,
     routes: &[GateRoute],
     (port, limits, tunnel, record): (Option<u16>, GateLimits, bool, bool),
+    harness: Option<String>,
 ) -> Result<Response, String> {
     validate_routes(routes)?;
     limits.validate()?;
@@ -233,10 +274,12 @@ fn start(
         pid: peer_pid,
         creds: kepr_core::gate_protocol::resolvable_creds(routes),
         rec,
+        harness: harness.filter(|h| kepr_core::protocol_aws::valid_harness(h)), // T7.10
     };
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
     let gate_pid = key.max(0);
+    crate::daemon_policy::session_started(uid, &session, routes); // T9.07
     Ok(Response::GateStarted {
         port: ready.port,
         placeholders: ready.placeholders,
@@ -255,8 +298,9 @@ pub fn handle_start_gate(
     username: &str,
     routes: &[GateRoute],
     port_limits: (Option<u16>, GateLimits, bool, bool),
+    harness: Option<String>,
 ) -> Response {
-    let result = start(uid, peer_pid, username, routes, port_limits);
+    let result = start(uid, peer_pid, username, routes, port_limits, harness);
     audit::log(&AuditEvent {
         op: "start-gate",
         name: None,

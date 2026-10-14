@@ -9,7 +9,6 @@ use std::time::Instant;
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, Limited};
 use hyper::body::Incoming;
-use hyper::header::HeaderValue;
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
@@ -17,11 +16,13 @@ use kepr_core::secmem::SplitKey;
 
 use crate::dlp;
 use crate::journal::Log;
-use crate::limits::{Limiter, Refusal, UsageMeter};
+use crate::limits::{reports_usage, Limiter, UsageMeter};
 use crate::placeholder;
 use crate::rewrite::{placeholders_in, upstream_headers, upstream_query};
 use crate::routes;
 use crate::vault::Cache;
+
+pub(crate) use crate::reply::{json, kepr_error, limit_response};
 
 pub type Body = BoxBody<Bytes, hyper::Error>;
 pub const MAX_BODY: usize = 8 * 1024 * 1024;
@@ -119,41 +120,6 @@ impl State {
     }
 }
 
-fn json(status: StatusCode, body: String) -> Response<Body> {
-    let mut r = Response::new(Full::new(Bytes::from(body)).map_err(|n| match n {}).boxed());
-    *r.status_mut() = status;
-    r.headers_mut()
-        .insert("content-type", HeaderValue::from_static("application/json"));
-    r
-}
-
-pub fn kepr_error(status: StatusCode, kind: &str, message: &str) -> Response<Body> {
-    let body = serde_json::json!({"type": "error", "error": {"type": kind, "message": message}});
-    json(status, body.to_string())
-}
-
-/// A session cap is final (403, so harnesses don't retry); the rate
-/// limit is a 429 with `Retry-After`.
-pub(crate) fn limit_response(refusal: Refusal) -> Response<Body> {
-    match refusal {
-        Refusal::Cap(why) => kepr_error(
-            StatusCode::FORBIDDEN,
-            "kepr_limit",
-            &format!("kepr stopped this request: {why}."),
-        ),
-        Refusal::Rate(secs) => {
-            let mut r = kepr_error(
-                StatusCode::TOO_MANY_REQUESTS,
-                "kepr_limit",
-                &format!("kepr rate limit for this session; retry in {secs}s."),
-            );
-            r.headers_mut()
-                .insert("retry-after", HeaderValue::from(secs));
-            r
-        }
-    }
-}
-
 pub async fn handle(
     state: Arc<State>,
     req: Request<Incoming>,
@@ -185,20 +151,37 @@ pub async fn proxy_request(
     rest: &str,
     req: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
+    proxy_request_to(state, pname, None, rest, req).await
+}
+
+/// `proxy_request` toward `host` instead of the provider's own host
+/// (T2.04: a bound host under a provider domain, e.g. gcloud's).
+pub async fn proxy_request_to(
+    state: Arc<State>,
+    pname: &str,
+    host: Option<String>,
+    rest: &str,
+    req: Request<Incoming>,
+) -> Result<Response<Body>, Infallible> {
     let not_found = || kepr_error(StatusCode::NOT_FOUND, "kepr", "unknown kepr route");
     let (Some(provider), Some(route)) = (routes::lookup(pname), state.routes.get(pname)) else {
         return Ok(not_found());
     };
+    let host = host.unwrap_or_else(|| provider.host.to_string());
     let method = req.method().to_string();
     let log = Log {
         state: &state,
         provider: pname,
-        host: provider.host,
+        host: &host,
         method: &method,
         path: rest,
         start: Instant::now(),
     };
     let query = req.uri().query().map(str::to_string);
+    let head = crate::canary::screen(&state.cache, req.headers(), query.as_deref(), None);
+    if let Some(r) = head.await {
+        return Ok(log.reply(r, 0, Some("canary"))); // T9.08
+    }
 
     let phs = placeholders_in(req.headers(), query.as_deref());
     if phs.is_empty() || !phs.iter().all(|p| state.valid_placeholder(p, route.slot)) {
@@ -213,20 +196,35 @@ pub async fn proxy_request(
     if let Err(refusal) = state.limiter.admit(Instant::now()) {
         return Ok(log.reply(limit_response(refusal), 0, Some("limit")));
     }
+    let today = state
+        .limiter
+        .admit_today(state.cache.clone(), route.cred.clone());
+    if let Err(refusal) = today.await {
+        return Ok(log.reply(limit_response(refusal), 0, Some("limit"))); // T9.06
+    }
 
-    let (cache, cred, host) = (state.cache.clone(), route.cred.clone(), provider.host);
-    let (value, inject) =
-        match tokio::task::spawn_blocking(move || cache.get(&cred, host, 443)).await {
-            Ok(Ok(v)) => v,
-            _ => {
-                let r = kepr_error(
-                    StatusCode::BAD_GATEWAY,
-                    "kepr",
-                    "kepr could not obtain the credential",
-                );
-                return Ok(log.reply(r, 0, None));
-            }
-        };
+    let (cache, cred, h) = (state.cache.clone(), route.cred.clone(), host.clone());
+    let (value, inject) = match tokio::task::spawn_blocking(move || cache.get(&cred, &h, 443)).await
+    {
+        Ok(Ok(v)) => v,
+        _ => {
+            let r = kepr_error(
+                StatusCode::BAD_GATEWAY,
+                "kepr",
+                "kepr could not obtain the credential",
+            );
+            return Ok(log.reply(r, 0, None));
+        }
+    };
+    // T7.08: a GitHub App key becomes an installation token here.
+    let Ok((value, inject)) = crate::github_app::swap(&state, value, inject).await else {
+        let r = kepr_error(
+            StatusCode::BAD_GATEWAY,
+            "kepr",
+            "kepr could not obtain a token",
+        );
+        return Ok(log.reply(r, 0, None));
+    };
 
     let (parts, body) = req.into_parts();
     let bytes = match Limited::new(body, MAX_BODY).collect().await {
@@ -241,6 +239,10 @@ pub async fn proxy_request(
         }
     };
 
+    let body = crate::canary::screen(&state.cache, &parts.headers, None, Some(&bytes));
+    if let Some(r) = body.await {
+        return Ok(log.reply(r, bytes.len(), Some("canary")));
+    }
     if let Some(msg) = dlp::check(&parts, &bytes, &state.cache.values()) {
         let r = kepr_error(StatusCode::FORBIDDEN, "kepr_blocked", &msg);
         return Ok(log.reply(r, bytes.len(), Some("dlp")));
@@ -282,13 +284,16 @@ pub async fn proxy_request(
         Ok(resp) => {
             let (mut p, b) = resp.into_parts();
             crate::rewrite::clean_response(&mut p.headers, &inject);
-            log.emit(p.status, bytes.len(), None);
+            let line = log.line(p.status, bytes.len(), None);
             let status = p.status.as_u16();
             let b = (state.recorder).http_response(conn, pname, status, b.boxed(), &state.cache);
-            if !state.limiter.meters_tokens() {
+            if !state.limiter.meters_tokens() && !reports_usage(&p.headers) {
+                crate::journal::push(&state.journal, line);
                 return Ok(Response::from_parts(p, b));
             }
-            let mut meter = UsageMeter::new(state.limiter.clone());
+            let mut meter = UsageMeter::new(state.limiter.clone())
+                .daily(&state.cache, &route.cred)
+                .journal(state.journal.clone(), line); // T9.07
             let b = b.map_frame(move |f| {
                 if let Some(d) = f.data_ref() {
                     meter.observe(d);
@@ -326,7 +331,7 @@ pub async fn serve(listener: tokio::net::TcpListener, state: Arc<State>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hyper::header::{HeaderMap, AUTHORIZATION};
+    use hyper::header::{HeaderMap, HeaderValue, AUTHORIZATION};
     use kepr_core::binding::Inject;
 
     impl State {
@@ -581,6 +586,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_metered_response_journals_its_tokens() {
+        const USAGE: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 48\r\n\r\n{\"usage\":{\"input_tokens\":30,\"output_tokens\":12}}";
+        let (up, _rx) = fake_upstream_with(Some(USAGE)).await;
+        let journal = Arc::new(crate::journal::Queue::default());
+        let rec = Arc::new(crate::recording::Recorder::new(false));
+        let gate = start_gate_journal(up, Default::default(), rec, journal.clone()).await;
+        let ph = placeholder::make(&KEY, SID, 0);
+        let r = send(&gate, &ph, "{}").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        r.into_body().collect().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let got = journal.take();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!((got[0].status, got[0].tokens), (200, Some(42)));
+    }
+
+    #[tokio::test]
     async fn an_upstream_echoing_the_key_does_not_put_it_in_the_recording() {
         const ECHO: &[u8] = b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 39\r\n\r\n{\"error\":\"bad key real-key-1234567890\"}";
         let (up, _rx) = fake_upstream_with(Some(ECHO)).await;
@@ -643,6 +665,114 @@ mod tests {
         assert_eq!(r.status(), StatusCode::OK);
         r.into_body().collect().await.unwrap(); // the meter sees the body
         assert_eq!(send(&gate, &ph, "{}").await.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// T9.06: the daemon's per-day counters, shared by every session.
+    #[derive(Clone, Default)]
+    struct Daily(Arc<std::sync::Mutex<HashMap<String, (u64, u64)>>>);
+    impl Resolve for Daily {
+        fn generation(&self) -> Result<u64, String> {
+            Fixed.generation()
+        }
+        fn resolve(&self, n: &str, h: &str, p: u16) -> Result<(ZeroString, Inject), String> {
+            Fixed.resolve(n, h, p)
+        }
+        fn day_usage(&self, name: &str, r: u64, t: u64) -> Result<(u64, u64), String> {
+            let mut m = self.0.lock().unwrap();
+            let e = m.entry(name.to_string()).or_default();
+            *e = (e.0 + r, e.1 + t);
+            Ok(*e)
+        }
+    }
+
+    async fn start_daily_gate(upstream: String, day: Daily) -> String {
+        let limits = kepr_core::gate_protocol::GateLimits {
+            max_requests_day: Some(2),
+            ..Default::default()
+        };
+        start_gate_resolver(upstream, Box::new(day), limits).await
+    }
+
+    async fn start_gate_resolver(
+        upstream: String,
+        resolver: Box<dyn Resolve>,
+        limits: kepr_core::gate_protocol::GateLimits,
+    ) -> String {
+        let cache = Arc::new(Cache::new(resolver, DEFAULT_TTL));
+        let mut routes = HashMap::new();
+        let cred = "ANTHROPIC_API_KEY".to_string();
+        routes.insert("anthropic".to_string(), Route { cred, slot: 0 });
+        let state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
+            .with_test_upstream(upstream)
+            .with_limits(limits);
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(serve(l, Arc::new(state)));
+        addr
+    }
+
+    #[tokio::test]
+    async fn daily_cap_holds_across_sessions() {
+        let (up, _rx) =
+            fake_upstream_with(Some(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")).await;
+        let day = Daily::default();
+        let a = start_daily_gate(up.clone(), day.clone()).await;
+        let b = start_daily_gate(up, day.clone()).await;
+        let ph = placeholder::make(&KEY, SID, 0);
+        assert_eq!(send(&a, &ph, "{}").await.status(), StatusCode::OK);
+        assert_eq!(send(&b, &ph, "{}").await.status(), StatusCode::OK);
+        let r = send(&a, &ph, "{}").await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let body =
+            String::from_utf8(r.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(
+            body.contains("kepr_limit") && body.contains("daily limit of 2"),
+            "{body}"
+        );
+        assert_eq!(day.0.lock().unwrap()["ANTHROPIC_API_KEY"].0, 3);
+    }
+
+    /// T9.08: the daemon's side of the canary check, one decoy planted.
+    #[derive(Clone)]
+    struct Planted(String, Arc<std::sync::Mutex<u32>>);
+    impl Resolve for Planted {
+        fn generation(&self) -> Result<u64, String> {
+            Fixed.generation()
+        }
+        fn resolve(&self, n: &str, h: &str, p: u16) -> Result<(ZeroString, Inject), String> {
+            Fixed.resolve(n, h, p)
+        }
+        fn canary(&self, fps: Vec<String>) -> Result<bool, String> {
+            let hit = fps.contains(&kepr_core::canary::fingerprint(self.0.as_bytes()));
+            *self.1.lock().unwrap() += u32::from(hit);
+            Ok(hit)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_planted_canary_is_refused_and_reported() {
+        let (up, mut rx) =
+            fake_upstream_with(Some(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")).await;
+        let decoy = kepr_core::canary::make("anthropic").unwrap();
+        let planted = Planted(decoy.clone(), Arc::default());
+        let gate = start_gate_resolver(up, Box::new(planted.clone()), Default::default()).await;
+        // Sent where the placeholder goes, and inside a body.
+        let r = send(&gate, &decoy, "{}").await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let body =
+            String::from_utf8(r.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(
+            body.contains("kepr_blocked") && !body.contains("canary"),
+            "{body}"
+        );
+        let ph = placeholder::make(&KEY, SID, 0);
+        let r = send(&gate, &ph, &format!("{{\"note\":\"{decoy}\"}}")).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        assert_eq!(*planted.1.lock().unwrap(), 2, "both reported to the daemon");
+        // A clean request still goes through; the refused ones never left.
+        assert_eq!(send(&gate, &ph, "{}").await.status(), StatusCode::OK);
+        assert!(!rx.recv().await.unwrap().contains(&decoy));
+        assert!(rx.try_recv().is_err());
     }
 
     async fn start_egress_gate(
