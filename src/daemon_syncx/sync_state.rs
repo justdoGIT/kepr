@@ -31,6 +31,16 @@ pub const TOMBSTONE_TTL: u64 = 30 * 86_400;
 pub struct State {
     #[serde(default)]
     pub recs: BTreeMap<String, Rec>,
+    /// Per sending device (its X25519 key, hex): the newest bundle `at`
+    /// merged. An older bundle from it is a stale or replayed copy and is
+    /// ignored: once a tombstone has expired, it would bring back what
+    /// was deleted.
+    #[serde(default)]
+    pub seen: BTreeMap<String, u64>,
+    /// The `at` of the last bundle this device built; each new one takes
+    /// a later one, so "older" is exact.
+    #[serde(default)]
+    pub built: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
