@@ -68,6 +68,7 @@ mod daemon_policy;
 // batch: gate
 mod daemon_gatex;
 // batch: aws
+mod daemon_aws;
 // batch: eco
 mod daemon_eco;
 // batch: platform

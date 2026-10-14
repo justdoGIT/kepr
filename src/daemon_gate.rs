@@ -68,6 +68,9 @@ pub struct GateOwner {
     pub creds: std::collections::HashSet<String>,
     /// T7.09: stores what the gate records (`kepr agent run --record`).
     pub rec: crate::daemon_gatex::recording::Recorder,
+    /// T7.10: the harness the session claims to run, for just-in-time
+    /// grants (`daemon_aws::grant`). `None` = no grant can match.
+    pub harness: Option<String>,
 }
 
 /// Bumped on every set, delete and expiry sweep; gates compare it
@@ -114,6 +117,14 @@ pub fn resolve_for_gate(
         Ok(i) => i,
         Err(reason) => return fail(reason),
     };
+    // T7.10: a just-in-time credential needs an open grant for this
+    // session's harness.
+    let jit = meta
+        .as_ref()
+        .map(|m| crate::daemon_aws::grant::check(m, owner.harness.as_deref(), expiry::now_unix()));
+    if let Some(Err(reason)) = jit {
+        return fail(reason);
+    }
     if let Some(Err(e)) = meta
         .as_ref()
         .map(|m| crate::daemon_syncx::quorum_gate(uid, &upper, m))
@@ -222,6 +233,7 @@ fn start(
     username: &str,
     routes: &[GateRoute],
     (port, limits, tunnel, record): (Option<u16>, GateLimits, bool, bool),
+    harness: Option<String>,
 ) -> Result<Response, String> {
     validate_routes(routes)?;
     limits.validate()?;
@@ -262,6 +274,7 @@ fn start(
         pid: peer_pid,
         creds: kepr_core::gate_protocol::resolvable_creds(routes),
         rec,
+        harness: harness.filter(|h| kepr_core::protocol_aws::valid_harness(h)), // T7.10
     };
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
@@ -285,8 +298,9 @@ pub fn handle_start_gate(
     username: &str,
     routes: &[GateRoute],
     port_limits: (Option<u16>, GateLimits, bool, bool),
+    harness: Option<String>,
 ) -> Response {
-    let result = start(uid, peer_pid, username, routes, port_limits);
+    let result = start(uid, peer_pid, username, routes, port_limits, harness);
     audit::log(&AuditEvent {
         op: "start-gate",
         name: None,

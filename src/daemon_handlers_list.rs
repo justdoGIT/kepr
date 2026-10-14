@@ -65,6 +65,7 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                             .any(|b| b.inject == kepr_core::binding::Inject::Sigv4)
                             .then_some(true)
                     }), // T2.02
+                ..crate::daemon_aws::info(meta_opt.as_ref())                        // T7.07
             }
         })
         .chain(crate::daemon_store::alias_infos(uid)) // T11.5

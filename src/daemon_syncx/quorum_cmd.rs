@@ -401,6 +401,61 @@ mod tests {
         assert_eq!(have, 1, "nothing above counted");
     }
 
+    /// T7.10: on a just-in-time credential the approved window is a
+    /// grant, and the owner's own grant is not one.
+    #[test]
+    fn an_approved_request_opens_a_jit_grant() {
+        let (a, b) = pair();
+        let now = now_unix();
+        testkit::set_sealed(a, "QJ_KEY", "v");
+        guarded_meta(a, "QJ_KEY", now);
+        let jit = crate::daemon_aws::grant::handle_grant(
+            a,
+            "t",
+            "QJ_KEY",
+            kepr_core::protocol_aws::GrantOp::Jit { on: true },
+        );
+        assert!(jit.is_success(), "{jit:?}");
+        let meta = || testkit::meta(a, "QJ_KEY");
+        assert!(super::super::quorum_gate(a, "QJ_KEY", &meta()).is_err());
+        // The owner's own grant doesn't satisfy the requirement.
+        let own = crate::daemon_aws::grant::handle_grant(
+            a,
+            "t",
+            "QJ_KEY",
+            kepr_core::protocol_aws::GrantOp::Open {
+                harness: "claude".into(),
+                for_secs: 3600,
+            },
+        );
+        assert!(own.is_success(), "{own:?}");
+        assert!(super::super::quorum_gate(a, "QJ_KEY", &meta()).is_err());
+        let (id, _, _, request) = status_of(handle_request(a, "t", "QJ_KEY", 3600, now));
+        status_of(handle_approve(a, "t", (&id, None), || true, now));
+        let (_, _, done, _) = status_of(handle_approve(
+            a,
+            "t",
+            (&id, Some(&sign(b, &request, now))),
+            no_prompt,
+            now,
+        ));
+        assert!(done);
+        let m = meta();
+        assert!(super::super::quorum_gate(a, "QJ_KEY", &m).is_ok());
+        assert_eq!(
+            crate::daemon_aws::grant::approved_until(&m),
+            Some(now + 3600)
+        );
+        // Persisted, for any session, and gone when it closes.
+        assert!(crate::daemon_aws::grant::check(&m, None, now).is_ok());
+        assert!(crate::daemon_aws::grant::check(&m, None, now + 3600).is_err());
+        assert!(quorum::window(a, "QJ_KEY", now).is_some(), "shown by ls");
+        // The window closes with its own grant: the in-memory sweep has
+        // nothing to do, and after it nothing resolves again.
+        assert!(quorum::window(a, "QJ_KEY", now + 3601).is_none());
+        assert!(quorum::gate(a, "QJ_KEY", &meta(), now + 3601).is_err());
+    }
+
     #[test]
     fn lowering_needs_the_quorum_and_set_keeps_it() {
         let (a, b) = pair();

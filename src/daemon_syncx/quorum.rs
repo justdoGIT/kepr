@@ -10,11 +10,13 @@
 // after 15 minutes. Lowering N or turning it off is a request too, needing
 // the current N. `set` keeps N (carry_over).
 //
-// T7.10's per-harness JIT grants are not in this tree: the approved window
-// is the grant, for the credential as a whole. Requests and windows live
-// in memory only, so a restarted daemon has none (fail-closed); the
-// expiry sweeper closes windows and bumps the gate generation, so a
-// gate's cached value goes with them.
+// On a credential that is just-in-time (T7.10 `jit`), an approved `Use`
+// opens a T7.10 grant instead: a persisted window for any harness,
+// marked `approved`, which is the only kind that satisfies this
+// requirement (`daemon_aws::grant::open_approved`). Everywhere else the
+// window lives in memory only, so a restarted daemon has none
+// (fail-closed); the expiry sweeper closes those and bumps the gate
+// generation, so a gate's cached value goes with them.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -80,14 +82,26 @@ pub fn need(uid: u32, name: &str) -> u8 {
         .unwrap_or(0)
 }
 
-/// Until when `name`'s approved window is open, if it is.
+/// Until when `name`'s approved window is open, if it is. On a
+/// just-in-time credential (T7.10) that window is a grant in the meta.
 pub fn window(uid: u32, name: &str, now: u64) -> Option<u64> {
-    with(|r| r.windows.get(&(uid, name.to_string())).copied()).filter(|u| *u > now)
+    let in_memory = with(|r| r.windows.get(&(uid, name.to_string())).copied());
+    let granted = || {
+        let m = expiry::read_meta(&expiry::meta_path_for(&cred_path(uid, name)))?.ok()?;
+        crate::daemon_aws::grant::approved_until(&m)
+    };
+    in_memory.or_else(granted).filter(|u| *u > now)
 }
 
 /// The `get` / gate-resolve check: refused while approvals are required
 /// and no approved window is open.
 pub fn gate(uid: u32, name: &str, meta: &CredMeta, now: u64) -> Result<(), String> {
+    // T7.10: on a just-in-time credential the approved grant is the
+    // window; the owner's own `kepr grant` is not approved, so it
+    // doesn't open this gate.
+    // T7.10: on a just-in-time credential the window is an approved
+    // grant (`window` reads it); the owner's own `kepr grant` is not
+    // approved, so it doesn't open this gate.
     match meta.approvals {
         Some(n) if n >= 2 && window(uid, name, now).is_none() => {
             Err(format!("needs {n} approvals (kepr quorum request {name})"))
@@ -169,7 +183,7 @@ pub fn approve(
     now: u64,
 ) -> Result<(Pending, bool), String> {
     find(uid, id, now)?;
-    with(|r| {
+    let (p, done) = with(|r| {
         let at = r
             .pending
             .iter()
@@ -184,12 +198,20 @@ pub fn approve(
             return Ok((p.clone(), false));
         }
         let p = r.pending.remove(at);
-        if let Action::Use(secs) = p.action {
-            let until = r.windows.entry((uid, p.name.clone())).or_insert(0);
-            *until = (*until).max(now + secs);
-        }
         Ok((p, true))
-    })
+    })?;
+    // Outside the registry lock: writing a T7.10 grant takes the
+    // credential's lock, which other paths hold while reading here.
+    if let (true, Action::Use(secs)) = (done, p.action) {
+        let jit = crate::daemon_aws::grant::open_approved(uid, &p.name, secs, now)?;
+        if !jit {
+            with(|r| {
+                let until = r.windows.entry((uid, p.name.clone())).or_insert(0);
+                *until = (*until).max(now + secs);
+            });
+        }
+    }
+    Ok((p, done))
 }
 
 /// Open requests and windows of `uid`.

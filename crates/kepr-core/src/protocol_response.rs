@@ -195,6 +195,8 @@ pub enum Response {
     #[serde(untagged)]
     Gatex(crate::protocol_gatex::GatexResponse),
     // batch: aws
+    #[serde(untagged)]
+    Aws(crate::protocol_aws::AwsResponse),
     // batch: eco
     #[serde(untagged)]
     Eco(crate::protocol_eco::EcoResponse),

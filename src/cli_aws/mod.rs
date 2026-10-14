@@ -6,26 +6,33 @@
 //   credproc   `kepr aws credential-process` (T2.03)
 //   iam        IAM Query API: list / create / delete access keys (T7.05)
 //   rotate_iam `kepr rotate NAME --aws-iam` (T7.05)
+//   rotate_sched `kepr rotate NAME --every 30d ...` / `--scheduled` (T7.07)
 //   flags      this batch's flags on the core `rotate` verb
 //   leaked     `kepr leaked NAME --rotate`: provider-API rotation (T9.09)
 //   github_app `kepr github-app add`: sealed GitHub App keys (T7.08)
 //   presets    npm / docker files for agent sessions (T2.04)
+//   grant      `kepr grant`: just-in-time windows for sealed keys (T7.10)
+//   checkout   `kepr checkout` / `kepr checkin`: one holder (T7.11)
 //
 // Network calls to providers happen here, in the user's CLI process: the
 // root daemon's unit has no TCP. Values reach the store only through the
 // normal `set` path.
 
+pub mod checkout;
 pub mod credproc;
 pub mod flags;
 pub mod github_app;
+pub mod grant;
 pub mod iam;
 pub mod leaked;
 pub mod presets;
 pub mod rotate_iam;
+pub mod rotate_sched;
 pub mod session;
 pub mod sts;
 
 pub use flags::{AwsFlags, FLAGS};
+pub use rotate_sched::list_tail;
 
 #[cfg(test)]
 pub mod fake;
@@ -36,7 +43,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::cli_exec::{CredFetcher, DaemonFetcher};
 
-pub const VERBS: &[&str] = &["aws", "github-app"];
+pub const VERBS: &[&str] = &["aws", "github-app", "grant", "checkout", "checkin"];
 
 pub const HELP: &str = "\
   aws whoami KEY [--region R]          which AWS account and principal the stored key KEY is
@@ -47,9 +54,22 @@ pub const HELP: &str = "\
                                        session's placeholder pair. Never the long-lived key
   rotate KEY --aws-iam                 new IAM access key for the stored KEY: created, verified
                                        (STS), stored, then the old key deleted (2-key limit)
+  rotate KEY --db                      new password for a sealed database login (rotate-db)
+  rotate KEY --every 30d --hook CMD | --aws-iam | --db
+                                       rotate on a schedule (12h, 30d, 2w; `--every off` stops);
+                                       the user-mode daemon runs due ones and `kepr list`
+                                       shows the next. `rotate KEY --scheduled` runs it now
   github-app add KEY --app-id N --installation-id N [--key-file PEM]
                                        store a GitHub App private key sealed; agent sessions get
                                        1-hour installation tokens for gh / GH_TOKEN (gate-minted)
+  grant KEY --to HARNESS --for 2h      let `kepr agent run HARNESS` sessions use the sealed KEY
+                                       for a window; outside every window none can (just-in-time)
+  grant KEY --revoke [--to HARNESS]    close the windows now
+  grant KEY --jit on|off               ask for grants at all (`kepr grant KEY` shows the state)
+  checkout KEY [--for 2h]              take KEY: a second checkout is refused until the hold
+                                       runs out, and the printed token is what checks it back in
+  checkin KEY [--token T] [--rotate]   give KEY back (--rotate rotates it first, and keeps the
+                                       hold if that fails)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -62,6 +82,8 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         ("aws", Some("whoami")) => cmd_whoami(&args[1..]),
         ("aws", Some("credential-process")) => credproc::cmd(&args[1..]),
         ("github-app", _) => github_app::cmd(&args),
+        ("grant", _) => grant::cmd(&args),
+        (v @ ("checkout" | "checkin"), _) => checkout::cmd(v, &args),
         _ => Response::fail(format!("usage:\n{HELP}")),
     }
 }
