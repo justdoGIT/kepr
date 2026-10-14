@@ -145,6 +145,10 @@ pub fn handle_health(
             }
             Some(Err(_)) => issues.push("unreadable".to_string()),
         }
+        issues.extend(crate::daemon_platform::pki::health_issues(
+            &meta,
+            expiry::now_unix(),
+        )); // T10.10
         let age_days = file_age_days(&path).unwrap_or(0);
         if age_days > max_age {
             issues.push(format!("not changed in {age_days} days"));
