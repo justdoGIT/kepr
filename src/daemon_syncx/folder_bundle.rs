@@ -80,12 +80,14 @@ struct Sealed {
     ct: String,
 }
 
-/// An opened bundle: who sent it (the pinned contact's name) and what.
+/// An opened bundle: who sent it (the pinned contact's name), when (the
+/// signed manifest's `at`) and what.
 #[derive(Debug)]
 pub struct Opened {
     pub id: String,
     pub folder: String,
     pub contact: String,
+    pub at: u64,
     pub sealed: bool,
     pub items: Vec<(String, Payload)>,
 }
@@ -282,6 +284,7 @@ pub fn open(
         id: m.id,
         folder: m.folder,
         contact,
+        at: m.at,
         sealed: m.sealed,
         items,
     })
@@ -327,13 +330,15 @@ mod tests {
             assert_eq!(o.items[1].0, "DB");
             assert_eq!(o.items[1].1.value.as_str(), "two");
             assert_eq!(o.id, folder_id(&a.recipient().text(), "team/api"));
+            assert_eq!(o.at, 5);
         }
         assert_eq!(
             open(&d, &bytes, pin(&a)).unwrap_err(),
             "not encrypted to your share key"
         );
+        // Quoted: random base64 can hold the bare letters, never a quote.
         let text = String::from_utf8_lossy(&bytes);
-        assert!(!text.contains("one") && !text.contains("two"));
+        assert!(!text.contains("\"one\"") && !text.contains("\"two\""));
         assert!(split(&bytes).is_ok());
     }
 

@@ -20,22 +20,36 @@ pub fn public(uid: u32) -> String {
         .text()
 }
 
-/// `kepr device add` on `on`, `kepr device enroll` from `other`.
-pub fn enroll(on: u32, other: u32) {
-    let sharing = |r| crate::daemon_sharing::dispatch(on, 0, "t", r);
+/// `kepr device add` on `on`, then `other`'s enrolment request.
+fn request(on: u32, other: u32) -> String {
     let add = SharingRequest::DeviceAdd {
         label: format!("d{other}"),
         oidc_issuer: None,
     };
-    let Response::Sharing(SharingResponse::DeviceToken { token, .. }) = sharing(add) else {
+    let Response::Sharing(SharingResponse::DeviceToken { token, .. }) =
+        crate::daemon_sharing::dispatch(on, 0, "t", add)
+    else {
         panic!("no token");
     };
     let req = EnrolRequest::new(token.as_str(), "host", &public(other), None);
+    serde_json::to_string(&req).unwrap()
+}
+
+/// `kepr device enroll --from` on `on` for `other`, sent as a client with
+/// `peer_pid` would: the daemon asks polkit about that pid.
+pub fn try_enroll(on: u32, other: u32, peer_pid: i32) -> Response {
     let enrol = SharingRequest::DeviceEnroll {
-        request: serde_json::to_string(&req).unwrap(),
+        request: request(on, other),
         oidc: None,
     };
-    assert!(sharing(enrol).is_success());
+    crate::daemon_sharing::dispatch(on, peer_pid, "t", enrol)
+}
+
+/// `other` enrolled on `on`, the human at `on` approving (polkit stubbed).
+pub fn enroll(on: u32, other: u32) {
+    let req = request(on, other);
+    let r = crate::daemon_sharing::devices::handle_enroll(on, "t", &req, None, || true);
+    assert!(r.is_success(), "{r:?}");
 }
 
 pub fn pair() -> (u32, u32) {

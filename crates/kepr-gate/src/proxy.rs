@@ -179,8 +179,8 @@ pub async fn proxy_request_to(
     };
     let query = req.uri().query().map(str::to_string);
     let head = crate::canary::screen(&state.cache, req.headers(), query.as_deref(), None);
-    if let Some(r) = head.await {
-        return Ok(log.reply(r, 0, Some("canary"))); // T9.08
+    if let Some((r, why)) = head.await {
+        return Ok(log.reply(r, 0, Some(why))); // T9.08
     }
 
     let phs = placeholders_in(req.headers(), query.as_deref());
@@ -240,8 +240,8 @@ pub async fn proxy_request_to(
     };
 
     let body = crate::canary::screen(&state.cache, &parts.headers, None, Some(&bytes));
-    if let Some(r) = body.await {
-        return Ok(log.reply(r, bytes.len(), Some("canary")));
+    if let Some((r, why)) = body.await {
+        return Ok(log.reply(r, bytes.len(), Some(why)));
     }
     if let Some(msg) = dlp::check(&parts, &bytes, &state.cache.values()) {
         let r = kepr_error(StatusCode::FORBIDDEN, "kepr_blocked", &msg);

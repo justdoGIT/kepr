@@ -6,48 +6,34 @@
 //
 // Re-importing a newer bundle of the same folder updates only what
 // changed in it: the importer keeps a fingerprint (HMAC under a key
-// derived from its share key) of what each import wrote, per folder id,
-// and never compares against the stored value itself, so an import can't
-// test guesses against a sealed or gated credential. A name that exists
+// derived from its share key) of what each import wrote, per folder id
+// (folder_state.rs), and never compares against the stored value itself,
+// so an import can't test guesses against a sealed or gated credential.
+// A bundle older than one of the same folder already imported is refused
+// (no rollback to a value the sender has since rotated). A name that exists
 // and didn't come from this folder is left alone unless --overwrite; an
 // SSH or share key is never replaced and a sealed credential is never
 // replaced by a plain one. A sealed import binds each value to its
 // provider's host (the key prefix or name says which); one with no known
 // provider is skipped rather than stored readable.
 
-use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::time::Instant;
 
-use hkdf::Hkdf;
-use hmac::{Hmac, KeyInit, Mac};
 use kepr_core::protocol::Response;
 use kepr_core::protocol_sharing::SharingResponse;
 use kepr_core::protocol_store::StoreRequest;
 use kepr_core::protocol_syncx::{SyncxResponse, MAX_REPORT_ROWS};
-use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-use zeroize::Zeroizing;
 
 use super::folder::meta_of;
 use super::folder_bundle::{self, Opened, Payload};
+use super::folder_state::{self, fingerprint, fp_key, Record, State};
 use super::import::{self, row, ROUND_TIME};
 use super::{audit_r, transfer};
 use crate::daemon_handlers::{handle_set, SetFlags};
+use crate::daemon_sharing::contacts;
 use crate::daemon_sharing::kem::{Recipient, ShareSecret};
-use crate::daemon_sharing::{contacts, load, save, state_path};
 use crate::expiry::{self, now_unix, CredMeta};
 use crate::store::{cred_exists, cred_path};
-
-/// One import at a time per daemon: the state file is read-modify-write.
-static IMPORTS: Mutex<()> = Mutex::new(());
-
-/// What each folder import wrote: folder id → name → fingerprint.
-#[derive(Default, Serialize, Deserialize)]
-struct State {
-    #[serde(default)]
-    folders: BTreeMap<String, BTreeMap<String, String>>,
-}
 
 /// The pinned contact's name for a public key (canonical text).
 fn pinned(uid: u32) -> impl Fn(&str) -> Option<String> {
@@ -62,36 +48,12 @@ fn pinned(uid: u32) -> impl Fn(&str) -> Option<String> {
     }
 }
 
-fn fp_key(me: &ShareSecret) -> Zeroizing<[u8; 32]> {
-    let mut key = Zeroizing::new([0u8; 32]);
-    let secret = Zeroizing::new(me.x.to_bytes());
-    Hkdf::<Sha256>::new(None, secret.as_ref())
-        .expand(b"kepr-folder-fingerprint-v1", key.as_mut())
-        .expect("32 bytes is a valid HKDF length");
-    key
-}
-
-fn fingerprint(key: &[u8; 32], name: &str, p: &Payload, sealed: bool) -> String {
-    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("any key length");
-    let meta = serde_json::to_vec(&p.meta).unwrap_or_default();
-    for part in [
-        name.as_bytes(),
-        p.value.as_bytes(),
-        &meta,
-        &[u8::from(sealed)],
-    ] {
-        m.update(&(part.len() as u64).to_be_bytes());
-        m.update(part);
-    }
-    hex::encode(&m.finalize().into_bytes()[..16])
-}
-
 /// What importing `p` as `name` would do. Caller holds the lock.
 fn plan(
     who: (u32, i32),
     username: &str,
     (name, p, sealed): (&str, &Payload, bool),
-    (recorded, fp, overwrite): (Option<&String>, &str, bool),
+    (recorded, fp, overwrite): (Option<&Record>, &str, bool),
 ) -> (&'static str, Option<String>) {
     let skip = |why: &str| ("skipped", Some(why.to_string()));
     let expires = p.meta.expires_at_unix;
@@ -109,11 +71,24 @@ fn plan(
         if meta.sealed == Some(true) && !sealed {
             return skip("a sealed credential has this name");
         }
-        if recorded.is_some_and(|r| r == fp) {
+        // The folder's own: what its import wrote, still carrying the mark
+        // (not set again, nor deleted and made again here since).
+        let ours = recorded.filter(|r| meta.folder_mark.as_deref() == Some(r.mark.as_str()));
+        if ours.is_some_and(|r| r.fp == fp) {
             return ("unchanged", None);
         }
-        if recorded.is_none() && !overwrite {
-            return skip("already in kepr, not from this folder (use --overwrite)");
+        if !overwrite && ours.is_none() {
+            return skip(match recorded {
+                Some(_) => "changed here since this folder wrote it (use --overwrite)",
+                None => "already in kepr, not from this folder (use --overwrite)",
+            });
+        }
+        // A gate set here (a sealed folder's own seal aside) is never
+        // lifted by an update the user didn't ask for.
+        let mut here = meta.clone();
+        here.sealed = here.sealed.filter(|_| !sealed);
+        if let Some(why) = here.gated().filter(|_| !overwrite) {
+            return skip(&format!("{why}-gated here (use --overwrite)"));
         }
     }
     if !import::set_allowed(who, username, name, expires) {
@@ -192,21 +167,29 @@ fn open(uid: u32, upload: &str) -> Result<(ShareSecret, Opened), String> {
     Ok((me, opened))
 }
 
+/// The whole import refused: drop the upload, audit why.
+fn refuse(uid: u32, username: &str, upload: &str, e: String) -> Response {
+    transfer::drop_upload(uid, upload);
+    audit_r::<()>("folder-import", uid, username, None, &Err(e.clone()));
+    Response::fail(e)
+}
+
 pub fn handle_import(who: (u32, i32), username: &str, a: ImportArgs) -> Response {
     let uid = who.0;
     let (me, b) = match open(uid, a.upload) {
         Ok(x) => x,
-        Err(e) => {
-            transfer::drop_upload(uid, a.upload);
-            audit_r::<()>("folder-import", uid, username, None, &Err(e.clone()));
-            return Response::fail(e);
-        }
+        Err(e) => return refuse(uid, username, a.upload, e),
     };
-    let Ok(_g) = IMPORTS.lock() else {
+    let Ok(_g) = folder_state::LOCK.lock() else {
         return Response::fail("import lock poisoned");
     };
-    let path = state_path("folders", uid);
-    let mut st: State = load(&path);
+    let mut st = State::load(uid);
+    if let Err(e) = st.check_fresh(&b) {
+        return refuse(uid, username, a.upload, e);
+    }
+    if a.apply {
+        st.saw(&b.id, b.at);
+    }
     let key = fp_key(&me);
     let (started, total) = (Instant::now(), b.items.len());
     let (mut rows, mut unchanged, mut i) = (Vec::new(), 0u32, a.start as usize);
@@ -226,7 +209,7 @@ pub fn handle_import(who: (u32, i32), username: &str, a: ImportArgs) -> Response
         };
         let _lock = crate::daemon_credlock::lock(uid, &name);
         let fp = fingerprint(&key, &name, p, b.sealed);
-        let recorded = st.folders.get(&b.id).and_then(|f| f.get(&name));
+        let recorded = st.records.get(&b.id).and_then(|f| f.get(&name));
         let (change, reason) = plan(
             who,
             username,
@@ -241,7 +224,8 @@ pub fn handle_import(who: (u32, i32), username: &str, a: ImportArgs) -> Response
             rows.push(row(&name, change, reason));
             continue;
         }
-        let r = write(uid, username, &name, p, (b.sealed, change == "create"));
+        let r = write(uid, username, &name, p, (b.sealed, change == "create"))
+            .and_then(|notes| Ok((notes, folder_state::mark(uid, &name)?)));
         audit_r(
             "folder-import",
             uid,
@@ -249,19 +233,23 @@ pub fn handle_import(who: (u32, i32), username: &str, a: ImportArgs) -> Response
             Some(&name),
             &r.as_ref().map(drop).map_err(Clone::clone),
         );
-        if r.is_ok() {
-            st.folders
+        if let Ok((_, mark)) = &r {
+            let rec = Record {
+                fp,
+                mark: mark.clone(),
+            };
+            st.records
                 .entry(b.id.clone())
                 .or_default()
-                .insert(name.clone(), fp);
+                .insert(name.clone(), rec);
         }
         rows.push(match r {
-            Ok(notes) => row(&name, change, (!notes.is_empty()).then(|| notes.join("; "))),
+            Ok((notes, _)) => row(&name, change, (!notes.is_empty()).then(|| notes.join("; "))),
             Err(e) => row(&name, "failed", Some(e)),
         });
     }
     if a.apply {
-        if let Err(e) = save(&path, &st) {
+        if let Err(e) = st.save(uid) {
             return Response::fail(e);
         }
     }
@@ -541,5 +529,79 @@ mod tests {
         assert!(export(a, "/", &["bob"], false)
             .unwrap_err()
             .contains("name a folder"));
+    }
+
+    /// Security review (T6.02): whoever controls the shared path can put
+    /// back an older signed bundle; it must not roll values back.
+    #[test]
+    fn an_older_bundle_of_a_folder_is_refused() {
+        let (a, b) = (user(), user());
+        file(a, "FR_KEY", "v1-compromised", "f");
+        pin(a, "bob", b);
+        pin(b, "alice", a);
+        let old = export(a, "f", &["bob"], false).unwrap().0;
+        import(b, &old, false).unwrap();
+        testkit::set(a, "FR_KEY", "v2-rotated");
+        let new = export(a, "f", &["bob"], false).unwrap().0;
+        import(b, &new, false).unwrap();
+        assert_eq!(testkit::value(b, "FR_KEY").as_deref(), Some("v2-rotated"));
+        let e = import(b, &old, false).unwrap_err();
+        assert!(e.contains("older"), "{e}");
+        assert_eq!(testkit::value(b, "FR_KEY").as_deref(), Some("v2-rotated"));
+        // The newest one again is fine (nothing changed).
+        let (_, rows, unchanged) = import(b, &new, false).unwrap();
+        assert!(rows.is_empty() && unchanged == 1, "{rows:?}");
+    }
+
+    fn skipped(rows: &[BundleRow], name: &str) -> bool {
+        rows.iter().any(|r| r.name == name && r.change == "skipped")
+    }
+
+    /// Security review (T6.02): a credential deleted and made again here
+    /// is the user's own, so a later import must not overwrite it (and
+    /// drop its consent gate); a gated one is never updated either, unless
+    /// --overwrite says so.
+    #[test]
+    fn a_recreated_or_gated_credential_is_not_overwritten() {
+        use crate::daemon_handlers::handle_delete;
+        let (a, b) = (user(), user());
+        let names = ["FG_GATED", "FG_PLAIN", "FG_QUORUM"];
+        for n in names {
+            file(a, n, "from-alice", "f");
+        }
+        pin(a, "bob", b);
+        pin(b, "alice", a);
+        import(b, &export(a, "f", &["bob"], false).unwrap().0, false).unwrap();
+        for n in ["FG_GATED", "FG_PLAIN"] {
+            assert!(handle_delete(b, "t", n).is_success());
+        }
+        let consent = SetFlags {
+            requires_consent: Some(true),
+            ..Default::default()
+        };
+        assert!(handle_set(b, "t", "FG_GATED", Some("bobs-own"), None, consent).is_success());
+        let plain = SetFlags::default();
+        assert!(handle_set(b, "t", "FG_PLAIN", Some("bobs-own"), None, plain).is_success());
+        let q = super::super::quorum_cmd::handle_set(b, "t", "FG_QUORUM", 2, now_unix());
+        assert!(q.is_success(), "{q:?}");
+        for n in names {
+            testkit::set(a, n, "alice-new");
+        }
+        let bundle = export(a, "f", &["bob"], false).unwrap().0;
+        let (_, rows, _) = import(b, &bundle, false).unwrap();
+        for n in names {
+            assert!(skipped(&rows, n), "{n}: {rows:?}");
+        }
+        assert_eq!(testkit::value(b, "FG_GATED").as_deref(), Some("bobs-own"));
+        assert_eq!(testkit::meta(b, "FG_GATED").requires_consent, Some(true));
+        assert_eq!(testkit::value(b, "FG_PLAIN").as_deref(), Some("bobs-own"));
+        assert_eq!(
+            testkit::value(b, "FG_QUORUM").as_deref(),
+            Some("from-alice")
+        );
+        // --overwrite is the explicit way.
+        let (_, rows, _) = import(b, &bundle, true).unwrap();
+        assert!(!skipped(&rows, "FG_PLAIN"), "{rows:?}");
+        assert_eq!(testkit::value(b, "FG_PLAIN").as_deref(), Some("alice-new"));
     }
 }

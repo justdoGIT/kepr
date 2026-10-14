@@ -3,8 +3,9 @@
 // 1 = the newest saved one). Field names only, never values; for a plain
 // value just "changed". Both versions stay in the daemon.
 //
-// Refused for credentials `get` protects (sealed, SSH, share key,
-// consent / FIDO2-gated, expired) and for versions saved while sealed:
+// Refused for gated credentials (`CredMeta::gated`: sealed, SSH, share
+// key, prompts, windows, exe binding, approvals), expired ones and for
+// versions saved while sealed:
 // `set` needs no prompt, so set-a-guess-then-diff would otherwise tell
 // whether a protected value equals the guess.
 

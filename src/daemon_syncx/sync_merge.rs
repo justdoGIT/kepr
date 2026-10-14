@@ -6,7 +6,10 @@
 //   SyncMerge    open another device's bundle (uploaded like an import)
 //                and apply each entry that is newer than what we know:
 //                a value is stored as `set` would (history keeps the old
-//                one), a tombstone moves the credential to the trash
+//                one), a tombstone moves the credential to the trash.
+//                A bundle older than one already merged from the same
+//                device is ignored: a replayed copy would otherwise bring
+//                back what was deleted once its tombstone expired
 //
 // A credential that doesn't sync here (sealed, SSH, share key, gated) is
 // never replaced or deleted by a merge. Network and files stay in the CLI:
@@ -75,7 +78,8 @@ pub fn handle_build(who: (u32, i32), username: &str) -> Response {
         let _g = SYNC.lock().map_err(|_| "sync lock poisoned")?;
         let (secret, id) = me(uid)?;
         let key = sync_state::fp_key(&secret);
-        let (st, mut local) = refreshed(who, username, &key, &id);
+        let (mut st, mut local) = refreshed(who, username, &key, &id);
+        st.built = now_unix().max(st.built.saturating_add(1));
         let entries: Vec<Entry> = st
             .recs
             .iter()
@@ -95,7 +99,7 @@ pub fn handle_build(who: (u32, i32), username: &str) -> Response {
             })
             .collect();
         let items = entries.len() as u32;
-        let bytes = device_bundle::seal(&secret, &devices(uid), &SyncBody { entries }, now_unix())?;
+        let bytes = device_bundle::seal(&secret, &devices(uid), &SyncBody { entries }, st.built)?;
         sync_state::save_state(uid, &st)?;
         let size = bytes.len() as u64;
         let (id, chunks) = transfer::put_export(uid, bytes, now_unix())?;
@@ -192,26 +196,37 @@ fn merge_one(
     }
 }
 
+/// The whole bundle refused: drop the upload, audit why.
+fn refuse(uid: u32, username: &str, upload: &str, e: String) -> Response {
+    transfer::drop_upload(uid, upload);
+    audit_r::<()>("sync-merge", uid, username, None, &Err(e.clone()));
+    Response::fail(e)
+}
+
 pub fn handle_merge(who: (u32, i32), username: &str, upload: &str, start: u32) -> Response {
     let uid = who.0;
     let opened = transfer::upload_bytes(uid, upload).and_then(|bytes| {
         let (secret, id) = me(uid)?;
-        let body = device_bundle::open(&secret, &devices(uid), &bytes)?;
-        Ok((secret, id, body))
+        let b = device_bundle::open(&secret, &devices(uid), &bytes)?;
+        Ok((secret, id, b))
     });
-    let (secret, id, body) = match opened {
+    let (secret, id, b) = match opened {
         Ok(x) => x,
-        Err(e) => {
-            transfer::drop_upload(uid, upload);
-            audit_r::<()>("sync-merge", uid, username, None, &Err(e.clone()));
-            return Response::fail(e);
-        }
+        Err(e) => return refuse(uid, username, upload, e),
     };
     let Ok(_g) = SYNC.lock() else {
         return Response::fail("sync lock poisoned");
     };
     let key = sync_state::fp_key(&secret);
     let (mut st, local) = refreshed(who, username, &key, &id);
+    if st.seen.get(&b.from).is_some_and(|seen| b.at < *seen) {
+        let e = "older than a bundle already merged from that device (a stale or \
+                 replayed copy): ignored";
+        return refuse(uid, username, upload, e.into());
+    }
+    let seen = st.seen.entry(b.from.clone()).or_insert(0);
+    *seen = (*seen).max(b.at);
+    let body = &b.body;
     let (started, total) = (Instant::now(), body.entries.len());
     let (mut rows, mut unchanged, mut i) = (Vec::new(), 0u32, start as usize);
     while i < total && rows.len() < MAX_REPORT_ROWS && started.elapsed() < import::ROUND_TIME {
@@ -455,5 +470,28 @@ mod tests {
             assert!(!rows.iter().any(|r| r.name == n), "{n} was sent");
         }
         assert!(!cred_exists(b, "SY_SEALED_A") && !cred_exists(b, "SY_ASK"));
+    }
+
+    /// Security review (T6.10): a replayed old bundle must not bring back
+    /// a credential deleted long enough ago that its tombstone is gone.
+    #[test]
+    fn an_older_bundle_from_a_device_is_ignored() {
+        let (a, b) = pair();
+        testkit::set(a, "SR_GONE", "old-secret");
+        let old = build(a).unwrap();
+        merge(b, &old).unwrap();
+        assert!(crate::daemon_store::handle_rm(a, "t", "SR_GONE").is_success());
+        let new = build(a).unwrap();
+        merge(b, &new).unwrap();
+        assert!(!cred_exists(b, "SR_GONE"));
+        // What refresh's retain does once the tombstone is 30 days old.
+        let mut st = sync_state::load_state(b);
+        assert!(st.recs.remove("SR_GONE").is_some());
+        sync_state::save_state(b, &st).unwrap();
+        let e = merge(b, &old).unwrap_err();
+        assert!(e.contains("older"), "{e}");
+        assert!(!cred_exists(b, "SR_GONE"));
+        // The newest bundle again (nothing new on the remote) is fine.
+        assert!(merge(b, &new).unwrap().is_empty());
     }
 }

@@ -6,11 +6,10 @@
 //! `POST /app/installations/{id}/access_tokens` for a 1-hour installation
 //! token and injects the token as a Bearer credential. Tokens are cached
 //! per key until 5 minutes before their `expires_at`, so each session
-//! mints its own and renews it as it runs. Neither the key, the JWT nor
-//! the token ever reaches the agent; errors carry the HTTP status only.
-
-use std::collections::HashMap;
-use std::sync::Mutex;
+//! mints its own and renews it as it runs; they live in the session's
+//! cache (vault.rs), so whatever empties it (a store change) ends them.
+//! Neither the key, the JWT nor the token ever reaches the agent; errors
+//! carry the HTTP status only.
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
@@ -29,9 +28,6 @@ use crate::proxy::State;
 /// Renew this long before `expires_at`.
 const MARGIN_SECS: u64 = 300;
 const MAX_REPLY: usize = 64 * 1024;
-
-type Tokens = HashMap<[u8; 32], (ZeroString, u64)>;
-static TOKENS: Mutex<Option<Tokens>> = Mutex::new(None);
 
 pub fn key_pair(pem: &str) -> Result<RsaKeyPair, String> {
     match gh::pem_der(pem)? {
@@ -64,21 +60,9 @@ fn cache_key(pem: &str, app_id: u64, installation_id: u64) -> [u8; 32] {
     h.finalize().into()
 }
 
-fn cached(key: &[u8; 32], now: u64) -> Option<ZeroString> {
-    let guard = TOKENS.lock().ok()?;
-    let (t, exp) = guard.as_ref()?.get(key)?;
-    (now + MARGIN_SECS < *exp).then(|| ZeroString::from_string(t.as_str().to_string()))
-}
-
-fn remember(key: [u8; 32], token: &ZeroString, exp: u64, now: u64) {
-    if let Ok(mut guard) = TOKENS.lock() {
-        let map = guard.get_or_insert_with(HashMap::new);
-        map.retain(|_, (_, e)| *e > now);
-        map.insert(
-            key,
-            (ZeroString::from_string(token.as_str().to_string()), exp),
-        );
-    }
+fn cached(state: &State, key: &[u8; 32], now: u64) -> Option<ZeroString> {
+    let (t, exp) = state.cache.minted(key)?;
+    (now + MARGIN_SECS < exp).then_some(t)
 }
 
 /// The installation token for this key, minted when none is cached or
@@ -91,7 +75,7 @@ pub async fn installation_token(
     now: u64,
 ) -> Result<ZeroString, String> {
     let key = cache_key(pem.as_str(), app_id, installation_id);
-    if let Some(t) = cached(&key, now) {
+    if let Some(t) = cached(state, &key, now) {
         return Ok(t);
     }
     let jwt = app_jwt(pem.as_str(), app_id, now)?;
@@ -125,7 +109,7 @@ pub async fn installation_token(
         ));
     }
     let (token, exp) = gh::parse_token_reply(&body)?;
-    remember(key, &token, exp, now);
+    state.cache.mint(key, &token, exp, now);
     Ok(token)
 }
 
@@ -368,5 +352,29 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e, "GitHub refused the app token request: HTTP 401");
+    }
+
+    /// Security review (T7.08): what empties the session's cache (a store
+    /// change: revoke, rotate, a grant or approval window ending) drops the
+    /// installation tokens minted from it too; another session's cache
+    /// never hands out this one's token.
+    #[tokio::test]
+    async fn minted_tokens_go_with_the_cached_values() {
+        let (base, mut rx) = fake_github().await;
+        let st = state(base.clone(), app(1009));
+        let pem = ZeroString::from_string(fixture_pem());
+        let now = EXP - 3600;
+        let t1 = installation_token(&st, &pem, 42, 1009, now).await.unwrap();
+        assert_eq!(t1.as_str(), "ghs_test1");
+        rx.recv().await.unwrap();
+        st.cache.clear(); // what a generation change does
+        let t2 = installation_token(&st, &pem, 42, 1009, now).await.unwrap();
+        assert_eq!(t2.as_str(), "ghs_test2", "minted again");
+        rx.recv().await.unwrap();
+        let other = state(base, app(1009));
+        let t3 = installation_token(&other, &pem, 42, 1009, now)
+            .await
+            .unwrap();
+        assert_eq!(t3.as_str(), "ghs_test3", "its own token");
     }
 }

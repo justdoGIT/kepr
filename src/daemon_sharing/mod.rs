@@ -144,7 +144,9 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SharingRequest
             devices::handle_add(uid, username, &label, oidc_issuer)
         }
         SharingRequest::DeviceEnroll { request, oidc } => {
-            devices::handle_enroll(uid, username, &request, oidc.as_ref())
+            devices::handle_enroll(uid, username, &request, oidc.as_ref(), || {
+                crate::daemon_polkit::consent_granted(peer_pid)
+            })
         }
         SharingRequest::DeviceList => devices::handle_list(uid),
         SharingRequest::DeviceRemove { device } => devices::handle_remove(uid, username, &device),

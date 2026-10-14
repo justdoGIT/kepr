@@ -18,6 +18,15 @@
 // is the process that connected (`kepr exec` fetches as kepr, not as the
 // child it starts).
 //
+// Exec after connect: SO_PEERCRED names the pid that connected, and the
+// check reads that pid's executable when each request arrives, not when
+// it connected. A program that connects, keeps the socket (in a forked
+// child, or across exec) and then execs an allowed binary passes with
+// what it sends over that socket; so does a socket whose connecting pid
+// exits and is reused by an allowed program. Only same-uid code can do
+// this, which is why a binding narrows which programs read a value, not a
+// boundary against code already running as the user.
+//
 // The binding is sticky: `set` keeps it (`carry_over`), and only a caller
 // the binding allows can change or clear it (delete + re-create otherwise).
 // In system mode the root daemon needs CAP_SYS_PTRACE to open other users'

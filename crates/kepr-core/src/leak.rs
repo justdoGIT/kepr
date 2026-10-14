@@ -251,21 +251,32 @@ pub fn looks_like_key(text: &[u8]) -> bool {
     !find_all(text).is_empty()
 }
 
-/// Most key-shaped strings one request is checked for as canaries.
+/// Most distinct key-shaped strings one request is checked for as
+/// canaries; a request with more is refused (`TooManyKeys`).
 pub const MAX_CANARY_PROBES: usize = 16;
 
-/// T9.08: the canary fingerprints of the key-shaped strings in `text`
-/// (private-key headers aside), for the daemon to match against the
-/// decoys it planted; a hit means someone is using a honeytoken.
-pub fn canary_probes(text: &[u8]) -> Vec<String> {
-    let mut out: Vec<String> = find_all(text)
-        .iter()
-        .filter(|h| h.kind != "private key")
-        .map(|h| crate::canary::fingerprint(&text[h.offset..h.offset + h.len]))
-        .collect();
-    out.dedup();
-    out.truncate(MAX_CANARY_PROBES);
-    out
+/// More than `MAX_CANARY_PROBES` distinct key-shaped strings.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TooManyKeys;
+
+/// T9.08: the canary fingerprints of the key-shaped strings in `texts`
+/// (private-key headers aside), each once, for the daemon to match
+/// against the decoys it planted; a hit means someone is using a
+/// honeytoken. More than `MAX_CANARY_PROBES` is an error, never a cut
+/// list: junk keys sent first must not push a decoy out of the check.
+pub fn canary_probes(texts: &[&[u8]]) -> Result<Vec<String>, TooManyKeys> {
+    let mut out = std::collections::BTreeSet::new();
+    for text in texts {
+        for h in find_all(text).iter().filter(|h| h.kind != "private key") {
+            out.insert(crate::canary::fingerprint(
+                &text[h.offset..h.offset + h.len],
+            ));
+            if out.len() > MAX_CANARY_PROBES {
+                return Err(TooManyKeys);
+            }
+        }
+    }
+    Ok(out.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -321,10 +332,32 @@ mod tests {
     fn a_planted_decoy_is_probed_exactly() {
         let decoy = crate::canary::make("openai").unwrap();
         let req = format!("{{\"auth\":\"Bearer {decoy}\",\"n\":1}}");
-        let probes = canary_probes(req.as_bytes());
+        let probes = canary_probes(&[req.as_bytes()]).unwrap();
         assert_eq!(probes, vec![crate::canary::fingerprint(decoy.as_bytes())]);
-        assert!(canary_probes(b"kepr-ph-0123456789abcdef-0000-0123456789abcdef").is_empty());
-        assert!(canary_probes(b"-----BEGIN PRIVATE KEY-----").is_empty());
+        let ph = b"kepr-ph-0123456789abcdef-0000-0123456789abcdef";
+        assert!(canary_probes(&[ph]).unwrap().is_empty());
+        assert!(canary_probes(&[b"-----BEGIN PRIVATE KEY-----"])
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Security review (T9.08): each distinct key once across all texts,
+    /// and past the cap an error rather than a cut list.
+    #[test]
+    fn probes_are_distinct_and_never_cut() {
+        let keys: Vec<String> = (0..MAX_CANARY_PROBES)
+            .map(|_| crate::canary::make("openai").unwrap())
+            .collect();
+        let text = format!("{} {}", keys.join(" "), keys[0]);
+        let probes = canary_probes(&[text.as_bytes(), keys[1].as_bytes()]).unwrap();
+        assert_eq!(probes.len(), MAX_CANARY_PROBES);
+        let decoy = crate::canary::make("openai").unwrap();
+        let more = format!("{text} {decoy}");
+        assert_eq!(canary_probes(&[more.as_bytes()]), Err(TooManyKeys));
+        assert_eq!(
+            canary_probes(&[text.as_bytes(), decoy.as_bytes()]),
+            Err(TooManyKeys)
+        );
     }
 
     #[test]

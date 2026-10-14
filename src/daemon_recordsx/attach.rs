@@ -296,7 +296,7 @@ mod tests {
         let mut out = Vec::new();
         let mut i = 0;
         loop {
-            match attach_read::handle_get(uid, "t", name, file, i) {
+            match attach_read::handle_get((uid, 0), "t", name, file, i) {
                 Response::Records(RecordsResponse::AttachChunkOk { chunks, data, .. }) => {
                     out.extend(B64.decode(data.as_bytes()).unwrap());
                     i += 1;
@@ -433,6 +433,34 @@ mod tests {
             "credential unavailable"
         );
         assert!(download(uid, "AT_NONE", "f").is_err());
+    }
+
+    /// Security review (T10.09 / T7.12): an attachment is read under the
+    /// same exe binding and M-of-N approvals as its credential's value.
+    #[test]
+    fn exe_bound_and_approval_gated_attachments_are_refused() {
+        let uid = testkit::uid();
+        let me = std::process::id() as i32;
+        let other_exe = format!("sha256:{}", "0".repeat(64));
+        for (name, exe, approvals) in [
+            ("AT_EXE", Some(vec![other_exe]), None),
+            ("AT_QUORUM", None, Some(2)),
+        ] {
+            testkit::set(uid, name, "v");
+            assert!(upload(uid, name, "k.pem", b"PRIVATE BYTES").is_success());
+            let mut m = testkit::meta(uid, name);
+            (m.exe_digests, m.approvals) = (exe, approvals);
+            let mp = crate::expiry::meta_path_for(&crate::store::cred_path(uid, name));
+            crate::expiry::write_meta(&mp, &m).unwrap();
+            assert!(crate::daemon_handlers_get::precheck_meta(uid, me, name).is_err());
+            let get = kepr_core::protocol_records::RecordsRequest::AttachGet {
+                name: name.into(),
+                file: "k.pem".into(),
+                index: 0,
+            };
+            let r = crate::daemon_recordsx::dispatch(uid, me, "t", get);
+            assert_eq!(r.err_msg(), Some("credential unavailable"), "{name}: {r:?}");
+        }
     }
 
     #[test]

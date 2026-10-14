@@ -22,9 +22,8 @@
 // just-in-time: `open_approved` writes a grant for every harness
 // (`ANY_HARNESS`) marked `approved`, which is the only kind that
 // satisfies an `approvals` requirement — the owner's own `kepr grant`
-// never does. A closed window stops the next resolve; a value a gate
-// already cached goes when its cache does (vault.rs `DEFAULT_TTL`),
-// like any other sealed value.
+// never does. A closed window stops the next resolve, and a gate drops
+// the value it cached when the window ends (daemon_gate_deadline.rs).
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_aws::{valid_harness, Grant, GrantOp, ANY_HARNESS, GRANT_MAX_SECS};
@@ -39,14 +38,26 @@ pub fn check(meta: &CredMeta, harness: Option<&str>, now: u64) -> Result<(), Str
     if meta.jit != Some(true) {
         return Ok(());
     }
-    let open = meta.grants.iter().flatten().any(|g| {
-        g.until > now && (g.harness == ANY_HARNESS || harness.is_some_and(|h| g.harness == h))
-    });
-    match (open, harness) {
+    match (open_until(meta, harness, now).is_some(), harness) {
         (true, _) => Ok(()),
         (false, None) => Err("resolve: just-in-time, session has no harness".to_string()),
         (false, Some(_)) => Err("resolve: no grant open".to_string()),
     }
+}
+
+/// Until when the open grants that let a session running `harness` have
+/// this just-in-time credential run (`None`: none, or not just-in-time).
+pub fn open_until(meta: &CredMeta, harness: Option<&str>, now: u64) -> Option<u64> {
+    if meta.jit != Some(true) {
+        return None;
+    }
+    meta.grants
+        .iter()
+        .flatten()
+        .filter(|g| g.until > now)
+        .filter(|g| g.harness == ANY_HARNESS || harness.is_some_and(|h| g.harness == h))
+        .map(|g| g.until)
+        .max()
 }
 
 /// T7.12: until when a window an approved M-of-N request opened runs
@@ -301,6 +312,7 @@ mod tests {
             creds: ["JIT".to_string()].into_iter().collect(),
             rec: crate::daemon_gatex::recording::Recorder::new(uid, "0123456789abcdef", false),
             harness: harness.map(str::to_string),
+            deadlines: Default::default(),
         };
         let resolve = |h: Option<&str>| {
             crate::daemon_gate::resolve_for_gate(&owner(h), "JIT", "api.example.com", 443)
@@ -375,5 +387,29 @@ mod tests {
         let (_, grants) = apply(&m, &open("new", 60), 1000).unwrap();
         let names: Vec<&str> = grants.iter().map(|g| g.harness.as_str()).collect();
         assert_eq!(names, ["live", "new"]);
+    }
+
+    /// Security review (T7.10): a gate that resolved a just-in-time value
+    /// sees its generation move when the grant ends, so it drops what it
+    /// cached then, not when its cache would (vault.rs `DEFAULT_TTL`).
+    #[test]
+    fn a_gate_drops_a_granted_value_when_the_grant_ends() {
+        let uid = testkit::uid();
+        testkit::set_sealed(uid, "JIT_END", "sk-test-value");
+        assert!(handle_grant(uid, "t", "JIT_END", GrantOp::Jit { on: true }).is_success());
+        assert!(handle_grant(uid, "t", "JIT_END", open("claude", 60)).is_success());
+        let until = testkit::meta(uid, "JIT_END").grants.unwrap()[0].until;
+        let owner = crate::daemon_gate::GateOwner {
+            uid,
+            username: "t".into(),
+            pid: std::process::id() as i32,
+            creds: ["JIT_END".to_string()].into_iter().collect(),
+            rec: crate::daemon_gatex::recording::Recorder::new(uid, "0123456789abcdef", false),
+            harness: Some("claude".into()),
+            deadlines: Default::default(),
+        };
+        crate::daemon_gate::resolve_for_gate(&owner, "JIT_END", "api.example.com", 443).unwrap();
+        assert_eq!(owner.deadlines.passed(until - 1), 0, "still granted");
+        assert_eq!(owner.deadlines.passed(until), 1, "the grant ended");
     }
 }

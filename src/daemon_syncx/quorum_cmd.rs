@@ -157,7 +157,8 @@ pub fn handle_approve(
             None => OWNER.to_string(),
         };
         if p.approvers.contains(&approver) {
-            return Err(format!("{approver} already approved request {id}"));
+            let who = quorum::shown(&approver);
+            return Err(format!("{who} already approved request {id}"));
         }
         if approval.is_none() && !consent() {
             return Err("approval denied".to_string());
@@ -244,7 +245,7 @@ pub fn handle_list(uid: u32, now: u64) -> Response {
 #[cfg(test)]
 mod tests {
     use super::super::quorum::REQUEST_TTL;
-    use super::super::testutil::{device, enroll, pair};
+    use super::super::testutil::{device, enroll, pair, try_enroll};
     use super::*;
     use crate::daemon_store::testkit;
     use crate::expiry::now_unix;
@@ -335,6 +336,77 @@ mod tests {
             matches!(r, Response::Syncx(SyncxResponse::QuorumSetOk { .. })),
             "{r:?}"
         );
+    }
+
+    /// `approval` with its `from` rewritten as the V1 text of the same
+    /// X25519 key (the MAC doesn't cover that text).
+    fn v1_alias(approval: &str) -> String {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let raw = b64
+            .decode(approval.strip_prefix("kepr-approval1-").unwrap())
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let from = Recipient::parse(v["from"].as_str().unwrap()).unwrap();
+        assert!(matches!(from, Recipient::V2 { .. }));
+        v["from"] = Recipient::V1(*from.x25519()).text().into();
+        format!(
+            "kepr-approval1-{}",
+            b64.encode(serde_json::to_vec(&v).unwrap())
+        )
+    }
+
+    /// Security review (T7.12): one device's approval re-encoded under
+    /// another text of its key must not count as a second approver.
+    #[test]
+    fn one_device_counts_once_whatever_its_key_text() {
+        let (a, b) = pair();
+        let now = now_unix();
+        guarded(a, "QV_KEY", 2, now);
+        let (id, _, _, request) = status_of(handle_request(a, "t", "QV_KEY", 3600, now));
+        let approval = sign(b, &request, now);
+        let alias = v1_alias(&approval);
+        let (_, have, done, _) = status_of(handle_approve(
+            a,
+            "t",
+            (&id, Some(&approval)),
+            no_prompt,
+            now,
+        ));
+        assert_eq!((have, done), (1, false));
+        let e = err(handle_approve(a, "t", (&id, Some(&alias)), no_prompt, now));
+        assert!(e.contains("already approved"), "{e}");
+        assert!(!readable(a, "QV_KEY"), "one device opened a 2-of-N window");
+    }
+
+    /// Security review (T7.12 / T6.10): a program running as the owner
+    /// can't enrol keys it made itself (no human approved them) and then
+    /// approve its own request with them.
+    #[test]
+    fn the_owners_malware_cannot_enrol_its_own_approvers() {
+        let a = device();
+        let (r1, r2) = (device(), device());
+        for r in [r1, r2] {
+            // A client whose polkit check can't pass (pid 0: fail closed).
+            let e = err(try_enroll(a, r, 0));
+            assert!(e.contains("approval"), "{e}");
+            enroll(r, a);
+        }
+        let now = now_unix();
+        guarded(a, "QM_KEY", 2, now);
+        let (id, _, _, request) = status_of(handle_request(a, "t", "QM_KEY", 3600, now));
+        for r in [r1, r2] {
+            let approval = sign(r, &request, now);
+            let e = err(handle_approve(
+                a,
+                "t",
+                (&id, Some(&approval)),
+                no_prompt,
+                now,
+            ));
+            assert!(e.contains("not enrolled"), "{e}");
+        }
+        assert!(!readable(a, "QM_KEY"), "self-enrolled keys opened a window");
     }
 
     #[test]
@@ -493,5 +565,78 @@ mod tests {
             matches!(r, Response::Syncx(SyncxResponse::QuorumList { ref keys, .. }) if keys.is_empty()),
             "{r:?}"
         );
+    }
+
+    /// Security review (T7.12): a window or a pending request belongs to
+    /// the credential it was approved for. Deleted (to the trash or for
+    /// good) and made again under the same name, the new value needs its
+    /// own approvals.
+    #[test]
+    fn a_deleted_credentials_window_does_not_open_its_successor() {
+        let (a, b) = pair();
+        let now = now_unix();
+        for (name, rm) in [("QW_TRASH", true), ("QW_GONE", false)] {
+            guarded(a, name, 2, now);
+            let (id, _, _, request) = status_of(handle_request(a, "t", name, 3600, now));
+            status_of(handle_approve(a, "t", (&id, None), || true, now));
+            let approval = sign(b, &request, now);
+            status_of(handle_approve(
+                a,
+                "t",
+                (&id, Some(&approval)),
+                no_prompt,
+                now,
+            ));
+            assert!(readable(a, name));
+            // A second request, half approved, still pending.
+            let (id, _, _, request) = status_of(handle_request(a, "t", name, 3600, now));
+            status_of(handle_approve(a, "t", (&id, None), || true, now));
+            let gone = if rm {
+                crate::daemon_store::handle_rm(a, "t", name)
+            } else {
+                crate::daemon_handlers::handle_delete(a, "t", name)
+            };
+            assert!(gone.is_success(), "{gone:?}");
+            guarded(a, name, 2, now);
+            assert!(!readable(a, name), "{name}: the old window opened it");
+            let approval = sign(b, &request, now);
+            let late = handle_approve(a, "t", (&id, Some(&approval)), no_prompt, now);
+            assert!(late.err_msg().is_some(), "{name}: {late:?}");
+            assert!(!readable(a, name), "{name}: the old request opened it");
+        }
+    }
+
+    /// Security review (T7.12): a gate that resolved a value inside an
+    /// approval window sees its generation move when the window ends,
+    /// not at the next sweep or when its cache would expire.
+    #[test]
+    fn a_gate_drops_an_approved_value_when_the_window_ends() {
+        let (a, b) = pair();
+        let now = now_unix();
+        testkit::set_sealed(a, "QG_SEALED", "s");
+        guarded_meta(a, "QG_SEALED", now);
+        let (id, _, _, request) = status_of(handle_request(a, "t", "QG_SEALED", 60, now));
+        status_of(handle_approve(a, "t", (&id, None), || true, now));
+        let approval = sign(b, &request, now);
+        status_of(handle_approve(
+            a,
+            "t",
+            (&id, Some(&approval)),
+            no_prompt,
+            now,
+        ));
+        let owner = crate::daemon_gate::GateOwner {
+            uid: a,
+            username: "t".into(),
+            pid: std::process::id() as i32,
+            creds: ["QG_SEALED".to_string()].into_iter().collect(),
+            rec: crate::daemon_gatex::recording::Recorder::new(a, "0123456789abcdef", false),
+            harness: None,
+            deadlines: Default::default(),
+        };
+        let host = "api.example.com";
+        crate::daemon_gate::resolve_for_gate(&owner, "QG_SEALED", host, 443).unwrap();
+        assert_eq!(owner.deadlines.passed(now + 59), 0, "still open");
+        assert_eq!(owner.deadlines.passed(now + 60), 1, "the window ended");
     }
 }

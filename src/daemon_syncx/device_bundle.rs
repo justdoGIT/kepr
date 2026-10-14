@@ -52,6 +52,15 @@ pub struct Entry {
     pub meta: ItemMeta,
 }
 
+/// An opened bundle: its body, the sending device's X25519 key (hex) and
+/// when it was built (the header `at`, under the MAC and the AAD).
+#[derive(Debug)]
+pub struct Opened {
+    pub body: SyncBody,
+    pub from: String,
+    pub at: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Header {
     kind: String,
@@ -168,7 +177,7 @@ fn split(bytes: &[u8]) -> Result<(Header, &[u8]), String> {
 }
 
 /// Open a bundle sent to `me` by one of the `trusted` devices.
-pub fn open(me: &ShareSecret, trusted: &[Recipient], bytes: &[u8]) -> Result<SyncBody, String> {
+pub fn open(me: &ShareSecret, trusted: &[Recipient], bytes: &[u8]) -> Result<Opened, String> {
     let (h, ct) = split(bytes)?;
     let from = Recipient::parse(&h.from).map_err(|_| FORGED)?;
     let from_x = *from.x25519();
@@ -193,7 +202,12 @@ pub fn open(me: &ShareSecret, trusted: &[Recipient], bytes: &[u8]) -> Result<Syn
         .and_then(|n| n.try_into().ok())
         .ok_or(FORGED)?;
     let plain = cipher::open(&content, &nonce, &aad(&h.from, h.at), ct).map_err(|_| FORGED)?;
-    serde_json::from_slice(&plain).map_err(|_| "malformed sync bundle".into())
+    let body = serde_json::from_slice(&plain).map_err(|_| "malformed sync bundle")?;
+    Ok(Opened {
+        body,
+        from: hex::encode(from_x),
+        at: h.at,
+    })
 }
 
 #[cfg(test)]
@@ -222,7 +236,8 @@ mod tests {
         let bytes = seal(&a, &[b.recipient(), c.recipient()], &body(), 9).unwrap();
         for me in [&b, &c] {
             let got = open(me, &[a.recipient()], &bytes).unwrap();
-            assert_eq!(got.entries[0].value.as_ref().unwrap().as_str(), "v");
+            assert_eq!(got.body.entries[0].value.as_ref().unwrap().as_str(), "v");
+            assert_eq!((got.from, got.at), (hex::encode(a.recipient().x25519()), 9));
         }
         assert!(!String::from_utf8_lossy(&bytes).contains("\"API\""));
     }

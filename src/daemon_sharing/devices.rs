@@ -8,9 +8,17 @@
 //                                → its share public key + HMAC under the
 //                                  token hash (kepr_core EnrolRequest)
 //   kepr device enroll --from FILE
-//                                → this daemon checks the HMAC against the
+//                                → the human here approves (polkit, for the
+//                                  caller's pid, fail closed), then this
+//                                  daemon checks the HMAC against the
 //                                  stored hashes, burns the token and pins
 //                                  the key under the label.
+//
+// The approval matters because an enrolled key gets sync bundles (T6.10)
+// and counts as a quorum approver (T7.12): without it, malware running
+// as the owner could enrol keys it made and approve its own requests.
+// In user mode the device file is the user's own, so there this is only
+// as strong as user-mode isolation in general.
 //
 // Devices are what multi-device sync (T6.10) encrypts to:
 // `sync_recipients` is the list it should read.
@@ -237,15 +245,25 @@ pub fn handle_add(uid: u32, username: &str, label: &str, oidc_issuer: Option<Str
     }
 }
 
+/// Pin a device. An enrolled key receives sync bundles and counts as an
+/// approver (T7.12), so the human at this machine approves it first:
+/// `consent` is the polkit check for the caller (fail closed), asked
+/// before the device file is locked.
 pub fn handle_enroll(
     uid: u32,
     username: &str,
     request: &str,
     oidc: Option<&OidcIdentity>,
+    consent: impl FnOnce() -> bool,
 ) -> Response {
     let r = serde_json::from_str::<EnrolRequest>(request)
         .map_err(|_| "not a device enrolment request".to_string())
-        .and_then(|req| with_devices(uid, |d| d.enroll(&req, oidc, now_unix())));
+        .and_then(|req| {
+            if !consent() {
+                return Err("enrolling a device needs your approval (polkit): denied".into());
+            }
+            with_devices(uid, |d| d.enroll(&req, oidc, now_unix()))
+        });
     audit_r("device-enroll", uid, username, None, &r);
     match r {
         Ok(dev) => SharingResponse::DeviceListing {
@@ -366,6 +384,40 @@ mod tests {
             dev.identity.as_deref(),
             Some("ana@example.com @ https://idp.example/")
         );
+    }
+
+    /// Security review (T6.10 / T7.12): pinning a key needs the human's
+    /// approval; a refusal pins nothing and keeps the token.
+    #[test]
+    fn enrolment_needs_consent() {
+        let uid = crate::daemon_store::testkit::uid();
+        let token = match handle_add(uid, "t", "laptop", None) {
+            Response::Sharing(SharingResponse::DeviceToken { token, .. }) => token,
+            other => panic!("{other:?}"),
+        };
+        let req = EnrolRequest::new(token.as_str(), "host", &public(), None);
+        let req = serde_json::to_string(&req).unwrap();
+        let r = handle_enroll(uid, "t", &req, None, || false);
+        assert!(r.err_msg().unwrap().contains("approval"), "{r:?}");
+        assert!(sync_recipients(uid).is_empty());
+        assert!(handle_enroll(uid, "t", &req, None, || true).is_success());
+        assert_eq!(sync_recipients(uid).len(), 1);
+        // Through the dispatcher a client whose pid polkit can't check
+        // (pid 0: no such process) is refused: fail closed.
+        let other = crate::daemon_store::testkit::uid();
+        let t = match handle_add(other, "t", "x", None) {
+            Response::Sharing(SharingResponse::DeviceToken { token, .. }) => token,
+            r => panic!("{r:?}"),
+        };
+        let req = EnrolRequest::new(t.as_str(), "host", &public(), None);
+        let enrol = kepr_core::protocol_sharing::SharingRequest::DeviceEnroll {
+            request: serde_json::to_string(&req).unwrap(),
+            oidc: None,
+        };
+        assert!(super::super::dispatch(other, 0, "t", enrol)
+            .err_msg()
+            .is_some());
+        assert!(sync_recipients(other).is_empty());
     }
 
     #[test]

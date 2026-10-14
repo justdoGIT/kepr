@@ -168,6 +168,10 @@ pub struct Cache {
     generation: Mutex<(u64, Option<Instant>)>,
     /// Serialises cache misses (single-flight).
     resolving: Mutex<()>,
+    /// T7.08: tokens minted from cached values (GitHub App installation
+    /// tokens) by a hash of what minted them, with their expiry; dropped
+    /// with the values, so a store change ends them too.
+    minted: Mutex<HashMap<[u8; 32], (ZeroString, u64)>>,
 }
 
 fn dup(z: &ZeroString) -> ZeroString {
@@ -182,6 +186,7 @@ impl Cache {
             entries: Mutex::new(HashMap::new()),
             generation: Mutex::new((0, None)),
             resolving: Mutex::new(()),
+            minted: Mutex::new(HashMap::new()),
         }
     }
 
@@ -260,6 +265,23 @@ impl Cache {
     pub fn clear(&self) {
         if let Ok(mut map) = self.entries.lock() {
             map.clear(); // ZeroString zeroizes on drop
+        }
+        if let Ok(mut map) = self.minted.lock() {
+            map.clear();
+        }
+    }
+
+    /// T7.08: a token minted under `key`, with its expiry.
+    pub fn minted(&self, key: &[u8; 32]) -> Option<(ZeroString, u64)> {
+        let map = self.minted.lock().ok()?;
+        map.get(key).map(|(t, exp)| (dup(t), *exp))
+    }
+
+    /// T7.08: keep a token minted under `key` until `exp` (unix seconds).
+    pub fn mint(&self, key: [u8; 32], token: &ZeroString, exp: u64, now: u64) {
+        if let Ok(mut map) = self.minted.lock() {
+            map.retain(|_, (_, e)| *e > now);
+            map.insert(key, (dup(token), exp));
         }
     }
 }

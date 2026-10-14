@@ -20,6 +20,7 @@ mod daemon_dispatch;
 mod daemon_expiry;
 mod daemon_extra;
 mod daemon_gate;
+mod daemon_gate_deadline;
 mod daemon_gate_registry;
 mod daemon_gate_service;
 mod daemon_handlers;

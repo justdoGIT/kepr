@@ -16,7 +16,9 @@
 // requirement (`daemon_aws::grant::open_approved`). Everywhere else the
 // window lives in memory only, so a restarted daemon has none
 // (fail-closed); the expiry sweeper closes those and bumps the gate
-// generation, so a gate's cached value goes with them.
+// generation. A gate that resolved the value inside a window drops it
+// when the window ends (daemon_gate_deadline.rs). Deleting the
+// credential drops its windows and requests (`forget`).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -30,6 +32,15 @@ pub const MAX_APPROVALS: u8 = 9;
 const MAX_PENDING: usize = 32;
 /// The approver id of the owner's own (polkit) approval.
 pub const OWNER: &str = "owner";
+
+/// How an approver is named in messages (a device's id is its key).
+pub fn shown(approver: &str) -> &'static str {
+    if approver == OWNER {
+        "the owner"
+    } else {
+        "that device"
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -131,6 +142,16 @@ pub fn sweep(now: u64) {
     }
 }
 
+/// `name` was deleted or moved away (its history is being purged): its
+/// windows and open requests were approved for that value, never for
+/// whatever is made under the name next.
+pub fn forget(uid: u32, name: &str) {
+    with(|r| {
+        r.windows.remove(&(uid, name.to_string()));
+        r.pending.retain(|p| p.uid != uid || p.name != name);
+    });
+}
+
 /// A new request; its id.
 pub fn open(uid: u32, name: &str, action: Action, now: u64) -> Result<Pending, String> {
     let mut id = [0u8; 4];
@@ -191,7 +212,7 @@ pub fn approve(
             .ok_or("no such approval request (kepr quorum ls)")?;
         let p = &mut r.pending[at];
         if p.approvers.iter().any(|a| a == approver) {
-            return Err(format!("{approver} already approved request {id}"));
+            return Err(format!("{} already approved request {id}", shown(approver)));
         }
         p.approvers.push(approver.to_string());
         if p.approvers.len() < usize::from(need.max(1)) {

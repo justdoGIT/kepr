@@ -18,7 +18,6 @@ use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-use super::device_bundle::device_id;
 use crate::daemon_sharing::kem::{Recipient, ShareSecret};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -119,8 +118,16 @@ pub fn sign(me: &ShareSecret, ask: &Ask) -> Result<String, String> {
     ))
 }
 
+/// The approver identity of an enrolled device: its X25519 key, the one
+/// thing the MAC proves. Never the `from` text, which the MAC doesn't
+/// cover: the same key as a V1 text, or as a V2 text with another ML-KEM
+/// key, would otherwise count as one more approver.
+pub fn approver_id(x25519: &[u8; 32]) -> String {
+    format!("device:{}", hex::encode(x25519))
+}
+
 /// On the owner: check an approval of `ask` (ours) against the enrolled
-/// `devices`. Returns the approving device's id.
+/// `devices`. Returns the approver identity (`approver_id`).
 pub fn verify(
     me: &ShareSecret,
     devices: &[Recipient],
@@ -144,7 +151,7 @@ pub fn verify(
     mac(&k, ask)
         .verify_slice(&got)
         .map_err(|_| "approval does not verify")?;
-    Ok(device_id(&from.text()))
+    Ok(approver_id(from.x25519()))
 }
 
 #[cfg(test)]
@@ -172,7 +179,7 @@ mod tests {
         assert_eq!(Ask::parse(&req.text()).unwrap(), req);
         let approval = sign(&b, &req).unwrap();
         let id = verify(&a, &[b.recipient()], &req, &approval).unwrap();
-        assert_eq!(id, device_id(&b.recipient().text()));
+        assert_eq!(id, approver_id(b.recipient().x25519()));
         // Not enrolled, our own key, another request, a changed field.
         let e = verify(&a, &[c.recipient()], &req, &approval).unwrap_err();
         assert!(e.contains("not enrolled"), "{e}");
@@ -211,5 +218,35 @@ mod tests {
             "approval does not verify"
         );
         assert!(Ask::parse("kepr-quorum1-!!").is_err());
+    }
+
+    /// Security review (T7.12): the approver is the key the MAC proves,
+    /// whatever text the approval names it by (V1, or V2 with another
+    /// ML-KEM key), so one device can't count twice.
+    #[test]
+    fn the_approver_is_the_key_not_its_text() {
+        let (a, b, c) = (key(), key(), key());
+        let req = ask(&a);
+        let devices = [b.recipient()];
+        let approval = sign(&b, &req).unwrap();
+        let want = verify(&a, &devices, &req, &approval).unwrap();
+        let raw: Approval = decode(&approval, APPROVAL, "approval").unwrap();
+        let x = *b.recipient().x25519();
+        let Recipient::V2 { ek, .. } = c.recipient() else {
+            panic!("a v2 key");
+        };
+        for alias in [Recipient::V1(x), Recipient::V2 { x, ek }] {
+            assert_ne!(alias.text(), raw.from);
+            let renamed = Approval {
+                id: raw.id.clone(),
+                from: alias.text(),
+                mac: raw.mac.clone(),
+            };
+            let text = format!(
+                "{APPROVAL}{}",
+                B64.encode(serde_json::to_vec(&renamed).unwrap())
+            );
+            assert_eq!(verify(&a, &devices, &req, &text).unwrap(), want);
+        }
     }
 }

@@ -100,18 +100,14 @@ pub fn meta_paths_of(uid: u32) -> Vec<PathBuf> {
     out
 }
 
-/// Would a plain `get` return this value with no prompt? Only such
-/// values may be opened for search or compared for duplicates: anything
-/// else (sealed, SSH, share key, consent / FIDO2, expired) would turn
-/// those features into an oracle on a value `get` protects.
+/// Is this a plain value, unexpired, that nothing but `get` guards? Only
+/// such values may be opened for search, health or breach checks or
+/// compared for duplicates: anything gated (`CredMeta::gated`: sealed,
+/// SSH, share key, consent / FIDO2, re-auth, view window, executable
+/// binding, approvals) or expired would turn those features into an
+/// oracle on a value `get` protects.
 pub fn readable_without_prompt(meta: &crate::expiry::CredMeta, now: u64) -> bool {
-    meta.sealed != Some(true)
-        && meta.ssh.is_none()
-        && meta.share_key != Some(true)
-        && meta.requires_consent != Some(true)
-        && meta.requires_fido2 != Some(true)
-        && meta.requires_reauth != Some(true) // T11.14
-        && meta.expires_at_unix.is_none_or(|t| now < t)
+    meta.gated().is_none() && meta.expires_at_unix.is_none_or(|t| now < t)
 }
 
 /// `from`'s history slots become `to`'s (best effort, like history
