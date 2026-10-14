@@ -21,6 +21,8 @@ mod export;
 mod folder;
 mod folder_bundle;
 mod folder_import;
+#[cfg(test)]
+mod gated_tests;
 mod import;
 mod quorum;
 mod quorum_cmd;

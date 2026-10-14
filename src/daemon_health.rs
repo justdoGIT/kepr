@@ -126,13 +126,11 @@ pub fn handle_health(
         let mut issues = Vec::new();
         let mut hibp_prefix = None;
         let rules = policy.map(|p| p.rules_for(meta.tags.as_deref().unwrap_or_default()));
-        // Values the caller can't `Get` (sealed, consent or FIDO2 gated)
-        // are never analysed: "same value as SEALED_KEY" or "weak" would
-        // let a caller test guesses against them.
-        let gated = meta.sealed == Some(true)
-            || meta.requires_consent == Some(true)
-            || meta.requires_fido2 == Some(true)
-            || meta.requires_reauth == Some(true); // T11.14
+        // Gated or expired values (`CredMeta::gated`: sealed, prompts,
+        // windows, exe binding, approvals) are never analysed: "same value
+        // as SEALED_KEY" or "weak" would let a caller test guesses.
+        let now = expiry::now_unix();
+        let gated = !crate::daemon_store::files::readable_without_prompt(&meta, now);
         match (!gated).then(|| crypto::default_backend().decrypt(uid, &name)) {
             None => {}
             Some(Ok(v)) => {
@@ -150,10 +148,7 @@ pub fn handle_health(
             issues.push(format!("not changed in {age_days} days"));
         }
         issues.extend(rules.and_then(|r| r.age_violation(age_days)));
-        if meta
-            .expires_at_unix
-            .is_some_and(|t| t <= expiry::now_unix())
-        {
+        if meta.expires_at_unix.is_some_and(|t| t <= now) {
             issues.push("expired".to_string());
         }
         items.push(KeyHealth {
@@ -210,15 +205,8 @@ pub fn handle_breach_check(uid: u32, username: &str, name: &str, suffixes: &[Str
         .map_err(|_| "credential unavailable".to_string())?
         .unwrap_or_default();
         // The caller picks the suffixes, so this is a guess oracle: only
-        // for values the caller could `Get` without a prompt anyway.
-        if meta.sealed == Some(true)
-            || meta.ssh.is_some()
-            || meta.share_key == Some(true)
-            || meta.requires_consent == Some(true)
-            || meta.requires_fido2 == Some(true)
-            || meta.requires_reauth == Some(true)
-        // T11.14
-        {
+        // for plain values nothing but `get` guards (`CredMeta::gated`).
+        if !crate::daemon_store::files::readable_without_prompt(&meta, expiry::now_unix()) {
             return Err("credential unavailable".to_string());
         }
         let v = crypto::default_backend()

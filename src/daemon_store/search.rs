@@ -37,8 +37,8 @@ impl Searchable {
     }
 }
 
-/// May search open this record's value? Only when `get` could, with
-/// no prompt.
+/// May search open this record's value? Only when it isn't gated
+/// (`CredMeta::gated`) or expired.
 fn openable(meta: &CredMeta, now: u64) -> bool {
     meta.record_type.is_some() && super::files::readable_without_prompt(meta, now)
 }

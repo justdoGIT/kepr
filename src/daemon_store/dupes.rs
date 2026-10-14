@@ -1,8 +1,8 @@
 // daemon_store/dupes.rs — T11.4 duplicate finder. The daemon decrypts the
 // caller's values, compares SHA-256 digests in memory and returns only
-// groups of names. Values a plain `get` would not return without a prompt
-// (sealed, SSH, share key, consent / FIDO2-gated, expired) are left out,
-// so the finder can't be used to test a guess against a protected value.
+// groups of names. Gated values (`CredMeta::gated`: sealed, SSH, share
+// key, prompts, windows, exe binding, approvals) and expired ones are left
+// out, so the finder can't be used to test a guess against them.
 // `--merge KEEP` moves the other members of KEEP's group to the trash and
 // makes each an alias of KEEP (T11.5), keeping its tags and folder.
 

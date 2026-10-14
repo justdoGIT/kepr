@@ -133,8 +133,8 @@ fn convert(
         Response::Err { error } => return Err(error),
         _ => return Err("unexpected store reply".into()),
     }
-    // Field names of a gated record are not shown without its prompt.
-    let gated = meta.requires_consent == Some(true) || meta.requires_fido2 == Some(true);
+    // Field names of a gated record (`CredMeta::gated`) are not shown.
+    let gated = meta.gated().is_some();
     let (moved, promoted) = match gated {
         true => (Vec::new(), Vec::new()),
         false => (moved, promoted),

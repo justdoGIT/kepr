@@ -138,3 +138,30 @@ pub struct SshMeta {
     pub public_b64: String,
     pub comment: String,
 }
+
+impl CredMeta {
+    /// Why this value is gated, if it is: something besides a plain `get`
+    /// guards it (a seal, a sign-only key, a prompt, a re-auth or view
+    /// window, an executable binding, M-of-N approvals). A gated value is
+    /// read only through `get` and its own checks: never compared (dupes,
+    /// search, diff, health, breach checks) and never exported, synced or
+    /// shared in a folder bundle, not even while an approval or re-auth
+    /// window is open (that window is for `get`). The one predicate every
+    /// such path asks (security review, 2026-10-14).
+    pub fn gated(&self) -> Option<&'static str> {
+        let exe_bound = self.exe_digests.as_ref().is_some_and(|d| !d.is_empty());
+        [
+            (self.sealed == Some(true), "sealed"),
+            (self.ssh.is_some(), "ssh"),
+            (self.share_key == Some(true), "share_key"),
+            (self.requires_fido2 == Some(true), "fido2"),
+            (self.requires_consent == Some(true), "consent"),
+            (self.requires_reauth == Some(true), "reauth"),
+            (self.view_window_secs.is_some(), "view_window"),
+            (exe_bound, "exe_bound"),
+            (self.approvals.is_some_and(|n| n >= 2), "approvals"),
+        ]
+        .into_iter()
+        .find_map(|(on, why)| on.then_some(why))
+    }
+}

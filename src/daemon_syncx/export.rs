@@ -1,14 +1,17 @@
 // daemon_syncx/export.rs — T6.09 `kepr export --encrypted -o FILE`.
 //
 // Builds a bundle body of every credential the caller could read with
-// `get` right now, without a prompt: value, record type, tags, folder,
-// expiry, re-auth flag, earlier values and attachments. Everything else
-// is listed by name with the reason it was left out:
+// `get` right now that nothing else guards: value, record type, tags,
+// folder, expiry, earlier values and attachments. Everything else is
+// listed by name with the reason it was left out (`CredMeta::gated`; the
+// same gate decides what sync (T6.10) and folder bundles (T6.02) carry):
 //
 //   sealed / ssh / share_key   never readable (no new path may return one)
 //   consent / fido2            needs a prompt or a key per credential
-//   reauth                     needs `kepr reauth NAME` first
+//   reauth                     re-auth window is for `get`, not copies
 //   view_window                a received share whose window has not run
+//   exe_bound                  only the bound programs may read it (T10.09)
+//   approvals                  M-of-N approvals; a window is for `get` (T7.12)
 //   expired / policy / unreadable / size
 //
 // The body is encrypted under the caller's passphrase (bundle.rs) and the
@@ -24,25 +27,6 @@ use super::{audit_r, transfer};
 use crate::expiry::{self, now_unix, CredMeta};
 use crate::store::{cred_path, validate_name};
 
-/// Why a credential with this meta never goes into a bundle.
-fn never_exported(m: &CredMeta) -> Option<&'static str> {
-    if m.sealed == Some(true) {
-        Some("sealed")
-    } else if m.ssh.is_some() {
-        Some("ssh")
-    } else if m.share_key == Some(true) {
-        Some("share_key")
-    } else if m.requires_fido2 == Some(true) {
-        Some("fido2")
-    } else if m.requires_consent == Some(true) {
-        Some("consent")
-    } else if m.view_window_secs.is_some() {
-        Some("view_window")
-    } else {
-        None
-    }
-}
-
 /// The credential's meta, if `uid` may read `upper` now with no prompt:
 /// the export gate, also what import asks before comparing values.
 /// Caller holds the credential's lock.
@@ -56,7 +40,7 @@ pub(super) fn readable(
         Some(Ok(m)) => m,
         Some(Err(_)) => return Err("unreadable"),
     };
-    if let Some(why) = never_exported(&meta) {
+    if let Some(why) = meta.gated() {
         return Err(why);
     }
     // T6.11: the policy file decides as for `get` (op `export` when the
@@ -68,12 +52,11 @@ pub(super) fn readable(
     if crate::daemon_policy::enforce(uid, peer_pid, username, &probe).is_some() {
         return Err("policy");
     }
-    // Get's own gate: expiry and re-auth. Consent and FIDO2 were refused
-    // above, so it never prompts.
+    // Get's own gate (expiry, another uid's checkout). Everything that
+    // prompts was refused above, so it never prompts.
     crate::daemon_handlers_get::precheck_meta(uid, peer_pid, upper).map_err(|e| {
         match e.as_str() {
             "expired" => "expired",
-            r if r == crate::daemon_session::reauth::NEEDED => "reauth",
             _ => "unreadable",
         }
     })?;
