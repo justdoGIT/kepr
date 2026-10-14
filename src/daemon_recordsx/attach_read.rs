@@ -1,8 +1,10 @@
 // daemon_recordsx/attach_read.rs — T5.03 reading side of attachments:
 // `kepr attach get` (one chunk per request, every one audited), `ls` and
 // `rm`. Reads follow the credential's policy: nothing for sealed / SSH /
-// share-key or expired credentials, and (there is no prompt per chunk)
-// nothing for consent- or FIDO2-gated ones.
+// share-key or expired credentials, (there is no prompt per chunk)
+// nothing for consent- or FIDO2-gated ones, and the gates `get` checks
+// before any prompt: the executable binding (T10.09, the caller's pid),
+// M-of-N approvals (T7.12) and another uid's checkout (T7.11).
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
@@ -39,10 +41,16 @@ fn find(m: &CredMeta, file: &str) -> Result<(AttachInfo, u32), String> {
     Ok((info, slot))
 }
 
-pub fn handle_get(uid: u32, username: &str, name: &str, file: &str, index: u32) -> Response {
+pub fn handle_get(
+    (uid, peer_pid): (u32, i32),
+    username: &str,
+    name: &str,
+    file: &str,
+    index: u32,
+) -> Response {
     let r = owner(uid, name).and_then(|o| {
         let _lock = crate::daemon_credlock::lock(uid, &o);
-        get(uid, &o, file, index).map(|x| (o, x))
+        get((uid, peer_pid), &o, file, index).map(|x| (o, x))
     });
     let shown = r.as_ref().map_or(name.to_uppercase(), |x| x.0.clone());
     log("attach-get", uid, username, &shown, &r);
@@ -62,7 +70,12 @@ pub fn handle_get(uid: u32, username: &str, name: &str, file: &str, index: u32) 
     }
 }
 
-fn get(uid: u32, owner: &str, file: &str, index: u32) -> Result<(AttachInfo, ZeroString), String> {
+fn get(
+    (uid, peer_pid): (u32, i32),
+    owner: &str,
+    file: &str,
+    index: u32,
+) -> Result<(AttachInfo, ZeroString), String> {
     if !cred_exists(uid, owner) {
         return Err("not found".into());
     }
@@ -70,6 +83,10 @@ fn get(uid: u32, owner: &str, file: &str, index: u32) -> Result<(AttachInfo, Zer
     if let Some(why) = read_refused(&meta) {
         return Err(why.into());
     }
+    // The value's own gates, as in `precheck_meta` (audit-only reasons).
+    crate::daemon_platform::exe::gate(&meta, peer_pid)?; // T10.09
+    crate::daemon_syncx::quorum_gate(uid, owner, &meta)?; // T7.12
+    crate::daemon_aws::checkout::gate(&meta, uid, expiry::now_unix())?; // T7.11
     let reauth = crate::daemon_session::reauth::window_open(uid, owner); // T11.14
     crate::daemon_session::reauth::gate(&meta, reauth)?;
     let (info, slot) = find(&meta, file)?;

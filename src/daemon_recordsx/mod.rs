@@ -34,7 +34,7 @@ pub use chunks::{
     purge_in as purge_attachments_in, verify as verify_attachments,
 };
 
-pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: RecordsRequest) -> Response {
+pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: RecordsRequest) -> Response {
     match r {
         RecordsRequest::AttachPut {
             name,
@@ -56,7 +56,7 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: RecordsRequest) -> 
             },
         ),
         RecordsRequest::AttachGet { name, file, index } => {
-            attach_read::handle_get(uid, username, &name, &file, index)
+            attach_read::handle_get((uid, peer_pid), username, &name, &file, index)
         }
         RecordsRequest::AttachList { name } => attach_read::handle_list(uid, username, &name),
         RecordsRequest::AttachRemove { name, file } => {
