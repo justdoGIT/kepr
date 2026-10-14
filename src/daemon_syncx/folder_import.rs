@@ -6,48 +6,34 @@
 //
 // Re-importing a newer bundle of the same folder updates only what
 // changed in it: the importer keeps a fingerprint (HMAC under a key
-// derived from its share key) of what each import wrote, per folder id,
-// and never compares against the stored value itself, so an import can't
-// test guesses against a sealed or gated credential. A name that exists
+// derived from its share key) of what each import wrote, per folder id
+// (folder_state.rs), and never compares against the stored value itself,
+// so an import can't test guesses against a sealed or gated credential.
+// A bundle older than one of the same folder already imported is refused
+// (no rollback to a value the sender has since rotated). A name that exists
 // and didn't come from this folder is left alone unless --overwrite; an
 // SSH or share key is never replaced and a sealed credential is never
 // replaced by a plain one. A sealed import binds each value to its
 // provider's host (the key prefix or name says which); one with no known
 // provider is skipped rather than stored readable.
 
-use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::time::Instant;
 
-use hkdf::Hkdf;
-use hmac::{Hmac, KeyInit, Mac};
 use kepr_core::protocol::Response;
 use kepr_core::protocol_sharing::SharingResponse;
 use kepr_core::protocol_store::StoreRequest;
 use kepr_core::protocol_syncx::{SyncxResponse, MAX_REPORT_ROWS};
-use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-use zeroize::Zeroizing;
 
 use super::folder::meta_of;
 use super::folder_bundle::{self, Opened, Payload};
+use super::folder_state::{self, fingerprint, fp_key, State};
 use super::import::{self, row, ROUND_TIME};
 use super::{audit_r, transfer};
 use crate::daemon_handlers::{handle_set, SetFlags};
+use crate::daemon_sharing::contacts;
 use crate::daemon_sharing::kem::{Recipient, ShareSecret};
-use crate::daemon_sharing::{contacts, load, save, state_path};
 use crate::expiry::{self, now_unix, CredMeta};
 use crate::store::{cred_exists, cred_path};
-
-/// One import at a time per daemon: the state file is read-modify-write.
-static IMPORTS: Mutex<()> = Mutex::new(());
-
-/// What each folder import wrote: folder id → name → fingerprint.
-#[derive(Default, Serialize, Deserialize)]
-struct State {
-    #[serde(default)]
-    folders: BTreeMap<String, BTreeMap<String, String>>,
-}
 
 /// The pinned contact's name for a public key (canonical text).
 fn pinned(uid: u32) -> impl Fn(&str) -> Option<String> {
@@ -60,30 +46,6 @@ fn pinned(uid: u32) -> impl Fn(&str) -> Option<String> {
             .find(|c| Recipient::parse(&c.public).is_ok_and(|r| r.text() == public))
             .map(|c| c.name.clone())
     }
-}
-
-fn fp_key(me: &ShareSecret) -> Zeroizing<[u8; 32]> {
-    let mut key = Zeroizing::new([0u8; 32]);
-    let secret = Zeroizing::new(me.x.to_bytes());
-    Hkdf::<Sha256>::new(None, secret.as_ref())
-        .expand(b"kepr-folder-fingerprint-v1", key.as_mut())
-        .expect("32 bytes is a valid HKDF length");
-    key
-}
-
-fn fingerprint(key: &[u8; 32], name: &str, p: &Payload, sealed: bool) -> String {
-    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("any key length");
-    let meta = serde_json::to_vec(&p.meta).unwrap_or_default();
-    for part in [
-        name.as_bytes(),
-        p.value.as_bytes(),
-        &meta,
-        &[u8::from(sealed)],
-    ] {
-        m.update(&(part.len() as u64).to_be_bytes());
-        m.update(part);
-    }
-    hex::encode(&m.finalize().into_bytes()[..16])
 }
 
 /// What importing `p` as `name` would do. Caller holds the lock.
@@ -192,21 +154,29 @@ fn open(uid: u32, upload: &str) -> Result<(ShareSecret, Opened), String> {
     Ok((me, opened))
 }
 
+/// The whole import refused: drop the upload, audit why.
+fn refuse(uid: u32, username: &str, upload: &str, e: String) -> Response {
+    transfer::drop_upload(uid, upload);
+    audit_r::<()>("folder-import", uid, username, None, &Err(e.clone()));
+    Response::fail(e)
+}
+
 pub fn handle_import(who: (u32, i32), username: &str, a: ImportArgs) -> Response {
     let uid = who.0;
     let (me, b) = match open(uid, a.upload) {
         Ok(x) => x,
-        Err(e) => {
-            transfer::drop_upload(uid, a.upload);
-            audit_r::<()>("folder-import", uid, username, None, &Err(e.clone()));
-            return Response::fail(e);
-        }
+        Err(e) => return refuse(uid, username, a.upload, e),
     };
-    let Ok(_g) = IMPORTS.lock() else {
+    let Ok(_g) = folder_state::LOCK.lock() else {
         return Response::fail("import lock poisoned");
     };
-    let path = state_path("folders", uid);
-    let mut st: State = load(&path);
+    let mut st = State::load(uid);
+    if let Err(e) = st.check_fresh(&b) {
+        return refuse(uid, username, a.upload, e);
+    }
+    if a.apply {
+        st.saw(&b.id, b.at);
+    }
     let key = fp_key(&me);
     let (started, total) = (Instant::now(), b.items.len());
     let (mut rows, mut unchanged, mut i) = (Vec::new(), 0u32, a.start as usize);
@@ -261,7 +231,7 @@ pub fn handle_import(who: (u32, i32), username: &str, a: ImportArgs) -> Response
         });
     }
     if a.apply {
-        if let Err(e) = save(&path, &st) {
+        if let Err(e) = st.save(uid) {
             return Response::fail(e);
         }
     }
@@ -541,5 +511,27 @@ mod tests {
         assert!(export(a, "/", &["bob"], false)
             .unwrap_err()
             .contains("name a folder"));
+    }
+
+    /// Security review (T6.02): whoever controls the shared path can put
+    /// back an older signed bundle; it must not roll values back.
+    #[test]
+    fn an_older_bundle_of_a_folder_is_refused() {
+        let (a, b) = (user(), user());
+        file(a, "FR_KEY", "v1-compromised", "f");
+        pin(a, "bob", b);
+        pin(b, "alice", a);
+        let old = export(a, "f", &["bob"], false).unwrap().0;
+        import(b, &old, false).unwrap();
+        testkit::set(a, "FR_KEY", "v2-rotated");
+        let new = export(a, "f", &["bob"], false).unwrap().0;
+        import(b, &new, false).unwrap();
+        assert_eq!(testkit::value(b, "FR_KEY").as_deref(), Some("v2-rotated"));
+        let e = import(b, &old, false).unwrap_err();
+        assert!(e.contains("older"), "{e}");
+        assert_eq!(testkit::value(b, "FR_KEY").as_deref(), Some("v2-rotated"));
+        // The newest one again is fine (nothing changed).
+        let (_, rows, unchanged) = import(b, &new, false).unwrap();
+        assert!(rows.is_empty() && unchanged == 1, "{rows:?}");
     }
 }

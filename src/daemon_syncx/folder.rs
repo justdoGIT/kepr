@@ -84,7 +84,9 @@ pub fn handle_export(
                 }),
             }
         }
-        let bytes = folder_bundle::seal(&me, &to, (&folder, sealed, now_unix()), &items)?;
+        let id = folder_bundle::folder_id(&me.recipient().text(), &folder);
+        let at = super::folder_state::next_at(uid, &id, now_unix())?;
+        let bytes = folder_bundle::seal(&me, &to, (&folder, sealed, at), &items)?;
         if bytes.len() > MAX_BUNDLE_BYTES {
             return Err("the folder is over 16 MiB as a bundle".into());
         }

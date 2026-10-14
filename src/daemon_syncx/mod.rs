@@ -11,6 +11,7 @@
 //   folder_bundle  T6.02 shared-folder bundles: folder key, signed manifest
 //   folder         T6.02 FolderExport
 //   folder_import  T6.02 FolderImport: pinned sender, changed values only
+//   folder_state   T6.02 what imports wrote, newest bundle seen / sent
 //   quorum         T7.12 M-of-N approvals: requirement, requests, windows
 //   quorum_cmd     T7.12 Quorum* requests
 //   quorum_device  T7.12 approvals signed by enrolled devices
@@ -21,6 +22,7 @@ mod export;
 mod folder;
 mod folder_bundle;
 mod folder_import;
+mod folder_state;
 #[cfg(test)]
 mod gated_tests;
 mod import;
