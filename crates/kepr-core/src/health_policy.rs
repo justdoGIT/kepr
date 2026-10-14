@@ -30,6 +30,7 @@ pub const FINDING_KINDS: &[&str] = &[
     "breached",
     "policy",
     "unreadable",
+    "cert",
 ];
 
 /// The kind of a `kepr health` finding (one of FINDING_KINDS).
@@ -43,6 +44,7 @@ pub fn finding_kind(issue: &str) -> &'static str {
         ("expired", "expired"),
         ("found in a data breach", "breached"),
         ("policy:", "policy"),
+        ("certificate ", "cert"), // T10.10: kepr pki expiry
     ];
     PREFIXES
         .iter()
@@ -246,6 +248,10 @@ mod tests {
             ("found in a data breach", "breached"),
             ("policy: older than 90 days", "policy"),
             ("unreadable", "unreadable"),
+            (
+                "certificate app.test (serial 0a) expires in 3 day(s)",
+                "cert",
+            ),
         ] {
             assert_eq!(finding_kind(issue), kind, "{issue}");
             assert!(FINDING_KINDS.contains(&kind));

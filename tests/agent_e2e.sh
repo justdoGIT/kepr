@@ -203,12 +203,15 @@ echo "── history and restore"
 check "$("$KEPR" list | grep -q '~' || echo ok)" "history slots hidden from list"
 "$KEPR" restore E2E_HIST --version 1 >/dev/null 2>&1
 check "$([ "$("$KEPR" get E2E_HIST -q 2>/dev/null)" = one ] && echo ok)" "restore brings back the replaced value"
-"$KEPR" set ANTHROPIC_API_KEY --value now-readable -q >/dev/null 2>&1
-if "$KEPR" restore ANTHROPIC_API_KEY --version 1 >/dev/null 2>&1; then
-    fail "sealed version restored into a readable credential"
-else
-    pass "sealed version not restorable into a readable credential"
-fi
+sleep 3 # the daemon rate-limits each uid (burst 30, 10/s): let it refill
+"$KEPR" set ANTHROPIC_API_KEY --value replaced-value -q >/dev/null 2>&1
+check "$("$KEPR" get ANTHROPIC_API_KEY >/dev/null 2>&1 || echo ok)" "a plain set keeps a sealed credential sealed"
+printf '#!/bin/sh\ncat >/dev/null\n' >"$WORK/hook.sh"
+chmod +x "$WORK/hook.sh"
+check "$("$KEPR" rotate ANTHROPIC_API_KEY --hook "$WORK/hook.sh" >/dev/null 2>&1 && echo ok)" "rotate --hook commits over a sealed credential"
+check "$("$KEPR" get ANTHROPIC_API_KEY >/dev/null 2>&1 || echo ok)" "the rotated value stays sealed"
+check "$("$KEPR" restore ANTHROPIC_API_KEY --version 2 >/dev/null 2>&1 && echo ok)" "the sealed version restores into the still-sealed credential"
+check "$("$KEPR" get ANTHROPIC_API_KEY >/dev/null 2>&1 || echo ok)" "the restored value stays sealed"
 
 echo "── usage report"
 uses=$("$KEPR" usage 2>/dev/null | awk '$1 == "E2E_MASK" { print $2 }')

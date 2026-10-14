@@ -134,6 +134,19 @@ jobs:
           python3 -m pip install --quiet pyyaml
           python3 -c "import yaml; yaml.safe_load(open('integrations/gitlab/kepr.gitlab-ci.yml'))"
 
+  # batch: platform
+  csi-provider:
+    name: Secrets Store CSI provider
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: go vet + test
+        working-directory: integrations/csi-provider
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
   terraform-provider:
     name: Terraform provider
     runs-on: ubuntu-latest
