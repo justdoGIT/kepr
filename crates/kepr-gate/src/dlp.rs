@@ -68,7 +68,7 @@ pub fn scan(body: &[u8], secrets: &[(String, ZeroString)]) -> Verdict {
 /// JSON string escapes decoded in place (`\\uXXXX`, `\\"`, `\\n`, …);
 /// `None` when there are none. Not a JSON parser: it decodes escapes
 /// wherever they are, which is what a scan wants.
-fn unescape_json(body: &[u8]) -> Option<zeroize::Zeroizing<Vec<u8>>> {
+pub(crate) fn unescape_json(body: &[u8]) -> Option<zeroize::Zeroizing<Vec<u8>>> {
     memchr::memchr(b'\\', body)?;
     let mut out = zeroize::Zeroizing::new(Vec::with_capacity(body.len()));
     let mut i = 0;

@@ -12,6 +12,7 @@
 //   view_window                a received share whose window has not run
 //   exe_bound                  only the bound programs may read it (T10.09)
 //   approvals                  M-of-N approvals; a window is for `get` (T7.12)
+//   canary                     a planted decoy (T9.08): a copy has no alarm
 //   expired / policy / unreadable / size
 //
 // The body is encrypted under the caller's passphrase (bundle.rs) and the

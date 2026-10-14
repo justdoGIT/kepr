@@ -147,7 +147,8 @@ pub struct SshMeta {
 impl CredMeta {
     /// Why this value is gated, if it is: something besides a plain `get`
     /// guards it (a seal, a sign-only key, a prompt, a re-auth or view
-    /// window, an executable binding, M-of-N approvals). A gated value is
+    /// window, an executable binding, M-of-N approvals) or it is a planted
+    /// canary, whose copy would be a decoy without its alarm. A gated value is
     /// read only through `get` and its own checks: never compared (dupes,
     /// search, diff, health, breach checks) and never exported, synced or
     /// shared in a folder bundle, not even while an approval or re-auth
@@ -165,6 +166,7 @@ impl CredMeta {
             (self.view_window_secs.is_some(), "view_window"),
             (exe_bound, "exe_bound"),
             (self.approvals.is_some_and(|n| n >= 2), "approvals"),
+            (self.canary.is_some(), "canary"),
         ]
         .into_iter()
         .find_map(|(on, why)| on.then_some(why))

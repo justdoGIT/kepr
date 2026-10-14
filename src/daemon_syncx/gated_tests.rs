@@ -3,6 +3,8 @@
 // approvals (T7.12) is never compared, analysed or put in a bundle
 // (`CredMeta::gated`), not even for a caller the binding allows or while
 // an approval window is open: a window is for `get`, not for copies.
+// A planted canary (T9.08) is never put in a bundle either: the copy
+// would be a plain credential, a decoy without its alarm.
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_store::{StoreRequest, StoreResponse};
@@ -52,6 +54,20 @@ fn approved(a: u32, b: u32, name: &str, value: &str, folder: &str) {
     assert!(handle_approve(a, "t", (&q.id, None), || true, now).is_success());
     assert!(handle_approve(a, "t", (&q.id, Some(&approval)), || false, now).is_success());
     assert!(crate::daemon_handlers_get::precheck_meta(a, me(), name).is_ok());
+}
+
+/// `name` = `value` in `folder`, planted as a canary.
+fn planted(uid: u32, name: &str, value: &str, folder: &str) {
+    filed(uid, name, value, folder);
+    let mut m = testkit::meta(uid, name);
+    m.canary = Some(crate::daemon_policy::CanaryMeta {
+        provider: "openai".into(),
+        fingerprint: kepr_core::canary::fingerprint(value.as_bytes()),
+        trip_id: "0".repeat(32),
+        planted_in: None,
+        created: 0,
+    });
+    expiry::write_meta(&expiry::meta_path_for(&cred_path(uid, name)), &m).unwrap();
 }
 
 fn filed(uid: u32, name: &str, value: &str, folder: &str) {
@@ -117,7 +133,12 @@ fn gated_values_never_go_into_a_bundle() {
     let (a, b) = pair();
     bound(a, "GT_BOUND", "v-bound", "team");
     approved(a, b, "GT_QUORUM", "v-quorum", "team");
+    planted(a, "GT_CANARY", "v-canary", "team");
     let want = |rows: &[(String, String)]| {
+        assert!(
+            rows.contains(&("GT_CANARY".into(), "canary".into())),
+            "{rows:?}"
+        );
         assert!(
             rows.contains(&("GT_BOUND".into(), "exe_bound".into())),
             "{rows:?}"
@@ -140,7 +161,7 @@ fn gated_values_never_go_into_a_bundle() {
     // What a sync bundle to the enrolled devices carries.
     let synced = super::sync_state::local((a, me()), "t");
     assert!(
-        GATED.iter().all(|n| !synced.contains_key(*n)),
+        GATED.iter().all(|n| !synced.contains_key(*n)) && !synced.contains_key("GT_CANARY"),
         "sent to devices"
     );
 }
