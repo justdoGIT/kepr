@@ -26,6 +26,8 @@ pub const HELP: &str =
     "  device add LABEL [--oidc ISSUER]     single-use token (15 min) for enrolling another machine
   device enroll TOKEN [-o FILE]        (new machine) write its enrolment request for the token
   device enroll --from FILE            (first machine) check the request and pin the new device
+                                       (asks for your approval: a pinned device gets sync
+                                       bundles and can approve quorum requests)
   device enroll … --oidc ISSUER --client-id ID [--subject WHO]
                                        prove the user via the IdP (device-code login) first
   device ls | device rm ID|LABEL       enrolled devices (what sync encrypts to)

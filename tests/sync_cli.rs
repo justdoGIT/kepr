@@ -73,6 +73,13 @@ fn ok(d: &Daemon, args: &[&str]) -> String {
 }
 
 /// `device` asks for a token, `new` writes the request, `device` pins it.
+///
+/// `kepr device enroll --from` asks polkit for the human's approval
+/// before it pins a key, and a test has no polkit agent to answer (on a
+/// desktop it would pop up a prompt). So the last step writes into
+/// `device`'s device file what the approved step pins: the new machine's
+/// share key from its request. The daemon side, approval included, is
+/// covered by the daemon's unit tests.
 fn enroll(device: &Daemon, new: &Daemon) {
     let token = ok(device, &["device", "add", "peer"]);
     let token = token.lines().next().unwrap().trim();
@@ -80,8 +87,31 @@ fn enroll(device: &Daemon, new: &Daemon) {
     let _ = std::fs::remove_file(&file);
     let f = file.to_str().unwrap();
     ok(new, &["device", "enroll", token, "-o", f]);
-    ok(device, &["device", "enroll", "--from", f]);
+    let req: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    pin(device, req["public"].as_str().unwrap());
     std::fs::remove_file(&file).unwrap();
+}
+
+/// Add `public` to `d`'s enrolled devices (its user-mode state file).
+fn pin(d: &Daemon, public: &str) {
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata(d.home.path()).unwrap().uid();
+    let path = d.home.path().join(format!("state/kepr/devices-{uid}.json"));
+    let mut v: serde_json::Value = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut list = v["devices"].as_array().cloned().unwrap_or_default();
+    let id = format!("test{}", list.len());
+    list.push(serde_json::json!({
+        "id": id,
+        "label": "peer",
+        "public": public,
+        "added": 0,
+    }));
+    v["devices"] = serde_json::Value::Array(list);
+    std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(ok(d, &["--json", "device", "ls"]).contains(&id));
 }
 
 fn get(d: &Daemon, name: &str) -> Option<String> {

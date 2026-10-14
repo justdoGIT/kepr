@@ -245,7 +245,7 @@ pub fn handle_list(uid: u32, now: u64) -> Response {
 #[cfg(test)]
 mod tests {
     use super::super::quorum::REQUEST_TTL;
-    use super::super::testutil::{device, enroll, pair};
+    use super::super::testutil::{device, enroll, pair, try_enroll};
     use super::*;
     use crate::daemon_store::testkit;
     use crate::expiry::now_unix;
@@ -377,6 +377,36 @@ mod tests {
         let e = err(handle_approve(a, "t", (&id, Some(&alias)), no_prompt, now));
         assert!(e.contains("already approved"), "{e}");
         assert!(!readable(a, "QV_KEY"), "one device opened a 2-of-N window");
+    }
+
+    /// Security review (T7.12 / T6.10): a program running as the owner
+    /// can't enrol keys it made itself (no human approved them) and then
+    /// approve its own request with them.
+    #[test]
+    fn the_owners_malware_cannot_enrol_its_own_approvers() {
+        let a = device();
+        let (r1, r2) = (device(), device());
+        for r in [r1, r2] {
+            // A client whose polkit check can't pass (pid 0: fail closed).
+            let e = err(try_enroll(a, r, 0));
+            assert!(e.contains("approval"), "{e}");
+            enroll(r, a);
+        }
+        let now = now_unix();
+        guarded(a, "QM_KEY", 2, now);
+        let (id, _, _, request) = status_of(handle_request(a, "t", "QM_KEY", 3600, now));
+        for r in [r1, r2] {
+            let approval = sign(r, &request, now);
+            let e = err(handle_approve(
+                a,
+                "t",
+                (&id, Some(&approval)),
+                no_prompt,
+                now,
+            ));
+            assert!(e.contains("not enrolled"), "{e}");
+        }
+        assert!(!readable(a, "QM_KEY"), "self-enrolled keys opened a window");
     }
 
     #[test]
