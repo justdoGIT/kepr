@@ -157,7 +157,8 @@ pub fn handle_approve(
             None => OWNER.to_string(),
         };
         if p.approvers.contains(&approver) {
-            return Err(format!("{approver} already approved request {id}"));
+            let who = quorum::shown(&approver);
+            return Err(format!("{who} already approved request {id}"));
         }
         if approval.is_none() && !consent() {
             return Err("approval denied".to_string());
@@ -335,6 +336,47 @@ mod tests {
             matches!(r, Response::Syncx(SyncxResponse::QuorumSetOk { .. })),
             "{r:?}"
         );
+    }
+
+    /// `approval` with its `from` rewritten as the V1 text of the same
+    /// X25519 key (the MAC doesn't cover that text).
+    fn v1_alias(approval: &str) -> String {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let raw = b64
+            .decode(approval.strip_prefix("kepr-approval1-").unwrap())
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let from = Recipient::parse(v["from"].as_str().unwrap()).unwrap();
+        assert!(matches!(from, Recipient::V2 { .. }));
+        v["from"] = Recipient::V1(*from.x25519()).text().into();
+        format!(
+            "kepr-approval1-{}",
+            b64.encode(serde_json::to_vec(&v).unwrap())
+        )
+    }
+
+    /// Security review (T7.12): one device's approval re-encoded under
+    /// another text of its key must not count as a second approver.
+    #[test]
+    fn one_device_counts_once_whatever_its_key_text() {
+        let (a, b) = pair();
+        let now = now_unix();
+        guarded(a, "QV_KEY", 2, now);
+        let (id, _, _, request) = status_of(handle_request(a, "t", "QV_KEY", 3600, now));
+        let approval = sign(b, &request, now);
+        let alias = v1_alias(&approval);
+        let (_, have, done, _) = status_of(handle_approve(
+            a,
+            "t",
+            (&id, Some(&approval)),
+            no_prompt,
+            now,
+        ));
+        assert_eq!((have, done), (1, false));
+        let e = err(handle_approve(a, "t", (&id, Some(&alias)), no_prompt, now));
+        assert!(e.contains("already approved"), "{e}");
+        assert!(!readable(a, "QV_KEY"), "one device opened a 2-of-N window");
     }
 
     #[test]

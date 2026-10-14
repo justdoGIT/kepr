@@ -31,6 +31,15 @@ const MAX_PENDING: usize = 32;
 /// The approver id of the owner's own (polkit) approval.
 pub const OWNER: &str = "owner";
 
+/// How an approver is named in messages (a device's id is its key).
+pub fn shown(approver: &str) -> &'static str {
+    if approver == OWNER {
+        "the owner"
+    } else {
+        "that device"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     /// Open a use window of this many seconds.
@@ -191,7 +200,7 @@ pub fn approve(
             .ok_or("no such approval request (kepr quorum ls)")?;
         let p = &mut r.pending[at];
         if p.approvers.iter().any(|a| a == approver) {
-            return Err(format!("{approver} already approved request {id}"));
+            return Err(format!("{} already approved request {id}", shown(approver)));
         }
         p.approvers.push(approver.to_string());
         if p.approvers.len() < usize::from(need.max(1)) {
