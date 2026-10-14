@@ -13,6 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::process::Child;
 
 use crate::audit::{self, AuditEvent, AuditResult};
+use crate::daemon_gate_deadline as deadline;
 use crate::daemon_gate_registry::{gates_for, track_gate, Handle, MAX_GATES_PER_UID};
 use crate::store::{cred_path, validate_name};
 use crate::{crypto, expiry};
@@ -71,10 +72,14 @@ pub struct GateOwner {
     /// T7.10: the harness the session claims to run, for just-in-time
     /// grants (`daemon_aws::grant`). `None` = no grant can match.
     pub harness: Option<String>,
+    /// When values this gate was given stop being allowed: its
+    /// generation moves then (daemon_gate_deadline.rs).
+    pub deadlines: crate::daemon_gate_deadline::Deadlines,
 }
 
 /// Bumped on every set, delete and expiry sweep; gates compare it
 /// before using a cached value so revoked or rotated keys stop at once.
+/// Each session's reply adds its own passed deadlines (`deadline`).
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub fn bump_generation() {
@@ -138,6 +143,14 @@ pub fn resolve_for_gate(
     if needs_consent && !meta.as_ref().is_some_and(consent) {
         return fail("resolve: consent denied".to_string());
     }
+    // A window ending must reach a gate that cached the value.
+    let (h, now) = (owner.harness.as_deref(), expiry::now_unix());
+    let until = meta
+        .as_ref()
+        .and_then(|m| deadline::until(uid, &upper, m, h, now));
+    if until.is_some_and(|t| owner.deadlines.note(t).is_err()) {
+        return fail("resolve: too many open windows in this session".to_string());
+    }
     match crypto::default_backend().decrypt(uid, &upper) {
         Ok(value) => {
             audit::log(&AuditEvent {
@@ -176,7 +189,8 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
             },
             Ok(GateRequest::Generation { id }) => GateResponse::Generation {
                 id,
-                generation: GENERATION.load(std::sync::atomic::Ordering::SeqCst),
+                generation: GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+                    + owner.deadlines.passed(expiry::now_unix()),
             },
             Ok(GateRequest::Record { id, record }) => owner.rec.handle(id, record),
             Ok(GateRequest::Journal { id, entries }) => crate::daemon_gatex::logs::handle_journal(
@@ -275,6 +289,7 @@ fn start(
         creds: kepr_core::gate_protocol::resolvable_creds(routes),
         rec,
         harness: harness.filter(|h| kepr_core::protocol_aws::valid_harness(h)), // T7.10
+        deadlines: Default::default(),
     };
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));

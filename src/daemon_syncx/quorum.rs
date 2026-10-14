@@ -16,7 +16,9 @@
 // requirement (`daemon_aws::grant::open_approved`). Everywhere else the
 // window lives in memory only, so a restarted daemon has none
 // (fail-closed); the expiry sweeper closes those and bumps the gate
-// generation, so a gate's cached value goes with them.
+// generation. A gate that resolved the value inside a window drops it
+// when the window ends (daemon_gate_deadline.rs). Deleting the
+// credential drops its windows and requests (`forget`).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -138,6 +140,16 @@ pub fn sweep(now: u64) {
     if closed {
         crate::daemon_gate::bump_generation();
     }
+}
+
+/// `name` was deleted or moved away (its history is being purged): its
+/// windows and open requests were approved for that value, never for
+/// whatever is made under the name next.
+pub fn forget(uid: u32, name: &str) {
+    with(|r| {
+        r.windows.remove(&(uid, name.to_string()));
+        r.pending.retain(|p| p.uid != uid || p.name != name);
+    });
 }
 
 /// A new request; its id.

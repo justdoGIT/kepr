@@ -46,7 +46,10 @@ use crate::expiry::now_unix;
 pub fn quorum_gate(uid: u32, name: &str, meta: &crate::expiry::CredMeta) -> Result<(), String> {
     quorum::gate(uid, name, meta, now_unix())
 }
-pub use quorum::{carry_over as quorum_carry_over, sweep as quorum_sweep};
+pub use quorum::{
+    carry_over as quorum_carry_over, forget as quorum_forget, sweep as quorum_sweep,
+    window as quorum_window,
+};
 
 pub(crate) fn audit_r<T>(
     op: &str,

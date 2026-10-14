@@ -566,4 +566,77 @@ mod tests {
             "{r:?}"
         );
     }
+
+    /// Security review (T7.12): a window or a pending request belongs to
+    /// the credential it was approved for. Deleted (to the trash or for
+    /// good) and made again under the same name, the new value needs its
+    /// own approvals.
+    #[test]
+    fn a_deleted_credentials_window_does_not_open_its_successor() {
+        let (a, b) = pair();
+        let now = now_unix();
+        for (name, rm) in [("QW_TRASH", true), ("QW_GONE", false)] {
+            guarded(a, name, 2, now);
+            let (id, _, _, request) = status_of(handle_request(a, "t", name, 3600, now));
+            status_of(handle_approve(a, "t", (&id, None), || true, now));
+            let approval = sign(b, &request, now);
+            status_of(handle_approve(
+                a,
+                "t",
+                (&id, Some(&approval)),
+                no_prompt,
+                now,
+            ));
+            assert!(readable(a, name));
+            // A second request, half approved, still pending.
+            let (id, _, _, request) = status_of(handle_request(a, "t", name, 3600, now));
+            status_of(handle_approve(a, "t", (&id, None), || true, now));
+            let gone = if rm {
+                crate::daemon_store::handle_rm(a, "t", name)
+            } else {
+                crate::daemon_handlers::handle_delete(a, "t", name)
+            };
+            assert!(gone.is_success(), "{gone:?}");
+            guarded(a, name, 2, now);
+            assert!(!readable(a, name), "{name}: the old window opened it");
+            let approval = sign(b, &request, now);
+            let late = handle_approve(a, "t", (&id, Some(&approval)), no_prompt, now);
+            assert!(late.err_msg().is_some(), "{name}: {late:?}");
+            assert!(!readable(a, name), "{name}: the old request opened it");
+        }
+    }
+
+    /// Security review (T7.12): a gate that resolved a value inside an
+    /// approval window sees its generation move when the window ends,
+    /// not at the next sweep or when its cache would expire.
+    #[test]
+    fn a_gate_drops_an_approved_value_when_the_window_ends() {
+        let (a, b) = pair();
+        let now = now_unix();
+        testkit::set_sealed(a, "QG_SEALED", "s");
+        guarded_meta(a, "QG_SEALED", now);
+        let (id, _, _, request) = status_of(handle_request(a, "t", "QG_SEALED", 60, now));
+        status_of(handle_approve(a, "t", (&id, None), || true, now));
+        let approval = sign(b, &request, now);
+        status_of(handle_approve(
+            a,
+            "t",
+            (&id, Some(&approval)),
+            no_prompt,
+            now,
+        ));
+        let owner = crate::daemon_gate::GateOwner {
+            uid: a,
+            username: "t".into(),
+            pid: std::process::id() as i32,
+            creds: ["QG_SEALED".to_string()].into_iter().collect(),
+            rec: crate::daemon_gatex::recording::Recorder::new(a, "0123456789abcdef", false),
+            harness: None,
+            deadlines: Default::default(),
+        };
+        let host = "api.example.com";
+        crate::daemon_gate::resolve_for_gate(&owner, "QG_SEALED", host, 443).unwrap();
+        assert_eq!(owner.deadlines.passed(now + 59), 0, "still open");
+        assert_eq!(owner.deadlines.passed(now + 60), 1, "the window ended");
+    }
 }
