@@ -356,8 +356,18 @@ mod tests {
             .iter()
             .any(|i| i.starts_with("certificate app.test")));
         assert_eq!(ca_item.ignore, ["old"]);
-        // Overwriting the name drops the CA (the value is not readable either way).
-        crate::daemon_store::testkit::set(uid, CA_NAME, "plain");
+        // A plain set never replaces the sealed CA key; deleting it drops the CA.
+        let r = crate::daemon_handlers::handle_set(
+            uid,
+            "t",
+            CA_NAME,
+            Some("plain"),
+            None,
+            Default::default(),
+        );
+        assert!(r.err_msg().unwrap().contains("never unseals"), "{r:?}");
+        assert!(handle_list(uid, "t").is_success());
+        assert!(crate::daemon_handlers::handle_delete(uid, "t", CA_NAME).is_success());
         assert!(handle_list(uid, "t").err_msg().is_some());
     }
 

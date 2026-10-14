@@ -51,6 +51,10 @@ fn keep_protection(uid: u32, upper: &str, f: &mut SetFlags) -> Result<(), String
     if old.sealed == Some(true) && f.ssh.is_none() && f.share_key.is_none() {
         match (f.sealed, &f.bindings) {
             (Some(false), _) => return delete_first("is sealed and a set never unseals it"),
+            // Sealed with no binding (the local CA key): nothing to carry.
+            (_, None) if old.bindings.as_ref().is_none_or(|b| b.is_empty()) => {
+                return delete_first("is sealed and a set never unseals it")
+            }
             (_, None) => (f.sealed, f.bindings) = (Some(true), old.bindings),
             _ => {} // new bindings: `sealed: true` re-seals, without it they're refused
         }
