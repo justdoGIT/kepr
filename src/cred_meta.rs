@@ -83,6 +83,11 @@ pub struct CredMeta {
     /// (`kepr quorum`). Kept across `set`; lowered only by a quorum.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub approvals: Option<u8>,
+    /// T6.02: a random mark a folder import puts on what it wrote (its
+    /// folder state keeps the same mark). Not kept by `set`, so a value
+    /// set again or deleted and re-created here is no longer the import's.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub folder_mark: Option<String>,
     // batch: policy
     /// T9.04: consent prompts for this credential may be answered by the
     /// registered approver (`kepr approvals serve`): desktop | ntfy | any.
