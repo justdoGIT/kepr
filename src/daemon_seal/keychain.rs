@@ -15,12 +15,18 @@
 //
 // The account is a fingerprint of the key (SHA-256, 96 bits): a new master
 // key never overwrites an older item, and unseal checks that the item it
-// read is the key the marker names. The read itself goes through
-// `security`, which is not on the item's access list, so macOS may ask the
-// user to allow it; a refusal (or no login session) fails the unseal.
+// read is the key the marker names.
+//
+// T10.12: on macOS the daemon reads the item itself through
+// Security.framework (`security-framework`, SecItemCopyMatching), so the
+// item's access list (`-T` the daemon binary) applies and the keychain does
+// not prompt on each start. `/usr/bin/security` is used only to add the item
+// (the access list needs it). A failed read (item gone, keychain locked, no
+// login session, or a rebuilt daemon binary the list no longer matches)
+// fails the unseal; it never falls back to a prompting read.
 //
 // macOS only at run time (`from_env`); built on every target so the command
-// lines are tested on Linux with a fake runner.
+// lines and the read path are tested on Linux with fakes.
 
 use std::path::Path;
 
@@ -37,11 +43,31 @@ const MAGIC: &str = "kepr-keychain-v1\n";
 const SEAL_FAILED: &str = "master-key seal failed";
 const UNSEAL_FAILED: &str = "master-key unseal failed";
 
+/// Reads an item's password by (service, account).
+pub type Reader = fn(&str, &str) -> Result<Zeroizing<Vec<u8>>, ()>;
+
 pub struct KeychainSealer<R: Runner> {
     /// The daemon binary: the one application the item trusts.
     exe: String,
     runner: R,
+    /// T10.12: read in this process (Security.framework on macOS); `None`
+    /// reads through `security find-generic-password -w`.
+    native: Option<Reader>,
 }
+
+/// T10.12: the item's password, read by the daemon itself.
+#[cfg(target_os = "macos")]
+fn native_read(service: &str, account: &str) -> Result<Zeroizing<Vec<u8>>, ()> {
+    use security_framework::passwords::{generic_password, PasswordOptions};
+    generic_password(PasswordOptions::new_generic_password(service, account))
+        .map(Zeroizing::new)
+        .map_err(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+const NATIVE: Option<Reader> = Some(native_read);
+#[cfg(not(target_os = "macos"))]
+const NATIVE: Option<Reader> = None;
 
 impl KeychainSealer<SystemRunner> {
     pub fn from_env() -> Result<Self, String> {
@@ -50,7 +76,10 @@ impl KeychainSealer<SystemRunner> {
         }
         let exe = std::env::current_exe()
             .map_err(|_| "KEPR_MASTER_KEY_SEAL=keychain: cannot find the daemon's path")?;
-        Self::new(&exe, SystemRunner)
+        Ok(Self {
+            native: NATIVE,
+            ..Self::new(&exe, SystemRunner)?
+        })
     }
 }
 
@@ -63,6 +92,7 @@ impl<R: Runner> KeychainSealer<R> {
         Ok(Self {
             exe: exe.to_string(),
             runner,
+            native: None,
         })
     }
 }
@@ -140,12 +170,16 @@ impl<R: Runner> Sealer for KeychainSealer<R> {
 
     fn unseal(&self, blob: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
         let account = parse_marker(blob)?;
-        let mut args = find_args(&account);
-        args.push("-w");
-        let out = self
-            .runner
-            .run(&Cmd::new(TOOL, &args))
-            .map_err(|_| UNSEAL_FAILED)?;
+        let out = match self.native {
+            Some(read) => read(SERVICE, &account).map_err(|_| UNSEAL_FAILED)?,
+            None => {
+                let mut args = find_args(&account);
+                args.push("-w");
+                self.runner
+                    .run(&Cmd::new(TOOL, &args))
+                    .map_err(|_| UNSEAL_FAILED)?
+            }
+        };
         let text = std::str::from_utf8(&out).map_err(|_| UNSEAL_FAILED)?;
         let mut key = Zeroizing::new([0u8; 32]);
         hex::decode_to_slice(text.trim_end(), &mut key[..]).map_err(|_| UNSEAL_FAILED)?;
@@ -299,6 +333,43 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    thread_local! {
+        static NATIVE_ITEMS: std::cell::RefCell<HashMap<String, String>> = Default::default();
+    }
+
+    /// Stands in for Security.framework, reading the same pretend keychain.
+    fn fake_native(service: &str, account: &str) -> Result<Zeroizing<Vec<u8>>, ()> {
+        assert_eq!(service, SERVICE);
+        NATIVE_ITEMS.with(|i| {
+            i.borrow()
+                .get(account)
+                .map(|v| Zeroizing::new(v.as_bytes().to_vec()))
+                .ok_or(())
+        })
+    }
+
+    #[test]
+    fn native_unseal_reads_in_process_and_never_runs_security_w() {
+        let items = Items::default();
+        let mut s = sealer(&items);
+        s.native = Some(fake_native);
+        let blob = s.seal(&KEY).unwrap();
+        NATIVE_ITEMS.with(|n| *n.borrow_mut() = items.lock().unwrap().clone());
+        assert_eq!(*s.unseal(&blob).unwrap(), KEY);
+        // Only the add and its attribute check went through `security`.
+        let argv: Vec<Vec<String>> = s.runner.calls().iter().map(|c| c.1.clone()).collect();
+        assert_eq!(argv.len(), 2);
+        assert!(argv.iter().all(|a| !a.contains(&"-w".to_string())));
+        // A failed native read fails the unseal (no prompting fallback).
+        NATIVE_ITEMS.with(|n| n.borrow_mut().clear());
+        assert_eq!(s.unseal(&blob).unwrap_err(), UNSEAL_FAILED);
+        assert_eq!(s.runner.calls().len(), 2);
+        // A wrong value behind the right account is refused too.
+        let acct = account(&KEY);
+        NATIVE_ITEMS.with(|n| n.borrow_mut().insert(acct, hex::encode([5u8; 32])));
+        assert_eq!(s.unseal(&blob).unwrap_err(), UNSEAL_FAILED);
     }
 
     #[cfg(not(target_os = "macos"))]

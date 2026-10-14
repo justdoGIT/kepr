@@ -129,6 +129,12 @@ cbc = { version = "0.2", features = ["zeroize"] }
 chacha20 = { version = "0.10", features = ["zeroize"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
+# batch: platform
+# T10.12: the keychain sealer reads the master key through Security.framework
+# from the daemon itself (macOS only; Linux builds never compile it).
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "3", default-features = false }
+
 [features]
 default = []
 # T7.16: route the daemon's crypto through aws-lc-rs (src/daemon_eco/crypto_fips.rs).
