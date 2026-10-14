@@ -336,8 +336,9 @@ mod tests {
             open(&d, &bytes, pin(&a)).unwrap_err(),
             "not encrypted to your share key"
         );
+        // Quoted: random base64 can hold the bare letters, never a quote.
         let text = String::from_utf8_lossy(&bytes);
-        assert!(!text.contains("one") && !text.contains("two"));
+        assert!(!text.contains("\"one\"") && !text.contains("\"two\""));
         assert!(split(&bytes).is_ok());
     }
 
