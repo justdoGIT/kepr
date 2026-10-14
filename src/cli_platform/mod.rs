@@ -9,14 +9,18 @@
 //   pki            `kepr pki init|ca|issue|ls` local CA (T10.10)
 //   svid           `kepr pki svid|tpm-enroll` SPIFFE SVIDs, TPM2 quotes (T10.11)
 //   kdbx*          `kepr import vault.kdbx` KeePass KDBX 4 (T10.02)
+//   fuse, mount*   `kepr mount DIR --file NAME=KEYS` read-only FUSE files (T10.01)
 
 mod args;
 pub mod exe;
 pub mod fingerprint;
+mod fuse;
 pub mod kdbx;
 mod kdbx_keys;
 mod kdbx_xml;
 mod keyring;
+mod mount;
+mod mount_os;
 mod pki;
 mod svid;
 mod systemd_cred;
@@ -25,7 +29,7 @@ use kepr_core::protocol::Response;
 
 pub use fingerprint::{PlatformFlags, FLAGS};
 
-pub const VERBS: &[&str] = &["systemd-cred", "keyring", "exe", "pki"];
+pub const VERBS: &[&str] = &["systemd-cred", "keyring", "exe", "pki", "mount"];
 
 pub const HELP: &str = "  systemd-cred KEY [--name CRED] [--tpm2]
                                        print a SetCredentialEncrypted= line for a unit file (value
@@ -52,6 +56,10 @@ pub const HELP: &str = "  systemd-cred KEY [--name CRED] [--tpm2]
   import vault.kdbx [--prefix P] [--seal] [--overwrite] [--yes]
                                        KeePass KDBX 4 (asks for its password; Argon2 KDF, AES-256 or
                                        ChaCha20; key files not supported)
+  mount DIR --file NAME=KEY1,KEY2 [--file ...] [--exe PATH]... [--consent]
+                                       read-only FUSE files (*.json object, .env lines, or one bare
+                                       value), fetched per open for your processes only; --exe limits
+                                       the reading programs, --consent asks polkit each time
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -60,6 +68,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "keyring" => keyring::cmd_keyring(args),
         "exe" => exe::cmd_exe(args),
         "pki" => pki::cmd_pki(args),
+        "mount" => mount_os::cmd_mount(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }
