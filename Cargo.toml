@@ -53,7 +53,7 @@ sha1 = "0.11"
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 # `kepr share` (P6.1/P6.2): X25519 key agreement (same curve25519-dalek
 # as ed25519-dalek) and HKDF-SHA256 for the share envelopes.
-x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
+x25519-dalek = { version = "3", default-features = false, features = ["static_secrets", "zeroize"] }
 hkdf = "0.13"
 # AWS SigV4 signing for `kepr sync-{push,pull} --url aws-sm:…`.
 # `hmac` composes with sha2 to produce HMAC-SHA256, the primitive
@@ -69,7 +69,7 @@ base64 = "0.22"
 # with its dependencies — comparable to the existing sha2+hmac footprint.
 # Signature verification only (no keygen), so the prime-field arithmetic
 # is verification-side only and audit-safe.
-p256 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 # Phase 2 η: minimal CBOR parsing for FIDO2 authenticator data and
 # COSE_Key structures. `ciborium` is the lightest pure-Rust CBOR
 # crate (~50KB). Only used in the daemon for parsing registration
