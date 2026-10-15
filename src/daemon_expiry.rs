@@ -278,6 +278,10 @@ fn spawn_sweeper_with_interval(versions: Arc<VersionState>, interval: Duration) 
             crate::daemon_sharing::sweep(now); // T6.05 self-destruct, T6.06 release
             crate::daemon_aws::sweep(now); // T7.07 scheduled rotation
             crate::daemon_syncx::quorum_sweep(now); // T7.12: closed approval windows
+            if let Err(e) = crate::crypto::relocate_key() {
+                eprintln!("[kepr-daemon] key relocation: {e}") // T12.22
+            }
+            crate::daemon_platform::fingerprint::relocate();
         })
         .expect("spawn kepr-expiry thread");
 }

@@ -156,6 +156,12 @@ pub fn unlock_backend(master_key: &[u8; 32]) -> Result<(), String> {
         .unlock(master_key)
 }
 
+/// T12.22: relocate the master key's shares; Ok before start-up has
+/// installed the backend.
+pub fn relocate_key() -> Result<(), String> {
+    INPROC_BACKEND.get().map_or(Ok(()), InProcBackend::relocate)
+}
+
 pub fn backend_is_locked() -> bool {
     INPROC_BACKEND
         .get()

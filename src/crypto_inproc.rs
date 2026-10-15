@@ -124,6 +124,16 @@ impl InProcBackend {
         Ok(())
     }
 
+    /// T12.22: move the key's shares to fresh random addresses under a
+    /// fresh mask (every 60 s, from the sweeper). Ok when locked.
+    pub fn relocate(&self) -> Result<(), String> {
+        let mut key = self
+            .master_key
+            .write()
+            .map_err(|_| "master-key lock poisoned")?;
+        key.as_mut().map_or(Ok(()), GuardedKey::relocate)
+    }
+
     pub fn is_locked(&self) -> bool {
         self.master_key
             .read()
@@ -415,6 +425,25 @@ mod tests {
         b.unlock(&[0xAB; 32]).unwrap();
         assert_ne!(b.key_addrs().unwrap(), before);
         assert_eq!(b.decrypt(TEST_UID, "BEFORE_LOCK").unwrap().as_str(), "kept");
+    }
+
+    /// T12.22: the sweeper's 60 s relocation.
+    #[test]
+    fn relocate_moves_shares_and_keeps_the_key() {
+        let (b, _dir) = fresh_backend();
+        b.encrypt(TEST_UID, "BEFORE_MOVE", b"kept").unwrap();
+        let before = b.key_addrs().unwrap();
+        b.relocate().unwrap();
+        assert_ne!(b.key_addrs().unwrap(), before);
+        assert_eq!(b.decrypt(TEST_UID, "BEFORE_MOVE").unwrap().as_str(), "kept");
+    }
+
+    #[test]
+    fn relocate_on_a_locked_store_is_ok() {
+        let (b, _dir) = fresh_backend();
+        b.lock();
+        assert_eq!(b.relocate(), Ok(()));
+        assert!(b.is_locked() && b.key_addrs().is_none());
     }
 
     /// T7.16: the file format is the same whichever suite is active. A v2
