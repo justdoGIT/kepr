@@ -14,7 +14,8 @@
 // (names and wrapped keys only, never a value), and drops both after a
 // failed write so the next call re-opens and recovers. The newest epoch
 // is recorded in the rollback state, so an older copy of the image is
-// refused.
+// refused; with a counter (rollback.rs, T12.27) a copy is refused even
+// when the state file was rolled back with it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -25,6 +26,7 @@ use zeroize::Zeroizing;
 use super::image::VaultImage;
 use super::index::{Index, Record};
 use super::keys::Keys;
+use super::rollback::EpochCounter;
 use crate::crypto::Backend;
 use crate::expiry::{CredMeta, MetaStore};
 use crate::store;
@@ -43,6 +45,8 @@ pub struct ImageBackend {
     versions: Option<Arc<VersionState>>,
     /// Size of the image the first write creates (MiB).
     create_mib: u32,
+    /// The off-disk counter the header is anchored to (T12.27).
+    counter: Option<Arc<dyn EpochCounter>>,
     state: Mutex<Option<Open>>,
 }
 
@@ -53,8 +57,20 @@ impl ImageBackend {
             kek,
             versions,
             create_mib: kepr_core::protocol_vault::DEFAULT_IMAGE_MIB,
+            counter: None,
             state: Mutex::new(None),
         }
+    }
+
+    /// Bind the image to an anti-rollback counter kept off the disk.
+    #[allow(dead_code)] // the TPM2 counter (T12.30) is its first user
+    pub fn with_counter(mut self, c: Arc<dyn EpochCounter>) -> Self {
+        self.counter = Some(c);
+        self
+    }
+
+    pub(super) fn counter(&self) -> Option<&dyn EpochCounter> {
+        self.counter.as_deref()
     }
 
     /// Tests: a small first-write image instead of 64 MiB of noise each.
@@ -87,6 +103,7 @@ impl ImageBackend {
 
     pub(super) fn open(&self, kek: &[u8; 32]) -> Result<Open, String> {
         let img = VaultImage::open(&self.path, kek)?;
+        self.check_counter(&img.header)?;
         if let Some(v) = &self.versions {
             v.verify(&epoch_key(&img.header.image_id), img.header.epoch)
                 .map_err(|e| format!("vault image refused: {e}"))?;
@@ -147,7 +164,7 @@ impl ImageBackend {
                 self.open(&kek)?
             } else {
                 Open {
-                    img: VaultImage::create(&self.path, self.create_mib, &kek)?,
+                    img: self.create_image(self.create_mib, &kek)?,
                     index: None,
                 }
             });
@@ -155,9 +172,14 @@ impl ImageBackend {
         let open = st.as_mut().expect("opened above");
         open.index = None;
         let keys = open.img.keys(&kek);
-        let r = f(&mut open.img, &keys);
+        let r = self
+            .anchor_first(&mut open.img, &keys)
+            .and_then(|()| f(&mut open.img, &keys));
         match &r {
-            Ok(_) => self.record_epoch(&open.img),
+            Ok(_) => {
+                self.record_epoch(&open.img);
+                self.count_commit(&open.img.header);
+            }
             Err(_) => *st = None,
         }
         r
@@ -208,30 +230,6 @@ impl ImageBackend {
         .ok()
         .flatten()
         .flatten()
-    }
-}
-
-impl ImageBackend {
-    /// Every credential whose `.meta` expiry is at or before `now`, as
-    /// (uid, NAME). Reads each record's meta; values stay in the image.
-    pub fn expired(&self, now: u64) -> Vec<(u32, String)> {
-        let due = self.with_index(|img, keys, ix| {
-            let mut out = Vec::new();
-            for (k, _) in ix.entries.iter().filter(|(_, e)| e.has_value) {
-                let Ok(Some(rec)) = img.read_record(keys, ix, k) else {
-                    continue;
-                };
-                let meta: Option<CredMeta> = rec.meta.and_then(|m| serde_json::from_slice(&m).ok());
-                if meta
-                    .and_then(|m| m.expires_at_unix)
-                    .is_some_and(|t| t <= now)
-                {
-                    out.extend(store::from_cred_name(k));
-                }
-            }
-            Ok(out)
-        });
-        due.ok().flatten().unwrap_or_default()
     }
 }
 

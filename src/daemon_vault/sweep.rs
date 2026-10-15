@@ -6,8 +6,10 @@
 // credential's lock, crypto-shred the record (meta included) and its
 // history, tell running gates, drop the list cache.
 
+use super::backend::ImageBackend;
 use crate::audit::{self, username_for_uid, AuditEvent, AuditResult};
 use crate::crypto::Backend;
+use crate::expiry::CredMeta;
 use crate::{daemon_cache, expiry, store};
 
 /// Expire everything due at `now`. Returns how many were removed.
@@ -40,4 +42,28 @@ pub fn sweep_expired(now: u64) -> usize {
         removed += usize::from(r.is_ok());
     }
     removed
+}
+
+impl ImageBackend {
+    /// Every credential whose `.meta` expiry is at or before `now`, as
+    /// (uid, NAME). Reads each record's meta; values stay in the image.
+    pub fn expired(&self, now: u64) -> Vec<(u32, String)> {
+        let due = self.with_index(|img, keys, ix| {
+            let mut out = Vec::new();
+            for (k, _) in ix.entries.iter().filter(|(_, e)| e.has_value) {
+                let Ok(Some(rec)) = img.read_record(keys, ix, k) else {
+                    continue;
+                };
+                let meta: Option<CredMeta> = rec.meta.and_then(|m| serde_json::from_slice(&m).ok());
+                if meta
+                    .and_then(|m| m.expires_at_unix)
+                    .is_some_and(|t| t <= now)
+                {
+                    out.extend(store::from_cred_name(k));
+                }
+            }
+            Ok(out)
+        });
+        due.ok().flatten().unwrap_or_default()
+    }
 }

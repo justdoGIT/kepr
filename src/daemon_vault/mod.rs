@@ -22,6 +22,7 @@
 //   migrate.rs move the per-file store into the image (T4.07)
 //   handlers.rs `kepr vault init|migrate|verify|status` (T4.07)
 //   listing.rs every record, for the store features (T4.14)
+//   rollback.rs the header's anchor to an off-disk counter (T12.27)
 
 pub mod admin;
 pub mod backend;
@@ -36,6 +37,7 @@ pub mod merkle;
 pub mod migrate;
 pub mod place;
 pub mod records;
+pub mod rollback;
 pub mod slot;
 pub mod sweep;
 #[cfg(test)]

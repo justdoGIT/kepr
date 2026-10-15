@@ -773,7 +773,7 @@ Limits:
 - The size is fixed at creation (64 MiB unless `init --size` says
   otherwise; the first write makes a 64 MiB image when there is none);
   there is no resize, and a full image
-  refuses writes ("vault image is full"). The index is capped at 256 slots
+  refuses writes ("vault image is full"). The index is capped at 253 slots
   (about 1 MiB).
 - There is no migration back to files. While the image is active, keys
   still in per-file storage are not listed or served until

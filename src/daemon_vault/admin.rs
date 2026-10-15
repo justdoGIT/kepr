@@ -4,7 +4,7 @@
 // interleave with a credential write.
 
 use super::backend::{ImageBackend, Open};
-use super::image::{VaultImage, FIRST_DATA_SLOT, SLOTS_PER_MIB};
+use super::image::{FIRST_DATA_SLOT, SLOTS_PER_MIB};
 
 /// How full the image is.
 #[derive(Debug, PartialEq, Eq)]
@@ -25,7 +25,7 @@ impl ImageBackend {
         if self.path().exists() {
             return Err("a vault image already exists".into());
         }
-        let img = VaultImage::create(self.path(), size_mib, &kek)?;
+        let img = self.create_image(size_mib, &kek)?;
         self.record_epoch(&img);
         *st = Some(Open { img, index: None });
         Ok(())

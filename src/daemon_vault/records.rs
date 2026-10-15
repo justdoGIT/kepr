@@ -186,9 +186,23 @@ impl<I: SlotIo> VaultImage<I> {
         keys: &Keys,
         old: &Index,
         new: Index,
+        alloc: Allocator,
+        writes: Pages,
+    ) -> Result<(), String> {
+        let c = self.prepare_index(keys, old, new, alloc, writes)?;
+        self.commit(keys, c)
+    }
+
+    /// `commit_index` up to the commit itself: the index pages sealed and
+    /// placed, the next header, the decoys and the freed slots.
+    pub(super) fn prepare_index(
+        &self,
+        keys: &Keys,
+        old: &Index,
+        new: Index,
         mut alloc: Allocator,
         mut writes: Pages,
-    ) -> Result<(), String> {
+    ) -> Result<Commit, String> {
         let epoch = self.header.epoch + 1;
         let id = self.header.image_id;
         let blob = Zeroizing::new(new.encode());
@@ -218,18 +232,17 @@ impl<I: SlotIo> VaultImage<I> {
             root: merkle_root(&leaves.iter().map(|l| l.1).collect::<Vec<_>>()),
             index_len: blob.len() as u32,
             index_slots,
+            // Each commit raises the anchor; the counter follows (T12.27).
+            anchor: self.header.anchor.map(|(i, v)| (i, v + 1)),
             ..self.header.clone()
         };
         let decoys = alloc.decoys(DECOYS)?;
-        self.commit(
-            keys,
-            Commit {
-                header,
-                writes,
-                decoys,
-                freed,
-            },
-        )
+        Ok(Commit {
+            header,
+            writes,
+            decoys,
+            freed,
+        })
     }
 
     /// Check the index, every page's hash and the root. Returns
