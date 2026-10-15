@@ -46,6 +46,36 @@ jobs:
       - name: cargo build --release
         run: cargo build --release --bins
 
+  fips:
+    # T7.16: the `fips` feature with AWS-LC's FIPS 140-3 validated module
+    # (aws-lc-rs/fips, rustls/fips). Its build needs Go and CMake, both on
+    # ubuntu-latest. The `--all-features` lint above links AWS-LC's ordinary
+    # build only, which needs just a C compiler.
+    name: Rust (FIPS module)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+
+      - name: Go and CMake
+        run: go version && cmake --version
+
+      - name: daemon tests, validated module
+        run: cargo test --features fips,aws-lc-rs/fips --bin kepr-daemon -- --include-ignored
+
+      - name: gate tests, validated module
+        run: cargo test -p kepr-gate --features fips,rustls/fips -- --include-ignored
+
+      - name: release build
+        run: |
+          cargo build --release --features fips,aws-lc-rs/fips --bin kepr-daemon
+          cargo build --release -p kepr-gate --features fips,rustls/fips
+
   python-sdk:
     name: Python SDK
     runs-on: ubuntu-latest
@@ -53,6 +83,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: unittest
         run: python3 -m unittest discover -s sdk/python/tests -v
+      - name: Ansible lookup plugin
+        run: python3 -m unittest discover -s integrations/ansible/tests -v
 
   node-sdk:
     name: Node SDK
@@ -62,6 +94,9 @@ jobs:
       - name: node --test
         working-directory: sdk/node
         run: node --test test/*.test.js
+      - name: VS Code extension
+        working-directory: integrations/vscode
+        run: node --test test/*.test.js
 
   go-sdk:
     name: Go SDK
@@ -70,6 +105,55 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: go vet + test
         working-directory: sdk/go
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
+  ci-templates:
+    name: GitHub Action + GitLab template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint (workflows, and the action's inputs via its example)
+        env:
+          SHELLCHECK_OPTS: --severity=warning
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint"
+      - name: shellcheck
+        run: shellcheck integrations/ci/*.sh
+      - name: kepr-ci.sh tests (masking, export, OIDC exchange, GitLab copy)
+        run: bash integrations/ci/test_kepr_ci.sh
+      - name: Podman secret driver (shellcheck + fake-kepr tests)
+        run: |
+          shellcheck integrations/podman/kepr-podman-driver integrations/podman/*.sh
+          bash integrations/podman/test_kepr_podman_driver.sh
+      - name: GitLab template parses
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 -c "import yaml; yaml.safe_load(open('integrations/gitlab/kepr.gitlab-ci.yml'))"
+
+  # batch: platform
+  csi-provider:
+    name: Secrets Store CSI provider
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: go vet + test
+        working-directory: integrations/csi-provider
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
+  terraform-provider:
+    name: Terraform provider
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: go vet + test
+        working-directory: integrations/terraform-provider-kepr
         run: |
           test -z "$(gofmt -l .)"
           go vet ./...

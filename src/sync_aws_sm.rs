@@ -2,7 +2,7 @@
 //
 // Phase 2 ζ.2. Pushes / pulls a kepr credential to / from AWS
 // Secrets Manager via signed REST calls. No SDK — SigV4 signing
-// from `sync_aws_sigv4`, HTTP via `ureq`. Same lean-deps stance
+// from `kepr_core::sigv4`, HTTP via `ureq`. Same lean-deps stance
 // as the Vault backend.
 //
 // Auth: standard AWS env vars
@@ -38,8 +38,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::sync::Syncer;
-use crate::sync_aws_sigv4::{format_amz_date, sign, SigV4Input};
 use kepr_core::generate::ZeroString;
+use kepr_core::sigv4::{format_amz_date, sign, SigV4Input};
 
 pub struct AwsSmSyncer {
     secret_id: String,
@@ -193,6 +193,13 @@ impl Syncer for AwsSmSyncer {
     }
 
     fn pull(&self) -> Result<String, String> {
+        match self.fetch()? {
+            Some(v) => Ok(v.as_str().to_string()),
+            None => Err("aws-sm GetSecretValue: HTTP 400 ResourceNotFoundException".into()),
+        }
+    }
+
+    fn fetch(&self) -> Result<Option<zeroize::Zeroizing<String>>, String> {
         let creds = Self::read_env()?;
         let body = serde_json::json!({"SecretId": self.secret_id});
         let (status, response) = self.signed_post(
@@ -200,6 +207,11 @@ impl Syncer for AwsSmSyncer {
             "secretsmanager.GetSecretValue",
             body.to_string().as_bytes(),
         )?;
+        let response = zeroize::Zeroizing::new(response);
+        // T11.17: no such secret (create, for a dry run).
+        if status == 400 && error_type(&response) == NOT_FOUND {
+            return Ok(None);
+        }
         if !(200..300).contains(&status) {
             return Err(format!(
                 "aws-sm GetSecretValue: HTTP {status} {}",
@@ -213,17 +225,89 @@ impl Syncer for AwsSmSyncer {
         // kepr always writes via SecretString, so a Binary-only
         // response means the secret wasn't kepr-managed.
         if let Some(s) = parsed.get("SecretString").and_then(|v| v.as_str()) {
-            return Ok(s.to_string());
+            return Ok(Some(zeroize::Zeroizing::new(s.to_string())));
         }
         if parsed.get("SecretBinary").is_some() {
             return Err("aws-sm: secret stored as SecretBinary, not SecretString — \
                         was it written by `kepr sync push`?"
                 .to_string());
         }
-        Err(format!(
-            "aws-sm GetSecretValue: response missing SecretString: {response}"
-        ))
+        Err("aws-sm GetSecretValue: response missing SecretString".into())
     }
+}
+
+const NOT_FOUND: &str = "ResourceNotFoundException";
+
+/// The AWS error type of a JSON error body (`__type`, after any `#`).
+fn error_type(body: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let t = v.get("__type").and_then(|t| t.as_str()).unwrap_or("");
+    t.rsplit('#').next().unwrap_or("").to_string()
+}
+
+/// T11.17: the secret names on one ListSecrets page, and its NextToken.
+pub fn parse_list(body: &str) -> Result<(Vec<String>, Option<String>), String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "aws-sm ListSecrets: reply is not JSON")?;
+    let list = v
+        .get("SecretList")
+        .and_then(|l| l.as_array())
+        .ok_or("aws-sm ListSecrets: reply has no SecretList")?;
+    let names = list
+        .iter()
+        .filter_map(|s| s.get("Name")?.as_str())
+        .map(str::to_string)
+        .collect();
+    let next = v
+        .get("NextToken")
+        .and_then(|t| t.as_str())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    Ok((names, next))
+}
+
+/// T11.17: the ListSecrets request body for one page.
+pub fn list_body(prefix: &str, next: Option<&str>) -> serde_json::Value {
+    let mut b = serde_json::json!({ "MaxResults": 100 });
+    if !prefix.is_empty() {
+        b["Filters"] = serde_json::json!([{ "Key": "name", "Values": [prefix] }]);
+    }
+    if let Some(t) = next {
+        b["NextToken"] = t.into();
+    }
+    b
+}
+
+/// T11.17: every secret whose name starts with `prefix`, as
+/// `(name, aws-sm:name)`. AWS's name filter is a case-insensitive
+/// prefix match; the exact prefix is checked here too.
+pub fn list(prefix: &str) -> Result<Vec<(String, String)>, String> {
+    let creds = AwsSmSyncer::read_env()?;
+    let me = AwsSmSyncer::from_path("");
+    let (mut out, mut next) = (Vec::new(), None::<String>);
+    for _ in 0..50 {
+        let body = list_body(prefix, next.as_deref()).to_string();
+        let (status, reply) =
+            me.signed_post(&creds, "secretsmanager.ListSecrets", body.as_bytes())?;
+        if !(200..300).contains(&status) {
+            return Err(format!(
+                "aws-sm ListSecrets: HTTP {status} {}",
+                error_type(&reply)
+            ));
+        }
+        let (names, more) = parse_list(&reply)?;
+        out.extend(
+            names
+                .into_iter()
+                .filter(|n| n.starts_with(prefix))
+                .map(|n| (n.clone(), format!("aws-sm:{n}"))),
+        );
+        match more {
+            Some(t) => next = Some(t),
+            None => return Ok(out),
+        }
+    }
+    Err("aws-sm ListSecrets: too many pages".into())
 }
 
 #[cfg(test)]
@@ -233,6 +317,33 @@ mod tests {
     use super::*;
 
     static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn list_pages_parse_names_and_next_token() {
+        let body = r#"{"SecretList":[{"ARN":"arn:x","Name":"prod/db"},{"Name":"prod/api"},{"ARN":"no-name"}],
+                       "NextToken":"tok2"}"#;
+        let (names, next) = parse_list(body).unwrap();
+        assert_eq!(names, ["prod/db", "prod/api"]);
+        assert_eq!(next.as_deref(), Some("tok2"));
+        assert_eq!(parse_list(r#"{"SecretList":[]}"#).unwrap(), (vec![], None));
+        assert!(parse_list(r#"{"__type":"AccessDeniedException"}"#).is_err());
+        assert_eq!(
+            list_body("prod/", Some("tok2")),
+            serde_json::json!({"MaxResults":100,"Filters":[{"Key":"name","Values":["prod/"]}],"NextToken":"tok2"})
+        );
+        assert_eq!(list_body("", None), serde_json::json!({"MaxResults":100}));
+    }
+
+    #[test]
+    fn not_found_is_recognised_by_error_type() {
+        let body = r#"{"__type":"ResourceNotFoundException","Message":"can't find hunter2"}"#;
+        assert_eq!(error_type(body), NOT_FOUND);
+        assert_eq!(
+            error_type(r#"{"__type":"com.amazonaws#ResourceNotFoundException"}"#),
+            NOT_FOUND
+        );
+        assert_eq!(error_type("hunter2"), "");
+    }
 
     #[test]
     fn from_path_stores_secret_id() {

@@ -8,39 +8,22 @@
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
+use kepr_core::record_types;
 
 use crate::daemon_handlers::{handle_set, SetFlags};
 
-/// Known record types and the fields `kepr record add` asks for.
-pub const TYPES: &[(&str, &[&str])] = &[
-    ("login", &["username", "password", "url", "totp"]),
-    ("card", &["holder", "number", "expiry", "cvv", "pin"]),
-    (
-        "database",
-        &["host", "port", "user", "password", "database"],
-    ),
-    ("server", &["host", "port", "user", "password"]),
-    ("api", &["key", "secret", "url"]),
-    ("note", &["text"]),
-    ("custom", &[]),
-];
 const MAX_FIELDS: usize = 64;
 
-fn valid_field_name(k: &str) -> bool {
-    (1..=32).contains(&k.len())
-        && k.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-}
-
-/// Check the type and that `fields` is a JSON object of 1..=64 string
-/// fields with lower-case names.
+/// Check the type and that `fields` is a JSON object of 1..=64 fields
+/// with lower-case names (values: daemon_recordsx/fields.rs). The type is
+/// a built-in or a well-formed user type name (T11.7: user types live in
+/// the caller's config, so only their name reaches the daemon).
 pub fn validate(record_type: &str, fields: &str) -> Result<(), String> {
-    if !TYPES.iter().any(|(t, _)| *t == record_type) {
-        let names: Vec<&str> = TYPES.iter().map(|(t, _)| *t).collect();
-        return Err(format!(
-            "unknown record type; use one of: {}",
-            names.join(", ")
-        ));
+    if !record_types::is_builtin(record_type) {
+        record_types::valid_type_name(record_type).map_err(|e| {
+            let names: Vec<&str> = record_types::builtin_names().collect();
+            format!("{e} (built-in types: {})", names.join(", "))
+        })?;
     }
     let obj: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(fields).map_err(|_| "record fields must be a JSON object")?;
@@ -48,14 +31,12 @@ pub fn validate(record_type: &str, fields: &str) -> Result<(), String> {
         return Err(format!("a record needs 1-{MAX_FIELDS} fields"));
     }
     for (k, v) in &obj {
-        if !valid_field_name(k) {
+        if !record_types::valid_field_name(k) {
             return Err(format!(
                 "field name {k:?}: use 1-32 of a-z, 0-9, underscore"
             ));
         }
-        if !v.is_string() {
-            return Err(format!("field {k}: values must be strings"));
-        }
+        crate::daemon_recordsx::check_field(k, v)?; // T5.05: lists, structured, custom
     }
     Ok(())
 }
@@ -74,14 +55,16 @@ pub fn db_binding(fields: &str) -> Result<kepr_core::binding::Binding, String> {
     if !matches!(get("sslmode"), "" | "verify-full" | "disable") {
         return Err("sslmode must be verify-full (default) or disable".into());
     }
+    let (inject, default_port) = kepr_core::binding::Inject::for_db_kind(get("kind"))
+        .ok_or("kind must be postgres, mysql or redis")?;
     let port = match get("port") {
-        "" => 5432,
+        "" => default_port,
         p => p.parse().map_err(|_| "port must be a number")?,
     };
     let b = kepr_core::binding::Binding {
         host: get("host").to_ascii_lowercase(),
         port,
-        inject: kepr_core::binding::Inject::Postgres,
+        inject,
     };
     kepr_core::binding::validate_binding(&b)?;
     Ok(b)
@@ -94,7 +77,9 @@ pub fn handle_record_set(
     (record_type, fields): (&str, &ZeroString),
     (requires_consent, seal): (Option<bool>, bool),
 ) -> Response {
-    if let Err(e) = validate(record_type, fields.as_str()) {
+    if let Err(e) = validate(record_type, fields.as_str())
+        .and_then(|()| crate::daemon_recordsx::check_links(uid, name, fields.as_str()))
+    {
         return Response::fail(e);
     }
     let bindings = match (seal, record_type) {
@@ -212,13 +197,31 @@ mod tests {
     }
 
     #[test]
+    fn database_kind_picks_the_proxy_and_default_port() {
+        let b = db_binding(
+            r#"{"kind":"redis","host":"cache.example.com","user":"default","password":"p","database":"0"}"#,
+        )
+        .unwrap();
+        assert_eq!(b.port, 6379);
+        assert_eq!(b.inject, kepr_core::binding::Inject::Redis);
+        assert!(db_binding(
+            r#"{"kind":"oracle","host":"db.example.com","user":"u","password":"p","database":"d"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
     fn validates_type_and_fields() {
         assert!(validate("login", r#"{"username":"me","password":"p"}"#).is_ok());
-        assert!(validate("nope", r#"{"a":"b"}"#).is_err());
+        assert!(validate("Nope", r#"{"a":"b"}"#).is_err());
+        assert!(validate("a b", r#"{"a":"b"}"#).is_err());
+        // T11.7: a user type's name.
+        assert!(validate("wifi", r#"{"ssid":"home"}"#).is_ok());
         assert!(validate("login", "[]").is_err());
         assert!(validate("login", "{}").is_err());
         assert!(validate("login", r#"{"User":"x"}"#).is_err());
         assert!(validate("login", r#"{"port":5432}"#).is_err());
+        assert!(validate("login", r#"{"url":["a","b"],"custom":{"Q/A":"x"}}"#).is_ok());
         let many: String = (0..65)
             .map(|i| format!("\"f{i}\":\"v\""))
             .collect::<Vec<_>>()

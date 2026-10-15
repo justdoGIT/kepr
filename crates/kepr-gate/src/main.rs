@@ -6,21 +6,35 @@
 //! ready line, then forwards provider API calls, replacing the session
 //! placeholder with the real key. See docs/content/docs/agent-vault-plan.mdx.
 
+mod aws_egress;
 mod ca;
+mod canary;
+mod db;
 mod dlp;
 mod egress;
+mod github_app;
 mod journal;
 mod limits;
+mod mysql;
+mod mysql_auth;
+mod mysql_rotate;
 mod pg;
+mod pg_jit;
 mod pg_rotate;
 mod pg_tls;
 mod placeholder;
 mod proxy;
+mod recording;
+mod redis;
+mod reply;
 mod rewrite;
 mod routes;
 mod scram;
 mod service;
 mod session;
+mod sigv4_resign;
+mod tls_provider;
+mod tunnel;
 mod vault;
 
 use std::process::ExitCode;

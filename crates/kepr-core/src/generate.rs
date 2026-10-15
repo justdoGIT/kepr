@@ -192,6 +192,36 @@ impl UrandomRng {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// The EFF large wordlist, one word per item.
+pub fn eff_words() -> impl Iterator<Item = &'static str> {
+    EFF_WORDS.lines()
+}
+
+/// `len` characters drawn uniformly from `alphabet` (1-256 distinct bytes).
+pub fn random_chars(alphabet: &[u8], len: usize) -> Result<Vec<u8>, String> {
+    if alphabet.is_empty() || alphabet.len() > 256 {
+        return Err("alphabet must have 1-256 symbols".into());
+    }
+    UrandomRng::sample(alphabet, len)
+}
+
+/// `n` words drawn uniformly from the EFF large wordlist.
+pub fn random_words(n: usize) -> Result<Vec<&'static str>, String> {
+    let words: Vec<&str> = EFF_WORDS.lines().collect();
+    let len = words.len();
+    let max = (65_536 / len) * len; // rejection bound: no modulo bias
+    let mut out = Vec::with_capacity(n);
+    while out.len() < n {
+        for pair in UrandomRng::bytes(32)?.chunks_exact(2) {
+            let v = u16::from_le_bytes([pair[0], pair[1]]) as usize;
+            if v < max && out.len() < n {
+                out.push(words[v % len]);
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn generate_secret(kind: GenKind) -> Result<ZeroString, String> {
     let s = match kind {
         GenKind::Hex => {
@@ -225,21 +255,7 @@ pub fn generate_secret(kind: GenKind) -> Result<ZeroString, String> {
             }
         }
 
-        GenKind::Words => {
-            let words: Vec<&str> = EFF_WORDS.lines().collect();
-            let n = words.len();
-            let max = (65_536 / n) * n; // rejection bound: no modulo bias
-            let mut out = Vec::with_capacity(PASSPHRASE_WORDS);
-            while out.len() < PASSPHRASE_WORDS {
-                for pair in UrandomRng::bytes(32)?.chunks_exact(2) {
-                    let v = u16::from_le_bytes([pair[0], pair[1]]) as usize;
-                    if v < max && out.len() < PASSPHRASE_WORDS {
-                        out.push(words[v % n]);
-                    }
-                }
-            }
-            out.join("-")
-        }
+        GenKind::Words => random_words(PASSPHRASE_WORDS)?.join("-"),
 
         GenKind::Uuid => {
             let b = UrandomRng::bytes(16)?;

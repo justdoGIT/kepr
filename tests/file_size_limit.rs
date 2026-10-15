@@ -71,7 +71,10 @@ const ALLOWLIST: &[(&str, usize)] = &[
     // the per-request handler dispatch into its own module
     // (`daemon_dispatch.rs`) so daemon.rs stays focused on the
     // accept loop and setup.
-    ("src/daemon.rs", 489),
+    // daemon.rs 489 → 400: the request dispatcher moved to
+    // daemon_dispatch.rs (2026-10-05); the headroom is for the P2–P11
+    // ticket batches' one-line module declarations.
+    ("src/daemon.rs", 400),
     // cli_cmds.rs grew 463 → 470: `cmd_set` now destructures
     // `password_protected` off the real `Response::SetOk` instead of
     // firing a second `Request::Status` round-trip to the daemon just

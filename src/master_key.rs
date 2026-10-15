@@ -6,7 +6,9 @@
 // key_unlock.rs; the daemon then starts locked until `kepr unlock`.
 //
 // The Sealer trait keeps system and local startup protection injectable and
-// testable. Password protection is deliberately a separate envelope: the
+// testable. The other sealers (TPM2 PIN / counter, bring-your-own-key KMS
+// and HSM, the macOS Keychain) live in daemon_seal/ and are picked by
+// `sealer_from_env`; the default path stays as below. Password protection is deliberately a separate envelope: the
 // credential-encryption key remains random 256-bit material and is never
 // derived directly from a human password.
 
@@ -22,6 +24,9 @@ const MASTER_KEY_LEN: usize = 32;
 const SYSTEMD_CREDS_BIN: &str = "/usr/bin/systemd-creds";
 const KEY_TYPE: &str = "host";
 const SEALED_NAME: &str = "kepr-master-key";
+/// T4.11: the other sealers `KEPR_MASTER_KEY_SEAL` can name (daemon_seal).
+const BYOK_KINDS: &str =
+    "aws-kms:ARN, gcp-kms:NAME, azure-kv:URL, pkcs11:MODULE:LABEL, keychain (macOS)";
 
 /// Read 32 random bytes from /dev/urandom. Linux's CSPRNG is the right
 /// source for long-term key material; getrandom(2) would be equivalent
@@ -57,7 +62,7 @@ pub fn seal_args(seal: Option<&str>, pcrs: Option<&str>) -> Result<Vec<String>, 
     let kind = seal.unwrap_or(KEY_TYPE);
     if !matches!(kind, "host" | "tpm2" | "host+tpm2" | "auto") {
         return Err(format!(
-            "KEPR_MASTER_KEY_SEAL={kind}: use host, tpm2, host+tpm2 or auto"
+            "KEPR_MASTER_KEY_SEAL={kind}: use host, tpm2, host+tpm2, auto or {BYOK_KINDS}"
         ));
     }
     let mut args = vec!["encrypt".to_string(), format!("--with-key={kind}")];
@@ -155,6 +160,23 @@ impl Sealer for LocalFileSealer {
         let backend = kepr_core::keyring::platform_keyring_backend();
         backend.unseal_key(blob)
     }
+}
+
+/// The sealer for a daemon's master key at `path`. `KEPR_MASTER_KEY_SEAL`
+/// and the TPM2 PIN / counter options (T4.08) can pick another one
+/// (daemon_seal::sealer_for); otherwise user mode keeps the local file
+/// and system mode the machine's credential sealer.
+pub fn sealer_from_env(user: bool, path: &Path) -> Result<Box<dyn Sealer>, String> {
+    let seal = std::env::var("KEPR_MASTER_KEY_SEAL").ok();
+    let dir = path.parent().unwrap_or(Path::new("."));
+    if let Some(s) = crate::daemon_seal::sealer_for(seal.as_deref(), dir)? {
+        return Ok(s);
+    }
+    Ok(if user {
+        Box::new(LocalFileSealer)
+    } else {
+        Box::new(SystemdCredsSealer)
+    })
 }
 
 /// Load the master key from `path`, or generate + seal + write it on

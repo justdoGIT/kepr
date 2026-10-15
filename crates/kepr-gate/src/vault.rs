@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 
 use kepr_core::binding::Inject;
 use kepr_core::framing::{read_frame, write_frame};
+use kepr_core::gate_journal::JournalEntry;
 use kepr_core::gate_protocol::{GateRequest, GateResponse};
+use kepr_core::gate_record::GateRecord;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::MAX_MSG_BYTES;
 
@@ -32,6 +34,22 @@ pub trait Resolve: Send + Sync {
     fn resolve(&self, name: &str, host: &str, port: u16) -> Result<(ZeroString, Inject), String>;
     /// The daemon's store generation (see module docs).
     fn generation(&self) -> Result<u64, String>;
+    /// T7.09: hand recorded chunks to the daemon.
+    fn record(&self, _record: GateRecord) -> Result<(), String> {
+        Err("recording is not available".into())
+    }
+    /// T11.22: hand request journal entries to the daemon.
+    fn journal(&self, _entries: Vec<JournalEntry>) -> Result<(), String> {
+        Err("journal is not available".into())
+    }
+    /// T9.06: add to today's usage of `name`; today's (requests, tokens).
+    fn day_usage(&self, _name: &str, _requests: u64, _tokens: u64) -> Result<(u64, u64), String> {
+        Err("daily usage is not available".into())
+    }
+    /// T9.08: is one of these fingerprints a planted canary?
+    fn canary(&self, _fingerprints: Vec<String>) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 pub struct FdResolver {
@@ -87,7 +105,7 @@ impl Resolve for FdResolver {
         match self.call(req)? {
             GateResponse::ResolveOk { value, inject, .. } => Ok((value, inject)),
             GateResponse::Err { error, .. } => Err(error),
-            GateResponse::Generation { .. } => Err("daemon channel: unexpected reply".into()),
+            _ => Err("daemon channel: unexpected reply".into()),
         }
     }
 
@@ -95,7 +113,47 @@ impl Resolve for FdResolver {
         match self.call(|id| GateRequest::Generation { id })? {
             GateResponse::Generation { generation, .. } => Ok(generation),
             GateResponse::Err { error, .. } => Err(error),
-            GateResponse::ResolveOk { .. } => Err("daemon channel: unexpected reply".into()),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
+
+    fn record(&self, record: GateRecord) -> Result<(), String> {
+        match self.call(|id| GateRequest::Record { id, record })? {
+            GateResponse::Recorded { .. } => Ok(()),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
+
+    fn journal(&self, entries: Vec<JournalEntry>) -> Result<(), String> {
+        match self.call(|id| GateRequest::Journal { id, entries })? {
+            GateResponse::Recorded { .. } => Ok(()),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
+
+    fn day_usage(&self, name: &str, requests: u64, tokens: u64) -> Result<(u64, u64), String> {
+        let req = |id| GateRequest::DayUsage {
+            id,
+            name: name.to_string(),
+            requests,
+            tokens,
+        };
+        match self.call(req)? {
+            GateResponse::UsageToday {
+                requests, tokens, ..
+            } => Ok((requests, tokens)),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
+
+    fn canary(&self, fingerprints: Vec<String>) -> Result<bool, String> {
+        match self.call(|id| GateRequest::Canary { id, fingerprints })? {
+            GateResponse::CanaryChecked { tripped, .. } => Ok(tripped),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
         }
     }
 }
@@ -110,6 +168,10 @@ pub struct Cache {
     generation: Mutex<(u64, Option<Instant>)>,
     /// Serialises cache misses (single-flight).
     resolving: Mutex<()>,
+    /// T7.08: tokens minted from cached values (GitHub App installation
+    /// tokens) by a hash of what minted them, with their expiry; dropped
+    /// with the values, so a store change ends them too.
+    minted: Mutex<HashMap<[u8; 32], (ZeroString, u64)>>,
 }
 
 fn dup(z: &ZeroString) -> ZeroString {
@@ -124,6 +186,7 @@ impl Cache {
             entries: Mutex::new(HashMap::new()),
             generation: Mutex::new((0, None)),
             resolving: Mutex::new(()),
+            minted: Mutex::new(HashMap::new()),
         }
     }
 
@@ -179,9 +242,46 @@ impl Cache {
         }
     }
 
+    /// T7.09: pass recorded chunks to the daemon (not cached).
+    pub fn record(&self, record: GateRecord) -> Result<(), String> {
+        self.resolver.record(record)
+    }
+
+    /// T11.22: pass request journal entries to the daemon.
+    pub fn journal(&self, entries: Vec<JournalEntry>) -> Result<(), String> {
+        self.resolver.journal(entries)
+    }
+
+    /// T9.08: ask the daemon about canary fingerprints (not cached).
+    pub fn canary(&self, fingerprints: Vec<String>) -> Result<bool, String> {
+        self.resolver.canary(fingerprints)
+    }
+
+    /// T9.06: report usage of `name` to the daemon (not cached).
+    pub fn day_usage(&self, name: &str, requests: u64, tokens: u64) -> Result<(u64, u64), String> {
+        self.resolver.day_usage(name, requests, tokens)
+    }
+
     pub fn clear(&self) {
         if let Ok(mut map) = self.entries.lock() {
             map.clear(); // ZeroString zeroizes on drop
+        }
+        if let Ok(mut map) = self.minted.lock() {
+            map.clear();
+        }
+    }
+
+    /// T7.08: a token minted under `key`, with its expiry.
+    pub fn minted(&self, key: &[u8; 32]) -> Option<(ZeroString, u64)> {
+        let map = self.minted.lock().ok()?;
+        map.get(key).map(|(t, exp)| (dup(t), *exp))
+    }
+
+    /// T7.08: keep a token minted under `key` until `exp` (unix seconds).
+    pub fn mint(&self, key: [u8; 32], token: &ZeroString, exp: u64, now: u64) {
+        if let Ok(mut map) = self.minted.lock() {
+            map.retain(|_, (_, e)| *e > now);
+            map.insert(key, (dup(token), exp));
         }
     }
 }

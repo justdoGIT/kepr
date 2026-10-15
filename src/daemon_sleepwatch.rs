@@ -51,7 +51,7 @@ pub fn spawn(owner_uid: u32) {
         };
         for line in BufReader::new(out).lines().map_while(Result::ok) {
             if let Some(ev) = parse(&line) {
-                let (gates, locked) = crate::daemon_gate_registry::panic_now(owner_uid);
+                let (gates, locked) = crate::daemon_platform::fingerprint::soft_lock(owner_uid);
                 eprintln!("[kepr-daemon] {ev:?}: stopped {gates} gate(s), locked={locked}");
             }
         }

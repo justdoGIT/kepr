@@ -34,6 +34,13 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 time = "0.3"
 # P7.1 database proxy: TLS to the server with the same compiled-in roots.
 webpki-roots = "1"
+# T7.08: RS256 GitHub App JWTs (already in the tree through rustls).
+ring = "0.17"
+
+[features]
+# T7.16 FIPS mode: rustls and the session CA (rcgen) on aws-lc-rs instead of
+# ring (src/tls_provider.rs). Add `rustls/fips` for the validated module.
+fips = ["rustls/aws-lc-rs", "rcgen/aws_lc_rs"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros"] }

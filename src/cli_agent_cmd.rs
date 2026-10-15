@@ -11,13 +11,15 @@
 
 use std::io::{BufRead, IsTerminal};
 
+use kepr_core::binding::Inject;
 use kepr_core::gate_protocol::GateLimits;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
+use kepr_core::sigv4_req::AwsKey;
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [-- ARGV] | install omp|grok | ls | revoke NAME";
+const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok | ls | revoke NAME";
 
 #[derive(Debug, Default, PartialEq)]
 pub struct AgentArgs {
@@ -35,6 +37,8 @@ pub struct AgentArgs {
     pub strict_sandbox: bool,
     pub isolate_net: bool,
     pub limits: GateLimits,
+    /// Gate-batch session flags (`--tunnel`, …), see cli_gatex.
+    pub session: crate::cli_gatex::SessionOpts,
     pub argv: Vec<String>,
 }
 
@@ -82,6 +86,15 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
                 i += 1;
                 a.limits.per_minute = Some(number(raw, i, "--rate")?);
             }
+            "--max-requests-day" => {
+                i += 1;
+                a.limits.max_requests_day = Some(number(raw, i, "--max-requests-day")?);
+            }
+            "--max-tokens-day" => {
+                i += 1;
+                a.limits.max_tokens_day = Some(number(raw, i, "--max-tokens-day")?);
+            }
+            f if crate::cli_gatex::SessionOpts::FLAGS.contains(&f) => i = a.session.take(raw, i)?,
             "--stdin" => a.stdin = true,
             "--force" | "-f" => a.force = true,
             "--requires-consent" => a.requires_consent = true,
@@ -136,12 +149,16 @@ fn cmd_add(a: &AgentArgs) -> Response {
     };
     let bindings = match specs
         .iter()
-        .map(|s| cli_agent_detect::binding_for(s))
+        .map(|s| cli_agent_detect::bindings_for(s)) // T2.04: presets may bind more hosts
         .collect::<Result<Vec<_>, _>>()
     {
-        Ok(b) => b,
+        Ok(b) => b.concat(),
         Err(e) => return Response::fail(e),
     };
+    let sigv4 = bindings.iter().any(|b| b.inject == Inject::Sigv4); // T2.02
+    if let (true, Err(e)) = (sigv4, AwsKey::parse(value.as_str())) {
+        return Response::fail(e);
+    }
     let hosts: Vec<String> = bindings.iter().map(|b| b.host.clone()).collect();
     let req = Request::Set {
         name: name.clone(),
@@ -274,6 +291,9 @@ pub fn main(raw: &[String]) -> Response {
     if raw.first().map(String::as_str) == Some("rotate-db") {
         return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]);
     }
+    if let Some(r) = crate::cli_gatex::agent_verb(raw) {
+        return r;
+    }
     let a = match parse(raw) {
         Ok(a) => a,
         Err(e) => return Response::fail(e),
@@ -290,7 +310,8 @@ pub fn main(raw: &[String]) -> Response {
                     (false, true) => cli_agent_run::SandboxMode::Required,
                     (false, false) => cli_agent_run::SandboxMode::Auto,
                 };
-                cli_agent_run::cmd_run(h, a.port, &a.argv, mode, a.isolate_net, a.limits)
+                let (net, s) = (a.isolate_net, &a.session);
+                cli_agent_run::cmd_run(h, a.port, &a.argv, mode, net, a.limits, s)
             }
             None => Response::fail("kepr agent run needs a HARNESS, e.g. kepr agent run claude"),
         },
@@ -338,6 +359,24 @@ mod tests {
         assert!(parse(&v(&["run", "claude", "--port", "0"])).is_err());
         assert!(parse(&v(&["add", "a", "b"])).is_err());
         assert!(parse(&[]).is_err());
+    }
+
+    #[test]
+    fn daily_caps_parse() {
+        let r = parse(&v(&[
+            "run",
+            "claude",
+            "--max-requests-day",
+            "500",
+            "--max-tokens-day",
+            "200000",
+        ]))
+        .unwrap();
+        assert_eq!(
+            (r.limits.max_requests_day, r.limits.max_tokens_day),
+            (Some(500), Some(200_000))
+        );
+        assert!(parse(&v(&["run", "claude", "--max-tokens-day", "lots"])).is_err());
     }
 
     #[test]

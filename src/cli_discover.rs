@@ -3,6 +3,8 @@
 // import them with the `kepr import` pipeline (plan first, names only).
 // Source files are never modified; the report says how to switch each
 // tool to kepr (credential helpers, `kepr exec`, `kepr inject`).
+// `~/.config/kepr/discover.toml` rules (T11.20) add, ignore or ask per
+// entry: cli_session/discover_rules.rs.
 
 use std::path::{Path, PathBuf};
 
@@ -184,49 +186,57 @@ pub fn docker(text: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// (path, reader, how to stop keeping it in plain text)
-type Source = (PathBuf, fn(&str) -> Vec<Entry>, &'static str);
+/// (rule key (T11.20), path, reader, how to stop keeping it in plain text)
+type Source = (&'static str, PathBuf, fn(&str) -> Vec<Entry>, &'static str);
 
 fn sources(home: &Path) -> Vec<Source> {
     let cfg = std::env::var_os("XDG_CONFIG_HOME").map_or(home.join(".config"), PathBuf::from);
     let kube = std::env::var_os("KUBECONFIG").map_or(home.join(".kube/config"), PathBuf::from);
     vec![
         (
+            "aws",
             home.join(".aws/credentials"),
             aws,
             "use `kepr exec --env AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY -- aws …`",
         ),
         (
+            "git",
             home.join(".git-credentials"),
             git_credentials,
             "git config --global credential.helper kepr",
         ),
         (
+            "netrc",
             home.join(".netrc"),
             netrc,
             "remove the password lines; use `kepr exec`",
         ),
         (
+            "npm",
             home.join(".npmrc"),
             npmrc,
             "write `_authToken=${NPM_TOKEN}` and run npm under `kepr exec --env NPM_TOKEN`",
         ),
         (
+            "pypi",
             home.join(".pypirc"),
             pypirc,
             "drop the password; run twine under `kepr exec` (TWINE_PASSWORD)",
         ),
         (
+            "docker",
             home.join(".docker/config.json"),
             docker,
             "set \"credsStore\": \"kepr\" and run `docker login` again",
         ),
         (
+            "gh",
             cfg.join("gh/hosts.yml"),
             |t| yaml_tokens(t, "GH"),
             "`gh auth login` with the system keyring, or `kepr exec --env GH_TOKEN`",
         ),
         (
+            "kube",
             kube,
             |t| yaml_tokens(t, "KUBE"),
             "use an exec credential plugin or `kepr inject` for the kubeconfig",
@@ -239,7 +249,7 @@ pub fn cmd_discover(o: &crate::cli_import::Opts) -> Response {
         return Response::fail("HOME is not set");
     };
     let mut all = Vec::new();
-    for (path, read, advice) in sources(&home) {
+    for (key, path, read, advice) in sources(&home) {
         let Ok(text) = std::fs::read_to_string(&path).map(Zeroizing::new) else {
             continue;
         };
@@ -250,14 +260,14 @@ pub fn cmd_discover(o: &crate::cli_import::Opts) -> Response {
                 path.display(),
                 found.len()
             ));
-            all.extend(found);
+            all.extend(found.into_iter().map(|e| (key, e)));
         }
     }
     if all.is_empty() {
         cli_ui::ok("no plain-text credentials found in the usual CLI config files");
         return Response::Pong;
     }
-    crate::cli_import::import_entries(all, o, None)
+    crate::cli_session::discover_rules::import(all, o) // T11.20: discover.toml
 }
 
 #[cfg(test)]

@@ -18,15 +18,13 @@
 // them, so it can't be used to swap the key of a working store. The
 // restored key is written under a new passphrase (Argon2id envelope).
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::Aes256Gcm;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
 use kepr_core::shamir;
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::audit::{self, AuditEvent, AuditResult};
+use crate::daemon_eco::cipher;
 use crate::{crypto, key_unlock, store};
 
 /// Same layout as crypto_inproc's files: magic(8) | nonce(12) | ct+tag.
@@ -34,9 +32,7 @@ const HEADER: usize = 8 + 12;
 
 /// Short public identifier of a master key, carried by every share.
 pub fn fingerprint(key: &[u8; 32]) -> String {
-    let d = Sha256::new_with_prefix(b"kepr-recovery-v1")
-        .chain_update(key)
-        .finalize();
+    let d = cipher::sha256(&[b"kepr-recovery-v1", key]);
     d[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -45,30 +41,20 @@ fn opens(key: &[u8; 32], uid: u32, name: &str, blob: &[u8]) -> bool {
     if blob.len() < HEADER + 16 || !blob.starts_with(b"kepr_v") {
         return false;
     }
-    let Ok(cipher) = Aes256Gcm::new_from_slice(key) else {
-        return false;
-    };
     let mut aad = uid.to_le_bytes().to_vec();
     aad.extend_from_slice(name.as_bytes());
     let nonce: [u8; 12] = blob[8..HEADER].try_into().expect("12-byte slice");
-    cipher
-        .decrypt(
-            &nonce.into(),
-            Payload {
-                msg: &blob[HEADER..],
-                aad: &aad,
-            },
-        )
-        .map(|p| drop(Zeroizing::new(p)))
-        .is_ok()
+    // The plaintext is Zeroizing and dropped at once; only the tag check counts.
+    cipher::open(key, &nonce, &aad, &blob[HEADER..]).is_ok()
 }
 
 /// (files the key opens, files checked) over the whole store.
 fn probe(key: &[u8; 32]) -> (usize, usize) {
+    // T4.06: the vault image, if there is one, counts as one more file.
+    let (mut ok, mut total) = crate::daemon_vault::probe_image(key);
     let Ok(dir) = std::fs::read_dir(store::store_dir()) else {
-        return (0, 0);
+        return (ok, total);
     };
-    let (mut ok, mut total) = (0, 0);
     for e in dir.flatten() {
         let fname = e.file_name().to_string_lossy().to_string();
         let Some((uid, name)) = store::from_cred_name(&fname) else {
@@ -102,21 +88,35 @@ fn allowed(uid: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// The fences every path that hands out the master key goes through
+/// (recovery kit shares, T4.10 recovery words): the owner only, no agent
+/// gate running, a passphrase-protected store and that passphrase again.
+pub fn release_live_key(
+    uid: u32,
+    username: &str,
+    password: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, String> {
+    allowed(uid)?;
+    if crate::daemon_gate_registry::gates_for(uid) > 0 {
+        return Err("stop running agent sessions first (kepr panic)".into());
+    }
+    if !crate::protected_master_key_path().exists() {
+        return Err("set a passphrase first (kepr lock), then retry".into());
+    }
+    // T11.13: the passphrase check is rate-limited like `kepr unlock`.
+    let key = crate::daemon_session::unlock_guard::unwrap_guarded(password, uid, username)?;
+    let live = crypto::snapshot_key()?;
+    if *key != *live {
+        return Err("the passphrase does not match the running store".into());
+    }
+    Ok(key)
+}
+
 pub fn handle_create(uid: u32, username: &str, password: &[u8], k: u8, n: u8) -> Response {
     let mut shares = Vec::new();
     let mut fp = String::new();
     let r = (|| {
-        allowed(uid)?;
-        if crate::daemon_gate_registry::gates_for(uid) > 0 {
-            return Err("stop running agent sessions first (kepr panic)".into());
-        }
-        let envelope = std::fs::read(crate::protected_master_key_path())
-            .map_err(|_| "set a passphrase first (kepr lock), then retry")?;
-        let key = key_unlock::unwrap(&envelope, password)?;
-        let live = crypto::snapshot_key()?;
-        if *key != *live {
-            return Err("the passphrase does not match the running store".into());
-        }
+        let key = release_live_key(uid, username, password)?;
         fp = fingerprint(&key);
         for s in shamir::split(key.as_ref(), k, n)? {
             shares.push(ZeroString::from_string(shamir::encode(&s, &fp).to_string()));
@@ -166,27 +166,7 @@ pub fn handle_restore(
         if fps.first() != Some(&fp) {
             return Err("the shares do not rebuild the key they were made from".into());
         }
-        let (opened, total) = probe(&key);
-        if opened == 0 {
-            return Err(format!(
-                "the rebuilt key opens none of the {total} credential file(s) here; \
-                 copy the old credential store into place first"
-            ));
-        }
-        // Never re-key a store whose loaded key still works: restore is
-        // for a lost key. A locked store (forgotten passphrase) has no
-        // loaded key, so restore goes ahead: k shares are the key itself,
-        // so this grants nothing the shares don't already.
-        if let Ok(live) = crypto::snapshot_key() {
-            if probe(&live).0 > 0 {
-                return Err("this store's current key still works; nothing to restore".into());
-            }
-        }
-        let envelope = key_unlock::wrap(&key, new_password)?;
-        crate::daemon_lock::install_protected_key(&envelope)?;
-        let _ = crypto::lock_backend();
-        crypto::unlock_backend(*key)?;
-        summary = (fp, opened);
+        summary = (fp, install_rebuilt_key(&key, new_password)?);
         Ok(())
     })();
     audit_result("recovery-restore", uid, username, &r);
@@ -199,9 +179,40 @@ pub fn handle_restore(
     }
 }
 
+/// Make a rebuilt master key (shares, T4.10 words) the store's key under
+/// `new_password`, once it proves itself against the credential files and
+/// only while the loaded key no longer works. Returns the files it opens.
+pub fn install_rebuilt_key(key: &[u8; 32], new_password: &[u8]) -> Result<usize, String> {
+    let (opened, total) = probe(key);
+    if opened == 0 {
+        return Err(format!(
+            "the rebuilt key opens none of the {total} credential file(s) here; \
+             copy the old credential store into place first"
+        ));
+    }
+    // Never re-key a store whose loaded key still works: restore is
+    // for a lost key. A locked store (forgotten passphrase) has no
+    // loaded key, so restore goes ahead: k shares are the key itself,
+    // so this grants nothing the shares don't already.
+    if let Ok(live) = crypto::snapshot_key() {
+        if probe(&live).0 > 0 {
+            return Err("this store's current key still works; nothing to restore".into());
+        }
+    }
+    let envelope = key_unlock::wrap(key, new_password)?;
+    crate::daemon_lock::install_protected_key(&envelope)?;
+    let _ = crypto::lock_backend();
+    crypto::unlock_backend(*key)?;
+    Ok(opened)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Written with RustCrypto directly: proves files from the default
+    // build open through the seam in either build.
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    use aes_gcm::Aes256Gcm;
 
     #[test]
     fn opens_only_with_the_right_key_and_binding() {

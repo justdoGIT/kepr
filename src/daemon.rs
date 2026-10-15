@@ -10,14 +10,17 @@
 mod atomic_file;
 mod audit;
 mod audit_chain;
+mod cred_meta;
 mod crypto;
 mod crypto_inproc;
 mod daemon_audit;
 mod daemon_cache;
 mod daemon_credlock;
+mod daemon_dispatch;
 mod daemon_expiry;
 mod daemon_extra;
 mod daemon_gate;
+mod daemon_gate_deadline;
 mod daemon_gate_registry;
 mod daemon_gate_service;
 mod daemon_handlers;
@@ -47,15 +50,40 @@ mod master_key;
 mod store;
 mod version_state;
 
+// ── P2–P11 ticket batches (2026-10-05): one directory module per batch,
+// declared under its own marker so parallel branches merge cleanly.
+// batch: vault
+mod daemon_vault;
+// batch: seal
+mod daemon_seal;
+// batch: store
+mod daemon_store;
+// batch: records
+mod daemon_recordsx;
+// batch: share
+mod daemon_sharing;
+// batch: sync
+mod daemon_syncx;
+// batch: policy
+mod daemon_policy;
+// batch: gate
+mod daemon_gatex;
+// batch: aws
+mod daemon_aws;
+// batch: eco
+mod daemon_eco;
+// batch: platform
+mod daemon_platform;
+// batch: session
+mod daemon_session;
+// end of batches
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::OnceLock;
 
-use audit::{username_for_uid, AuditEvent, AuditResult};
-use daemon_audit::handle_audit_verify;
-use daemon_handlers::{handle_check, handle_delete, handle_set, SetFlags};
-use daemon_handlers_list::handle_list;
+use audit::username_for_uid;
 use daemon_peer::get_peer_creds;
 use daemon_pool::Pool;
 use daemon_ratelimit::RateLimiter;
@@ -83,36 +111,19 @@ fn rate_limiter() -> &'static RateLimiter {
     RATE_LIMITER.get_or_init(|| RateLimiter::new(RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_PER_SEC))
 }
 
-/// Disable core dumps and ptrace attachment for this process.
-///
-/// SAFETY: `PR_SET_DUMPABLE` takes a single integer argument (0 = not
-/// dumpable); the remaining `prctl(2)` varargs are ignored for this
-/// option. No pointer or lifetime hazard — this only flips a per-process
-/// kernel flag. Without this, decrypted secrets, the master key, and
-/// Argon2id working memory can land in a systemd-coredump or be read via
-/// ptrace by a process that gains the right capability.
-fn disable_core_dumps() {
-    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
-    if ret != 0 {
-        eprintln!(
-            "[kepr-daemon] warning: prctl(PR_SET_DUMPABLE) failed — core dumps may leak secrets"
-        );
-    }
-}
-
 fn user_mode() -> bool {
     std::env::var_os("KEPR_USER_MODE").is_some() || effective_uid() != 0
 }
 
 fn state_dir() -> std::path::PathBuf {
     if user_mode() {
-        std::env::var_os("XDG_STATE_HOME")
+        let base = std::env::var_os("XDG_STATE_HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
                     .join(".local/state")
-            })
-            .join("kepr")
+            });
+        kepr_core::profile::nest(base.join("kepr")) // T11.16
     } else {
         std::path::PathBuf::from("/var/lib/kepr")
     }
@@ -207,7 +218,7 @@ fn sweep_legacy_credstore() {
 
 fn main() {
     daemon_memlock::lock_memory();
-    disable_core_dumps();
+    daemon_memlock::disable_core_dumps();
 
     let user = std::env::args().any(|arg| arg == "--user") || effective_uid() != 0;
     if user {
@@ -215,6 +226,7 @@ fn main() {
     } else {
         std::env::set_var("KEPR_SYSTEM_MODE", "1");
     }
+    daemon_session::check_profile_or_exit(); // T11.16
 
     fs::create_dir_all(state_dir()).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot create state directory: {e}");
@@ -248,20 +260,17 @@ fn main() {
         eprintln!("[kepr-daemon] cannot secure credential directory: {e}");
         std::process::exit(1);
     });
-    let sealer: Box<dyn master_key::Sealer> = if user {
-        Box::new(master_key::LocalFileSealer)
-    } else {
-        Box::new(master_key::SystemdCredsSealer)
-    };
     let password_protected = protected_master_key_path().exists();
     let key = if password_protected {
         None
     } else {
         Some(
-            master_key::load_or_generate(&master_key_path(), sealer.as_ref()).unwrap_or_else(|e| {
-                eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
-                std::process::exit(1);
-            }),
+            master_key::sealer_from_env(user, &master_key_path())
+                .and_then(|s| master_key::load_or_generate(&master_key_path(), s.as_ref()))
+                .unwrap_or_else(|e| {
+                    eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
+                    std::process::exit(1);
+                }),
         )
     };
     let versions = std::sync::Arc::new(
@@ -287,8 +296,10 @@ fn main() {
 
     sweep_legacy_credstore();
     daemon_expiry::spawn_sweeper(versions_for_sweeper);
+    daemon_policy::init(); // T6.11: policy.toml, reloaded on SIGHUP
     if user {
         daemon_sleepwatch::spawn(effective_uid());
+        daemon_session::idle::spawn(effective_uid());
     }
 
     let chain = audit_chain::AuditChain::open(audit_chain_path()).unwrap_or_else(|e| {
@@ -371,102 +382,11 @@ fn handle_client(mut stream: UnixStream) {
         }
     };
 
+    daemon_session::idle::touch(&request);
     let username = username_for_uid(peer_uid);
-    let response = dispatch(peer_uid, peer_pid, &username, request);
+    let response = daemon_dispatch::dispatch(peer_uid, peer_pid, &username, request);
     send_response(&mut stream, &response);
-}
-
-fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
-    match request {
-        Request::Lock { password } => {
-            daemon_lock::handle_lock_gated(uid, username, password.as_bytes())
-        }
-        Request::Unlock { password } => {
-            daemon_lock::handle_unlock_gated(uid, username, password.as_bytes())
-        }
-        Request::Panic => daemon_gate_registry::handle_panic(uid, username),
-        Request::SshGenerate { .. }
-        | Request::SshImport { .. }
-        | Request::SshList
-        | Request::SshSign { .. } => daemon_ssh::dispatch(uid, peer_pid, username, request),
-        Request::Status => Response::StatusOk {
-            locked: crypto::backend_is_locked(),
-            password_protected: protected_master_key_path().exists(),
-        },
-        Request::Ping => {
-            audit::log(&AuditEvent {
-                op: "ping",
-                name: None,
-                uid,
-                username,
-                result: AuditResult::Ok,
-            });
-            Response::Pong
-        }
-        Request::Set {
-            name,
-            value,
-            generate,
-            ttl_secs,
-            requires_consent,
-            requires_fido2,
-            sealed,
-            bindings,
-        } => handle_set(
-            uid,
-            username,
-            &name,
-            value.as_deref(),
-            generate.as_deref(),
-            SetFlags {
-                ttl_secs,
-                requires_consent,
-                requires_fido2,
-                sealed,
-                bindings,
-                ..Default::default()
-            },
-        ),
-        Request::Get {
-            name,
-            fido2_assertion,
-        } => daemon_handlers_get::handle_get(
-            uid,
-            peer_pid,
-            username,
-            &name,
-            fido2_assertion.as_ref(),
-        ),
-        Request::List => handle_list(uid, username),
-        Request::Delete { name } => handle_delete(uid, username, &name),
-        Request::Check => handle_check(uid, username),
-        Request::AuditVerify => handle_audit_verify(uid, username, &audit_chain_path()),
-        Request::Fido2Register {
-            label,
-            credential_id,
-            public_key_cose,
-        } => fido2::handle_register(
-            (uid, peer_pid, username),
-            &label,
-            &credential_id,
-            &public_key_cose,
-        ),
-        Request::Fido2List => {
-            audit::log(&AuditEvent {
-                op: "fido2-list",
-                name: None,
-                uid,
-                username,
-                result: AuditResult::Ok,
-            });
-            Response::Fido2ListOk {
-                credentials: fido2::list_for_uid(uid),
-            }
-        }
-        // History, restore, usage, health, leak response, recovery kit:
-        // routed (and unknown variants refused) in daemon_extra.rs.
-        other => daemon_extra::dispatch(uid, peer_pid, username, other),
-    }
+    daemon_session::fetchfd::send_pending(&stream, &response); // T3.06
 }
 
 fn send_response(stream: &mut UnixStream, resp: &Response) {

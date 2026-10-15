@@ -130,6 +130,7 @@ pub fn cmd_run(
     mode: SandboxMode,
     isolate_net: bool,
     limits: GateLimits,
+    session: &crate::cli_gatex::SessionOpts,
 ) -> Response {
     let adapter = match cli_agent_adapters::lookup(harness) {
         Ok(a) => a,
@@ -143,19 +144,26 @@ pub fn cmd_run(
         let names: HashSet<String> = creds.iter().map(|c| c.name.clone()).collect();
         let mut routes = routes_for(adapter, &names)?;
         routes.extend(crate::cli_agent_egress::extra_routes(&routes, &creds));
+        routes.extend(crate::cli_aws::session::routes(&routes, &creds)); // T2.02
         let db = crate::cli_agent_db::routes(&routes, &creds);
         routes.extend(db);
+        let tunnels = crate::cli_gatex::tunnel::routes(&routes, &session.tunnels)?;
+        routes.extend(tunnels);
+        crate::cli_gatex::grant::apply(&mut routes, &session.grants)?;
         Ok(routes)
     });
     let routes = match routes {
         Ok(r) => r,
         Err(e) => return Response::fail(e),
     };
+    let all_routes = routes.clone();
     let req = Request::StartGate {
         routes,
         port: port.or(adapter.port),
         limits,
         tunnel: !isolate_net,
+        record: session.record,
+        harness: Some(adapter.harness.to_string()), // T7.10
     };
     let (gate_port, placeholders, ca_pem, db_ports) = match client::send_request(&req) {
         Ok(Response::GateStarted {
@@ -163,7 +171,11 @@ pub fn cmd_run(
             placeholders,
             extras,
             ..
-        }) => (port, placeholders, extras.ca_pem, extras.db_ports),
+        }) => {
+            session.announce(extras.session.as_deref());
+            crate::cli_policy::label_session(extras.session.as_deref(), harness); // T9.07
+            (port, placeholders, extras.ca_pem, extras.db_ports)
+        }
         Ok(Response::Err { error }) => return Response::fail(error),
         Ok(_) => return Response::fail("unexpected daemon response"),
         Err(e) => return Response::fail(e),
@@ -173,9 +185,11 @@ pub fn cmd_run(
     let shadowed = crate::cli_agent_egress::shadowed(&placeholders);
     let (inherited, withheld) = keep_safe_env(std::env::vars().filter(|(k, _)| {
         k != "KEPR_GATE_URL"
+            && k != "KEPR_AGENT_HARNESS"
             && !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
             && !crate::cli_agent_db::DB_VARS.contains(&k.as_str())
             && !shadowed.contains(&k.as_str())
+            && !crate::cli_aws::session::shadowed(&placeholders, k)
     }));
     if !withheld.is_empty() {
         crate::cli_ui::warn(&format!(
@@ -184,18 +198,27 @@ pub fn cmd_run(
         ));
     }
     let mut env = build_env(adapter, gate_port, &placeholders, inherited.into_iter());
-    env.extend(crate::cli_agent_db::env(&placeholders, &db_ports));
+    env.extend(crate::cli_agent_db::env(
+        &all_routes,
+        &placeholders,
+        &db_ports,
+    ));
+    env.extend(crate::cli_gatex::tunnel::env(&db_ports));
     // Lets harness plugins (plugins/omp, plugins/grok) find the gate.
     env.push((
         "KEPR_GATE_URL".into(),
         format!("http://127.0.0.1:{gate_port}"),
     ));
+    // T6.11: policy.toml `agent` / `harness` rules match on this.
+    env.push(("KEPR_AGENT_HARNESS".into(), harness.to_string()));
     if let Some(pem) = ca_pem {
         match crate::cli_agent_egress::env(gate_port, &pem, &placeholders) {
             Ok(e) => env.extend(e),
             Err(e) => return Response::fail(e),
         }
     }
+    let aws_env = crate::cli_aws::session::env(&placeholders, &env); // T2.02
+    env.extend(aws_env);
     let default_argv = [adapter.program.to_string()];
     let argv = if argv.is_empty() {
         &default_argv[..]
@@ -204,7 +227,11 @@ pub fn cmd_run(
     };
     if sandbox {
         match crate::cli_agent_sandbox::Plan::new(argv, env, gate_port, isolate_net) {
-            Ok(plan) => crate::cli_agent_sandbox::run(plan),
+            Ok(mut plan) => {
+                // Database and tunnel ports are relayed into an isolated netns too.
+                plan.extra_ports = db_ports.values().copied().collect();
+                crate::cli_agent_sandbox::run(plan)
+            }
             Err(e) => return Response::fail(e),
         }
     }

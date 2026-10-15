@@ -36,8 +36,15 @@ pub(crate) fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result
         Ok(m) => m,
         Err(e) => return Err(format!("meta parse: {e}")),
     };
-    meta_gate(&meta, expiry::now_unix(), || {
-        crate::daemon_polkit::consent_granted(peer_pid)
+    crate::daemon_platform::exe::gate(&meta, peer_pid)?; // T10.09 (batch: platform)
+                                                         // T7.12 (batch: sync): M-of-N approvals.
+    crate::daemon_syncx::quorum_gate(uid, name_upper, &meta)?;
+    // T7.11 (batch: aws): checked out by another uid.
+    crate::daemon_aws::checkout::gate(&meta, uid, expiry::now_unix())?;
+    // T11.14 (batch: session): is a re-auth window open for it?
+    let reauth_open = crate::daemon_session::reauth::window_open(uid, name_upper);
+    meta_gate(&meta, expiry::now_unix(), reauth_open, || {
+        crate::daemon_policy::consent(uid, peer_pid, name_upper, &meta) // T9.04
     })
 }
 
@@ -47,6 +54,7 @@ pub(crate) fn precheck_meta(uid: u32, peer_pid: i32, name_upper: &str) -> Result
 fn meta_gate(
     meta: &expiry::CredMeta,
     now_unix: u64,
+    reauth_open: bool,
     consent: impl FnOnce() -> bool,
 ) -> Result<(), String> {
     if meta.sealed == Some(true) {
@@ -63,6 +71,9 @@ fn meta_gate(
             return Err("expired".to_string());
         }
     }
+    // T11.14: before consent and FIDO2, so the client's passphrase round
+    // trip comes first and a FIDO2 retry finds the window open.
+    crate::daemon_session::reauth::gate(meta, reauth_open)?;
     if matches!(meta.requires_consent, Some(true)) && !consent() {
         return Err("consent denied".to_string());
     }
@@ -88,6 +99,8 @@ pub fn handle_get(
     }
 
     let upper = name.to_uppercase();
+    // T11.5: an alias reads its target, under the target's own policy.
+    let (upper, asked) = (crate::daemon_store::resolve_alias(uid, &upper), upper);
     // Check and decrypt under one lock: a sealed `set` can't slip between.
     let _lock = crate::daemon_credlock::lock(uid, &upper);
 
@@ -170,8 +183,17 @@ pub fn handle_get(
                 username,
                 result: AuditResult::Fail(reason.to_string()),
             });
+            // T11.14: the one refusal the client acts on (asks again).
+            if reason == crate::daemon_session::reauth::NEEDED {
+                return Response::fail(reason);
+            }
             return Response::fail("credential unavailable");
         }
+    }
+
+    // T11.15: a received share's view window starts at its first read.
+    if crate::daemon_sharing::view::start(uid, &upper).is_err() {
+        return Response::fail("credential unavailable");
     }
 
     match crypto::default_backend().decrypt(uid, &upper) {
@@ -183,14 +205,15 @@ pub fn handle_get(
                 username,
                 result: AuditResult::Ok,
             });
-            // Move the ZeroString directly into the response — the
-            // protocol field is `value: ZeroString`, so the secret
-            // bytes never touch a non-zeroising String on the way
-            // out. The previous `secret.to_owned_string()` cloned
-            // into a plain String that the serializer would then
-            // walk; that String dropped without zeroizing.
+            crate::daemon_policy::canary_read(uid, peer_pid, username, &upper); // T9.08
+                                                                                // Move the ZeroString directly into the response — the
+                                                                                // protocol field is `value: ZeroString`, so the secret
+                                                                                // bytes never touch a non-zeroising String on the way
+                                                                                // out. The previous `secret.to_owned_string()` cloned
+                                                                                // into a plain String that the serializer would then
+                                                                                // walk; that String dropped without zeroizing.
             Response::GetOk {
-                name: upper,
+                name: asked,
                 value: secret,
             }
         }
@@ -231,7 +254,10 @@ mod tests {
 
     #[test]
     fn sealed_wins_over_fido2_and_valid_expiry() {
-        assert_eq!(meta_gate(&sealed_meta(), 0, || true), Err("sealed".into()));
+        assert_eq!(
+            meta_gate(&sealed_meta(), 0, false, || true),
+            Err("sealed".into())
+        );
     }
 
     #[test]
@@ -240,23 +266,50 @@ mod tests {
             requires_fido2: Some(true),
             ..Default::default()
         };
-        assert!(meta_gate(&fido, 0, || true)
+        assert!(meta_gate(&fido, 0, false, || true)
             .unwrap_err()
             .starts_with("fido2:"));
         let expired = expiry::CredMeta {
             expires_at_unix: Some(10),
             ..Default::default()
         };
-        assert_eq!(meta_gate(&expired, 10, || true), Err("expired".into()));
+        assert_eq!(
+            meta_gate(&expired, 10, false, || true),
+            Err("expired".into())
+        );
         let consent = expiry::CredMeta {
             requires_consent: Some(true),
             ..Default::default()
         };
         assert_eq!(
-            meta_gate(&consent, 0, || false),
+            meta_gate(&consent, 0, false, || false),
             Err("consent denied".into())
         );
-        assert_eq!(meta_gate(&consent, 0, || true), Ok(()));
-        assert_eq!(meta_gate(&expiry::CredMeta::default(), 0, || false), Ok(()));
+        assert_eq!(meta_gate(&consent, 0, false, || true), Ok(()));
+        assert_eq!(
+            meta_gate(&expiry::CredMeta::default(), 0, false, || false),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn reauth_comes_after_the_seal_and_before_fido2() {
+        let m = expiry::CredMeta {
+            requires_reauth: Some(true),
+            requires_fido2: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            meta_gate(&m, 0, false, || true),
+            Err("reauth needed".into())
+        );
+        assert!(meta_gate(&m, 0, true, || true)
+            .unwrap_err()
+            .starts_with("fido2:"));
+        let sealed = expiry::CredMeta {
+            requires_reauth: Some(true),
+            ..sealed_meta()
+        };
+        assert_eq!(meta_gate(&sealed, 0, false, || true), Err("sealed".into()));
     }
 }

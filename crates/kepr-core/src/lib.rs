@@ -13,8 +13,10 @@
 
 pub mod auth;
 pub mod binding;
+pub mod canary;
 pub mod fdpass;
 pub mod framing;
+pub mod gate_limits;
 pub mod gate_protocol;
 pub mod generate;
 pub mod keyring;
@@ -26,4 +28,53 @@ pub mod protocol_types;
 pub mod providers;
 pub mod secmem;
 pub mod shamir;
+pub mod sigv4;
 pub mod ssh_wire;
+
+// ── P2–P11 ticket batches (2026-10-05): `protocol_<batch>` and other
+// shared modules, declared under each batch's marker.
+// batch: vault
+pub mod protocol_vault;
+// batch: seal
+pub mod protocol_seal;
+pub mod recovery_words;
+pub mod seal_factor;
+// batch: store
+pub mod protocol_store;
+// batch: records
+pub mod generate_profile;
+pub mod health_policy;
+pub mod protocol_records;
+pub mod record_types;
+pub mod strength;
+// batch: share
+pub mod protocol_sharing;
+pub mod protocol_sharing_types;
+// batch: sync
+pub mod protocol_syncx;
+// batch: policy
+pub mod policy;
+pub mod protocol_policy;
+// batch: gate
+pub mod gate_journal;
+pub mod gate_record;
+pub mod mysql_handshake;
+pub mod mysql_wire;
+pub mod protocol_gatex;
+// batch: aws
+pub mod github_app;
+pub mod protocol_aws;
+pub mod sigv4_req;
+// batch: eco
+pub mod protocol_eco;
+// batch: platform
+pub mod exe_digest;
+pub mod pki;
+pub mod protocol_platform;
+pub mod x509_build;
+// batch: session
+pub mod fdfetch;
+pub mod http_lite;
+pub mod profile;
+pub mod protocol_session;
+// end of batches

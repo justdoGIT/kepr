@@ -4,6 +4,7 @@
 //! anonymous file, seals it against further writes, growth, shrinking, or unsealing,
 //! and returns a raw file descriptor configured to be inherited across `exec`.
 
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::io::RawFd;
 
 /// Creates an anonymous sealed memory descriptor containing `secret` bytes.
@@ -23,6 +24,22 @@ use std::os::unix::io::RawFd;
 /// subprocesses. Never hand these fds to programs that run arbitrary tools
 /// (AI agent harnesses, shells): any child could read the secret.
 pub fn create_sealed_memfd(name: &str, secret: &[u8]) -> Result<RawFd, String> {
+    let fd = create_sealed_memfd_cloexec(name, secret)?.into_raw_fd();
+    // Clear FD_CLOEXEC so the descriptor is inherited across process exec
+    // SAFETY: `fd` is the open, sealed memfd from above; `fcntl`
+    // (F_GETFD/F_SETFD) only reads/writes the descriptor's own flag
+    // word and cannot invalidate it.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags >= 0 {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+    }
+    Ok(fd)
+}
+
+/// Steps 1-4 of `create_sealed_memfd`: the descriptor stays
+/// close-on-exec, so nothing this process starts inherits it. For
+/// handing a secret over a socket (T3.06 `FetchFd`).
+pub fn create_sealed_memfd_cloexec(name: &str, secret: &[u8]) -> Result<OwnedFd, String> {
     let name_clean = name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_");
     let c_name = match std::ffi::CString::new(format!("kepr_{name_clean}")) {
         Ok(c) => c,
@@ -99,16 +116,8 @@ pub fn create_sealed_memfd(name: &str, secret: &[u8]) -> Result<RawFd, String> {
             return Err(format!("memfd sealing failed: {err}"));
         }
 
-        // Clear FD_CLOEXEC so the descriptor is inherited across process exec
-        // SAFETY: `fd` is the open, sealed memfd from above; `fcntl`
-        // (F_GETFD/F_SETFD) only reads/writes the descriptor's own flag
-        // word and cannot invalidate it.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-        if flags >= 0 {
-            unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
-        }
-
-        Ok(fd)
+        // SAFETY: `fd` is the open, sealed memfd from above, owned only here.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
     #[cfg(not(target_os = "linux"))]

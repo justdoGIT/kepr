@@ -110,10 +110,18 @@ case "$codes" in
     *) fail "request cap not enforced (codes: $codes)" ;;
 esac
 
+echo "── request journal"
+sleep 1
+LOGS=$("$KEPR" agent logs -n 50 2>&1) || true
+case "$LOGS" in *"/v1/messages"*"blocked: dlp"*) pass "agent logs shows the DLP refusal" ;; *) fail "agent logs: $LOGS" ;; esac
+case "$LOGS" in *"blocked: limit"*) pass "agent logs shows the request cap" ;; *) fail "agent logs misses the cap" ;; esac
+case "$LOGS" in *"$REAL"*) fail "agent logs prints the real key" ;; *) pass "agent logs never prints the key" ;; esac
+
 echo "── sandbox"
 cat >"$WORK/sbprobe.sh" <<'PROBE'
 #!/usr/bin/env bash
 r() { echo "$1 $2"; }
+ll_mode=${1:-default}
 n=$(ls -d /proc/[0-9]* | wc -l)
 [ "$n" -lt 10 ] && r ok "only sandbox processes visible ($n)" || r bad "$n processes visible"
 [ -z "$(ls -A "$HOME/.local/share/kepr" 2>/dev/null)" ] && r ok "credential store hidden" || r bad "credential store visible"
@@ -123,17 +131,34 @@ if command -v python3 >/dev/null; then
     e=$(python3 -c "import ctypes;l=ctypes.CDLL(None,use_errno=True);l.ptrace(0,0,0,0);print(ctypes.get_errno())")
     [ "$e" = 1 ] && r ok "ptrace denied (seccomp)" || r bad "ptrace errno $e"
 fi
+if [ "$ll_mode" = default ]; then
+    t="$HOME/.kepr-e2e-rename"
+    if echo a >"$t.tmp" && mv -f "$t.tmp" "$t" && [ "$(cat "$t")" = a ]; then
+        r ok "a file in \$HOME can be replaced by rename"
+    else
+        r bad "a file in \$HOME cannot be replaced by rename"
+    fi
+    rm -f "$t" "$t.tmp"
+elif command -v python3 >/dev/null; then
+    ll=$(python3 -c 'import ctypes, os, sys
+if ctypes.CDLL(None, use_errno=True).syscall(444, None, 0, 1) < 1: print("skip")
+else:
+    try: os.listdir(sys.argv[1]); print("open")
+    except PermissionError: print("denied")' "$HOME/.local/share/kepr")
+    case "$ll" in denied) r ok "Landlock denies the store dir";; open) r bad "store dir listable under Landlock";; esac
+fi
 grep -q "CapEff:	0000000000000000" /proc/self/status && r ok "no capabilities" || r bad "capabilities present"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: wrong' "$ANTHROPIC_BASE_URL/v1/messages" -d '{}')
 [ "$code" = 401 ] && r ok "gate reachable from the sandbox" || r bad "gate unreachable ($code)"
 PROBE
 chmod +x "$WORK/sbprobe.sh"
-for mode in "" "--isolate-net"; do
-    if ! SB=$("$KEPR" agent run claude --strict-sandbox $mode -- "$WORK/sbprobe.sh" 2>&1); then
+for run in "strict:" "strict:--isolate-net" "default:"; do
+    ll="${run%%:*}" mode="${run#*:}"
+    if ! SB=$(KEPR_LANDLOCK=$ll "$KEPR" agent run claude --strict-sandbox $mode -- "$WORK/sbprobe.sh" "$ll" 2>&1); then
         case "$SB" in *"sandbox unavailable"*) printf '  –  SKIP: sandbox unavailable here %s\n' "$mode"; continue;; esac
     fi
     while read -r status msg; do
-        case "$status" in ok) pass "$msg ${mode}";; bad) fail "$msg ${mode}";; esac
+        case "$status" in ok) pass "$msg ${mode} ($ll)";; bad) fail "$msg ${mode} ($ll)";; esac
     done <<<"$SB"
 done
 
@@ -178,12 +203,15 @@ echo "── history and restore"
 check "$("$KEPR" list | grep -q '~' || echo ok)" "history slots hidden from list"
 "$KEPR" restore E2E_HIST --version 1 >/dev/null 2>&1
 check "$([ "$("$KEPR" get E2E_HIST -q 2>/dev/null)" = one ] && echo ok)" "restore brings back the replaced value"
-"$KEPR" set ANTHROPIC_API_KEY --value now-readable -q >/dev/null 2>&1
-if "$KEPR" restore ANTHROPIC_API_KEY --version 1 >/dev/null 2>&1; then
-    fail "sealed version restored into a readable credential"
-else
-    pass "sealed version not restorable into a readable credential"
-fi
+sleep 3 # the daemon rate-limits each uid (burst 30, 10/s): let it refill
+"$KEPR" set ANTHROPIC_API_KEY --value replaced-value -q >/dev/null 2>&1
+check "$("$KEPR" get ANTHROPIC_API_KEY >/dev/null 2>&1 || echo ok)" "a plain set keeps a sealed credential sealed"
+printf '#!/bin/sh\ncat >/dev/null\n' >"$WORK/hook.sh"
+chmod +x "$WORK/hook.sh"
+check "$("$KEPR" rotate ANTHROPIC_API_KEY --hook "$WORK/hook.sh" >/dev/null 2>&1 && echo ok)" "rotate --hook commits over a sealed credential"
+check "$("$KEPR" get ANTHROPIC_API_KEY >/dev/null 2>&1 || echo ok)" "the rotated value stays sealed"
+check "$("$KEPR" restore ANTHROPIC_API_KEY --version 2 >/dev/null 2>&1 && echo ok)" "the sealed version restores into the still-sealed credential"
+check "$("$KEPR" get ANTHROPIC_API_KEY >/dev/null 2>&1 || echo ok)" "the restored value stays sealed"
 
 echo "── usage report"
 uses=$("$KEPR" usage 2>/dev/null | awk '$1 == "E2E_MASK" { print $2 }')
