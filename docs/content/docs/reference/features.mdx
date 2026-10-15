@@ -807,7 +807,7 @@ is no re-seal command.
 | Setting | Master key sealed by |
 | --- | --- |
 | `KEPR_MASTER_KEY_SEAL=tpm2`, `host+tpm2` or `auto`, optionally `KEPR_TPM2_PCRS=7+11` | the credential backend, bound to the TPM (and those PCRs) |
-| `KEPR_TPM2_PIN=1` and `KEPR_TPM2_PIN_FILE=/abs/path` | the TPM through tpm2-tools; unsealing also needs the PIN, read by the tools from that file, never from argv |
+| `KEPR_TPM2_PIN=1` and `KEPR_TPM2_PIN_FILE=/abs/path` | the TPM through tpm2-tools; unsealing also needs the PIN, read by the tools from that file, never from argv. The key and the PIN cross the TPM bus only inside salted sessions with parameter encryption |
 | `KEPR_TPM2_NV_INDEX=0x01800A11` | the TPM with an anti-rollback NV counter: an older sealed copy of the key is refused |
 | `KEPR_MASTER_KEY_SEAL=aws-kms:ARN` | AWS KMS (key or alias ARN; region from the ARN), with encryption context `{"kepr":"master-key"}` |
 | `KEPR_MASTER_KEY_SEAL=gcp-kms:projects/P/locations/L/keyRings/R/cryptoKeys/K` | Google Cloud KMS |
@@ -820,8 +820,10 @@ Notes and limits:
 - **TPM2 PIN and counter:** both need `KEPR_MASTER_KEY_SEAL` unset or
   `tpm2`. The NV index defaults to `0x01800A11` when either option is set.
   The counter protects the sealed master key, not the vault image (which
-  has its own epoch check). A missing tool gives an error naming the
-  tpm2-tools package.
+  has its own epoch check). Seal and unseal run in salted, encrypting
+  sessions, so sniffing a discrete TPM's bus yields ciphertext; this needs
+  tpm2-tools 5.0 or newer (`tpm2_sessionconfig`). A missing tool gives an
+  error naming the tpm2-tools package.
 - **Key services:** credentials come only from the daemon's environment:
   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and optional
   `AWS_SESSION_TOKEN` for AWS (no instance role or profile lookup),

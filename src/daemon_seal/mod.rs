@@ -6,7 +6,9 @@
 //              recovery kit in daemon_recovery.rs
 //   runner     the helper-tool runner the sealers share (fake in tests)
 //   tpm        T4.08 TPM2 PIN + anti-rollback counter (tpm2-tools);
+//   tpm_blob   its sealed-key file format
 //   tpm_config its environment
+//   tpm_session T12.29 salted, encrypting sessions for it
 //   fido2_kek  T4.09 the `kepr_pw2` envelope: passphrase + security key
 //              (used by key_unlock.rs; the CLI drives the device)
 //   kms        T4.11 bring your own key: `KekSealer`, the blob header
@@ -29,7 +31,9 @@ mod pkcs11;
 mod recovery;
 mod runner;
 mod tpm;
+mod tpm_blob;
 mod tpm_config;
+mod tpm_session;
 
 use std::path::Path;
 
