@@ -8,6 +8,7 @@
 use crate::cli_args::VERSION;
 
 pub fn print_help() {
+    let more = crate::cli_more::help();
     print!(
         r#"kepr {VERSION} — credential manager
 
@@ -33,10 +34,11 @@ COMMANDS:
   agent add KEY [--for PROVIDER] [--requires-consent]  store a write-only key (paste once)
   agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox]
             [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
+            [--max-requests-day N] [--max-tokens-day N]  per key per day, across sessions
                                        run claude|codex|grok-cli|aider|omp|grok sandboxed, with
                                        placeholders; a local gate injects the real key on the wire
-  agent add-db KEY --url postgres://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
-                                       sealed database login; agents get DATABASE_URL to a local gate port
+  agent add-db KEY --url postgres|mysql|redis[s]://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
+                                       sealed database login; agents get DATABASE_URL / MYSQL_* / REDIS_URL to a local gate port
   agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new
   agent install omp|grok               point the harness's config file at the gate and install
                                        kepr's plugin for it (once)
@@ -48,13 +50,16 @@ COMMANDS:
   recovery-kit create [--threshold K] [--shares N] [--out-dir DIR]
                                        split the master key into K-of-N shares (needs the passphrase)
   recovery-kit restore                 rebuild a lost master key from K shares, under a new passphrase
-  leaked KEY [--yes]                   key exposed: stop agent sessions, delete it + history, log an
-                                       incident, show where to revoke it at the provider
+  leaked KEY [--yes] [--rotate]        key exposed: stop agent sessions, delete it + history, log an
+                                       incident, show where to revoke it at the provider; --rotate:
+                                       replace an AWS IAM key through the IAM API instead
   totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
-  inject -i TEMPLATE [-o OUT]          fill kepr://NAME and kepr://NAME/field references (OUT 0600)
+  inject -i TEMPLATE [-o OUT]          fill kepr:// references (OUT 0600): NAME, NAME/field[i][sub],
+                                       NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape)
   scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
   copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
-  record add KEY --type T [--field k=v|k=-]...  typed record (login, card, database, server, api, note, custom)
+  record add KEY --type T [--field k=v|k=-|k[]=v]... [--custom LABEL=v]...  typed record
+                                       (login, card, database, server, api, note, custom)
   record show KEY [--reveal] | record get KEY FIELD | record types
   share key | share send KEY --to PUBKEY [--ttl SECS] [-o FILE] | share receive [FILE] [--as KEY]
                                        give one credential to another kepr user (encrypted, single-use)
@@ -70,7 +75,7 @@ COMMANDS:
   ssh generate KEY [--comment C] | ssh import KEY FILE | ssh list
                                        SSH keys that stay in the daemon (sign-only)
   ssh-agent [--foreground] [--socket PATH]  ssh-agent for those keys: eval "$(kepr ssh-agent)"
-
+{MORE}
 GLOBAL FLAGS:
   --json       machine-readable output; no stderr on clean errors
   --color      enable ANSI colours (default is plain text)
@@ -118,9 +123,12 @@ MANIFEST:
     required = ["DB_PASS", "DB_USER", "OPENAI_API_KEY"]
   Then `kepr exec -- python train.py` and `kepr env` need no flags.
   --env CSV overrides the manifest; --manifest path pins a different file.
+  [env.map] VAR = "kepr://KEY/field" adds references; [env.STAGE] tables add per-stage sets,
+  picked with --stage STAGE or $KEPR_STAGE.
 
   View audit log: journalctl -t kepr-daemon
     journalctl -t kepr-daemon KEPR_OP=get
-"#
+"#,
+        MORE = more
     );
 }

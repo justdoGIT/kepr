@@ -237,6 +237,24 @@ impl VersionState {
         Ok(())
     }
 
+    /// Raise `name`'s high-water mark to `value` if that is higher (never
+    /// lowers it). The vault image records its epoch here (daemon_vault),
+    /// so an older copy of the image is refused like an older cred file.
+    pub fn raise(&self, name: &str, value: u64) -> Result<(), String> {
+        let mut map = self.counters.lock().unwrap();
+        let current = map.get(name).copied().unwrap_or(0);
+        if value <= current {
+            return Ok(());
+        }
+        map.insert(name.to_string(), value);
+        let snapshot = map.clone();
+        if let Err(e) = self.persist(&snapshot) {
+            map.insert(name.to_string(), current);
+            return Err(e);
+        }
+        Ok(())
+    }
+
     fn persist(&self, counters: &HashMap<String, u64>) -> Result<(), String> {
         let state = StateFile {
             counters: counters.clone(),
@@ -458,5 +476,16 @@ mod tests {
         fs::write(&path, b"not valid json").unwrap();
         let err = VersionState::load(path).expect_err("must reject garbage");
         assert!(err.contains("parse state"), "got: {err}");
+    }
+
+    #[test]
+    fn raise_only_moves_up_and_persists() {
+        let (s, dir) = fresh_state();
+        s.raise("kepr-vault-x", 5).unwrap();
+        s.raise("kepr-vault-x", 3).unwrap();
+        assert!(s.verify("kepr-vault-x", 4).is_err());
+        assert!(s.verify("kepr-vault-x", 5).is_ok());
+        let again = VersionState::load(dir.path().join("cred-versions.json")).unwrap();
+        assert!(again.verify("kepr-vault-x", 4).is_err());
     }
 }

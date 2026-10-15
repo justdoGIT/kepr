@@ -23,6 +23,44 @@ pub enum Inject {
     /// user, password, database, sslmode, optional ca_pem); the gate logs
     /// in to host:port with it on the agent's behalf.
     Postgres,
+    /// T7.01: a Redis login (`database` record with `kind: redis`); the
+    /// gate sends `AUTH` upstream for the agent.
+    Redis,
+    /// T7.02: a MySQL login (`kind: mysql`); the gate completes the
+    /// server handshake for the agent.
+    Mysql,
+    /// T2.02: an AWS access key (JSON `{"access_key_id","secret_access_key",
+    /// "session_token"?}`). The gate checks the agent's SigV4 signature
+    /// (made with the session placeholder) and signs again with the key;
+    /// `*.amazonaws.com` hosts only.
+    Sigv4,
+    /// T7.08: a GitHub App private key (PEM). The gate never sends it: it
+    /// signs an app JWT and injects the 1-hour installation token it
+    /// exchanges that for (`Authorization: Bearer`). api.github.com only.
+    GithubApp { app_id: u64, installation_id: u64 },
+}
+
+impl Inject {
+    /// The database protocol of a database login, `None` for HTTP.
+    pub fn db_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::Postgres => Some("postgres"),
+            Self::Redis => Some("redis"),
+            Self::Mysql => Some("mysql"),
+            _ => None,
+        }
+    }
+
+    /// Inject and default port for a `database` record's `kind` field
+    /// (empty = postgres, the P7.1 records written before `kind`).
+    pub fn for_db_kind(kind: &str) -> Option<(Self, u16)> {
+        match kind {
+            "" | "postgres" => Some((Self::Postgres, 5432)),
+            "redis" => Some((Self::Redis, 6379)),
+            "mysql" => Some((Self::Mysql, 3306)),
+            _ => None,
+        }
+    }
 }
 
 /// One allowed destination for a sealed credential.
@@ -80,6 +118,22 @@ pub fn validate_binding(b: &Binding) -> Result<(), String> {
         Inject::Query { param } if !valid_token(param) => {
             Err("query parameter must be 1-64 chars of A-Z a-z 0-9 - _".to_string())
         }
+        Inject::Sigv4 if !b.host.ends_with(".amazonaws.com") || b.port != 443 => {
+            Err("sigv4 binds only *.amazonaws.com hosts on port 443".to_string())
+        }
+        Inject::GithubApp {
+            app_id,
+            installation_id,
+        } if b.host != crate::github_app::API_HOST
+            || b.port != 443
+            || *app_id == 0
+            || *installation_id == 0 =>
+        {
+            Err(
+                "a GitHub App key binds only api.github.com:443, with app and installation ids"
+                    .into(),
+            )
+        }
         _ => Ok(()),
     }
 }
@@ -88,6 +142,7 @@ fn parse_inject(s: &str) -> Result<Inject, String> {
     match s {
         "bearer" => Ok(Inject::Bearer),
         "basic" => Ok(Inject::Basic),
+        "sigv4" => Ok(Inject::Sigv4),
         _ => {
             if let Some(n) = s.strip_prefix("header=") {
                 Ok(Inject::Header {
@@ -99,7 +154,7 @@ fn parse_inject(s: &str) -> Result<Inject, String> {
                 })
             } else {
                 Err(format!(
-                    "unknown inject '{s}' (use bearer, basic, header=NAME or query=NAME)"
+                    "unknown inject '{s}' (use bearer, basic, sigv4, header=NAME or query=NAME)"
                 ))
             }
         }
@@ -156,12 +211,26 @@ mod tests {
             Inject::Query {
                 param: "key".into(),
             },
+            Inject::Redis,
+            Inject::Mysql,
         ] {
             let bb = b("api.example.com", 443, i);
             let json = serde_json::to_string(&bb).unwrap();
             let back: Binding = serde_json::from_str(&json).unwrap();
             assert_eq!(bb, back);
         }
+    }
+
+    #[test]
+    fn db_kinds_map_to_injects() {
+        for kind in ["postgres", "redis", "mysql"] {
+            let (inject, _) = Inject::for_db_kind(kind).unwrap();
+            assert_eq!(inject.db_kind(), Some(kind));
+        }
+        assert_eq!(Inject::for_db_kind(""), Some((Inject::Postgres, 5432)));
+        assert_eq!(Inject::for_db_kind("redis").unwrap().1, 6379);
+        assert!(Inject::for_db_kind("oracle").is_none());
+        assert_eq!(Inject::Bearer.db_kind(), None);
     }
 
     #[test]
@@ -192,6 +261,48 @@ mod tests {
         };
         assert!(validate_binding(&b("x.com", 443, bad_header)).is_err());
         assert!(validate_binding(&b("api.openai.com", 443, Inject::Bearer)).is_ok());
+    }
+
+    #[test]
+    fn sigv4_binds_only_amazonaws_hosts() {
+        assert_eq!(
+            parse_binding("sts.amazonaws.com:sigv4").unwrap(),
+            b("sts.amazonaws.com", 443, Inject::Sigv4)
+        );
+        assert!(parse_binding("s3.eu-west-1.amazonaws.com:sigv4").is_ok());
+        for bad in [
+            "api.example.com:sigv4",
+            "amazonaws.com:sigv4",
+            "evilamazonaws.com:sigv4",
+            "sts.amazonaws.com.evil.com:sigv4",
+            "sts.amazonaws.com:8443:sigv4",
+        ] {
+            assert!(parse_binding(bad).is_err(), "{bad}");
+        }
+        let j = serde_json::to_string(&b("sts.amazonaws.com", 443, Inject::Sigv4)).unwrap();
+        assert!(j.contains(r#"{"kind":"sigv4"}"#), "{j}");
+    }
+
+    #[test]
+    fn github_app_binds_only_api_github_com() {
+        let app = |a, i| Inject::GithubApp {
+            app_id: a,
+            installation_id: i,
+        };
+        assert!(validate_binding(&b("api.github.com", 443, app(1, 2))).is_ok());
+        assert!(validate_binding(&b("github.com", 443, app(1, 2))).is_err());
+        assert!(validate_binding(&b("api.github.com", 8443, app(1, 2))).is_err());
+        assert!(validate_binding(&b("api.github.com", 443, app(0, 2))).is_err());
+        assert!(validate_binding(&b("api.github.com", 443, app(1, 0))).is_err());
+        let j = serde_json::to_string(&b("api.github.com", 443, app(7, 9))).unwrap();
+        assert!(
+            j.contains(r#"{"kind":"github_app","app_id":7,"installation_id":9}"#),
+            "{j}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Binding>(&j).unwrap().inject,
+            app(7, 9)
+        );
     }
 
     #[test]

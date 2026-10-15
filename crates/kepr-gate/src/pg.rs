@@ -19,40 +19,17 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use zeroize::Zeroizing;
 
-use crate::journal;
+use crate::db::{self, Fail};
 use crate::proxy::State;
 use crate::scram::Scram;
-use kepr_core::binding::Inject;
-use kepr_core::gate_protocol::DbTarget;
 
 pub(crate) const SSL_REQUEST: u32 = 80_877_103;
 const GSS_REQUEST: u32 = 80_877_104;
 const PROTOCOL_3: u32 = 196_608;
 const MAX_MSG: usize = 1 << 20;
 
+pub(crate) use crate::db::{DbRoute, Login};
 pub(crate) use crate::pg_tls::Io;
-
-/// One database route of the session.
-pub struct DbRoute {
-    pub key: String,
-    pub cred: String,
-    pub slot: u16,
-    pub target: DbTarget,
-}
-
-#[derive(serde::Deserialize)]
-pub(crate) struct Login {
-    pub(crate) user: String,
-    pub(crate) password: kepr_core::generate::ZeroString,
-    pub(crate) database: String,
-    #[serde(default)]
-    pub(crate) sslmode: String,
-    #[serde(default)]
-    pub(crate) ca_pem: String,
-    /// P7.2: set during `kepr agent rotate-db`, until committed.
-    #[serde(default)]
-    pub(crate) pending_password: Option<kepr_core::generate::ZeroString>,
-}
 
 pub(crate) fn error_response(code: &str, msg: &str) -> Vec<u8> {
     let mut body = Vec::new();
@@ -225,23 +202,8 @@ pub(crate) async fn login(
 pub async fn serve_conn(state: Arc<State>, route: Arc<DbRoute>, mut client: TcpStream) {
     let start = Instant::now();
     let result = session(&state, &route, &mut client).await;
-    let (status, blocked) = match &result {
-        Ok(()) => (200, None),
-        Err((s, b)) => (*s, *b),
-    };
-    journal::emit(&journal::Entry {
-        session: &state.session_id,
-        provider: "postgres",
-        method: "LOGIN",
-        path: &route.key,
-        status,
-        bytes_out: 0,
-        ms: start.elapsed().as_millis(),
-        blocked,
-    });
+    db::log(&state, &route, "LOGIN", &result, start);
 }
-
-type Fail = (u16, Option<&'static str>);
 
 async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) -> Result<(), Fail> {
     let io = |_| (400, None);
@@ -272,21 +234,11 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
             .await;
         return Err((401, None));
     }
-    if let Err(r) = state.limiter.admit(Instant::now()) {
-        let msg = match r {
-            crate::limits::Refusal::Cap(m) => format!("kepr stopped this login: {m}"),
-            crate::limits::Refusal::Rate(s) => format!("kepr rate limit; retry in {s}s"),
-        };
+    if let Err(msg) = db::admit(state) {
         let _ = client.write_all(&error_response("53400", &msg)).await;
         return Err((403, Some("limit")));
     }
-    let (cache, cred, t) = (
-        state.cache.clone(),
-        route.cred.clone(),
-        route.target.clone(),
-    );
-    let resolved = tokio::task::spawn_blocking(move || cache.get(&cred, &t.host, t.port)).await;
-    let Ok(Ok((value, Inject::Postgres))) = resolved else {
+    let Ok(login_rec) = db::resolve_login(state, route).await else {
         let _ = client
             .write_all(&error_response(
                 "28000",
@@ -295,8 +247,6 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
             .await;
         return Err((502, None));
     };
-    let login_rec: Login = serde_json::from_str(value.as_str()).map_err(|_| (502, None))?;
-    drop(value);
     let mut up =
         match crate::pg_tls::upstream(&route.target, &login_rec.sslmode, &login_rec.ca_pem).await {
             Ok(u) => u,
@@ -321,6 +271,12 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
         let _ = client.write_all(&reply).await;
         return Ok(());
     }
+    // T7.18: the route's role is granted before its first login.
+    if let Err(e) = crate::pg_jit::ensure(state, route, &login_rec.user).await {
+        let msg = format!("kepr: role elevation failed: {e}");
+        let _ = client.write_all(&error_response("42501", &msg)).await;
+        return Err((502, Some("grant")));
+    }
     match login(&mut up, &params, &login_rec).await {
         Ok(ok) => client.write_all(&ok).await.map_err(io)?,
         Err(err) => {
@@ -329,7 +285,7 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
         }
     }
     drop(login_rec);
-    let _ = tokio::io::copy_bidirectional(client, &mut up).await;
+    crate::recording::relay(state, route, client, &mut up).await;
     Ok(())
 }
 

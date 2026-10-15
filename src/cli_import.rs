@@ -85,6 +85,12 @@ fn store(e: &Entry, seal: bool) -> Result<bool, String> {
 }
 
 pub fn cmd_import(file: &str, o: &Opts) -> Response {
+    if crate::cli_syncx::is_bundle(file) {
+        return crate::cli_syncx::import_bundle(file, o); // T6.09
+    }
+    if let Some(r) = crate::cli_platform::kdbx::cmd_import(file, o) {
+        return r; // T10.02 (batch: platform)
+    }
     let text = match std::fs::read_to_string(file) {
         Ok(t) => Zeroizing::new(t),
         Err(e) => return Response::fail(format!("{file}: {e}")),
@@ -105,7 +111,16 @@ pub fn import_entries(mut entries: Vec<Entry>, o: &Opts, file: Option<&str>) -> 
             e.name = format!("{p}_{}", e.name);
         }
     }
-    let (keep, skipped) = plan(entries, &existing_names(), o.overwrite);
+    let canaries = crate::cli_policy::Canaries::planted();
+    let (entries, decoys): (Vec<_>, Vec<_>) = entries
+        .into_iter()
+        .partition(|e| !canaries.contains(e.value.as_str()));
+    let (keep, mut skipped) = plan(entries, &existing_names(), o.overwrite);
+    skipped.extend(
+        decoys
+            .into_iter()
+            .map(|e| (e.name, crate::cli_policy::CANARY_SKIP)),
+    );
     for e in &keep {
         let sealed = o.seal && providers::detect(None, e.value.as_str()).is_some();
         println!("{}{}", e.name, if sealed { "  (sealed)" } else { "" });

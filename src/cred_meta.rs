@@ -1,0 +1,178 @@
+// cred_meta.rs — the `.meta` sidecar record. Split out of expiry.rs
+// (2026-10-05) so the P2–P11 ticket batches have room for new fields;
+// the read/write helpers and `impl CredMeta` stay in expiry.rs, which
+// re-exports these types.
+
+/// On-disk record. Every field is `Option<…>` with `#[serde(default)]`
+/// so meta files written by older daemons parse cleanly under newer
+/// ones. Empty `CredMeta` is equivalent to "no flags" (callers should
+/// skip writing the meta file in that case).
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct CredMeta {
+    /// Absolute unix timestamp (seconds since epoch) at which this
+    /// credential expires. The daemon refuses to decrypt past this
+    /// instant. Phase 2 α.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub expires_at_unix: Option<u64>,
+    /// True iff `kepr get` requires a polkit consent prompt before
+    /// the daemon decrypts. Phase 2 ε.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_consent: Option<bool>,
+    /// True iff `kepr get` requires a FIDO2 hardware-key assertion
+    /// before the daemon decrypts. Phase 2 η.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_fido2: Option<bool>,
+    /// True iff the value is write-only: `Get` is refused and only a
+    /// daemon-spawned kepr-gate may resolve it, for a host listed in
+    /// `bindings`. Agent vault plan §4.3.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sealed: Option<bool>,
+    /// Destinations a sealed value may be sent to.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub bindings: Option<Vec<kepr_core::binding::Binding>>,
+    /// P2.4: the value is an Ed25519 SSH key seed. Like `sealed`, `Get`
+    /// refuses it; the daemon only signs with it (`SshSign`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ssh: Option<SshMeta>,
+    /// P5.1: the value is a typed record of this type (login, card, …).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub record_type: Option<String>,
+    /// P6.1: the value is this user's X25519 share key; `Get` refuses it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub share_key: Option<bool>,
+    // ── P2–P11 ticket batches: new fields go under the batch's marker,
+    // each `#[serde(skip_serializing_if = "Option::is_none", default)]`.
+    // batch: vault
+    // batch: seal
+    // batch: store
+    /// T5.01: tags (`[a-z0-9_-]{1,32}`, at most 16) and a `/`-separated
+    /// folder. Organisation only; kept across `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub folder: Option<String>,
+    /// T11.2: on a trash entry (`NAME~t<unix>`): when it was deleted.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub trashed_at: Option<u64>,
+    /// T11.5: this name is an alias of that credential (no value file).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub alias_of: Option<String>,
+    // batch: records
+    /// T5.03: attachment manifest; chunks are `NAME~a<id>~<n>` values.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub attachments: Option<Vec<kepr_core::protocol_records::AttachInfo>>,
+    /// T11.23: `kepr health` finding kinds the owner ignores; a new value
+    /// starts without (handle_set does not carry it over).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub health_ignore: Option<Vec<String>>,
+    // batch: share
+    /// T6.05: delete this record (and its history) once the one-time
+    /// link with this id is opened or expires. A new `set` drops it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub self_destruct_share: Option<String>,
+    /// T11.15: a received share with a view window. The first `get`
+    /// turns it into `expires_at_unix` = then + this, and clears it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub view_window_secs: Option<u64>,
+    /// T6.07: the value was revealed by break-glass; rotate it. The next
+    /// `set` drops it (handle_set doesn't carry it over).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub must_rotate: Option<bool>,
+    // batch: sync
+    /// T7.12: approvals (2-9) needed before each use window opens
+    /// (`kepr quorum`). Kept across `set`; lowered only by a quorum.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub approvals: Option<u8>,
+    /// T6.02: a random mark a folder import puts on what it wrote (its
+    /// folder state keeps the same mark). Not kept by `set`, so a value
+    /// set again or deleted and re-created here is no longer the import's.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub folder_mark: Option<String>,
+    // batch: policy
+    /// T9.04: consent prompts for this credential may be answered by the
+    /// registered approver (`kepr approvals serve`): desktop | ntfy | any.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub approve_via: Option<String>,
+    /// T9.08: the value is a decoy (`kepr canary plant`): reading it,
+    /// or a gate seeing it, raises the alarm; gates never release it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub canary: Option<crate::daemon_policy::CanaryMeta>,
+    // batch: gate
+    // batch: aws
+    /// T7.07: `kepr rotate NAME --every`: rotate every this many seconds,
+    /// the way `rotate_via` says (`protocol_aws::valid_rotate_via`). Kept
+    /// across `set`; a `set` moves `rotate_next_at` and clears failures.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_every_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_via: Option<String>,
+    /// T7.07: when the next scheduled rotation is due (unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_next_at: Option<u64>,
+    /// T7.07: failed scheduled tries since the last success (backoff).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_failures: Option<u32>,
+    /// T7.10: just-in-time: a gate resolves this sealed credential only
+    /// for a session whose harness has an open grant. Kept across `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub jit: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub grants: Option<Vec<kepr_core::protocol_aws::Grant>>,
+    /// T7.11: `kepr checkout` holds the credential: one holder at a
+    /// time, and only they can check it back in. Dropped by `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub checkout: Option<kepr_core::protocol_aws::Hold>,
+    // batch: eco
+    // batch: platform
+    /// T10.09: identities (`kepr_core::exe_digest`) of the executables
+    /// allowed to read the value through `Get`. Kept across `set`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub exe_digests: Option<Vec<String>>,
+    /// T10.10: on `KEPR_PKI_CA` (sealed): the CA certificate and the
+    /// certificates it issued (public data; the key is the value).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pki: Option<kepr_core::pki::PkiState>,
+    // batch: session
+    /// T11.14: `get` / `copy` / `record show --reveal` need the store
+    /// passphrase again (a 60 s window per credential). Kept across `set`;
+    /// only an open window may clear it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_reauth: Option<bool>,
+    // end of batches
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct SshMeta {
+    /// Public key blob, base64 (not secret).
+    pub public_b64: String,
+    pub comment: String,
+}
+
+impl CredMeta {
+    /// Why this value is gated, if it is: something besides a plain `get`
+    /// guards it (a seal, a sign-only key, a prompt, a re-auth or view
+    /// window, an executable binding, M-of-N approvals) or it is a planted
+    /// canary, whose copy would be a decoy without its alarm. A gated value is
+    /// read only through `get` and its own checks: never compared (dupes,
+    /// search, diff, health, breach checks) and never exported, synced or
+    /// shared in a folder bundle, not even while an approval or re-auth
+    /// window is open (that window is for `get`). The one predicate every
+    /// such path asks (security review, 2026-10-14).
+    pub fn gated(&self) -> Option<&'static str> {
+        let exe_bound = self.exe_digests.as_ref().is_some_and(|d| !d.is_empty());
+        [
+            (self.sealed == Some(true), "sealed"),
+            (self.ssh.is_some(), "ssh"),
+            (self.share_key == Some(true), "share_key"),
+            (self.requires_fido2 == Some(true), "fido2"),
+            (self.requires_consent == Some(true), "consent"),
+            (self.requires_reauth == Some(true), "reauth"),
+            (self.view_window_secs.is_some(), "view_window"),
+            (exe_bound, "exe_bound"),
+            (self.approvals.is_some_and(|n| n >= 2), "approvals"),
+            (self.canary.is_some(), "canary"),
+        ]
+        .into_iter()
+        .find_map(|(on, why)| on.then_some(why))
+    }
+}

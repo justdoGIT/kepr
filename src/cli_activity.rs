@@ -26,7 +26,20 @@ fn resolve_env_for(args: &Args) -> Result<Vec<String>, String> {
     } else {
         cli_manifest::resolve
     };
-    let (resolved, _used) = resolver(&args.env_vars, args.manifest_path.as_deref(), &cwd)?;
+    // T5.02: `--stage`, else $KEPR_STAGE (which is ignored without a manifest).
+    let stage = args
+        .stage
+        .clone()
+        .or_else(|| std::env::var("KEPR_STAGE").ok().filter(|s| !s.is_empty()));
+    let (resolved, used) = resolver(
+        &args.env_vars,
+        args.manifest_path.as_deref(),
+        &cwd,
+        stage.as_deref(),
+    )?;
+    if args.stage.is_some() && used.is_none() {
+        return Err("--stage picks a set from a .kepr.toml: add --manifest PATH (or KEPR_AUTO_MANIFEST=1) and drop --env".into());
+    }
     Ok(resolved)
 }
 
@@ -75,20 +88,23 @@ impl CliActivity {
             "set" => cli_cmds::cmd_set(args),
             "get" => cli_cmds::cmd_get(args),
             "list" => cli_cmds::cmd_list(args),
-            "delete" => cli_cmds::cmd_delete(args),
+            "delete" => crate::cli_store::cmd_delete(args), // T11.2: trash / --force
             "check" => cli_cmds::cmd_check(args),
             "lock" => cli_cmds::cmd_lock(args),
             "unlock" => cli_cmds::cmd_unlock(args),
             "status" => cli_cmds::cmd_status(args),
             "exec" => match resolve_env_for(args) {
+                Ok(vars) if !args.session.pull.is_empty() => crate::cli_session::pull::cmd_exec(&vars, args), // T3.06
                 Ok(vars) => cli_exec::cmd_exec(&vars, &args.memfd_vars, &args.exec_argv, args.mask),
                 Err(e) => Response::fail(e),
             },
+            "doctor" if args.store.verify => crate::cli_store::cmd_verify(args.json), // T11.10
             "doctor" => cli_doctor::cmd_doctor(args.json),
             "env" => match resolve_env_for(args) {
                 Ok(vars) => cli_envdump::cmd_env(&vars),
                 Err(e) => Response::fail(e),
             },
+            "rotate" if args.aws.any() => crate::cli_aws::flags::cmd_rotate(args), // batch: aws
             "rotate" => match (&args.name, &args.hook_path) {
                 (Some(n), Some(h)) => cli_rotate::cmd_rotate(n, args.gen_kind, h),
                 (None, _) => Response::fail("rotate requires NAME"),

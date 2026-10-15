@@ -41,6 +41,33 @@ pub trait Backend: Send + Sync {
     fn verify(&self, uid: u32, name: &str) -> bool {
         self.decrypt(uid, name).is_ok()
     }
+
+    /// Move `from`'s value and its `.meta` to `to` (T4.14); refused if
+    /// `to` holds a value. This per-file version re-encrypts under `to`
+    /// (the AEAD binds the name) after moving the meta, so the value is
+    /// never readable under `to` without its policy, and removes `from`
+    /// last, so a failure never loses the value. The vault image does it
+    /// all in one commit.
+    fn rename(&self, uid: u32, from: &str, to: &str) -> Result<(), String> {
+        use crate::{expiry, store};
+        if store::cred_path(uid, to).exists() {
+            return Err(format!("{to} already holds a value"));
+        }
+        let value = self.decrypt(uid, from)?;
+        let meta_of = |n: &str| expiry::meta_path_for(&store::cred_path(uid, n));
+        let (src, dst) = (meta_of(from), meta_of(to));
+        match expiry::read_meta(&src).transpose()? {
+            Some(m) => expiry::write_meta(&dst, &m)?,
+            None => expiry::delete_meta(&dst),
+        }
+        if let Err(e) = self.encrypt(uid, to, value.as_bytes()) {
+            expiry::delete_meta(&dst);
+            return Err(e);
+        }
+        self.delete(uid, from)?;
+        expiry::delete_meta(&src);
+        Ok(())
+    }
 }
 
 /// What `default_backend()` returns before start-up has installed the
@@ -77,9 +104,19 @@ pub fn initialize_inproc_backend(
     versions: Arc<VersionState>,
 ) -> Result<(), String> {
     INPROC_BACKEND
-        .set(InProcBackend::new(master_key, versions))
-        .map_err(|_| "InProc backend already initialised".to_string())
+        .set(InProcBackend::new(master_key, Arc::clone(&versions)))
+        .map_err(|_| "InProc backend already initialised".to_string())?;
+    // T4.06: `KEPR_STORE=image` puts the vault image in front of it (the
+    // in-process backend keeps holding the key and the lock state).
+    crate::daemon_vault::install_from_env(versions)
 }
+
+/// The per-file backend, whatever store is active (`kepr vault migrate`
+/// reads the files through it).
+pub fn file_backend() -> Option<&'static InProcBackend> {
+    INPROC_BACKEND.get()
+}
+
 pub fn lock_backend() -> Result<(), String> {
     INPROC_BACKEND
         .get()
@@ -112,6 +149,9 @@ pub fn snapshot_key() -> Result<zeroize::Zeroizing<[u8; 32]>, String> {
 /// The daemon's credential backend (the in-process AEAD backend once
 /// `initialize_inproc_backend` has run; a fail-closed stub before).
 pub fn default_backend() -> &'static dyn Backend {
+    if let Some(image) = crate::daemon_vault::active() {
+        return image;
+    }
     match INPROC_BACKEND.get() {
         Some(b) => b as &dyn Backend,
         None => &Uninitialised,

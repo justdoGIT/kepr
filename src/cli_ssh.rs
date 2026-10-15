@@ -5,6 +5,7 @@
 //   kepr ssh generate NAME [--comment C] [--requires-consent]
 //   kepr ssh import NAME FILE [--requires-consent]
 //   kepr ssh list            (authorized_keys lines)
+//   kepr ssh rotate NAME --host [USER@]HOST   (T11.21, cli_session/ssh_rotate.rs)
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
@@ -48,6 +49,7 @@ pub fn cmd_ssh(args: &[String]) -> Response {
             .collect()
     };
     match pos.as_slice() {
+        [verb, ..] if verb.as_str() == "rotate" => crate::cli_session::ssh_rotate::cmd(&args[1..]),
         [verb, name] if verb.as_str() == "generate" => {
             let comment = comment.unwrap_or_else(|| format!("kepr:{}", name.to_uppercase()));
             print_key(send(&Request::SshGenerate {
@@ -87,8 +89,9 @@ pub fn cmd_ssh(args: &[String]) -> Response {
             }
             other => other,
         },
-        _ => {
-            Response::fail("usage: kepr ssh generate NAME [--comment C] | import NAME FILE | list")
-        }
+        _ => Response::fail(
+            "usage: kepr ssh generate NAME [--comment C] | import NAME FILE | list \
+                 | rotate NAME --host [USER@]HOST",
+        ),
     }
 }

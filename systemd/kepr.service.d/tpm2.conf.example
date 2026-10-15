@@ -1,0 +1,29 @@
+# kepr.service drop-in: seal the master key in the TPM2 with a PIN and an
+# anti-rollback counter (T4.08). The base unit hides every device
+# (PrivateDevices=yes); this opens the TPM resource manager and nothing else.
+#
+# Install:
+#   sudo mkdir -p /etc/systemd/system/kepr.service.d
+#   sudo cp tpm2.conf.example /etc/systemd/system/kepr.service.d/tpm2.conf
+#   sudo systemctl daemon-reload && sudo systemctl restart kepr.service
+#
+# Needs the tpm2-tools package. Applies to a newly created master key; an
+# existing one keeps the sealing it was made with.
+
+[Service]
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+
+# The anti-rollback NV counter alone (default index 0x01800A11):
+Environment=KEPR_TPM2_NV_INDEX=0x01800A11
+
+# Also require a PIN. The tools read it from this file; keep it off the
+# disk that holds the sealed key, e.g. a credential or a tmpfs file
+# written at boot (`systemd-ask-password > /run/kepr-tpm2-pin`).
+#Environment=KEPR_TPM2_PIN=1
+#Environment=KEPR_TPM2_PIN_FILE=/run/kepr-tpm2-pin
+#ReadOnlyPaths=/run/kepr-tpm2-pin
+
+# Bind to the boot chain too:
+#Environment=KEPR_TPM2_PCRS=7

@@ -9,8 +9,9 @@
 //   kepr history NAME
 //   kepr restore NAME --version N
 //   kepr usage [--days N]
-//   kepr health [--max-age DAYS] [--breach]
-//   kepr leaked NAME [--yes]
+//   kepr health [--max-age DAYS | --period N] [--policy FILE] [--breach]
+//               [--notify URL [--format F]]
+//   kepr leaked NAME [--yes] [--rotate]
 //   kepr record add|show|get|types        see cli_record.rs
 //   kepr share key|send|receive           see cli_share.rs
 //   kepr recovery-kit create|restore      see cli_recovery.rs
@@ -107,6 +108,9 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 };
                 crate::cli_copy::cmd_copy(&name, secs)
             }
+            "history" if args.iter().any(|a| a == "--diff") => {
+                crate::cli_store::cmd_history_diff(args) // T11.3
+            }
             "history" => crate::cli_history::cmd_history(&one_name(args, verb, &[])?),
             "restore" => {
                 let name = one_name(args, verb, &["--version"])?;
@@ -120,6 +124,9 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                     None => Response::fail("usage: kepr restore NAME --version N"),
                 }
             }
+            "usage" if args.iter().any(|a| a == "--report") => {
+                crate::cli_policy::usage_report(args)
+            }
             "usage" => match value_of(args, &["--days"]).map_err(Response::fail)? {
                 Some(d) => match d.parse() {
                     Ok(n) => crate::cli_usage::cmd_usage(Some(n)),
@@ -128,14 +135,10 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
                 None => crate::cli_usage::cmd_usage(None),
             },
             "health" => {
-                let max_age = match value_of(args, &["--max-age"]).map_err(Response::fail)? {
-                    Some(d) => Some(
-                        d.parse()
-                            .map_err(|_| Response::fail("--max-age needs a number of days"))?,
-                    ),
-                    None => None,
-                };
-                crate::cli_health::cmd_health(max_age, args.iter().any(|a| a == "--breach"))
+                let notify = crate::cli_policy::health_notify(args).map_err(Response::fail)?; // T6.08
+                let rest = crate::cli_policy::health_rest(args);
+                crate::cli_policy::after_health(notify, crate::cli_health::cmd(&rest))
+                // T11.11
             }
             "import" => {
                 let file = one_name(args, verb, &["--format", "--prefix"])?;
@@ -164,6 +167,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
             "leaked" => crate::cli_leaked::cmd_leaked(
                 &one_name(args, verb, &[])?,
                 args.iter().any(|a| a == "--yes" || a == "-y"),
+                args.iter().any(|a| a == "--rotate"), // T9.09 (batch: aws)
             ),
             "recovery-kit" => crate::cli_recovery::cmd_recovery_kit(args),
             "record" => crate::cli_record::cmd_record(args),

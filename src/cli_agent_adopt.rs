@@ -131,7 +131,11 @@ pub struct Plan<'a> {
 /// Group findings by NAME. A NAME found with different values in
 /// different places, or already stored in kepr, is skipped rather than
 /// silently overwritten.
-pub fn plan<'a>(found: &'a [Found], existing: &std::collections::HashSet<String>) -> Plan<'a> {
+pub fn plan<'a>(
+    found: &'a [Found],
+    existing: &std::collections::HashSet<String>,
+    canaries: &crate::cli_policy::Canaries,
+) -> Plan<'a> {
     let mut p = Plan {
         store: Vec::new(),
         remove: Vec::new(),
@@ -142,7 +146,10 @@ pub fn plan<'a>(found: &'a [Found], existing: &std::collections::HashSet<String>
     names.dedup();
     for name in names {
         let group: Vec<&Found> = found.iter().filter(|f| f.name == name).collect();
-        if existing.contains(name) {
+        if group.iter().any(|f| canaries.contains(f.value.as_str())) {
+            p.skipped
+                .push((name.into(), crate::cli_policy::CANARY_SKIP.into()));
+        } else if existing.contains(name) {
             p.skipped.push((
                 name.into(),
                 "already in kepr (use `kepr agent add` to replace it)".into(),
@@ -213,7 +220,11 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
             f.provider
         );
     }
-    let plan = plan(&found, &existing_names());
+    let plan = plan(
+        &found,
+        &existing_names(),
+        &crate::cli_policy::Canaries::planted(),
+    );
     for (name, why) in &plan.skipped {
         cli_ui::warn(&format!("skipping {name}: {why}"));
     }
@@ -322,12 +333,20 @@ mod tests {
         );
         let found: Vec<Found> = a.into_iter().chain(b).collect();
         let existing: std::collections::HashSet<String> = ["OPENAI_API_KEY".to_string()].into();
-        let p = plan(&found, &existing);
+        let p = plan(&found, &existing, &Default::default());
         let stored: Vec<&str> = p.store.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(stored, vec!["XAI_API_KEY"]);
         assert_eq!(p.remove.len(), 2, "same value in two files: both lines go");
         let skipped: Vec<&str> = p.skipped.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(skipped, vec!["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+        // A planted canary is neither stored nor removed from its file.
+        let decoy = crate::cli_policy::Canaries::of(&["xai-1"]);
+        let p = plan(&found, &existing, &decoy);
+        assert!(p.store.is_empty() && p.remove.is_empty());
+        assert!(p
+            .skipped
+            .iter()
+            .any(|(n, why)| n == "XAI_API_KEY" && why.contains("canary")));
     }
 
     #[test]

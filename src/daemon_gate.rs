@@ -9,34 +9,21 @@
 // session is handed to kepr-gate.service instead (daemon_gate_service.rs,
 // T1.19); the channel and every resolve check stay here either way.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::process::Child;
 
 use crate::audit::{self, AuditEvent, AuditResult};
+use crate::daemon_gate_deadline as deadline;
 use crate::daemon_gate_registry::{gates_for, track_gate, Handle, MAX_GATES_PER_UID};
 use crate::store::{cred_path, validate_name};
 use crate::{crypto, expiry};
 use kepr_core::binding::Inject;
 use kepr_core::framing::{read_frame, write_frame};
-use kepr_core::gate_protocol::{
-    GateLimits, GateRequest, GateResponse, GateRoute, ReadyLine, SessionConfig,
-};
+use kepr_core::gate_protocol::{GateLimits, GateRequest, GateResponse, GateRoute, SessionConfig};
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Response, MAX_MSG_BYTES};
 
-const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const UNAVAILABLE: &str = "credential unavailable";
-
-fn gate_bin() -> std::path::PathBuf {
-    std::env::var_os("KEPR_GATE_BIN")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| "/usr/local/bin/kepr-gate".into())
-}
 
 pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
     kepr_core::gate_protocol::validate_routes(routes)?;
@@ -80,10 +67,19 @@ pub struct GateOwner {
     /// The credentials this session's routes name; anything else a gate
     /// asks for is refused, so a compromised gate stays confined.
     pub creds: std::collections::HashSet<String>,
+    /// T7.09: stores what the gate records (`kepr agent run --record`).
+    pub rec: crate::daemon_gatex::recording::Recorder,
+    /// T7.10: the harness the session claims to run, for just-in-time
+    /// grants (`daemon_aws::grant`). `None` = no grant can match.
+    pub harness: Option<String>,
+    /// When values this gate was given stop being allowed: its
+    /// generation moves then (daemon_gate_deadline.rs).
+    pub deadlines: crate::daemon_gate_deadline::Deadlines,
 }
 
 /// Bumped on every set, delete and expiry sweep; gates compare it
 /// before using a cached value so revoked or rotated keys stop at once.
+/// Each session's reply adds its own passed deadlines (`deadline`).
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub fn bump_generation() {
@@ -119,15 +115,41 @@ pub fn resolve_for_gate(
         Some(Err(e)) => return fail(format!("resolve: meta parse: {e}")),
         None => None,
     };
+    if crate::daemon_policy::canary_refuse(uid, username, &upper, meta.as_ref()) {
+        return Err(()); // T9.08: never released; asking trips it
+    }
     let inject = match check_resolvable(meta.as_ref(), expiry::now_unix(), host, port) {
         Ok(i) => i,
         Err(reason) => return fail(reason),
     };
+    // T7.10: a just-in-time credential needs an open grant for this
+    // session's harness.
+    let jit = meta
+        .as_ref()
+        .map(|m| crate::daemon_aws::grant::check(m, owner.harness.as_deref(), expiry::now_unix()));
+    if let Some(Err(reason)) = jit {
+        return fail(reason);
+    }
+    if let Some(Err(e)) = meta
+        .as_ref()
+        .map(|m| crate::daemon_syncx::quorum_gate(uid, &upper, m))
+    {
+        return fail(format!("resolve: {e}")); // T7.12: M-of-N approvals
+    }
     // T9.01: a sealed credential flagged --requires-consent is released
     // only after polkit approves the agent process (fail-closed).
     let needs_consent = meta.as_ref().and_then(|m| m.requires_consent) == Some(true);
-    if needs_consent && !crate::daemon_polkit::consent_granted(owner.pid) {
+    let consent = |m: &expiry::CredMeta| crate::daemon_policy::consent(uid, owner.pid, &upper, m); // T9.04
+    if needs_consent && !meta.as_ref().is_some_and(consent) {
         return fail("resolve: consent denied".to_string());
+    }
+    // A window ending must reach a gate that cached the value.
+    let (h, now) = (owner.harness.as_deref(), expiry::now_unix());
+    let until = meta
+        .as_ref()
+        .and_then(|m| deadline::until(uid, &upper, m, h, now));
+    if until.is_some_and(|t| owner.deadlines.note(t).is_err()) {
+        return fail("resolve: too many open windows in this session".to_string());
     }
     match crypto::default_backend().decrypt(uid, &upper) {
         Ok(value) => {
@@ -150,50 +172,7 @@ fn random_hex(n: usize) -> Result<ZeroString, String> {
     Ok(ZeroString::from_string(hex::encode(&*buf)))
 }
 
-fn spawn_gate(owner_pid: i32, gate_end: &UnixStream) -> Result<Child, String> {
-    let fd = gate_end.as_raw_fd();
-    let mut cmd = Command::new(gate_bin());
-    cmd.arg("--owner-pid")
-        .arg(owner_pid.to_string())
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    // SAFETY: only async-signal-safe calls (dup2, fcntl) between fork
-    // and exec; `fd` stays open in the parent until spawn returns.
-    unsafe {
-        cmd.pre_exec(move || {
-            if libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    cmd.spawn()
-        .map_err(|e| format!("cannot start kepr-gate: {e}"))
-}
-
-fn read_ready(child: &mut Child) -> Result<ReadyLine, String> {
-    let stdout = child.stdout.take().ok_or("kepr-gate has no stdout")?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = tx.send(BufReader::new(stdout).read_line(&mut line).map(|_| line));
-    });
-    let line = rx
-        .recv_timeout(READY_TIMEOUT)
-        .map_err(|_| "kepr-gate did not become ready")?
-        .map_err(|e| format!("kepr-gate: {e}"))?;
-    let ready: ReadyLine =
-        serde_json::from_str(&line).map_err(|_| "kepr-gate sent a malformed ready line")?;
-    if !ready.ready {
-        return Err("kepr-gate reported not ready".into());
-    }
-    Ok(ready)
-}
-
-fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, owner: GateOwner) {
+fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut owner: GateOwner) {
     while let Ok(raw) = read_frame(&mut chan, MAX_MSG_BYTES) {
         let resp = match serde_json::from_slice::<GateRequest>(&raw) {
             Ok(GateRequest::Resolve {
@@ -210,8 +189,36 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, owne
             },
             Ok(GateRequest::Generation { id }) => GateResponse::Generation {
                 id,
-                generation: GENERATION.load(std::sync::atomic::Ordering::SeqCst),
+                generation: GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+                    + owner.deadlines.passed(expiry::now_unix()),
             },
+            Ok(GateRequest::Record { id, record }) => owner.rec.handle(id, record),
+            Ok(GateRequest::Journal { id, entries }) => crate::daemon_gatex::logs::handle_journal(
+                owner.uid,
+                owner.rec.session(),
+                id,
+                entries,
+            ),
+            Ok(GateRequest::Canary { id, fingerprints }) => {
+                crate::daemon_policy::canary_gate_check(
+                    owner.uid,
+                    &owner.username,
+                    id,
+                    &fingerprints,
+                )
+            }
+            Ok(GateRequest::DayUsage {
+                id,
+                name,
+                requests,
+                tokens,
+            }) => crate::daemon_policy::day_usage(
+                &owner.creds,
+                owner.uid,
+                id,
+                &name,
+                (requests, tokens),
+            ),
             Err(_) => GateResponse::Err {
                 id: 0,
                 error: "malformed request".into(),
@@ -234,41 +241,13 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, owne
     }
 }
 
-/// Spawn the gate here (user mode): returns the child and its ready line.
-fn start_local(
-    peer_pid: i32,
-    gate_end: &UnixStream,
-    config: SessionConfig,
-) -> Result<(Child, ReadyLine), String> {
-    let mut child = spawn_gate(peer_pid, gate_end)?;
-    let payload = zeroize::Zeroizing::new(serde_json::to_vec(&config).map_err(|e| e.to_string())?);
-    drop(config);
-    let ready = child
-        .stdin
-        .take()
-        .ok_or_else(|| "kepr-gate has no stdin".to_string())
-        .and_then(|mut stdin| {
-            stdin
-                .write_all(&payload)
-                .map_err(|e| format!("kepr-gate: {e}"))
-        })
-        .and_then(|_| read_ready(&mut child));
-    match ready {
-        Ok(r) => Ok((child, r)),
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(e)
-        }
-    }
-}
-
 fn start(
     uid: u32,
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
-    (port, limits, tunnel): (Option<u16>, GateLimits, bool),
+    (port, limits, tunnel, record): (Option<u16>, GateLimits, bool, bool),
+    harness: Option<String>,
 ) -> Result<Response, String> {
     validate_routes(routes)?;
     limits.validate()?;
@@ -284,10 +263,13 @@ fn start(
         port,
         limits,
         tunnel,
+        record,
     };
+    let session = config.session_id.clone();
+    let rec = crate::daemon_gatex::recording::Recorder::new(uid, &session, record);
     let (daemon_end, gate_end) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
     let (child, ready, key, handle) = if crate::user_mode() {
-        let (child, ready) = start_local(peer_pid, &gate_end, config)?;
+        let (child, ready) = crate::daemon_gatex::spawn::start_local(peer_pid, &gate_end, config)?;
         let pid = child.id() as i32;
         (Some(child), ready, pid, Handle::Pid(pid))
     } else {
@@ -304,11 +286,15 @@ fn start(
         uid,
         username: username.to_string(),
         pid: peer_pid,
-        creds: routes.iter().map(|r| r.cred.to_uppercase()).collect(),
+        creds: kepr_core::gate_protocol::resolvable_creds(routes),
+        rec,
+        harness: harness.filter(|h| kepr_core::protocol_aws::valid_harness(h)), // T7.10
+        deadlines: Default::default(),
     };
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
     let gate_pid = key.max(0);
+    crate::daemon_policy::session_started(uid, &session, routes); // T9.07
     Ok(Response::GateStarted {
         port: ready.port,
         placeholders: ready.placeholders,
@@ -316,6 +302,7 @@ fn start(
         extras: Box::new(kepr_core::protocol_types::GateExtras {
             ca_pem: ready.ca_pem,
             db_ports: ready.db_ports,
+            session: Some(session),
         }),
     })
 }
@@ -325,9 +312,10 @@ pub fn handle_start_gate(
     peer_pid: i32,
     username: &str,
     routes: &[GateRoute],
-    port_limits: (Option<u16>, GateLimits, bool),
+    port_limits: (Option<u16>, GateLimits, bool, bool),
+    harness: Option<String>,
 ) -> Response {
-    let result = start(uid, peer_pid, username, routes, port_limits);
+    let result = start(uid, peer_pid, username, routes, port_limits, harness);
     audit::log(&AuditEvent {
         op: "start-gate",
         name: None,

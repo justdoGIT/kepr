@@ -57,11 +57,8 @@ pub fn build_export_lines<F: CredFetcher>(
     fetcher: &F,
 ) -> Result<Vec<String>, String> {
     let mut out = Vec::with_capacity(vars.len());
-    for v in vars {
-        let upper = v.to_uppercase();
-        let value = fetcher
-            .fetch(&upper)
-            .map_err(|e| format!("cannot resolve {upper}: {e}"))?;
+    // T5.06: `VAR=kepr://…` entries too; one fetch per credential.
+    for (upper, value) in crate::cli_recordsx::refs::entries(vars, fetcher)? {
         out.push(format!("export {upper}={}", shell_escape(value.as_str())));
     }
     Ok(out)

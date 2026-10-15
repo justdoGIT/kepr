@@ -1,0 +1,32 @@
+{
+  "name": "kepr-vscode",
+  "displayName": "kepr",
+  "description": "Hover kepr:// references to see a credential's type, tags and expiry (never its value); list credentials; see the vault's lock state.",
+  "version": "0.1.0",
+  "publisher": "justdogit",
+  "license": "MIT OR Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/justdoGIT/kepr" },
+  "engines": { "vscode": "^1.85.0", "node": ">=18" },
+  "categories": ["Other"],
+  "os": ["linux"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "kepr.listCredentials", "title": "kepr: List credentials" },
+      { "command": "kepr.refreshStatus", "title": "kepr: Refresh lock state" }
+    ],
+    "configuration": {
+      "title": "kepr",
+      "properties": {
+        "kepr.socketPath": {
+          "type": "string",
+          "default": "",
+          "description": "Daemon socket. Empty: the same default as the kepr CLI."
+        }
+      }
+    }
+  },
+  "dependencies": { "kepr-client": "file:../../sdk/node" },
+  "scripts": { "test": "node --test test/*.test.js" }
+}
