@@ -39,25 +39,56 @@ mod cli_manifest;
 mod cli_mask;
 mod cli_mcp;
 mod cli_mode;
+mod cli_more;
 mod cli_record;
 mod cli_recovery;
 mod cli_rotate;
+mod cli_sandbox_relay;
 mod cli_sandbox_seccomp;
 mod cli_sandbox_sys;
 mod cli_scan;
 mod cli_share;
 mod cli_ssh;
 mod cli_ssh_agent;
+mod cli_status;
 mod cli_totp;
 mod cli_ui;
 mod cli_usage;
 mod client;
 mod sync;
-mod sync_aws_sigv4;
 mod sync_aws_sm;
 mod sync_gcp_sm;
 mod sync_http;
 mod sync_vault;
+
+// ── P2–P11 ticket batches (2026-10-05): one `cli_<batch>` directory module
+// per batch, declared under its own marker (registered in cli_more.rs).
+// batch: vault
+mod cli_vault;
+// batch: seal
+mod cli_seal;
+// batch: store
+mod cli_store;
+// batch: records
+mod cli_recordsx;
+// batch: share
+mod cli_sharing;
+// batch: sync
+mod cli_syncx;
+// batch: policy
+mod cli_policy;
+// batch: gate
+mod cli_gatex;
+// batch: aws
+mod cli_aws;
+// batch: eco
+mod cli_eco;
+// batch: platform
+mod cli_platform;
+// batch: session
+mod cli_sandbox_landlock; // T1.23
+mod cli_session;
+// end of batches
 
 use cli_args::parse_args;
 use cli_ui::{err, json_mode, print_json};
@@ -71,15 +102,21 @@ fn main() {
     // On parse failure: honour --json mode, if it was already seen on
     // argv, by emitting a Response::Err on stdout with no stderr noise.
     // Verbs with their own small parsers (cli_extra.rs).
+    cli_session::profile::apply(); // T11.16: --profile / KEPR_PROFILE
     let raw: Vec<String> = std::env::args().collect();
     if let Some(pos) = raw.iter().skip(1).position(|a| !a.starts_with("--")) {
         // Harness hooks speak exit codes, not Responses.
         if raw[pos + 1] == "hook" {
             std::process::exit(cli_hook::cmd_hook(&raw[pos + 2..]));
         }
-        if cli_extra::VERBS.contains(&raw[pos + 1].as_str()) {
+        let verb = raw[pos + 1].as_str();
+        if cli_extra::VERBS.contains(&verb) || cli_more::is_verb(verb) {
             cli_mode::init_from_argv(&raw);
-            let resp = cli_extra::dispatch(&raw[pos + 1], &raw[pos + 2..]);
+            let resp = if cli_more::is_verb(verb) {
+                cli_more::dispatch(verb, &raw[pos + 2..])
+            } else {
+                cli_extra::dispatch(verb, &raw[pos + 2..])
+            };
             // `init_from_argv` takes `--json` anywhere on the line, and the
             // handlers skip their human output in JSON mode: print it here
             // whatever its position (recovery shares, share envelopes).

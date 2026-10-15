@@ -1,5 +1,5 @@
-// sync_aws_sigv4.rs — AWS Signature V4 signing for the
-// AWS Secrets Manager sync backend.
+// sigv4.rs — AWS Signature V4 signing, shared by the sync backends and
+// the gate (moved from src/sync_aws_sigv4.rs, ticket T2.01).
 //
 // SigV4 is AWS's symmetric request-signing scheme: every API
 // request carries an `Authorization` header whose signature is
@@ -32,8 +32,8 @@
 // the auth header) DON'T contain the secret — they contain the
 // derived signature, which is one-way.
 
+use crate::generate::ZeroString;
 use hmac::{Hmac, KeyInit, Mac};
-use kepr_core::generate::ZeroString;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 type HmacSha256 = Hmac<Sha256>;
@@ -188,19 +188,19 @@ pub fn sign(input: &SigV4Input<'_>) -> SigV4Headers {
     SigV4Headers { headers }
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub fn hex_sha256(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     hex(&h.finalize())
 }
 
-fn hmac(key: &[u8], msg: &[u8]) -> Zeroizing<Vec<u8>> {
+pub(crate) fn hmac(key: &[u8], msg: &[u8]) -> Zeroizing<Vec<u8>> {
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(msg);
     Zeroizing::new(mac.finalize().into_bytes().to_vec())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         out.push_str(&format!("{b:02x}"));

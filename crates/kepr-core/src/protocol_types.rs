@@ -50,6 +50,13 @@ pub struct KeyHealth {
     /// range lookup. Absent for sealed credentials.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub hibp_prefix: Option<String>,
+    /// T11.23: findings the owner chose to ignore (moved out of `issues`).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub ignored: Vec<String>,
+    /// T11.23: the finding kinds ignored for this credential, so a client
+    /// can apply them to findings it adds itself (breaches).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub ignore: Vec<String>,
 }
 
 /// Optional parts of `GateStarted` (P2.1 egress CA, P7.1 database ports).
@@ -61,11 +68,16 @@ pub struct GateExtras {
     /// `db:<CRED>` → local port of the gate's database proxy.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty", default)]
     pub db_ports: std::collections::HashMap<String, u16>,
+    /// The gate session's id (`kepr agent replay` / `kepr agent logs`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session: Option<String>,
 }
 
 // ── Credential info (for ListOk) ──────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// `Default` lets literals name only the fields they set (`..Default::default()`),
+/// so a batch adding an optional field doesn't touch every literal.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CredInfo {
     pub name: String,      // ENV_VAR_NAME
     pub cred_name: String, // kepr-<uid>-env-var-name
@@ -98,6 +110,62 @@ pub struct CredInfo {
     /// P5.1: typed record (`login`, `card`, …); absent for a plain value.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub record_type: Option<String>,
+    // ── P2–P11 ticket batches: new optional fields under the batch's marker.
+    // batch: vault
+    // batch: seal
+    // batch: store
+    /// T5.01: tags and folder (no secret material).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub folder: Option<String>,
+    /// T11.5: this entry is an alias of that credential.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub alias_of: Option<String>,
+    // batch: records
+    // batch: share
+    /// T6.07: revealed by break-glass; rotate it (cleared by the next set).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub must_rotate: Option<bool>,
+    // batch: sync
+    // batch: policy
+    // batch: gate
+    /// T7.01: protocol of a sealed database login (`postgres`, `redis`,
+    /// …), so `kepr agent run` opens the right proxy for it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub db_kind: Option<String>,
+    // batch: aws
+    /// T2.02: a sealed AWS key the gate re-signs SigV4 requests with, so
+    /// `kepr agent run` gives the session an AWS placeholder pair.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub aws_sigv4: Option<bool>,
+    /// T7.07: scheduled rotation: every N seconds, how (`rotate_via`),
+    /// when next (unix seconds) and failed tries since the last success.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_every_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_via: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_next_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rotate_failures: Option<u32>,
+    /// T7.10: just-in-time: agent sessions need an open grant.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub jit: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub grants: Option<Vec<crate::protocol_aws::Grant>>,
+    /// T7.11: checked out by this uid until this unix second.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub held_by_uid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub held_until: Option<u64>,
+    // batch: eco
+    // batch: platform
+    // batch: session
+    /// T11.14: revealing the value needs the store passphrase again.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_reauth: Option<bool>,
+    // end of batches
 }
 
 // ── FIDO2 types (Phase 2 η) ─────────────────────────────────────────────────

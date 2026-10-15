@@ -1,6 +1,7 @@
 // daemon_health.rs — `kepr health` (agent vault P6.4): weak, reused and
 // old credentials, plus a k-anonymity breach check. Everything that
-// needs a value runs here; replies carry only flags.
+// needs a value runs here; replies carry only flags. T11.11 policy rules
+// (kepr_core::health_policy); T11.23 ignored findings (daemon_recordsx).
 //
 // Breach check (Have I Been Pwned "range" model): `Health` returns the
 // first 5 hex digits of each readable value's SHA-1. The CLI downloads
@@ -11,6 +12,7 @@
 
 use std::collections::HashMap;
 
+use kepr_core::health_policy::HealthPolicy;
 use kepr_core::protocol::{KeyHealth, Response};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
@@ -76,9 +78,18 @@ fn sha1_hex(v: &str) -> String {
     hex::encode_upper(Sha1::digest(v.as_bytes()))
 }
 
+/// Days since the value was last written: the record's write time on the
+/// image backend, the file's mtime otherwise.
 fn file_age_days(path: &std::path::Path) -> Option<u64> {
+    if let Some((_, updated)) = crate::daemon_vault::stat(path) {
+        return Some(days_since(updated, crate::expiry::now_unix()));
+    }
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     Some(modified.elapsed().ok()?.as_secs() / 86_400)
+}
+
+fn days_since(then_unix: u64, now_unix: u64) -> u64 {
+    now_unix.saturating_sub(then_unix) / 86_400
 }
 
 fn audit_ok(op: &'static str, uid: u32, username: &str, name: Option<&str>) {
@@ -91,7 +102,16 @@ fn audit_ok(op: &'static str, uid: u32, username: &str, name: Option<&str>) {
     });
 }
 
-pub fn handle_health(uid: u32, username: &str, max_age_days: Option<u32>) -> Response {
+pub fn handle_health(
+    uid: u32,
+    username: &str,
+    max_age_days: Option<u32>,
+    policy: Option<&HealthPolicy>,
+) -> Response {
+    // T11.11: the caller's hygiene rules (health_policy.rs).
+    if let Some(Err(e)) = policy.map(HealthPolicy::validate) {
+        return Response::fail(format!("health policy: {e}"));
+    }
     let max_age = u64::from(max_age_days.unwrap_or(DEFAULT_MAX_AGE_DAYS));
     let mut items = Vec::new();
     // value digest → names, for reuse detection (digests never leave).
@@ -105,16 +125,17 @@ pub fn handle_health(uid: u32, username: &str, max_age_days: Option<u32>) -> Res
         }
         let mut issues = Vec::new();
         let mut hibp_prefix = None;
-        // Values the caller can't `Get` (sealed, consent or FIDO2 gated)
-        // are never analysed: "same value as SEALED_KEY" or "weak" would
-        // let a caller test guesses against them.
-        let gated = meta.sealed == Some(true)
-            || meta.requires_consent == Some(true)
-            || meta.requires_fido2 == Some(true);
+        let rules = policy.map(|p| p.rules_for(meta.tags.as_deref().unwrap_or_default()));
+        // Gated or expired values (`CredMeta::gated`: sealed, prompts,
+        // windows, exe binding, approvals) are never analysed: "same value
+        // as SEALED_KEY" or "weak" would let a caller test guesses.
+        let now = expiry::now_unix();
+        let gated = !crate::daemon_store::files::readable_without_prompt(&meta, now);
         match (!gated).then(|| crypto::default_backend().decrypt(uid, &name)) {
             None => {}
             Some(Ok(v)) => {
                 issues.extend(value_issues(v.as_str()));
+                issues.extend(rules.iter().flat_map(|r| r.value_violations(v.as_str())));
                 seen.entry(Sha256::digest(v.as_bytes()).into())
                     .or_default()
                     .push(name.clone());
@@ -122,14 +143,16 @@ pub fn handle_health(uid: u32, username: &str, max_age_days: Option<u32>) -> Res
             }
             Some(Err(_)) => issues.push("unreadable".to_string()),
         }
+        issues.extend(crate::daemon_platform::pki::health_issues(
+            &meta,
+            expiry::now_unix(),
+        )); // T10.10
         let age_days = file_age_days(&path).unwrap_or(0);
         if age_days > max_age {
             issues.push(format!("not changed in {age_days} days"));
         }
-        if meta
-            .expires_at_unix
-            .is_some_and(|t| t <= expiry::now_unix())
-        {
+        issues.extend(rules.and_then(|r| r.age_violation(age_days)));
+        if meta.expires_at_unix.is_some_and(|t| t <= now) {
             issues.push("expired".to_string());
         }
         items.push(KeyHealth {
@@ -137,6 +160,8 @@ pub fn handle_health(uid: u32, username: &str, max_age_days: Option<u32>) -> Res
             issues,
             age_days,
             hibp_prefix,
+            ignored: Vec::new(),
+            ignore: meta.health_ignore.unwrap_or_default(), // T11.23
         });
     }
     for names in seen.values().filter(|n| n.len() > 1) {
@@ -150,6 +175,9 @@ pub fn handle_health(uid: u32, username: &str, max_age_days: Option<u32>) -> Res
                 .push(format!("same value as {}", others.join(", ")));
         }
     }
+    items
+        .iter_mut()
+        .for_each(crate::daemon_recordsx::apply_health_ignores);
     audit_ok("health", uid, username, None);
     Response::HealthOk { items }
 }
@@ -181,13 +209,8 @@ pub fn handle_breach_check(uid: u32, username: &str, name: &str, suffixes: &[Str
         .map_err(|_| "credential unavailable".to_string())?
         .unwrap_or_default();
         // The caller picks the suffixes, so this is a guess oracle: only
-        // for values the caller could `Get` without a prompt anyway.
-        if meta.sealed == Some(true)
-            || meta.ssh.is_some()
-            || meta.share_key == Some(true)
-            || meta.requires_consent == Some(true)
-            || meta.requires_fido2 == Some(true)
-        {
+        // for plain values nothing but `get` guards (`CredMeta::gated`).
+        if !crate::daemon_store::files::readable_without_prompt(&meta, expiry::now_unix()) {
             return Err("credential unavailable".to_string());
         }
         let v = crypto::default_backend()
@@ -225,6 +248,89 @@ mod tests {
         assert!(value_issues("abc").iter().any(|i| i.contains("short")));
         assert!(value_issues("sk-ant-api03-Xq8vLm2PzR7tY4nB6wK0").is_empty());
         assert!(value_issues("").iter().any(|i| i.contains("weak")));
+    }
+
+    fn issues(
+        uid: u32,
+        max_age: Option<u32>,
+        p: Option<&HealthPolicy>,
+    ) -> Vec<(String, Vec<String>)> {
+        match handle_health(uid, "t", max_age, p) {
+            Response::HealthOk { items } => items.into_iter().map(|i| (i.name, i.issues)).collect(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn days_since_counts_whole_days_and_never_underflows() {
+        assert_eq!(days_since(1_000, 1_000 + 86_399), 0);
+        assert_eq!(days_since(1_000, 1_000 + 120 * 86_400 + 5), 120);
+        assert_eq!(days_since(2_000, 1_000), 0);
+    }
+
+    fn age(uid: u32, name: &str, days: u64) {
+        let f = std::fs::File::options()
+            .write(true)
+            .open(crate::store::cred_path(uid, name))
+            .unwrap();
+        let then =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400 + 60);
+        f.set_modified(then).unwrap();
+    }
+
+    #[test]
+    fn period_and_policy_rules_are_reported() {
+        use crate::daemon_store::testkit;
+        use kepr_core::health_policy::HealthRules;
+        let uid = testkit::uid();
+        testkit::set(uid, "OLD", "Qz8#vR2!mX9$pL4&kT6@");
+        testkit::set(uid, "PROD_KEY", "Qz8#vR2!mX9$pL4&kT6@wY3*");
+        testkit::set_sealed(uid, "SEALED", "short");
+        let tag = kepr_core::protocol_store::StoreRequest::Organize {
+            name: "PROD_KEY".into(),
+            add_tags: vec!["prod".into()],
+            remove_tags: vec![],
+            folder: None,
+        };
+        assert!(crate::daemon_store::dispatch(uid, 0, "t", tag).is_success());
+        age(uid, "OLD", 120);
+        age(uid, "SEALED", 120);
+        // --period 90: unchanged for longer than 90 days.
+        let got = issues(uid, Some(90), None);
+        let of = |n: &str| got.iter().find(|(k, _)| k == n).unwrap().1.clone();
+        assert!(of("OLD")
+            .iter()
+            .any(|i| i.starts_with("not changed in 120 days")));
+        assert!(of("PROD_KEY").is_empty());
+        let policy = HealthPolicy {
+            all: HealthRules {
+                min_length: Some(16),
+                classes: vec![],
+                max_age_days: Some(100),
+            },
+            tags: std::collections::BTreeMap::from([(
+                "prod".into(),
+                HealthRules {
+                    min_length: Some(32),
+                    classes: vec!["upper".into()],
+                    max_age_days: None,
+                },
+            )]),
+        };
+        let got = issues(uid, None, Some(&policy));
+        let of = |n: &str| got.iter().find(|(k, _)| k == n).unwrap().1.clone();
+        assert_eq!(of("OLD"), ["policy: older than 100 days"]);
+        assert_eq!(of("PROD_KEY"), ["policy: shorter than 32 characters"]);
+        // A sealed value is never measured, but its age still counts.
+        assert_eq!(of("SEALED"), ["policy: older than 100 days"]);
+        let bad = HealthPolicy {
+            all: HealthRules {
+                min_length: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!handle_health(uid, "t", None, Some(&bad)).is_success());
     }
 
     #[test]

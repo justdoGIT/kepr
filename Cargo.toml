@@ -32,7 +32,7 @@ name = "git-credential-kepr"
 path = "src/git_helper.rs"
 
 [workspace]
-members = ["crates/kepr-core", "crates/kepr-eso-provider", "crates/kepr-gate"]
+members = ["crates/kepr-core", "crates/kepr-eso-provider", "crates/kepr-gate", "crates/kepr-relay"]
 
 [dependencies]
 kepr-core = { path = "crates/kepr-core", version = "0.4.0" }
@@ -106,6 +106,47 @@ toml = { version = "1.1", default-features = false, features = ["parse", "serde"
 # rest of kepr's "pure-Rust crypto" stance. Used by sync_vault today;
 # future sync_aws / sync_gcp will add their own SDK deps.
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
+# T6.01: ML-KEM-768 (FIPS 203, RustCrypto) for the hybrid X25519 + ML-KEM
+# share envelopes (`kepr-pk2-…` / `kepr-share2-…`).
+ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
+# T6.13: RS256 ID-token signature verification (OIDC device enrolment).
+# Already in the tree through rustls; used instead of the `rsa` crate,
+# which carries an unpatched timing advisory (RUSTSEC-2023-0071).
+ring = "0.17"
+# T6.04 / T11.15: `--qr` prints share links and envelopes as terminal QR
+# codes (unicode renderer only; no image/svg features).
+qrcode = { version = "0.14", default-features = false }
+# T7.16 FIPS mode: the daemon's AES-256-GCM / SHA-256 / HMAC through AWS-LC.
+# Optional, off by default. `--features fips` links AWS-LC's ordinary build;
+# add `aws-lc-rs/fips` for the FIPS 140-3 validated module (needs Go + CMake).
+aws-lc-rs = { version = "1.18", optional = true }
+# batch: platform
+# T10.02: `kepr import vault.kdbx` (KeePass KDBX 4): AES-256-CBC or ChaCha20
+# payload, ChaCha20 protected values, gzip. RustCrypto (`aes` 0.9 is already
+# in the tree through aes-gcm) and flate2 with its pure-Rust backend only.
+aes = "0.9"
+cbc = { version = "0.2", features = ["zeroize"] }
+chacha20 = { version = "0.10", features = ["zeroize"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+# batch: platform
+# T10.12: the keychain sealer reads the master key through Security.framework
+# from the daemon itself (macOS only; Linux builds never compile it).
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "3", default-features = false }
+
+[features]
+default = []
+# T7.16: route the daemon's crypto through aws-lc-rs (src/daemon_eco/crypto_fips.rs).
+fips = ["dep:aws-lc-rs"]
+
+# Never built (`cfg(any())` matches no target): it only puts the FIPS
+# module's build dependencies into Cargo.lock, so CI's `aws-lc-rs/fips`
+# build uses pinned versions instead of resolving fresh ones. Resolved
+# fresh, aws-lc-fips-sys 0.14.3's bindgen 0.73 got syn 2 next to
+# prettyplease 0.3 (syn 3) and failed to compile.
+[target.'cfg(any())'.dependencies]
+aws-lc-rs = { version = "1.18", features = ["fips"] }
 
 [dev-dependencies]
 # Property-based testing. Keeps the random-shrinking corpus outside git
@@ -117,6 +158,8 @@ proptest = "1"
 # tempfile auto-cleans on drop so each test gets a hermetic credstore
 # without touching /etc/credstore.encrypted/.
 tempfile = "3"
+# T6.04: link round trips through a real relay on 127.0.0.1.
+kepr-relay = { path = "crates/kepr-relay", version = "0.4.0" }
 
 [profile.release]
 opt-level = "z"

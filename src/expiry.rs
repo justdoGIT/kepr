@@ -37,51 +37,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// is how operators audit the store today.
 const META_SUFFIX: &str = ".meta";
 
-/// On-disk record. Every field is `Option<…>` with `#[serde(default)]`
-/// so meta files written by older daemons parse cleanly under newer
-/// ones. Empty `CredMeta` is equivalent to "no flags" (callers should
-/// skip writing the meta file in that case).
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct CredMeta {
-    /// Absolute unix timestamp (seconds since epoch) at which this
-    /// credential expires. The daemon refuses to decrypt past this
-    /// instant. Phase 2 α.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub expires_at_unix: Option<u64>,
-    /// True iff `kepr get` requires a polkit consent prompt before
-    /// the daemon decrypts. Phase 2 ε.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub requires_consent: Option<bool>,
-    /// True iff `kepr get` requires a FIDO2 hardware-key assertion
-    /// before the daemon decrypts. Phase 2 η.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub requires_fido2: Option<bool>,
-    /// True iff the value is write-only: `Get` is refused and only a
-    /// daemon-spawned kepr-gate may resolve it, for a host listed in
-    /// `bindings`. Agent vault plan §4.3.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub sealed: Option<bool>,
-    /// Destinations a sealed value may be sent to.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub bindings: Option<Vec<kepr_core::binding::Binding>>,
-    /// P2.4: the value is an Ed25519 SSH key seed. Like `sealed`, `Get`
-    /// refuses it; the daemon only signs with it (`SshSign`).
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub ssh: Option<SshMeta>,
-    /// P5.1: the value is a typed record of this type (login, card, …).
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub record_type: Option<String>,
-    /// P6.1: the value is this user's X25519 share key; `Get` refuses it.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub share_key: Option<bool>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct SshMeta {
-    /// Public key blob, base64 (not secret).
-    pub public_b64: String,
-    pub comment: String,
-}
+pub use crate::cred_meta::{CredMeta, SshMeta};
 
 impl CredMeta {
     /// True iff the meta has no flags set. Callers use this to
@@ -182,12 +138,51 @@ pub fn compute_expires_at(now_unix: u64, ttl_secs: u64) -> Option<u64> {
     now_unix.checked_add(ttl_secs)
 }
 
+/// Where `.meta` records live (T4.06): sidecar files (below), or the
+/// vault image when it is the active store. Callers keep addressing a
+/// meta by its sidecar path; `meta_store` picks the implementation.
+pub trait MetaStore: Send + Sync {
+    fn read_meta(&self, meta_path: &Path) -> Option<Result<CredMeta, String>>;
+    fn write_meta(&self, meta_path: &Path, meta: &CredMeta) -> Result<(), String>;
+    fn delete_meta(&self, meta_path: &Path);
+}
+
+struct FileMeta;
+
+impl MetaStore for FileMeta {
+    fn read_meta(&self, meta_path: &Path) -> Option<Result<CredMeta, String>> {
+        read_meta_file(meta_path)
+    }
+    fn write_meta(&self, meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
+        write_meta_file(meta_path, meta)
+    }
+    fn delete_meta(&self, meta_path: &Path) {
+        let _ = fs::remove_file(meta_path);
+    }
+}
+
+fn meta_store(meta_path: &Path) -> &'static dyn MetaStore {
+    crate::daemon_vault::meta_store_for(meta_path).unwrap_or(&FileMeta)
+}
+
+pub fn write_meta(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
+    meta_store(meta_path).write_meta(meta_path, meta)
+}
+
+pub fn read_meta(meta_path: &Path) -> Option<Result<CredMeta, String>> {
+    meta_store(meta_path).read_meta(meta_path)
+}
+
+pub fn delete_meta(meta_path: &Path) {
+    meta_store(meta_path).delete_meta(meta_path)
+}
+
 /// Atomically write a meta file at `meta_path` with the given
 /// expiry timestamp. The temp+rename dance mirrors the cred-write
 /// path in `crypto_inproc::write_atomic` so a crashed daemon
 /// doesn't leave half-written meta files; the per-(pid, thread-id)
 /// suffix keeps two concurrent writers from racing on the same temp.
-pub fn write_meta(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
+pub fn write_meta_file(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
     let parent = meta_path.parent().ok_or("invalid meta path (no parent)")?;
     if !parent.exists() {
         fs::create_dir_all(parent).map_err(|e| format!("create meta dir: {e}"))?;
@@ -201,7 +196,7 @@ pub fn write_meta(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
 /// meta written by a newer daemon). Treat the malformed-but-present
 /// branch as fail-closed at the call site: refuse to decrypt rather
 /// than silently dropping the expiry constraint.
-pub fn read_meta(meta_path: &Path) -> Option<Result<CredMeta, String>> {
+pub fn read_meta_file(meta_path: &Path) -> Option<Result<CredMeta, String>> {
     let bytes = match fs::read(meta_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
@@ -209,16 +204,9 @@ pub fn read_meta(meta_path: &Path) -> Option<Result<CredMeta, String>> {
     };
     Some(serde_json::from_slice(&bytes).map_err(|e| format!("parse meta: {e}")))
 }
-
-/// Best-effort delete of a meta file. The cred-delete path calls
-/// this AFTER the cred file is removed, since (a) we want the
-/// AEAD-rooted state mutation to land first, and (b) a missing
-/// meta on a present cred is harmless (decrypt just no-ops the
-/// expiry check), while a present meta on a missing cred is also
-/// harmless (the cred is gone, no decrypt can succeed).
-pub fn delete_meta(meta_path: &Path) {
-    let _ = fs::remove_file(meta_path);
-}
+// `delete_meta` (above) is best-effort. The cred-delete path calls it
+// AFTER the cred is removed: a missing meta on a present cred is
+// harmless, and so is a present meta on a missing cred.
 
 /// Format a unix timestamp as `YYYY-MM-DD HH:MM` (UTC), matching
 /// the `modified` field's format in `CredInfo`. Used to render

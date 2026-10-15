@@ -26,6 +26,10 @@ pub struct SessionCa {
     ca_der: CertificateDer<'static>,
     pem: String,
     hosts: Vec<String>,
+    /// T2.02: domains whose sub-hosts the CA may sign (`amazonaws.com` for
+    /// AWS routes); the egress proxy asks the daemon first whether the
+    /// session's key is bound to the exact host.
+    suffixes: Vec<String>,
     leaves: Mutex<HashMap<String, Arc<ServerConfig>>>,
 }
 
@@ -41,8 +45,14 @@ fn validity(p: &mut CertificateParams) {
 
 impl SessionCa {
     /// A CA that can sign only `hosts` (lower-case DNS names).
+    #[cfg(test)]
     pub fn new(hosts: &[String]) -> Result<Self, String> {
-        if hosts.is_empty() {
+        Self::with_suffixes(hosts, &[])
+    }
+
+    /// Also sub-hosts of `suffixes` (e.g. `amazonaws.com`).
+    pub fn with_suffixes(hosts: &[String], suffixes: &[&str]) -> Result<Self, String> {
+        if hosts.is_empty() && suffixes.is_empty() {
             return Err("session CA: no bound hosts".into());
         }
         let key = KeyPair::generate().map_err(err)?;
@@ -55,7 +65,9 @@ impl SessionCa {
         p.name_constraints = Some(NameConstraints {
             permitted_subtrees: hosts
                 .iter()
-                .map(|h| GeneralSubtree::DnsName(h.clone()))
+                .map(String::as_str)
+                .chain(suffixes.iter().copied())
+                .map(|h| GeneralSubtree::DnsName(h.to_string()))
                 .collect(),
             excluded_subtrees: Vec::new(),
         });
@@ -66,6 +78,7 @@ impl SessionCa {
             pem: cert.pem(),
             issuer: Issuer::new(p, key),
             hosts: hosts.to_vec(),
+            suffixes: suffixes.iter().map(|s| format!(".{s}")).collect(),
             leaves: Mutex::new(HashMap::new()),
         })
     }
@@ -80,7 +93,7 @@ impl SessionCa {
     }
 
     pub fn covers(&self, host: &str) -> bool {
-        self.hosts.iter().any(|h| h == host)
+        self.hosts.iter().any(|h| h == host) || self.suffixes.iter().any(|s| host.ends_with(s))
     }
 
     /// TLS server config presenting a leaf for `host` (bound hosts only).
@@ -100,7 +113,7 @@ impl SessionCa {
         let leaf = p.signed_by(&key, &self.issuer).map_err(err)?;
         let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
         let mut cfg =
-            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            ServerConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
                 .with_safe_default_protocol_versions()
                 .map_err(err)?
                 .with_no_client_auth()
@@ -132,7 +145,7 @@ mod tests {
         let mut roots = RootCertStore::empty();
         roots.add(ca.ca_der.clone()).unwrap();
         Arc::new(
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            ClientConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
                 .with_safe_default_protocol_versions()
                 .unwrap()
                 .with_root_certificates(roots)
@@ -180,21 +193,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn aws_suffix_covers_only_its_sub_hosts() {
+        let ca = SessionCa::with_suffixes(&[], &["amazonaws.com"]).unwrap();
+        assert!(ca.covers("s3.eu-west-1.amazonaws.com"));
+        for h in [
+            "amazonaws.com",
+            "evilamazonaws.com",
+            "amazonaws.com.evil.io",
+        ] {
+            assert!(!ca.covers(h), "{h}");
+        }
+        let cfg = ca.server_config("sts.amazonaws.com").unwrap();
+        assert!(handshake(cfg, client(&ca), "sts.amazonaws.com").await);
+        let (leaf, key) = ca.leaf_for_any("evil.example");
+        let cfg = ServerConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf, ca.ca_der.clone()],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+            )
+            .unwrap();
+        assert!(!handshake(Arc::new(cfg), client(&ca), "evil.example").await);
+        assert!(SessionCa::with_suffixes(&[], &[]).is_err());
+    }
+
+    #[tokio::test]
     async fn name_constraints_stop_any_other_host() {
         let ca = SessionCa::new(&["api.github.com".into()]).unwrap();
         // Forge a leaf for another host with the CA key itself: clients
         // must still reject it, because the CA is constrained.
         let (leaf, key) = ca.leaf_for_any("evil.example");
-        let cfg =
-            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_no_client_auth()
-                .with_single_cert(
-                    vec![leaf, ca.ca_der.clone()],
-                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
-                )
-                .unwrap();
+        let cfg = ServerConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf, ca.ca_der.clone()],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+            )
+            .unwrap();
         assert!(!handshake(Arc::new(cfg), client(&ca), "evil.example").await);
     }
 }

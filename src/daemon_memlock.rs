@@ -16,6 +16,23 @@ extern "C" {
     fn mlockall(flags: i32) -> i32;
 }
 
+/// Disable core dumps and ptrace attachment for this process.
+///
+/// SAFETY: `PR_SET_DUMPABLE` takes a single integer argument (0 = not
+/// dumpable); the remaining `prctl(2)` varargs are ignored for this
+/// option. No pointer or lifetime hazard — this only flips a per-process
+/// kernel flag. Without this, decrypted secrets, the master key, and
+/// Argon2id working memory can land in a systemd-coredump or be read via
+/// ptrace by a process that gains the right capability.
+pub fn disable_core_dumps() {
+    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    if ret != 0 {
+        eprintln!(
+            "[kepr-daemon] warning: prctl(PR_SET_DUMPABLE) failed — core dumps may leak secrets"
+        );
+    }
+}
+
 fn memlock_limit() -> u64 {
     let mut rl = libc::rlimit {
         rlim_cur: 0,

@@ -103,23 +103,22 @@ pub fn run() -> Result<(), String> {
     let mut table = HashMap::new();
     let mut db_routes = Vec::new();
     for r in &cfg.routes {
-        if let Some(target) = &r.target {
+        // A raw tunnel (T7.03) takes no credential, hence no placeholder.
+        if !r.is_tunnel() {
             placeholders.insert(
                 r.provider.clone(),
                 placeholder::make(&key, &cfg.session_id, r.slot),
             );
-            db_routes.push(Arc::new(crate::pg::DbRoute {
-                key: r.provider.clone(),
-                cred: r.cred.clone(),
-                slot: r.slot,
-                target: target.clone(),
-            }));
+        }
+        if let Some(target) = &r.target {
+            db_routes.push(Arc::new(crate::db::DbRoute::new(
+                r.provider.clone(),
+                r.cred.clone(),
+                r.slot,
+                target.clone(),
+            )));
             continue;
         }
-        placeholders.insert(
-            r.provider.clone(),
-            placeholder::make(&key, &cfg.session_id, r.slot),
-        );
         table.insert(
             r.provider.clone(),
             Route {
@@ -136,12 +135,27 @@ pub fn run() -> Result<(), String> {
         .filter_map(|r| kepr_core::providers::lookup(&r.provider))
         .map(|p| p.host.to_string())
         .collect();
+    // T2.02: AWS keys may be bound to any *.amazonaws.com host; the
+    // egress proxy asks the daemon per host (aws_egress.rs).
+    let aws = cfg.routes.iter().any(|r| r.provider.starts_with("aws:"));
+    let mut suffixes: Vec<&str> = if aws { vec!["amazonaws.com"] } else { vec![] };
+    // T2.04: keys bound to hosts under a provider domain (gcloud).
+    let domains = kepr_core::providers::DOMAINS.iter();
+    suffixes.extend(
+        domains
+            .filter(|(p, _)| cfg.routes.iter().any(|r| r.provider == *p))
+            .map(|(_, d)| *d),
+    );
     // A database-only session has no HTTPS host, hence no CA.
-    let ca = match hosts.is_empty() {
+    let ca = match hosts.is_empty() && suffixes.is_empty() {
         true => None,
-        false => Some(Arc::new(crate::ca::SessionCa::new(&hosts)?)),
+        false => Some(Arc::new(crate::ca::SessionCa::with_suffixes(
+            &hosts, &suffixes,
+        )?)),
     };
     let ca_pem = ca.as_ref().map(|c| c.pem().to_string());
+    let recorder = Arc::new(crate::recording::Recorder::new(cfg.record));
+    crate::recording::spawn_flusher(recorder.clone(), cache.clone());
     let state = Arc::new(
         State::new(
             cfg.session_id.clone(),
@@ -151,11 +165,14 @@ pub fn run() -> Result<(), String> {
         )
         .with_limits(cfg.limits)
         .with_egress(ca, cfg.tunnel)
+        .with_tunnels(&cfg.routes)
+        .with_recorder(recorder.clone())
         .validated()?,
     );
     // From here on the key exists only as SplitKey shares in secret
     // memory; the plain copy is wiped rather than kept for the session.
     drop(key);
+    crate::journal::spawn_flusher(state.journal.clone(), cache.clone());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -171,6 +188,7 @@ pub fn run() -> Result<(), String> {
             .port();
         // P7.1: one loopback listener per database route.
         let mut db_ports = HashMap::new();
+        let jit_routes = db_routes.clone();
         for route in db_routes {
             let l = tokio::net::TcpListener::bind(("127.0.0.1", 0))
                 .await
@@ -180,7 +198,7 @@ pub fn run() -> Result<(), String> {
             let st = state.clone();
             tokio::spawn(async move {
                 while let Ok((c, _)) = l.accept().await {
-                    tokio::spawn(crate::pg::serve_conn(st.clone(), route.clone(), c));
+                    tokio::spawn(crate::db::serve_conn(st.clone(), route.clone(), c));
                 }
             });
         }
@@ -200,10 +218,18 @@ pub fn run() -> Result<(), String> {
         .and_then(|_| out.flush())
         .map_err(|e| format!("stdout: {e}"))?;
 
+        let st = state.clone();
         tokio::spawn(async move {
             if let Ok(afd) = tokio::io::unix::AsyncFd::new(owner) {
                 let _ = afd.readable().await;
             }
+            // T7.18: take back the roles this session granted.
+            crate::pg_jit::revoke_all(&st, &jit_routes).await;
+            // Connections the agent closed as it exited are still winding
+            // down: let them journal (and record) their last lines.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            recorder.flush(&cache);
+            st.journal.flush(&cache);
             cache.clear();
             std::process::exit(0);
         });
@@ -226,6 +252,7 @@ mod tests {
             port: None,
             limits: Default::default(),
             tunnel: false,
+            record: false,
         }
     }
 

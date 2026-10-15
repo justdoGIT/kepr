@@ -48,8 +48,27 @@ pub fn handle_list(uid: u32, username: &str) -> Response {
                 sealed,
                 bound_hosts,
                 record_type: meta_opt.as_ref().and_then(|m| m.record_type.clone()),
+                tags: meta_opt.as_ref().and_then(|m| m.tags.clone()),
+                folder: meta_opt.as_ref().and_then(|m| m.folder.clone()),
+                alias_of: None,
+                must_rotate: meta_opt.as_ref().and_then(|m| m.must_rotate), // T6.07
+                db_kind: meta_opt
+                    .as_ref()
+                    .and_then(|m| m.bindings.as_ref()?.first()?.inject.db_kind())
+                    .map(str::to_string),
+                requires_reauth: meta_opt.as_ref().and_then(|m| m.requires_reauth), // T11.14
+                aws_sigv4: meta_opt
+                    .as_ref()
+                    .and_then(|m| m.bindings.as_ref())
+                    .and_then(|bs| {
+                        bs.iter()
+                            .any(|b| b.inject == kepr_core::binding::Inject::Sigv4)
+                            .then_some(true)
+                    }), // T2.02
+                ..crate::daemon_aws::info(meta_opt.as_ref())                        // T7.07
             }
         })
+        .chain(crate::daemon_store::alias_infos(uid)) // T11.5
         .collect();
 
     audit::log(&AuditEvent {

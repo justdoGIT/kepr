@@ -75,14 +75,14 @@ pub fn cmd_set(a: &Args) -> Response {
         }
         (Some(v.clone().into()), None)
     } else if a.generate {
-        let s = match generate_secret(a.gen_kind) {
+        let s = match crate::cli_recordsx::generate::generate(a.gen_kind, a.profile.as_deref()) {
             Ok(s) => s,
             Err(e) => return Response::fail(e),
         };
         if !a.json {
             ok(&format!(
                 "Generated {} secret ({} chars)",
-                a.gen_kind.as_str(),
+                a.profile.as_deref().unwrap_or(a.gen_kind.as_str()),
                 s.len()
             ));
         }
@@ -95,13 +95,13 @@ pub fn cmd_set(a: &Args) -> Response {
         println!();
         bold(&format!("  Setting: {}", color("1;33", &name)));
 
-        if let Response::GetOk { .. } = dispatch(
+        if crate::cli_session::reauth::exists(dispatch(
             a,
             &Request::Get {
                 name: name.clone(),
                 fido2_assertion: None,
             },
-        ) {
+        )) {
             warn(&format!("'{}' already exists.", name));
             eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
             io::stderr().flush().ok();
@@ -161,7 +161,8 @@ pub fn cmd_set(a: &Args) -> Response {
         sealed: None,
         bindings: None,
     };
-    let resp = dispatch(a, &req);
+    let resp = crate::cli_platform::exe::after_set(a, dispatch(a, &req)); // T10.09
+    let resp = crate::cli_session::reauth::after_set(a, resp);
 
     match &resp {
         Response::SetOk {
@@ -194,7 +195,7 @@ pub fn cmd_get(a: &Args) -> Response {
         }
     };
 
-    let resp = dispatch(
+    let resp = crate::cli_session::reauth::dispatch_get(
         a,
         &Request::Get {
             name: name.clone(),
@@ -269,7 +270,9 @@ pub fn cmd_get(a: &Args) -> Response {
         Response::Err { error } => {
             if !a.json {
                 err(error);
-                einfo(&crate::cli_agent_cmd::get_failure_hint(&name));
+                if !crate::cli_session::reauth::asked() {
+                    einfo(&crate::cli_agent_cmd::get_failure_hint(&name));
+                }
             }
             resp
         }
@@ -283,7 +286,7 @@ pub fn cmd_get(a: &Args) -> Response {
 }
 
 pub fn cmd_list(a: &Args) -> Response {
-    let resp = dispatch(a, &Request::List);
+    let resp = crate::cli_store::filter_list(a, dispatch(a, &Request::List));
     if a.json {
         return resp;
     }
@@ -308,6 +311,10 @@ pub fn cmd_list(a: &Args) -> Response {
                 if matches!(c.requires_consent, Some(true)) {
                     tail.push_str("  (consent required)");
                 }
+                tail.push_str(&crate::cli_store::list_tail(c));
+                tail.push_str(crate::cli_session::reauth::list_tail(c)); // T11.14
+                tail.push_str(crate::cli_sharing::list_tail(c)); // T6.07
+                tail.push_str(&crate::cli_aws::list_tail(c)); // T7.07
                 println!("  {:<40} {}", color("1", &c.name), color("2", &tail));
             }
             println!();
@@ -410,6 +417,9 @@ pub fn cmd_audit_verify(a: &Args) -> Response {
 }
 
 pub fn cmd_lock(a: &Args) -> Response {
+    if a.lock_fido2 {
+        return crate::cli_seal::fido2::cmd_lock_fido2(a);
+    }
     let first = read_masked("  Lock password: ");
     if first.is_empty() {
         return Response::fail("password cannot be empty");
@@ -430,10 +440,14 @@ pub fn cmd_lock(a: &Args) -> Response {
 }
 
 pub fn cmd_unlock(a: &Args) -> Response {
-    let password = read_masked("  Unlock password: ");
-    if password.is_empty() {
-        return Response::fail("password cannot be empty");
+    if let Some(r) = crate::cli_platform::fingerprint::cmd_unlock(a) {
+        return r; // T10.03
     }
+    // T4.09: with the security key's factor when the store has one.
+    let password = match crate::cli_seal::fido2::store_passphrase("  Unlock password: ") {
+        Ok(p) => p,
+        Err(e) => return crate::cli_seal::fido2::failed(a, e),
+    };
     let resp = dispatch(a, &Request::Unlock { password });
     if !a.json {
         match &resp {
@@ -445,27 +459,5 @@ pub fn cmd_unlock(a: &Args) -> Response {
     resp
 }
 
-pub fn cmd_status(a: &Args) -> Response {
-    let resp = dispatch(a, &Request::Status);
-    if !a.json {
-        match &resp {
-            Response::StatusOk {
-                locked,
-                password_protected,
-            } => info(&format!(
-                "Store: {} ({})",
-                if *locked { "locked" } else { "unlocked" },
-                if *password_protected {
-                    "password protected"
-                } else {
-                    "local key protection"
-                }
-            )),
-            Response::Err { error } => err(error),
-            _ => err("unexpected response"),
-        }
-    }
-    resp
-}
-
 pub use crate::cli_fido2::{cmd_fido2_list, cmd_fido2_register};
+pub use crate::cli_status::cmd_status;
