@@ -48,6 +48,8 @@ COMMANDS:
                                        kepr's plugin for it (once; opencode: config only)
   agent install claude|codex           install kepr's guidance for the model (Claude Code skill,
                                        a block in Codex's AGENTS.md)
+  agent doctor [--port N] [--json]     check omp / Grok Build still route through the gate and
+                                       kepr's plugin is current; non-zero exit on any problem
   hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
   agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
   agent ls | agent revoke KEY          list / delete sealed keys

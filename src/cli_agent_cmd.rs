@@ -5,6 +5,7 @@
 //   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin|--from-clipboard] [--requires-consent]
 //   kepr agent run HARNESS [--port N] [--no-sandbox|--strict-sandbox] [--isolate-net] [-- ARGV...]
 //   kepr agent install omp|grok|opencode|claude|codex [--port N]
+//   kepr agent doctor [--port N] [--json]
 //   kepr agent adopt [FILE...] [--yes] [--remove]
 //   kepr agent ls
 //   kepr agent revoke NAME [--force]
@@ -19,7 +20,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok|opencode|claude|codex | ls | revoke NAME";
+const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok|opencode|claude|codex | doctor [--port N] [--json] | ls | revoke NAME";
 
 #[derive(Debug, Default, PartialEq)]
 pub struct AgentArgs {
@@ -299,11 +300,11 @@ fn cmd_revoke(a: &AgentArgs) -> Response {
 }
 
 pub fn main(raw: &[String]) -> Response {
-    if raw.first().map(String::as_str) == Some("add-db") {
-        return crate::cli_agent_db::cmd_add_db(&raw[1..]);
-    }
-    if raw.first().map(String::as_str) == Some("rotate-db") {
-        return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]);
+    match raw.first().map(String::as_str) {
+        Some("add-db") => return crate::cli_agent_db::cmd_add_db(&raw[1..]),
+        Some("rotate-db") => return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]),
+        Some("doctor") => return crate::cli_agent_doctor::cmd_doctor(&raw[1..]),
+        _ => {}
     }
     if let Some(r) = crate::cli_gatex::agent_verb(raw) {
         return r;
@@ -405,6 +406,10 @@ mod tests {
     fn unknown_verb_is_an_error() {
         match main(&v(&["frobnicate"])) {
             Response::Err { error } => assert!(error.contains("unknown agent command")),
+            other => panic!("{other:?}"),
+        }
+        match main(&v(&["doctor", "--bogus"])) {
+            Response::Err { error } => assert!(error.contains("kepr agent doctor")),
             other => panic!("{other:?}"),
         }
     }

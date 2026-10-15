@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-type Files = &'static [(&'static str, &'static str)];
+pub type Files = &'static [(&'static str, &'static str)];
 
 const OMP: Files = &[
     (
@@ -163,15 +163,46 @@ fn grok(args: &[&str]) -> Result<std::process::Output, String> {
         .map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginState {
+    Missing,
+    Stale,
+    Current,
+}
+
+/// How the plugin in `dir` compares with the embedded files, byte for
+/// byte (T12.16): none there, some differ or are missing, or all equal.
+pub fn plugin_state(dir: &Path, files: Files) -> PluginState {
+    let same: Vec<Option<bool>> = files
+        .iter()
+        .map(|(rel, body)| {
+            std::fs::read(dir.join(rel))
+                .ok()
+                .map(|b| b == body.as_bytes())
+        })
+        .collect();
+    if same.iter().all(|s| *s == Some(true)) {
+        PluginState::Current
+    } else if same.iter().all(Option::is_none) {
+        PluginState::Missing
+    } else {
+        PluginState::Stale
+    }
+}
+
+/// Whether `grok plugin list --json` lists kepr; None when grok can't run.
+pub fn grok_lists_kepr() -> Option<bool> {
+    let o = grok(&["plugin", "list", "--json"]).ok()?;
+    let list = serde_json::from_slice::<Vec<serde_json::Value>>(&o.stdout).unwrap_or_default();
+    Some(list.iter().any(|p| p["name"] == "kepr"))
+}
+
 /// `grok plugin install DIR --trust` the first time, `grok plugin update
 /// kepr` after a change. Without grok on PATH, say what to run.
 fn register_with_grok(dir: &Path, changed: bool) -> Result<(), String> {
-    let installed = match grok(&["plugin", "list", "--json"]) {
-        Ok(o) => serde_json::from_slice::<Vec<serde_json::Value>>(&o.stdout)
-            .unwrap_or_default()
-            .iter()
-            .any(|p| p["name"] == "kepr"),
-        Err(_) => {
+    let installed = match grok_lists_kepr() {
+        Some(listed) => listed,
+        None => {
             crate::cli_ui::info(&format!(
                 "grok not found on PATH; afterwards run: grok plugin install {} --trust",
                 dir.display()
@@ -298,6 +329,19 @@ mod tests {
         assert_eq!(GROK[3], ("skills/kepr/SKILL.md", SKILL));
         assert!(SKILL.contains("kepr agent run <harness>"));
         assert!(!SKILL.contains("kepr agent run grok"));
+    }
+
+    #[test]
+    fn plugin_state_compares_bytes_with_the_embedded_files() {
+        let dir = std::env::temp_dir().join(format!("kepr-pstate-{}", std::process::id()));
+        assert_eq!(plugin_state(&dir, OMP), PluginState::Missing);
+        write_plugin(&dir, OMP).unwrap();
+        assert_eq!(plugin_state(&dir, OMP), PluginState::Current);
+        std::fs::write(dir.join("index.ts"), "// older\n").unwrap();
+        assert_eq!(plugin_state(&dir, OMP), PluginState::Stale);
+        std::fs::remove_file(dir.join("index.ts")).unwrap();
+        assert_eq!(plugin_state(&dir, OMP), PluginState::Stale);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
