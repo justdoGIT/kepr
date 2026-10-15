@@ -79,7 +79,7 @@ fn handle_unlock(uid: u32, username: &str, password: &[u8]) -> Response {
         Ok(key) => key,
         Err(e) => return Response::fail(e),
     };
-    match crypto::unlock_backend(*key) {
+    match crypto::unlock_backend(&key) {
         Ok(()) => Response::UnlockedOk,
         Err(e) => Response::fail(e),
     }

@@ -280,7 +280,7 @@ fn main() {
         }),
     );
     let versions_for_sweeper = std::sync::Arc::clone(&versions);
-    crypto::initialize_inproc_backend(key.as_ref().map(|key| **key).unwrap_or([0u8; 32]), versions)
+    crypto::initialize_inproc_backend(key.as_deref().unwrap_or(&[0u8; 32]), versions)
         .unwrap_or_else(|e| {
             eprintln!("[kepr-daemon] cannot install backend: {e}");
             std::process::exit(1);

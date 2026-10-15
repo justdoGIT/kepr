@@ -29,7 +29,7 @@ pub fn uid() -> u32 {
             crate::version_state::VersionState::load(root.join("cred-versions.json"))
                 .expect("version state"),
         );
-        let _ = crate::crypto::initialize_inproc_backend([0x5a; 32], versions);
+        let _ = crate::crypto::initialize_inproc_backend(&[0x5a; 32], versions);
     });
     NEXT_UID.fetch_add(1, Ordering::SeqCst)
 }

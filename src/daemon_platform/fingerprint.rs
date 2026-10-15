@@ -95,7 +95,7 @@ pub fn unlock_with(
     state: State,
     now: Instant,
     authorize: impl FnOnce() -> bool,
-    unlock: impl FnOnce([u8; 32]) -> Result<(), String>,
+    unlock: impl FnOnce(&[u8; 32]) -> Result<(), String>,
 ) -> Result<(), String> {
     let take = || kept.lock().unwrap_or_else(|p| p.into_inner()).take();
     if !state.user_mode {
@@ -116,7 +116,7 @@ pub fn unlock_with(
         }
         return Err("not authorized".into());
     }
-    unlock(*entry.key)
+    unlock(&entry.key)
 }
 
 pub fn handle_unlock(uid: u32, peer_pid: i32, username: &str) -> Response {
@@ -181,7 +181,7 @@ mod tests {
                 grant
             },
             |k| {
-                got.set(Some(k));
+                got.set(Some(*k));
                 Ok(())
             },
         );

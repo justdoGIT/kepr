@@ -29,7 +29,7 @@ pub fn check_memfd_secret(available: bool) -> Finding {
         f(
             "secret memory",
             Level::Good,
-            "memfd_secret available: key pages hidden from the kernel direct map",
+            "memfd_secret available: kepr's keys are hidden from the kernel direct map; while they exist the kernel refuses hibernation (KEPR_SECRET_MEMORY=locked keeps it)",
         )
     } else {
         f(
@@ -297,6 +297,9 @@ mod tests {
         assert_eq!(check_iommu(0).level, Level::Warn);
         assert_eq!(check_iommu(3).level, Level::Good);
         assert_eq!(check_memfd_secret(true).level, Level::Good);
+        assert!(check_memfd_secret(true)
+            .detail
+            .contains("KEPR_SECRET_MEMORY=locked"));
         assert_eq!(check_sleep_lock(true, true, false).level, Level::Good);
         assert_eq!(check_sleep_lock(true, true, true).level, Level::Warn);
         assert_eq!(check_sleep_lock(false, true, false).level, Level::Warn);

@@ -51,6 +51,7 @@ use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
 
 use kepr_core::generate::ZeroString;
+use kepr_core::secmem::GuardedKey;
 
 use crate::crypto::Backend;
 use crate::daemon_eco::cipher;
@@ -64,9 +65,10 @@ const NONCE_LEN: usize = 12; // 96 bits — AES-GCM canonical nonce size
 const TAG_LEN: usize = 16; // 128 bits — AES-GCM tag
 const COUNTER_LEN: usize = 8; // u64 LE inside the v2 plaintext
 
-/// AES-256-GCM credential backend. Holds the 32-byte master key in a
-/// `Zeroizing<[u8; 32]>` so it is wiped on drop, and binds every
-/// ciphertext to `(uid, name)` via AEAD additional data.
+/// AES-256-GCM credential backend. Holds the 32-byte master key as a
+/// `GuardedKey` (T12.21: two XOR shares in secret memory, wiped and
+/// unmapped on drop), and binds every ciphertext to `(uid, name)` via
+/// AEAD additional data.
 ///
 /// Wire formats supported:
 ///
@@ -81,33 +83,36 @@ const COUNTER_LEN: usize = 8; // u64 LE inside the v2 plaintext
 ///             value means the on-disk file was rolled back and the
 ///             read is refused.
 pub struct InProcBackend {
-    master_key: Arc<RwLock<Option<Zeroizing<[u8; 32]>>>>,
+    master_key: Arc<RwLock<Option<GuardedKey<32>>>>,
     store_dir: PathBuf,
     versions: Arc<VersionState>,
 }
 
 impl InProcBackend {
-    pub fn new(master_key: [u8; 32], versions: Arc<VersionState>) -> Self {
+    pub fn new(master_key: &[u8; 32], versions: Arc<VersionState>) -> Self {
         Self::with_store_dir(master_key, crate::store::store_dir(), versions)
     }
 
     pub fn with_store_dir(
-        master_key: [u8; 32],
+        master_key: &[u8; 32],
         store_dir: PathBuf,
         versions: Arc<VersionState>,
     ) -> Self {
         Self {
-            master_key: Arc::new(RwLock::new(Some(Zeroizing::new(master_key)))),
+            master_key: Arc::new(RwLock::new(Some(crate::crypto::guard_key(master_key)))),
             store_dir,
             versions,
         }
     }
 
+    /// Drop the key: its regions are wiped and unmapped.
     pub fn lock(&self) {
         *self.master_key.write().expect("master-key lock poisoned") = None;
     }
 
-    pub fn unlock(&self, master_key: [u8; 32]) -> Result<(), String> {
+    /// Install `master_key` in fresh secret regions (new addresses, new
+    /// mask), so a snapshot from before the lock doesn't say where it is.
+    pub fn unlock(&self, master_key: &[u8; 32]) -> Result<(), String> {
         let mut key = self
             .master_key
             .write()
@@ -115,7 +120,7 @@ impl InProcBackend {
         if key.is_some() {
             return Err("credential store is already unlocked".to_string());
         }
-        *key = Some(Zeroizing::new(master_key));
+        *key = Some(crate::crypto::guard_key(master_key));
         Ok(())
     }
 
@@ -125,11 +130,23 @@ impl InProcBackend {
             .map(|key| key.is_none())
             .unwrap_or(true)
     }
-    pub fn snapshot_key(&self) -> Option<[u8; 32]> {
-        self.master_key
-            .read()
-            .ok()
-            .and_then(|key| key.as_ref().map(|key| **key))
+
+    /// A wiped-on-drop copy of the key, for callers that wrap or compare
+    /// it (lock, recovery, escrow); None when locked.
+    pub fn snapshot_key(&self) -> Option<Zeroizing<[u8; 32]>> {
+        self.with_key(|k| {
+            let mut out = Zeroizing::new([0u8; 32]);
+            out.copy_from_slice(k);
+            Ok(out)
+        })
+        .ok()
+    }
+
+    /// Where the key's shares are (diagnostics and tests); None when
+    /// locked or held in ordinary memory.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn key_addrs(&self) -> Option<(usize, usize)> {
+        self.master_key.read().ok()?.as_ref()?.addrs()
     }
 
     fn cred_path(&self, uid: u32, name: &str) -> PathBuf {
@@ -143,23 +160,31 @@ impl InProcBackend {
         out
     }
 
-    /// A wiped-on-drop copy of the master key; AEAD runs through the
-    /// `daemon_eco::cipher` seam (RustCrypto, or aws-lc-rs with `fips`).
-    fn key(&self) -> Result<Zeroizing<[u8; 32]>, String> {
+    /// Run `f` on the master key, recombined only for its duration; AEAD
+    /// runs through the `daemon_eco::cipher` seam (RustCrypto, or
+    /// aws-lc-rs with `fips`).
+    fn with_key<R>(&self, f: impl FnOnce(&[u8; 32]) -> Result<R, String>) -> Result<R, String> {
         let key = self
             .master_key
             .read()
             .map_err(|_| "master-key lock poisoned".to_string())?;
-        key.as_ref()
-            .map(|k| Zeroizing::new(**k))
-            .ok_or_else(|| "credential store is locked".to_string())
+        match key.as_ref() {
+            Some(k) => k.with_key(f),
+            None => Err(LOCKED.to_string()),
+        }
     }
 }
+
+const LOCKED: &str = "credential store is locked";
 
 impl Backend for InProcBackend {
     fn encrypt(&self, uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
         let cred_name = store::to_cred_name(uid, name);
-        let key = self.key()?;
+        // Fail before the counter moves; a lock racing in after this
+        // fails the seal below and with_next rolls the counter back.
+        if self.is_locked() {
+            return Err(LOCKED.to_string());
+        }
         let aad = Self::aad(uid, name);
         let cred_path = self.cred_path(uid, name);
 
@@ -183,8 +208,10 @@ impl Backend for InProcBackend {
                 plaintext.extend_from_slice(&counter.to_le_bytes());
                 plaintext.extend_from_slice(value);
 
-                let ciphertext = cipher::seal(&key[..], &nonce_bytes, &aad, &plaintext)
-                    .map_err(|_| "encryption failed".to_string())?;
+                let ciphertext = self.with_key(|key| {
+                    cipher::seal(key, &nonce_bytes, &aad, &plaintext)
+                        .map_err(|_| "encryption failed".to_string())
+                })?;
 
                 let mut out = Vec::with_capacity(MAGIC_LEN + NONCE_LEN + ciphertext.len());
                 out.extend_from_slice(MAGIC_V2);
@@ -225,10 +252,11 @@ impl Backend for InProcBackend {
         let ciphertext = &blob[header_len..];
         let aad = Self::aad(uid, name);
 
-        let key = self.key()?;
         // Zeroizing: the decrypted secret must not linger in freed heap.
-        let plaintext = cipher::open(&key[..], &nonce_bytes, &aad, ciphertext)
-            .map_err(|_| "decryption failed: authentication".to_string())?;
+        let plaintext = self.with_key(|key| {
+            cipher::open(key, &nonce_bytes, &aad, ciphertext)
+                .map_err(|_| "decryption failed: authentication".to_string())
+        })?;
 
         // Split off the counter (v2) or treat as 0 (v1) BEFORE
         // building the ZeroString, so the secret bytes never share a
@@ -333,8 +361,60 @@ mod tests {
         let dir = tempfile::tempdir().expect("create tempdir");
         let state_path = dir.path().join("cred-versions.json");
         let versions = Arc::new(VersionState::load(state_path).expect("load fresh state"));
-        let backend = InProcBackend::with_store_dir([0xAB; 32], dir.path().to_owned(), versions);
+        let backend = InProcBackend::with_store_dir(&[0xAB; 32], dir.path().to_owned(), versions);
         (backend, dir)
+    }
+
+    /// Every mapping in /proc/self/maps as (start, end).
+    fn mappings() -> Vec<(usize, usize)> {
+        let maps = fs::read_to_string("/proc/self/maps").unwrap();
+        maps.lines()
+            .filter_map(|l| {
+                let (a, b) = l.split_whitespace().next()?.split_once('-')?;
+                Some((
+                    usize::from_str_radix(a, 16).ok()?,
+                    usize::from_str_radix(b, 16).ok()?,
+                ))
+            })
+            .collect()
+    }
+
+    /// T12.21: two XOR shares in two secret regions, never one heap array.
+    #[test]
+    fn master_key_is_held_in_split_regions() {
+        let (b, _dir) = fresh_backend();
+        let (a, c) = b.key_addrs().expect("key held as split shares");
+        assert_ne!(a, c);
+        let maps = mappings();
+        for addr in [a, c] {
+            assert!(
+                maps.iter().any(|(lo, hi)| *lo <= addr && addr < *hi),
+                "share at {addr:#x} is not in any mapping"
+            );
+        }
+        b.encrypt(TEST_UID, "SPLIT", b"hunter2").unwrap();
+        assert_eq!(b.decrypt(TEST_UID, "SPLIT").unwrap().as_str(), "hunter2");
+    }
+
+    #[test]
+    fn lock_drops_the_key() {
+        let (b, _dir) = fresh_backend();
+        b.lock();
+        assert!(b.key_addrs().is_none());
+        assert!(b.snapshot_key().is_none());
+        let err = b.encrypt(TEST_UID, "LOCKED", b"v").unwrap_err();
+        assert_eq!(err, "credential store is locked");
+    }
+
+    #[test]
+    fn unlock_places_the_key_at_new_addresses() {
+        let (b, _dir) = fresh_backend();
+        b.encrypt(TEST_UID, "BEFORE_LOCK", b"kept").unwrap();
+        let before = b.key_addrs().unwrap();
+        b.lock();
+        b.unlock(&[0xAB; 32]).unwrap();
+        assert_ne!(b.key_addrs().unwrap(), before);
+        assert_eq!(b.decrypt(TEST_UID, "BEFORE_LOCK").unwrap().as_str(), "kept");
     }
 
     /// T7.16: the file format is the same whichever suite is active. A v2
@@ -529,7 +609,7 @@ mod tests {
 
         // Manually craft a v1 file: kepr_v1 magic + nonce + AES-GCM
         // ciphertext over the plaintext bytes (no counter prefix).
-        let key = b.key().unwrap();
+        let key = b.snapshot_key().unwrap();
         let mut nonce_bytes = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce_bytes).unwrap();
         let aad = InProcBackend::aad(TEST_UID, "LEGACY");
@@ -559,7 +639,7 @@ mod tests {
         b.encrypt(TEST_UID, "DOWNGRADE", b"v2-secret").unwrap(); // state=1
 
         // Plant a syntactically-valid v1 file under the same cred-name.
-        let key = b.key().unwrap();
+        let key = b.snapshot_key().unwrap();
         let mut nonce_bytes = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce_bytes).unwrap();
         let aad = InProcBackend::aad(TEST_UID, "DOWNGRADE");

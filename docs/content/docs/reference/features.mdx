@@ -1637,6 +1637,7 @@ starts `kepr-daemon --user`).
 | `KEPR_FINGERPRINT_UNLOCK` | How long after an idle or sleep lock `kepr unlock --fingerprint` may reopen the store (`8h`). |
 | `KEPR_WIPE_AFTER` | Destroy the wrapped master key after N wrong passphrases in a row (off by default). |
 | `KEPR_LOCK_ON_SLEEP=0` | Don't lock the user-mode store on suspend or screen lock. |
+| `KEPR_SECRET_MEMORY=locked` | Hold the master key in locked, no-dump pages instead of memfd_secret pages, which keep the kernel from hibernating. |
 
 ### Set by kepr
 
