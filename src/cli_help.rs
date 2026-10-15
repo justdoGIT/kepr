@@ -31,7 +31,10 @@ COMMANDS:
   sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally
   fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions
   fido2-list                             list registered FIDO2 keys
-  agent add KEY [--for PROVIDER] [--requires-consent]  store a write-only key (paste once)
+  agent add KEY [--for PROVIDER] [--stdin|--from-clipboard] [--requires-consent]
+                                       store a write-only key (paste once); --from-clipboard reads
+                                       it once and clears the clipboard (a clipboard manager may
+                                       keep its own copy)
   agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox]
             [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
             [--max-requests-day N] [--max-tokens-day N]  per key per day, across sessions

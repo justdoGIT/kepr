@@ -2,7 +2,7 @@
 // P1). Parsed separately from the main argv parser because the verbs
 // take their own flags.
 //
-//   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin] [--requires-consent]
+//   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin|--from-clipboard] [--requires-consent]
 //   kepr agent run HARNESS [--port N] [--no-sandbox|--strict-sandbox] [--isolate-net] [-- ARGV...]
 //   kepr agent install omp|grok [--port N]
 //   kepr agent adopt [FILE...] [--yes] [--remove]
@@ -19,7 +19,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok | ls | revoke NAME";
+const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok | ls | revoke NAME";
 
 #[derive(Debug, Default, PartialEq)]
 pub struct AgentArgs {
@@ -28,6 +28,7 @@ pub struct AgentArgs {
     pub fors: Vec<String>,
     pub port: Option<u16>,
     pub stdin: bool,
+    pub from_clipboard: bool,
     pub force: bool,
     pub requires_consent: bool,
     pub yes: bool,
@@ -96,6 +97,7 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
             }
             f if crate::cli_gatex::SessionOpts::FLAGS.contains(&f) => i = a.session.take(raw, i)?,
             "--stdin" => a.stdin = true,
+            "--from-clipboard" => a.from_clipboard = true,
             "--force" | "-f" => a.force = true,
             "--requires-consent" => a.requires_consent = true,
             "--yes" | "-y" => a.yes = true,
@@ -112,6 +114,9 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
             other => return Err(format!("unexpected argument: {other}\n{USAGE}")),
         }
         i += 1;
+    }
+    if a.stdin && a.from_clipboard {
+        return Err("use one of --stdin or --from-clipboard".into());
     }
     Ok(a)
 }
@@ -131,7 +136,13 @@ fn cmd_add(a: &AgentArgs) -> Response {
             "kepr agent add needs a NAME, e.g. kepr agent add ANTHROPIC_API_KEY",
         );
     };
-    let value = read_value(a.stdin, &name);
+    let value = match a.from_clipboard {
+        true => match crate::cli_copy::take_clipboard() {
+            Ok(v) => v,
+            Err(e) => return Response::fail(e),
+        },
+        false => read_value(a.stdin, &name),
+    };
     if value.as_str().is_empty() {
         return Response::fail("empty value — nothing stored");
     }
@@ -177,6 +188,9 @@ fn cmd_add(a: &AgentArgs) -> Response {
                 hosts.join(", ")
             ));
             cli_ui::info("it can no longer be read back; agents use it through `kepr agent run`");
+            if a.from_clipboard {
+                cli_ui::ok("clipboard cleared");
+            }
             r
         }
         Ok(r) => r,
@@ -359,6 +373,14 @@ mod tests {
         assert!(parse(&v(&["run", "claude", "--port", "0"])).is_err());
         assert!(parse(&v(&["add", "a", "b"])).is_err());
         assert!(parse(&[]).is_err());
+    }
+
+    #[test]
+    fn from_clipboard_parses_and_excludes_stdin() {
+        let a = parse(&v(&["add", "K", "--from-clipboard"])).unwrap();
+        assert!(a.from_clipboard && !a.stdin);
+        let e = parse(&v(&["add", "K", "--from-clipboard", "--stdin"])).unwrap_err();
+        assert_eq!(e, "use one of --stdin or --from-clipboard");
     }
 
     #[test]

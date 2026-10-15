@@ -140,7 +140,7 @@ See the [AI agents guide](/docs/guides/ai-agents) for the full walkthrough.
 
 | Verb | Args | What it does |
 | ---- | ---- | ------------ |
-| `agent add` | `KEY [--for PROVIDER\|HOST[:PORT]:INJECT]... [--requires-consent] [--stdin]` | Store a write-only key bound to a provider or host (INJECT: `bearer`, `basic`, `header=NAME`, `query=NAME`, `sigv4`). |
+| `agent add` | `KEY [--for PROVIDER\|HOST[:PORT]:INJECT]... [--requires-consent] [--stdin\|--from-clipboard]` | Store a write-only key bound to a provider or host (INJECT: `bearer`, `basic`, `header=NAME`, `query=NAME`, `sigv4`). `--from-clipboard` reads the key once and clears the clipboard (a clipboard manager may keep its own copy). |
 | `agent add-db` | `KEY --url postgres\|mysql\|redis[s]://USER@HOST[:PORT]/DB [--kind K] [--sslmode verify-full\|disable] [--ca FILE] [--stdin] [--requires-consent]` | Store a sealed database login. |
 | `agent rotate-db` | `KEY [--abort]` | Set a new random database password; nobody sees the old or new one. |
 | `agent run` | `HARNESS [--port N] [--isolate-net\|--no-sandbox\|--strict-sandbox] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [--tunnel NAME=HOST:PORT]... [--grant NAME=ROLE:ADMIN]... [--record] [-- ARGV]` | Run a harness sandboxed, with placeholders and a gate. |
