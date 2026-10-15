@@ -760,7 +760,10 @@ What the image protects:
   slot number and epoch as associated data. A Merkle root over the used
   slots lets `vault verify` name damaged slots.
 - **Placement:** record pages go to keyed pseudo-random free slots, and
-  every write also rewrites 3 random free slots with fresh noise.
+  every write also rewrites 3 random free slots with fresh noise. Each
+  record and the index take 1, 2, 4, 8, … slots (the rest of the bucket
+  is encrypted empty pages), so comparing two copies doesn't give a
+  record's size to the slot; the padding counts toward the fill.
 - **Crash safety:** commits go through a journal slot; after a crash the
   image opens in the old state or the new one.
 - **Crypto-shred:** every write uses a fresh record key, wrapped under a

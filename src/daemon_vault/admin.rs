@@ -132,10 +132,20 @@ mod tests {
         b.encrypt(UID, "SMALL", b"v").unwrap();
         b.encrypt(UID, "BIG", &[b'x'; 9000]).unwrap();
         let u = b.usage().unwrap().unwrap();
-        // 1 + 3 record pages and one index page.
-        assert_eq!(u.used_slots, 5);
+        // 1 + 3 record pages (padded to 4, T12.28) and one index page.
+        assert_eq!(u.used_slots, 6);
         assert_eq!(u.size_mib, 2, "with_create_mib sized the first write");
         assert_eq!(u.epoch, 2);
+    }
+
+    #[test]
+    fn a_three_page_record_takes_four_slots() {
+        let (b, _d) = fresh();
+        b.encrypt(UID, "FIRST", b"v").unwrap();
+        let before = b.usage().unwrap().unwrap().used_slots;
+        // 9000 bytes of value: three pages of data.
+        b.encrypt(UID, "THREE", &[b'x'; 9000]).unwrap();
+        assert_eq!(b.usage().unwrap().unwrap().used_slots, before + 4);
     }
 
     #[test]
