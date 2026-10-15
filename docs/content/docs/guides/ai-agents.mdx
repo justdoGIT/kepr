@@ -57,13 +57,18 @@ places, or already stored in kepr, is skipped rather than overwritten.
 | OpenAI Codex CLI | `kepr agent run codex` | `OPENAI_API_KEY` |
 | grok-cli | `kepr agent run grok-cli` | `XAI_API_KEY` |
 | Aider (OpenAI path) | `kepr agent run aider` | `OPENAI_API_KEY` |
+| Gemini CLI | `kepr agent run gemini` | `GEMINI_API_KEY` |
 | oh-my-pi | `kepr agent install omp` once, then `kepr agent run omp` | `ANTHROPIC_API_KEY` |
 | Grok Build | `kepr agent install grok` once, then `kepr agent run grok` | `XAI_API_KEY` |
+| opencode (Anthropic) | `kepr agent install opencode` once, then `kepr agent run opencode` | `ANTHROPIC_API_KEY` |
 
 `kepr agent install` edits the harness's own config file
-(`~/.omp/agent/models.yml`, `~/.grok/config.toml`) to point at the gate on
-port 7878, after writing a timestamped backup. It also installs kepr's
-plugin for that harness (below). Running it twice changes nothing.
+(`~/.omp/agent/models.yml`, `~/.grok/config.toml`,
+`~/.config/opencode/opencode.json`) to point at the gate on port 7878,
+after writing a timestamped backup. It also installs kepr's plugin for
+omp and Grok Build (below). Running it twice changes nothing. The opencode
+config gets only a base URL and `{env:KEPR_PH_ANTHROPIC}`; a file with
+comments or another non-JSON shape is left alone, with a message.
 
 ### Plugins for omp and Grok Build
 

@@ -144,7 +144,7 @@ See the [AI agents guide](/docs/guides/ai-agents) for the full walkthrough.
 | `agent add-db` | `KEY --url postgres\|mysql\|redis[s]://USER@HOST[:PORT]/DB [--kind K] [--sslmode verify-full\|disable] [--ca FILE] [--stdin] [--requires-consent]` | Store a sealed database login. |
 | `agent rotate-db` | `KEY [--abort]` | Set a new random database password; nobody sees the old or new one. |
 | `agent run` | `HARNESS [--port N] [--isolate-net\|--no-sandbox\|--strict-sandbox] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [--tunnel NAME=HOST:PORT]... [--grant NAME=ROLE:ADMIN]... [--record] [-- ARGV]` | Run a harness sandboxed, with placeholders and a gate. |
-| `agent install` | `omp\|grok [--port N]` | Point the harness's config at the gate and install kepr's plugin. |
+| `agent install` | `omp\|grok\|opencode [--port N]` | Point the harness's config at the gate and install kepr's plugin (omp, Grok Build). |
 | `agent adopt` | `[FILE...] [--yes] [--remove]` | Move keys from `.env` and shell rc files into kepr. |
 | `agent ls` / `agent revoke` | `[KEY] [--force]` | List or delete sealed keys. |
 | `agent replay` | `[SESSION]` · `SESSION --typescript FILE --timing FILE` | List or print recorded sessions; export PostgreSQL traffic for `scriptreplay`. |

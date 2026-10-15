@@ -38,13 +38,14 @@ COMMANDS:
   agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox]
             [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
             [--max-requests-day N] [--max-tokens-day N]  per key per day, across sessions
-                                       run claude|codex|grok-cli|aider|omp|grok sandboxed, with
-                                       placeholders; a local gate injects the real key on the wire
+                                       run claude|codex|grok-cli|aider|gemini|omp|grok|opencode
+                                       sandboxed, with placeholders; a local gate injects the real
+                                       key on the wire
   agent add-db KEY --url postgres|mysql|redis[s]://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
                                        sealed database login; agents get DATABASE_URL / MYSQL_* / REDIS_URL to a local gate port
   agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new
-  agent install omp|grok               point the harness's config file at the gate and install
-                                       kepr's plugin for it (once)
+  agent install omp|grok|opencode      point the harness's config file at the gate and install
+                                       kepr's plugin for it (once; opencode: config only)
   hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
   agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
   agent ls | agent revoke KEY          list / delete sealed keys
