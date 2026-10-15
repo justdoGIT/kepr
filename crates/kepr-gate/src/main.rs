@@ -31,6 +31,7 @@ mod reply;
 mod rewrite;
 mod routes;
 mod scram;
+mod secret_cell;
 mod service;
 mod session;
 mod sigv4_resign;
