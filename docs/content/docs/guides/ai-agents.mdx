@@ -53,8 +53,8 @@ places, or already stored in kepr, is skipped rather than overwritten.
 
 | Harness | Command | Key it uses |
 | --- | --- | --- |
-| Claude Code | `kepr agent run claude` | `ANTHROPIC_API_KEY` |
-| OpenAI Codex CLI | `kepr agent run codex` | `OPENAI_API_KEY` |
+| Claude Code | `kepr agent run claude` (optional once: `kepr agent install claude`) | `ANTHROPIC_API_KEY` |
+| OpenAI Codex CLI | `kepr agent run codex` (optional once: `kepr agent install codex`) | `OPENAI_API_KEY` |
 | grok-cli | `kepr agent run grok-cli` | `XAI_API_KEY` |
 | Aider (OpenAI path) | `kepr agent run aider` | `OPENAI_API_KEY` |
 | Gemini CLI | `kepr agent run gemini` | `GEMINI_API_KEY` |
@@ -69,6 +69,16 @@ after writing a timestamped backup. It also installs kepr's plugin for
 omp and Grok Build (below). Running it twice changes nothing. The opencode
 config gets only a base URL and `{env:KEPR_PH_ANTHROPIC}`; a file with
 comments or another non-JSON shape is left alone, with a message.
+
+Claude Code and Codex need no config edit: `kepr agent run` points them at
+the gate through the environment. `kepr agent install claude` adds kepr's
+guidance for the model as a Claude Code skill
+(`~/.claude/skills/kepr/SKILL.md`, or under `$CLAUDE_CONFIG_DIR`), and
+`kepr agent install codex` adds it as a marked block in Codex's global
+`~/.codex/AGENTS.md` (or under `$CODEX_HOME`), leaving the rest of the file
+alone. It is the same text as Grok Build's skill: keys are placeholders,
+never put one in a file, command or commit, use `kepr mcp`'s `call_api`,
+and run `kepr leaked NAME` when a real key shows up.
 
 ### Plugins for omp and Grok Build
 

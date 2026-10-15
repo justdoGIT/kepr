@@ -33,11 +33,88 @@ const GROK: Files = &[
         include_str!("../plugins/grok/kepr/hooks/hooks.json"),
     ),
     (".mcp.json", include_str!("../plugins/grok/kepr/.mcp.json")),
-    (
-        "skills/kepr/SKILL.md",
-        include_str!("../plugins/grok/kepr/skills/kepr/SKILL.md"),
-    ),
+    ("skills/kepr/SKILL.md", SKILL),
 ];
+
+/// kepr's guidance for the model, harness-neutral: Grok Build's skill,
+/// Claude Code's skill and Codex's AGENTS.md block all come from it (T12.15).
+pub const SKILL: &str = include_str!("../plugins/grok/kepr/skills/kepr/SKILL.md");
+
+const BEGIN: &str = "<!-- kepr:begin -->";
+const END: &str = "<!-- kepr:end -->";
+
+/// Where `kepr agent install claude|codex` puts the guidance.
+pub fn guidance_path(
+    harness: &str,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<PathBuf> {
+    let base = |var: &str, default: &str| {
+        env(var)
+            .filter(|v| !v.is_empty())
+            .map_or_else(|| home.join(default), PathBuf::from)
+    };
+    match harness {
+        "claude" => Some(base("CLAUDE_CONFIG_DIR", ".claude").join("skills/kepr/SKILL.md")),
+        "codex" => Some(base("CODEX_HOME", ".codex").join("AGENTS.md")),
+        _ => None,
+    }
+}
+
+/// Byte range of the first line at or after `from` that is `marker`.
+fn marker_line(text: &str, marker: &str, from: usize) -> Option<(usize, usize)> {
+    let mut at = from;
+    for line in text[from..].split_inclusive('\n') {
+        if line.trim_end() == marker {
+            return Some((at, at + line.len()));
+        }
+        at += line.len();
+    }
+    None
+}
+
+/// `text` with kepr's block (between the begin and end markers) set to
+/// `body`: replaced in place, or appended. Text outside it is untouched.
+pub fn upsert_block(text: &str, body: &str) -> String {
+    let block = format!("{BEGIN}\n{}\n{END}\n", body.trim_end());
+    let span = marker_line(text, BEGIN, 0)
+        .and_then(|(b, e)| marker_line(text, END, e).map(|(_, end)| (b, end)));
+    if let Some((b, e)) = span {
+        return format!("{}{block}{}", &text[..b], &text[e..]);
+    }
+    let sep = match text {
+        "" => "",
+        t if t.ends_with("\n\n") => "",
+        t if t.ends_with('\n') => "\n",
+        _ => "\n\n",
+    };
+    format!("{text}{sep}{block}")
+}
+
+/// SKILL without its `---` front matter (for AGENTS.md).
+fn skill_body() -> &'static str {
+    SKILL
+        .strip_prefix("---\n")
+        .and_then(|s| s.split_once("\n---\n"))
+        .map_or(SKILL, |(_, body)| body.trim_start())
+}
+
+/// Write the guidance for `harness` through `cli_agent_install::apply`
+/// (timestamped 0600 backup, idempotent). None: no guidance for it.
+pub fn install_guidance(
+    harness: &str,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<(PathBuf, bool)>, String> {
+    let Some(path) = guidance_path(harness, home, env) else {
+        return Ok(None);
+    };
+    let changed = match harness {
+        "codex" => crate::cli_agent_install::apply(&path, |t| upsert_block(t, skill_body())),
+        _ => crate::cli_agent_install::apply(&path, |_| SKILL.to_string()),
+    }?;
+    Ok(Some((path, changed)))
+}
 
 /// (directory under HOME, files) for a harness with a plugin.
 pub fn plugin_for(harness: &str) -> Option<(&'static str, Files)> {
@@ -141,6 +218,86 @@ mod tests {
         }
         assert!(GROK[3].1.starts_with("---\nname: kepr\ndescription: "));
         assert!(plugin_for("claude").is_none());
+    }
+
+    const B: &str = "<!-- kepr:begin -->";
+    const E: &str = "<!-- kepr:end -->";
+
+    #[test]
+    fn upsert_block_appends_replaces_and_is_idempotent() {
+        let fresh = upsert_block("", "rules\n");
+        assert_eq!(fresh, format!("{B}\nrules\n{E}\n"));
+        assert_eq!(upsert_block(&fresh, "rules"), fresh);
+        let user = "# Mine\n\nbe terse\n";
+        let added = upsert_block(user, "rules");
+        assert_eq!(added, format!("{user}\n{B}\nrules\n{E}\n"));
+        assert_eq!(upsert_block(&added, "rules"), added);
+        assert_eq!(
+            upsert_block("no newline", "r"),
+            format!("no newline\n\n{B}\nr\n{E}\n")
+        );
+        let around = format!("top\n{B}\nold rules\nmore old\n{E}\nbottom\n");
+        let replaced = upsert_block(&around, "new rules");
+        assert_eq!(replaced, format!("top\n{B}\nnew rules\n{E}\nbottom\n"));
+        assert_eq!(upsert_block(&replaced, "new rules"), replaced);
+    }
+
+    #[test]
+    fn guidance_paths_honour_the_harness_variables() {
+        let home = Path::new("/h");
+        let none = |_: &str| None;
+        assert_eq!(
+            guidance_path("claude", home, &none).unwrap(),
+            Path::new("/h/.claude/skills/kepr/SKILL.md")
+        );
+        assert_eq!(
+            guidance_path("codex", home, &none).unwrap(),
+            Path::new("/h/.codex/AGENTS.md")
+        );
+        let env = |k: &str| match k {
+            "CLAUDE_CONFIG_DIR" => Some("/c".to_string()),
+            "CODEX_HOME" => Some("/x".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            guidance_path("claude", home, &env).unwrap(),
+            Path::new("/c/skills/kepr/SKILL.md")
+        );
+        assert_eq!(
+            guidance_path("codex", home, &env).unwrap(),
+            Path::new("/x/AGENTS.md")
+        );
+        assert!(guidance_path("omp", home, &env).is_none());
+    }
+
+    #[test]
+    fn installs_guidance_for_claude_and_codex() {
+        let home = std::env::temp_dir().join(format!("kepr-guide-{}", std::process::id()));
+        let none = |_: &str| None;
+        let (path, changed) = install_guidance("claude", &home, &none).unwrap().unwrap();
+        assert!(changed);
+        assert_eq!(path, home.join(".claude/skills/kepr/SKILL.md"));
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, SKILL);
+        assert!(written.starts_with("---\nname: kepr\n"));
+        assert!(!install_guidance("claude", &home, &none).unwrap().unwrap().1);
+        let agents = home.join(".codex/AGENTS.md");
+        std::fs::create_dir_all(agents.parent().unwrap()).unwrap();
+        std::fs::write(&agents, "# my rules\n").unwrap();
+        install_guidance("codex", &home, &none).unwrap();
+        let text = std::fs::read_to_string(&agents).unwrap();
+        assert!(text.starts_with("# my rules\n\n<!-- kepr:begin -->\n# Working with secrets"));
+        assert!(!text.contains("name: kepr") && text.contains("kepr leaked NAME"));
+        assert!(!install_guidance("codex", &home, &none).unwrap().unwrap().1);
+        assert!(install_guidance("aider", &home, &none).unwrap().is_none());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn skill_is_one_source_and_harness_neutral() {
+        assert_eq!(GROK[3], ("skills/kepr/SKILL.md", SKILL));
+        assert!(SKILL.contains("kepr agent run <harness>"));
+        assert!(!SKILL.contains("kepr agent run grok"));
     }
 
     #[test]

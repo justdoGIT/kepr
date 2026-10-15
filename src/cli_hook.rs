@@ -147,7 +147,11 @@ pub fn session_start(gate_url: Option<&str>) -> Verdict {
                     environment are placeholders (kepr-ph-…); a local gate swaps in the real \
                     key on the way to the provider. Use them as they are. Never ask the user to \
                     paste a key, and never try to print or decode secrets: `kepr get`, `kepr env` \
-                    and `kepr exec` are blocked here."
+                    and `kepr exec` are blocked here. Never put a key in a file, a command line \
+                    or a commit; reference the environment variable instead. The `kepr` MCP \
+                    server (`kepr mcp`) offers list_secrets and call_api for provider calls \
+                    without a key. If a real key shows up anywhere, stop and tell the user to \
+                    run `kepr leaked NAME`."
             .into(),
         None => "kepr is installed but this session was not started with `kepr agent run`, \
                  so real keys may be present in the environment. Do not print environment \
@@ -281,5 +285,8 @@ mod tests {
             panic!()
         };
         assert!(inside.contains("placeholders") && outside.contains("kepr agent run"));
+        for rule in ["kepr leaked", "call_api", "list_secrets", "commit"] {
+            assert!(inside.contains(rule), "{rule}");
+        }
     }
 }

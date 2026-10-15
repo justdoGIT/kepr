@@ -46,6 +46,8 @@ COMMANDS:
   agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new
   agent install omp|grok|opencode      point the harness's config file at the gate and install
                                        kepr's plugin for it (once; opencode: config only)
+  agent install claude|codex           install kepr's guidance for the model (Claude Code skill,
+                                       a block in Codex's AGENTS.md)
   hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
   agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
   agent ls | agent revoke KEY          list / delete sealed keys

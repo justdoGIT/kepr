@@ -4,7 +4,7 @@
 //
 //   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin|--from-clipboard] [--requires-consent]
 //   kepr agent run HARNESS [--port N] [--no-sandbox|--strict-sandbox] [--isolate-net] [-- ARGV...]
-//   kepr agent install omp|grok|opencode [--port N]
+//   kepr agent install omp|grok|opencode|claude|codex [--port N]
 //   kepr agent adopt [FILE...] [--yes] [--remove]
 //   kepr agent ls
 //   kepr agent revoke NAME [--force]
@@ -19,7 +19,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok|opencode | ls | revoke NAME";
+const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok|opencode|claude|codex | ls | revoke NAME";
 
 #[derive(Debug, Default, PartialEq)]
 pub struct AgentArgs {
@@ -331,7 +331,7 @@ pub fn main(raw: &[String]) -> Response {
         },
         "install" => match a.target.as_deref() {
             Some(h) => cli_agent_install::cmd_install(h, a.port),
-            None => Response::fail("kepr agent install needs omp, grok or opencode"),
+            None => Response::fail("kepr agent install needs a HARNESS, e.g. omp or claude"),
         },
         "ls" | "list" => cmd_ls(),
         "adopt" => crate::cli_agent_adopt::cmd_adopt(&a.files, a.yes, a.remove),

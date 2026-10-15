@@ -3,6 +3,8 @@
 // user just runs `kepr agent run omp` / `kepr agent run grok`
 // afterwards. Plain line editing (no YAML/TOML crates); always writes a
 // timestamped backup first; idempotent; never removes user entries.
+// `install claude|codex` writes only kepr's guidance for the model
+// (cli_agent_plugin::install_guidance, T12.15).
 //
 // Config shapes follow the harnesses' docs as of 2026-10:
 //   omp:  ~/.omp/agent/models.yml  providers.<id>.{baseUrl,api,apiKey}
@@ -186,6 +188,22 @@ pub fn apply(path: &std::path::Path, edit: impl Fn(&str) -> String) -> Result<bo
     Ok(true)
 }
 
+/// claude / codex: no config to edit (the environment points them at the
+/// gate), only kepr's guidance for the model (T12.15).
+fn guidance(harness: &str, home: &std::path::Path) -> Response {
+    let env = |k: &str| std::env::var(k).ok();
+    match crate::cli_agent_plugin::install_guidance(harness, home, &env) {
+        Ok(Some((path, changed))) => {
+            let what = if changed { "installed" } else { "up to date" };
+            cli_ui::ok(&format!("kepr guidance {what}: {}", path.display()));
+            cli_ui::info(&format!("start it with: kepr agent run {harness}"));
+            Response::Pong
+        }
+        Ok(None) => Response::fail(format!("no guidance for '{harness}'")),
+        Err(e) => Response::fail(e),
+    }
+}
+
 pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
     let port = port.unwrap_or(INSTALL_PORT);
     let home = match home() {
@@ -211,14 +229,15 @@ pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
             let r = install_opencode(&p, port);
             (p, r)
         }
-        "claude" | "codex" | "grok-cli" | "aider" | "gemini" => {
+        "claude" | "codex" => return guidance(harness, &home),
+        "grok-cli" | "aider" | "gemini" => {
             return Response::fail(format!(
                 "{harness} needs no install step: run `kepr agent run {harness}`"
             ))
         }
         other => {
             return Response::fail(format!(
-                "no installer for '{other}' (supported: omp, grok, opencode)"
+                "no installer for '{other}' (supported: omp, grok, opencode, claude, codex)"
             ))
         }
     };
