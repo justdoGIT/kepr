@@ -270,6 +270,7 @@ pub async fn proxy_request_to(
             *up.headers_mut() = headers;
             Ok(up)
         });
+    let own = crate::mask::forms(value.as_str()); // T12.01, even if the cache empties
     drop(value);
     let Ok(up) = built else {
         let r = kepr_error(
@@ -284,9 +285,13 @@ pub async fn proxy_request_to(
         Ok(resp) => {
             let (mut p, b) = resp.into_parts();
             crate::rewrite::clean_response(&mut p.headers, &inject);
+            let mut n = state.cache.needles();
+            n.extend(own);
+            crate::mask::headers(&mut p.headers, &n);
+            let b = crate::mask::body(b.boxed(), n);
             let line = log.line(p.status, bytes.len(), None);
             let status = p.status.as_u16();
-            let b = (state.recorder).http_response(conn, pname, status, b.boxed(), &state.cache);
+            let b = (state.recorder).http_response(conn, pname, status, b);
             if !state.limiter.meters_tokens() && !reports_usage(&p.headers) {
                 crate::journal::push(&state.journal, line);
                 return Ok(Response::from_parts(p, b));
@@ -603,15 +608,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_upstream_echoing_the_key_does_not_put_it_in_the_recording() {
-        const ECHO: &[u8] = b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 39\r\n\r\n{\"error\":\"bad key real-key-1234567890\"}";
+    async fn an_upstream_echoing_the_key_is_masked_for_the_agent() {
+        const ECHO: &[u8] = b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 39\r\nx-debug: real-key-1234567890\r\n\r\n{\"error\":\"bad key real-key-1234567890\"}";
         let (up, _rx) = fake_upstream_with(Some(ECHO)).await;
         let rec = Arc::new(crate::recording::Recorder::new(true));
         let gate = start_gate_full(up, Default::default(), rec.clone()).await;
         let ph = placeholder::make(&KEY, SID, 0);
         let resp = send(&gate, &ph, "{}").await;
+        assert_eq!(resp.headers()["x-debug"], "*".repeat(REAL.len()).as_str());
+        assert_eq!(resp.headers()["content-length"], "39");
         let got = resp.into_body().collect().await.unwrap().to_bytes();
-        assert!(String::from_utf8_lossy(&got).contains(REAL), "agent view");
+        let agent = String::from_utf8(got.to_vec()).unwrap();
+        assert!(!agent.contains(REAL), "{agent}");
+        assert!(
+            agent.contains(&format!("bad key {}", "*".repeat(19))),
+            "{agent}"
+        );
+        assert_eq!(got.len(), 39, "the upstream's length");
         tokio::time::sleep(Duration::from_millis(50)).await;
         let recorded: Vec<u8> = rec
             .take()

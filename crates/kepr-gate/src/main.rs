@@ -15,6 +15,7 @@ mod egress;
 mod github_app;
 mod journal;
 mod limits;
+mod mask;
 mod mysql;
 mod mysql_auth;
 mod mysql_rotate;

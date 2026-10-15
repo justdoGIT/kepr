@@ -169,9 +169,9 @@ pub async fn handle(
         );
     }
     let (cache, c, h) = (state.cache.clone(), cred.clone(), host.clone());
-    let real = match tokio::task::spawn_blocking(move || cache.get(&c, &h, 443)).await {
-        Ok(Ok((v, Inject::Sigv4))) => AwsKey::parse(v.as_str()).ok(),
-        _ => None,
+    let (real, own) = match tokio::task::spawn_blocking(move || cache.get(&c, &h, 443)).await {
+        Ok(Ok((v, Inject::Sigv4))) => (AwsKey::parse(v.as_str()).ok(), crate::mask::forms(&v)),
+        _ => (None, Vec::new()),
     };
     let Some(real) = real else {
         return deny(
@@ -225,8 +225,11 @@ pub async fn handle(
         Ok(resp) => {
             let (mut p, b) = resp.into_parts();
             crate::rewrite::strip_hop_by_hop(&mut p.headers);
+            let mut n = state.cache.needles(); // T12.01
+            n.extend(own);
+            crate::mask::headers(&mut p.headers, &n);
             log.emit(p.status, bytes.len(), None);
-            Ok(Response::from_parts(p, b.boxed()))
+            Ok(Response::from_parts(p, crate::mask::body(b.boxed(), n)))
         }
         Err(_) => deny(
             &log,
@@ -270,6 +273,10 @@ mod tests {
     }
 
     async fn upstream() -> (String, mpsc::UnboundedReceiver<String>) {
+        upstream_with(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok".to_vec()).await
+    }
+
+    async fn upstream_with(reply: Vec<u8>) -> (String, mpsc::UnboundedReceiver<String>) {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", l.local_addr().unwrap());
         let (tx, rx) = mpsc::unbounded_channel();
@@ -278,9 +285,7 @@ mod tests {
                 let mut buf = vec![0u8; 8192];
                 let n = s.read(&mut buf).await.unwrap_or(0);
                 let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
-                let _ = s
-                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
-                    .await;
+                let _ = s.write_all(&reply).await;
             }
         });
         (base, rx)
@@ -328,6 +333,15 @@ mod tests {
         secret: &str,
         body: &'static [u8],
     ) -> StatusCode {
+        send_full(stream, ca, secret, body).await.status()
+    }
+
+    async fn send_full(
+        stream: tokio::net::TcpStream,
+        ca: &crate::ca::SessionCa,
+        secret: &str,
+        body: &'static [u8],
+    ) -> Response<Incoming> {
         let mut roots = rustls::RootCertStore::empty();
         roots.add(ca.ca_der()).unwrap();
         let cfg =
@@ -359,7 +373,25 @@ mod tests {
             .body(Full::new(Bytes::from_static(body)))
             .unwrap();
         *req.headers_mut() = h;
-        tx.send_request(req).await.unwrap().status()
+        tx.send_request(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_upstream_echoing_the_secret_key_is_masked() {
+        let body = r#"{"m":"bad real/secret, real\/secret again"}"#;
+        let reply = format!(
+            "HTTP/1.1 400 Bad Request\r\ncontent-length: {}\r\nx-amz-debug: real/secret\r\n\r\n{body}",
+            body.len()
+        );
+        let (up, _rx) = upstream_with(reply.into_bytes()).await;
+        let (gate, ca) = gate(up).await;
+        let ph = crate::placeholder::make(&KEY, SID, 0);
+        let (s, _) = connect(&gate, "sts.amazonaws.com:443").await;
+        let resp = send_full(s, &ca, &ph, b"Action=GetCallerIdentity").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.headers()["x-amz-debug"], "***********");
+        let got = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&got[..], br#"{"m":"bad ***********, ************ again"}"#);
     }
 
     #[tokio::test]

@@ -242,6 +242,26 @@ impl Cache {
         }
     }
 
+    /// T12.01: what no response to the agent may contain: every cached
+    /// value (a JSON record's secret fields only) and minted token, with
+    /// their JSON-escaped forms (mask::forms). A poisoned lock still
+    /// yields its values: masking fails closed.
+    pub fn needles(&self) -> Vec<ZeroString> {
+        let mut out = Vec::new();
+        let map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        for (v, _, _) in map.values() {
+            out.extend(crate::mask::forms(v.as_str()));
+        }
+        drop(map);
+        let map = self.minted.lock().unwrap_or_else(|e| e.into_inner());
+        for (t, _) in map.values() {
+            out.extend(crate::mask::forms(t.as_str()));
+        }
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        out.dedup_by(|a, b| a.as_str() == b.as_str());
+        out
+    }
+
     /// T7.09: pass recorded chunks to the daemon (not cached).
     pub fn record(&self, record: GateRecord) -> Result<(), String> {
         self.resolver.record(record)
@@ -361,6 +381,36 @@ mod tests {
         assert_eq!(c.values().len(), 1);
         c.clear();
         assert!(c.values().is_empty());
+    }
+
+    struct Record(&'static str);
+    impl Resolve for Record {
+        fn resolve(&self, _: &str, _: &str, _: u16) -> Result<(ZeroString, Inject), String> {
+            Ok((ZeroString::from(self.0), Inject::Postgres))
+        }
+        fn generation(&self) -> Result<u64, String> {
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn needles_of_a_database_record_are_its_password_not_user_or_database() {
+        let rec =
+            r#"{"user":"app-user-long","password":"s3cret-PW-only","database":"main-database"}"#;
+        let c = Cache::new(Box::new(Record(rec)), DEFAULT_TTL);
+        c.get("DB", "db.example.com", 5432).unwrap();
+        let got: Vec<String> = c.needles().iter().map(|z| z.to_owned_string()).collect();
+        assert_eq!(got, vec!["s3cret-PW-only".to_string()]);
+    }
+
+    #[test]
+    fn needles_cover_minted_tokens_and_skip_short_values() {
+        let c = Cache::new(Box::new(Record("short")), DEFAULT_TTL);
+        c.get("A", "h.example.com", 443).unwrap();
+        assert!(c.needles().is_empty(), "under MIN_SECRET_LEN");
+        c.mint([1; 32], &ZeroString::from("ghs_minted-token-1"), 100, 0);
+        let got: Vec<String> = c.needles().iter().map(|z| z.to_owned_string()).collect();
+        assert_eq!(got, vec!["ghs_minted-token-1".to_string()]);
     }
 
     #[test]
