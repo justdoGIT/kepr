@@ -1,6 +1,8 @@
 
 # Kepr — The Developer-Native Secret Vault That Kills `.env` Leaks
 
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/justdoGIT/kepr?utm_source=badge)
+
 Kepr is a per-user secret vault for Linux and macOS, written in Rust (`kepr` CLI, `kepr-daemon` over Unix/IPC socket, `git-credential-kepr`, `docker-credential-kepr`, `kepr-core` library, and `kepr-eso-provider`).
 
 It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/environ` leaks by delivering secrets directly into process memory via **RAM-sealed memory file descriptors (`memfd`)**.
