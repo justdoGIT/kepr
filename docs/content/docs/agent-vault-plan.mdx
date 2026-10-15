@@ -199,7 +199,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | `ksm sync` to AWS / Azure / GCP / JSON ("Universal Secrets Sync") | ✅ `kepr sync-push` and `sync-pull` with `vault:`, `aws-sm:`, `gcp-sm:`, `azure-kv:`, `json:PATH#KEY`; many keys with `kepr sync push --map` | P8, P11.17 · T8.05, T8.06, T11.17 |
 | Applications + client devices + one-time access tokens | 🟡 `kepr device add LABEL` issues a single-use 15-minute token; `kepr device enroll` (optional OIDC login), `device ls`, `device rm`. Missing: applications; an enrolled device gets every synced credential | P6.1, P6.6 · T6.03, T6.13 |
 | OS-native storage of the client config | ✅ daemon-held master key, sealed by the credential backend, TPM2 (PIN, counter), the macOS Keychain (read through Security.framework) or a KMS | P4.3, P10.4 · T4.08, T10.04, T10.12 |
-| SDKs: Python, Java, .NET, Go, JavaScript, PowerShell, Ruby | 🟡 Python, Node.js and Go clients: get, set, generate, delete, list; `fetch_fd` in Python and Go. Missing: Java, .NET, PowerShell, Ruby | P8 · T8.09 |
+| SDKs: Python, Java, .NET, Go, JavaScript, PowerShell, Ruby | 🟡 Python, Node.js and Go clients: get, set, generate, delete, list; `fetch_fd` in Python, `FetchFD` in Go. Missing: Java, .NET, PowerShell, Ruby | P8 · T8.09 |
 | CI/CD: GitHub Actions, GitLab, Bitbucket, Jenkins, Azure DevOps, Harness, TeamCity, Octopus | 🟡 GitHub Action and GitLab CI template (OIDC login to AWS, GCP or Vault; values masked in the GitHub log, never printed by the GitLab template). Missing: Bitbucket, Jenkins, Azure DevOps, Harness, TeamCity, Octopus | P8 · T8.07 |
 | IaC/config: Terraform, Ansible, Chef, Puppet | 🟡 Terraform provider (`kepr_secret` resource and data source, local build), Ansible `lookup('kepr', …)`. Missing: Chef, Puppet | P8 · T8.03, T8.04 |
 | Kubernetes: operator + secrets injector | ✅ ESO provider; Secrets Store CSI provider (`kepr-csi-provider`) mounts credentials into pods as files | P10.6 · T10.08 |
@@ -274,8 +274,8 @@ nice to have.
 | A5 | **Honeytokens**: plant decoy keys in `.env`, shell rc files and repos; any use triggers an alert | Detects exfiltration by agents or malware | M | ✅ `kepr canary plant`, `kepr canary listen`; a trip is audited as `canary-tripped` | P9.7 · T9.08 |
 | A6 | **Leak response**: `kepr revoke --leaked NAME` rotates through the provider's API, kills sessions, invalidates placeholders, records an incident | Minutes, not hours, from leak to dead key | M | 🟡 `kepr leaked KEY` stops gates, deletes the key and its history and records an incident; `--rotate` replaces AWS IAM keys through the IAM API. Missing: API rotation for other providers (kepr shows their revocation page) | P9.8 · T9.09 |
 | A7 | **Scoped short-lived child credentials** minted per session where the provider allows (GitHub App installation tokens, AWS STS, GCP impersonation, OpenAI project keys) | Even a used key expires on its own | M | 🟡 GitHub App installation tokens (`kepr github-app add`), AWS STS (`kepr aws credential-process`). Missing: GCP impersonation, OpenAI project keys | P7.2 · T7.08, T2.03 |
-| A8 | **Binary identity**: bind a credential to an executable's digest (fs-verity / IMA), not just a uid | "Only `/usr/bin/psql` with this hash may receive `DB_PASS`" | M | 🟡 `kepr set KEY --exe PATH`, `kepr exe KEY` (SHA-256 or fs-verity digest). Missing: IMA digests; the system daemon refuses new bindings from callers other than root, since the shipped unit lacks CAP_SYS_PTRACE | P10.8 · T10.09 |
-| A9 | **Lock on suspend, lid close, screen lock, security-key removal; `kepr panic`** | Wipes keys from RAM before suspend-to-RAM, which defeats cold-boot capture of a sleeping laptop | H | 🟡 `kepr panic`; on suspend or screen lock the user-mode daemon stops every gate and locks a passphrase-protected store; idle lock (`KEPR_IDLE_LOCK`). Missing: lock on security-key removal; a store without a passphrase keeps its key in RAM | P3.5, P11.12 · T3.05, T11.12 |
+| A8 | **Binary identity**: bind a credential to an executable's digest (fs-verity / IMA), not just a uid | "Only `/usr/bin/psql` with this hash may receive `DB_PASS`" | M | 🟡 `kepr set KEY --exe PATH`, `kepr exe KEY` (SHA-256 or fs-verity digest). Missing: IMA digests; the system daemon refuses new bindings, since reading a caller's executable needs CAP_SYS_PTRACE, which the shipped unit lacks | P10.8 · T10.09 |
+| A9 | **Lock on suspend, lid close, screen lock, security-key removal; `kepr panic`** | Wipes keys from RAM before suspend-to-RAM, which defeats cold-boot capture of a sleeping laptop | H | 🟡 `kepr panic`; on suspend or screen lock the user-mode daemon stops every gate and locks a passphrase-protected store; idle lock (`KEPR_IDLE_LOCK`). Missing: lock on security-key removal; a store without a passphrase keeps its key in RAM, and so does a locked store while `KEPR_FINGERPRINT_UNLOCK` is set | P3.5, P11.12 · T3.05, T11.12 |
 | A10 | **Clipboard hygiene**: `kepr copy NAME --clear 20s` with password-manager hints so clipboard managers skip it | The one time a human needs a value, it doesn't linger | M | 🟡 `kepr copy KEY [--clear SECS]` (default 20 s; cleared only if the clipboard still holds the value). Missing: the password-manager hint that tells clipboard managers to skip it | P10.9 |
 | A11 | **systemd credentials export**: emit `LoadCredentialEncrypted=` blobs for services | Services get secrets via `$CREDENTIALS_DIRECTORY` (a non-swappable ramfs), no env | M | ✅ `kepr systemd-cred KEY [--tpm2]` prints a `SetCredentialEncrypted=` line | P10.6 · T10.06 |
 | A12 | **Kernel `logon` keyring keys** for disk/network unlock (dm-crypt, fscrypt, CIFS/NFS) | Userspace can't read `logon` keys back, even as the same uid | L | ✅ `kepr keyring add KEY --desc SUBTYPE:REST` | P10.5 · T10.05 |
@@ -283,7 +283,7 @@ nice to have.
 | A14 | **Break-glass**: M-of-N unseal of a sealed credential, loud audit, forced rotation afterwards | The only way to see a sealed value again, and it's never quiet | M | ✅ `kepr break-glass NAME`: k recovery-kit shares, audited `break-glass`, marked must-rotate | P6.3 · T6.07 |
 | A15 | **Unused / stale key report**: last used, age, never-used, over-scoped bindings | Least privilege over time | M | ✅ `kepr usage`, `kepr usage --report` (bound hosts never reached), `kepr health --period` | P9.6 · T9.07, T11.11 |
 | A16 | **Local PKI and certificate tracking**: issue dev certs, track expiry | Keeper stores certs; Vault issues them | L | ✅ `kepr pki init`, `issue`, `ls`; `kepr health` warns 14 days before a certificate expires | P10.10 · T10.10 |
-| A17 | **Workload identity for servers/CI**: TPM-attested machine enrolment, SPIFFE SVIDs | Solves "secret zero" without a bootstrap token in env | L | ✅ `kepr pki tpm-enroll`, `kepr pki svid` (a TPM2 quote over PCR 7 per SVID; files only, no Workload API) | P10.11 · T10.11 |
+| A17 | **Workload identity for servers/CI**: TPM-attested machine enrolment, SPIFFE SVIDs | Solves "secret zero" without a bootstrap token in env | L | ✅ `kepr pki tpm-enroll`, `kepr pki svid` (once a TPM is enrolled, a TPM2 quote over PCR 7 before each SVID; files only, no Workload API) | P10.11 · T10.11 |
 
 ### 2.7 Found on the 2026-10-05 re-check
 
@@ -806,20 +806,23 @@ built: a preset for `git` over HTTPS, and ECDSA keys in `kepr ssh-agent`
 **Status (2026-10-14): partly shipped.** P3.1 (T3.01–T3.03) and P3.4
 (T3.04) are built. P3.3 is `kepr exec --pull KEY` (T3.06): the command
 fetches each value itself as a sealed, close-on-exec memfd
-(`kepr_core::fdfetch`, or `fetch_fd` in the Python and Go clients), and
-nothing it starts inherits it. It sits beside `--memfd`, which still hands
-the command inherited descriptors, rather than replacing it.
-P3.5 (T3.05): on suspend or screen lock the user-mode daemon stops every
-gate and locks a passphrase-protected store, and `kepr panic` does the same
-on demand. Not built: P3.2. Only the gate's session key uses `secmem`; the
-daemon's master key and the gate's value cache sit in ordinary memory,
-zeroized on drop. The system daemon locks all its pages with `mlockall`; a
-user-mode daemon under a small `RLIMIT_MEMLOCK` locks only the pages
-mapped at start, so later allocations, the master key's among them, are
-not guaranteed to be locked. Also not built:
-the relocation timer (`SplitKey::relocate` exists, but nothing calls it),
-locking when a security key is removed, and wiping the master key of a
-store without a passphrase before suspend.
+(`kepr_core::fdfetch`, `fetch_fd` in the Python client or `FetchFD` in
+the Go client), and nothing it starts inherits it. It sits beside
+`--memfd`, which still hands the command inherited descriptors, rather
+than replacing it. P3.5 (T3.05): on suspend or screen lock the user-mode
+daemon stops every gate and locks a passphrase-protected store, and
+`kepr panic` does the same on demand. Not built: P3.2. Only the gate's
+session key uses `secmem`; the daemon's master key and the gate's value
+cache sit in ordinary memory, zeroized on drop. The system daemon locks
+all its pages with `mlockall`; a user-mode daemon under a small
+`RLIMIT_MEMLOCK` locks only the pages mapped at start, so later
+allocations, the master key's among them, are not guaranteed to be
+locked. Also not built: the relocation timer (`SplitKey::relocate`
+exists, but nothing calls it), locking when a security key is removed,
+and wiping the master key of a store without a passphrase before
+suspend. With `KEPR_FINGERPRINT_UNLOCK` set (P10.3), the sleep and idle
+locks keep a passphrase-protected store's master key in memory for that
+window too.
 
 ### P4: vault image and hardware-bound keys (shipped)
 
