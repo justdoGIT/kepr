@@ -69,7 +69,7 @@ base64 = "0.22"
 # with its dependencies — comparable to the existing sha2+hmac footprint.
 # Signature verification only (no keygen), so the prime-field arithmetic
 # is verification-side only and audit-safe.
-p256 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 # Phase 2 η: minimal CBOR parsing for FIDO2 authenticator data and
 # COSE_Key structures. `ciborium` is the lightest pure-Rust CBOR
 # crate (~50KB). Only used in the daemon for parsing registration
