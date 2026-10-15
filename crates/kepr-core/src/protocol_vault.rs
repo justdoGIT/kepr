@@ -4,6 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Size of a vault image made by `kepr vault init` without `--size`, or
+/// by the daemon on the first write (T12.26): 64 MiB = 16384 slots.
+pub const DEFAULT_IMAGE_MIB: u32 = 64;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum VaultRequest {

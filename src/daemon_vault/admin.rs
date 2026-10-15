@@ -85,7 +85,8 @@ mod tests {
     fn fresh() -> (ImageBackend, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let vs = crate::version_state::VersionState::load(dir.path().join("v.json")).unwrap();
-        let b = ImageBackend::new(dir.path().join("vault.img"), key, Some(Arc::new(vs)));
+        let b = ImageBackend::new(dir.path().join("vault.img"), key, Some(Arc::new(vs)))
+            .with_create_mib(2);
         (b, dir)
     }
 
@@ -133,7 +134,7 @@ mod tests {
         let u = b.usage().unwrap().unwrap();
         // 1 + 3 record pages and one index page.
         assert_eq!(u.used_slots, 5);
-        assert_eq!(u.size_mib, super::super::backend::DEFAULT_MIB);
+        assert_eq!(u.size_mib, 2, "with_create_mib sized the first write");
         assert_eq!(u.epoch, 2);
     }
 

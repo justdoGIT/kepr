@@ -32,9 +32,6 @@ use crate::version_state::VersionState;
 
 pub type KeySource = fn() -> Result<Zeroizing<[u8; 32]>, String>;
 
-/// Size of an image created on first write (16 MiB = 4096 slots).
-pub const DEFAULT_MIB: u32 = 16;
-
 pub(super) struct Open {
     pub(super) img: VaultImage,
     pub(super) index: Option<Index>,
@@ -44,6 +41,8 @@ pub struct ImageBackend {
     path: PathBuf,
     kek: KeySource,
     versions: Option<Arc<VersionState>>,
+    /// Size of the image the first write creates (MiB).
+    create_mib: u32,
     state: Mutex<Option<Open>>,
 }
 
@@ -53,8 +52,16 @@ impl ImageBackend {
             path,
             kek,
             versions,
+            create_mib: kepr_core::protocol_vault::DEFAULT_IMAGE_MIB,
             state: Mutex::new(None),
         }
+    }
+
+    /// Tests: a small first-write image instead of 64 MiB of noise each.
+    #[cfg(test)]
+    pub(crate) fn with_create_mib(mut self, mib: u32) -> Self {
+        self.create_mib = mib;
+        self
     }
 
     pub fn path(&self) -> &Path {
@@ -140,7 +147,7 @@ impl ImageBackend {
                 self.open(&kek)?
             } else {
                 Open {
-                    img: VaultImage::create(&self.path, DEFAULT_MIB, &kek)?,
+                    img: VaultImage::create(&self.path, self.create_mib, &kek)?,
                     index: None,
                 }
             });
@@ -346,7 +353,7 @@ mod tests {
     fn fresh() -> (ImageBackend, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let vs = Arc::new(VersionState::load(dir.path().join("v.json")).unwrap());
-        let b = ImageBackend::new(dir.path().join("vault.img"), key, Some(vs));
+        let b = ImageBackend::new(dir.path().join("vault.img"), key, Some(vs)).with_create_mib(2);
         (b, dir)
     }
 
@@ -530,7 +537,25 @@ mod tests {
         assert!(!b.path().exists());
         b.encrypt(UID, "FIRST", b"v").unwrap();
         let md = std::fs::metadata(b.path()).unwrap();
-        assert_eq!(md.len(), u64::from(DEFAULT_MIB) << 20);
+        assert_eq!(md.len(), 2 << 20);
+    }
+
+    #[test]
+    fn new_backend_creates_64_mib_images() {
+        let d = tempfile::tempdir().unwrap();
+        let b = ImageBackend::new(d.path().join("vault.img"), key, None);
+        assert_eq!(b.create_mib, 64);
+        assert_eq!(b.create_mib, kepr_core::protocol_vault::DEFAULT_IMAGE_MIB);
+        assert!(!b.path().exists(), "nothing is written up front");
+    }
+
+    #[test]
+    fn with_create_mib_sizes_the_first_write_image() {
+        let d = tempfile::tempdir().unwrap();
+        let b = ImageBackend::new(d.path().join("vault.img"), key, None).with_create_mib(1);
+        b.encrypt(UID, "FIRST", b"v").unwrap();
+        assert_eq!(std::fs::metadata(b.path()).unwrap().len(), 1 << 20);
+        assert_eq!(b.decrypt(UID, "FIRST").unwrap().as_str(), "v");
     }
 
     #[test]

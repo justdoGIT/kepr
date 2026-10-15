@@ -114,6 +114,7 @@ fn cred_files(d: &Daemon) -> Vec<String> {
 #[test]
 fn set_list_get_delete_through_the_handlers_with_the_image() {
     let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["vault", "init", "--size", "4"]);
     ok(&d, &["set", "ALPHA", "--value", "alpha-value"]);
     ok(&d, &["set", "BETA", "--value", "beta-one", "--ttl", "3600"]);
     ok(&d, &["set", "BETA", "--value", "beta-two"]);
@@ -139,6 +140,17 @@ fn set_list_get_delete_through_the_handlers_with_the_image() {
     };
     let d = start(home, Some("image"));
     assert_eq!(ok(&d, &["get", "BETA", "--quiet"]).trim(), "beta-two");
+}
+
+/// T12.26: without `kepr vault init`, the first write makes a 64 MiB image.
+#[test]
+fn an_image_made_on_first_write_is_64_mib() {
+    let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    let path = store_dir(&d).join("vault.img");
+    assert!(!path.exists());
+    ok(&d, &["set", "FIRST", "--value", "v"]);
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 64 << 20);
+    assert_eq!(json(&d, &["vault", "status"])["size_mib"], 64);
 }
 
 #[test]
@@ -210,6 +222,7 @@ fn migrate_moves_the_file_store_into_the_image() {
     assert!(fails_with(&d, &["vault", "migrate"]).contains("KEPR_STORE=image"));
 
     let d = restart(d, Some("image"));
+    ok(&d, &["vault", "init", "--size", "4M"]);
     assert!(names(&d).is_empty(), "the image starts empty");
     let m = json(&d, &["vault", "migrate"]);
     assert_eq!(
@@ -256,7 +269,7 @@ fn migrate_moves_the_file_store_into_the_image() {
     );
     assert_eq!(
         (&st["legacy_files"], &st["size_mib"]),
-        (&0.into(), &16.into())
+        (&0.into(), &4.into())
     );
     assert!(st["used_slots"].as_u64().unwrap() >= 6, "{st}");
     let again = json(&d, &["vault", "migrate"]);
@@ -327,6 +340,7 @@ fn verify_names_each_damaged_slot_and_only_used_ones() {
 #[test]
 fn trash_aliases_verify_and_delete_all_work_on_the_image() {
     let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["vault", "init", "--size", "4"]);
     ok(&d, &["set", "KEEP", "--value", "one"]);
     ok(&d, &["set", "KEEP", "--value", "two"]);
     ok(&d, &["tag", "KEEP", "+prod"]);
@@ -422,6 +436,7 @@ fn trash_aliases_verify_and_delete_all_work_on_the_image() {
 #[test]
 fn attachments_follow_their_credential_on_the_image() {
     let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["vault", "init", "--size", "4"]);
     ok(&d, &["set", "DOC", "--value", "v"]);
     let src = d.home.path().join("notes.bin");
     let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();

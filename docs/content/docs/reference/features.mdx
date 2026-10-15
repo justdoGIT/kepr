@@ -744,7 +744,7 @@ attachment chunks as records in one fixed-size file, `vault.img` in the
 store directory.
 
 ```bash
-kepr vault init --size 64      # MiB, 1-4096 (default 16), filled with random noise
+kepr vault init --size 64M     # MiB, 1-4096 (default 64), filled with random noise
 # set KEPR_STORE=image for the daemon and restart it, then:
 kepr vault migrate             # move per-file credentials in (each one read back first)
 kepr vault verify              # check every used slot and the Merkle root
@@ -770,7 +770,9 @@ What the image protects:
 
 Limits:
 
-- The size is fixed at creation; there is no resize, and a full image
+- The size is fixed at creation (64 MiB unless `init --size` says
+  otherwise; the first write makes a 64 MiB image when there is none);
+  there is no resize, and a full image
   refuses writes ("vault image is full"). The index is capped at 256 slots
   (about 1 MiB).
 - There is no migration back to files. While the image is active, keys
