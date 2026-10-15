@@ -546,10 +546,13 @@ gate after harness upgrades rewrite their config files.
 For agent platforms that prefer tools over base-URL rewiring:
 
 - `list_secrets` returns names, bindings and expiry, never values.
-- `http_request(secret, method, url, headers, body)` performs the request
-  through the gate (binding-checked) and returns the response.
-- `run_with_secrets(cmd, secrets)` runs a command inside a nested gate
-  session with placeholders set.
+- `call_api(provider, method, path, headers, body)` sends the request to
+  that provider's API host through a gate session (the key is
+  binding-checked and added by the gate) and returns the response.
+- `db_query(target, sql)` runs one SQL statement through the gate's PostgreSQL proxy with
+  the session placeholder (`--read-only` refuses writes), and `ssh_run(host,
+  cmd)` runs a command over ssh through a private agent socket whose keys
+  sign in the daemon (T9.05).
 - No tool ever returns plaintext. This is the inverse of Keeper's MCP server,
   which returns secret values into the model's context.
 
@@ -773,8 +776,9 @@ availability, Landlock ABI version, unprivileged user namespaces (and
 AppArmor's `apparmor_restrict_unprivileged_userns` on Ubuntu 24.04+), TPM2
 presence and PCR bank, Secure Boot state, `lockdown` mode, Yama scope,
 swap/hibernate encryption, TME/SME flags from `/proc/cpuinfo`, IOMMU groups.
-`kepr agent run` refuses to start with `--strict` if a required item is
-missing, and warns otherwise.
+The hardening section is advisory. `kepr agent run --strict-sandbox`
+and `--isolate-net` refuse to start when the agent sandbox can't be set
+up; otherwise the run warns and continues unsandboxed.
 
 ---
 
@@ -833,7 +837,7 @@ retired: it refuses to run and points at `kepr agent add` and
   Code and Codex: open, T12.15).
 - P1.5 `kepr adopt` scanner + rewriter; `--from-clipboard` with clipboard
   clear.
-- P1.6 `kepr-mcp` (list + gated actions, never values).
+- P1.6 `kepr mcp` (list + gated actions, never values).
 - P1.7 systemd units: `kepr-gate.service` with its own `DynamicUser`-style
   system user, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, no access
   to the vault directory.
