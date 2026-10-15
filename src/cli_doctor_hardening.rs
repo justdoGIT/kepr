@@ -185,6 +185,18 @@ pub fn check_sleep_lock(gdbus: bool, system_bus: bool, opted_out: bool) -> Findi
     }
 }
 
+/// T12.25: locking when a FIDO2 security key is unplugged needs udevadm;
+/// a line only when it is missing (and not turned off).
+pub fn check_key_removal_lock(udevadm: bool, setting: Option<&str>) -> Option<Finding> {
+    (!udevadm && setting != Some("0")).then(|| {
+        f(
+            "lock on key removal",
+            Level::Warn,
+            "needs udevadm to lock when a FIDO2 security key is unplugged",
+        )
+    })
+}
+
 pub fn check_iommu(group_count: usize) -> Finding {
     if group_count > 0 {
         f(
@@ -205,11 +217,20 @@ fn read(p: &str) -> Option<String> {
     std::fs::read_to_string(p).ok()
 }
 
+fn on_path(tool: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(tool).is_file()))
+}
+
 pub fn report() -> Vec<Finding> {
     let iommu = std::fs::read_dir("/sys/kernel/iommu_groups")
         .map(|d| d.count())
         .unwrap_or(0);
-    vec![
+    let key_removal = check_key_removal_lock(
+        on_path("udevadm"),
+        std::env::var("KEPR_LOCK_ON_KEY_REMOVAL").ok().as_deref(),
+    );
+    let mut v = vec![
         check_memfd_secret(kepr_core::secmem::memfd_secret_available()),
         check_yama(read("/proc/sys/kernel/yama/ptrace_scope").as_deref()),
         check_lockdown(read("/sys/kernel/security/lockdown").as_deref()),
@@ -223,12 +244,13 @@ pub fn report() -> Vec<Finding> {
         check_mem_encryption(read("/proc/cpuinfo").as_deref()),
         check_iommu(iommu),
         check_sleep_lock(
-            std::env::var_os("PATH")
-                .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("gdbus").is_file())),
+            on_path("gdbus"),
             std::path::Path::new("/run/dbus/system_bus_socket").exists(),
             std::env::var("KEPR_LOCK_ON_SLEEP").as_deref() == Ok("0"),
         ),
-    ]
+    ];
+    v.extend(key_removal);
+    v
 }
 
 pub fn render(findings: &[Finding]) -> String {
@@ -303,5 +325,11 @@ mod tests {
         assert_eq!(check_sleep_lock(true, true, false).level, Level::Good);
         assert_eq!(check_sleep_lock(true, true, true).level, Level::Warn);
         assert_eq!(check_sleep_lock(false, true, false).level, Level::Warn);
+        // T12.25: only a missing udevadm is worth a line.
+        assert!(check_key_removal_lock(true, None).is_none());
+        assert!(check_key_removal_lock(false, Some("0")).is_none());
+        let w = check_key_removal_lock(false, None).unwrap();
+        assert_eq!(w.level, Level::Warn);
+        assert!(w.detail.contains("udevadm"));
     }
 }

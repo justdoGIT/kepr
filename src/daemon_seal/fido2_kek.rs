@@ -46,6 +46,19 @@ pub fn is_fido2(envelope: &[u8]) -> bool {
     envelope.starts_with(MAGIC)
 }
 
+/// Unlocking this store needs a FIDO2 security key (T12.25).
+pub fn enrolled() -> bool {
+    enrolled_at(&crate::protected_master_key_path())
+}
+
+/// Reads only the magic, never the wrapped key.
+fn enrolled_at(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; MAGIC.len()];
+    let read = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head));
+    read.is_ok() && is_fido2(&head)
+}
+
 /// The KEK from the passphrase's Argon2id output and the key's
 /// `hmac-secret` output.
 pub fn combine(
@@ -190,6 +203,18 @@ pub fn handle_params(uid: u32, username: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T12.25: the key-removal watcher follows a FIDO2 envelope.
+    #[test]
+    fn enrolled_only_with_a_fido2_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("master.key.protected");
+        assert!(!enrolled_at(&p), "no envelope");
+        std::fs::write(&p, b"kepr_pw1\nrest").unwrap();
+        assert!(!enrolled_at(&p), "passphrase only");
+        std::fs::write(&p, [&MAGIC[..], b"rest"].concat()).unwrap();
+        assert!(enrolled_at(&p));
+    }
 
     /// Stand-in for Argon2id (seconds per call in a debug build).
     fn cheap_kdf(p: &[u8], salt: &[u8; ARGON_SALT]) -> Result<Zeroizing<[u8; KEY]>, String> {

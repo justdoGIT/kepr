@@ -1392,6 +1392,14 @@ opens a 60 s window; `kepr reauth KEY` opens it ahead of time, for scripts.
   seconds; `0` or `off` disables it) locks a passphrase-protected user-mode
   store after that long without requests, like `kepr panic`. `status` and
   `ping` polling don't count, and nothing locks while an agent gate runs.
+- **Sleep, screen lock and key removal:** the user-mode daemon does what
+  `kepr panic` does when the machine suspends, when the screen locks (a
+  logind `Lock`, or the session's `LockedHint` turning true), and when a
+  FIDO2 security key is unplugged. Key removal applies when unlocking
+  needs a security key (`kepr lock --fido2`) or with
+  `KEPR_LOCK_ON_KEY_REMOVAL=1`; any FIDO2 token counts. These need
+  `gdbus` and `udevadm`; without them nothing happens, and `kepr doctor`
+  says so.
 - **Fingerprint:** `kepr unlock --fingerprint` reopens a store the idle
   timer or sleep watcher locked, after a polkit fingerprint prompt. A
   fingerprint can't derive the key-wrapping key, so this needs the daemon
@@ -1637,6 +1645,7 @@ starts `kepr-daemon --user`).
 | `KEPR_FINGERPRINT_UNLOCK` | How long after an idle or sleep lock `kepr unlock --fingerprint` may reopen the store (`8h`). |
 | `KEPR_WIPE_AFTER` | Destroy the wrapped master key after N wrong passphrases in a row (off by default). |
 | `KEPR_LOCK_ON_SLEEP=0` | Don't lock the user-mode store on suspend or screen lock. |
+| `KEPR_LOCK_ON_KEY_REMOVAL` | `1`: lock the user-mode store when a FIDO2 security key is unplugged; `0`: never. Unset: only when unlocking needs a security key. |
 | `KEPR_SECRET_MEMORY=locked` | Hold the master key in locked, no-dump pages instead of memfd_secret pages, which keep the kernel from hibernating. |
 
 ### Set by kepr
