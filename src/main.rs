@@ -17,6 +17,7 @@ mod cli_agent_install;
 mod cli_agent_plugin;
 mod cli_agent_run;
 mod cli_agent_sandbox;
+mod cli_agent_shim;
 mod cli_args;
 mod cli_cmds;
 mod cli_copy;

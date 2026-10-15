@@ -50,6 +50,9 @@ COMMANDS:
                                        a block in Codex's AGENTS.md)
   agent doctor [--port N] [--json]     check omp / Grok Build still route through the gate and
                                        kepr's plugin is current; non-zero exit on any problem
+  agent shim HARNESS [--dir DIR] [--remove]
+                                       launcher so typing `claude` (etc.) runs it through
+                                       `kepr agent run`; put DIR (~/.local/share/kepr/shims) first on PATH
   hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
   agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
   agent ls | agent revoke KEY          list / delete sealed keys

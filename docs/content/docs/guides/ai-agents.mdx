@@ -117,6 +117,23 @@ kepr agent run claude -- claude --model claude-sonnet-5-5
 Any real key already exported in your shell (for example
 `ANTHROPIC_API_KEY=sk-ant-…`) is removed from the agent's environment.
 
+### Typing the harness's own command: `kepr agent shim`
+
+```bash
+kepr agent shim claude            # writes ~/.local/share/kepr/shims/claude
+export PATH="$HOME/.local/share/kepr/shims:$PATH"   # in your shell profile
+claude                            # now runs: kepr agent run claude -- /path/to/claude
+```
+
+The shim is a three-line `sh` script holding only paths: the real binary
+(the first one on `PATH` outside the shim directory) and `kepr`. Inside a
+`kepr agent run` session it starts the real binary directly, so sessions
+never nest. The default directory is
+`${XDG_DATA_HOME:-~/.local/share}/kepr/shims`, never `~/.local/bin`, where
+Claude Code, for one, installs its real binary; `--dir DIR` picks another.
+kepr never replaces or removes a file that isn't one of its shims:
+`kepr agent shim claude --remove` (or deleting the file) undoes it.
+
 ## The sandbox
 
 `kepr agent run` starts the harness in its own user, mount and PID
