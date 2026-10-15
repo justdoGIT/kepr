@@ -105,9 +105,12 @@ impl InProcBackend {
         }
     }
 
-    /// Drop the key: its regions are wiped and unmapped.
+    /// Drop the key: its regions are wiped and unmapped. Running gates
+    /// drop their cached values too (T12.23): they see the generation
+    /// move within 250 ms and can't re-resolve while the store is locked.
     pub fn lock(&self) {
         *self.master_key.write().expect("master-key lock poisoned") = None;
+        crate::daemon_gate::bump_generation();
     }
 
     /// Install `master_key` in fresh secret regions (new addresses, new
@@ -436,6 +439,15 @@ mod tests {
         b.relocate().unwrap();
         assert_ne!(b.key_addrs().unwrap(), before);
         assert_eq!(b.decrypt(TEST_UID, "BEFORE_MOVE").unwrap().as_str(), "kept");
+    }
+
+    /// T12.23: every lock makes running gates drop their cached values.
+    #[test]
+    fn lock_bumps_the_gate_generation() {
+        let (b, _dir) = fresh_backend();
+        let g = crate::daemon_gate::generation();
+        b.lock();
+        assert!(crate::daemon_gate::generation() > g);
     }
 
     #[test]
