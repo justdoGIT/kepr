@@ -77,4 +77,6 @@ pub mod fdfetch;
 pub mod http_lite;
 pub mod profile;
 pub mod protocol_session;
+// batch: gate-sec (P12)
+pub mod seccomp;
 // end of batches

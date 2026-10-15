@@ -74,6 +74,14 @@ pub(crate) fn pidfd_open(pid: i32) -> Result<OwnedFd, String> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
 }
 
+/// T12.03: confine the session before any thread exists (a filter covers
+/// only the calling thread and those it starts later). Never called by
+/// `service::serve`, which starts session gates.
+pub(crate) fn confine() -> Result<(), String> {
+    use kepr_core::seccomp;
+    seccomp::install(&seccomp::gate_program()).map_err(|e| format!("cannot harden the gate: {e}"))
+}
+
 fn fd3_is_open() -> bool {
     // SAFETY: F_GETFD only reads the descriptor flags.
     unsafe { libc::fcntl(3, libc::F_GETFD) >= 0 }
@@ -92,6 +100,7 @@ pub fn run() -> Result<(), String> {
         serde_json::from_str(&raw).map_err(|_| "malformed session config")?;
     drop(raw); // wiped: it held the session key in hex
     validate_config(&cfg)?;
+    confine()?;
     let key = decode_key(cfg.session_key_hex.as_str())?;
     cfg.session_key_hex = kepr_core::generate::ZeroString::from_string(String::new());
     if !fd3_is_open() {
@@ -280,6 +289,54 @@ mod tests {
         assert!(decode_key(&"ab".repeat(32)).is_ok());
         assert!(decode_key("abcd").is_err());
         assert!(decode_key(&"zz".repeat(32)).is_err());
+    }
+
+    /// `check`'s verdict in a forked child that ran `confine()` first:
+    /// 0 passed, 1 failed, 2 could not confine. A hang fails the test.
+    fn confined_child(check: impl FnOnce() -> bool) -> i32 {
+        use std::time::{Duration, Instant};
+        // SAFETY: the child confines itself, runs `check` and leaves with
+        // _exit; glibc keeps malloc and NSS usable in a forked child.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            let code = match confine() {
+                Ok(()) => i32::from(!check()),
+                Err(_) => 2,
+            };
+            // SAFETY: leave the child without the parent's destructors.
+            unsafe { libc::_exit(code) };
+        }
+        let start = Instant::now();
+        let mut status = 0;
+        // SAFETY: waiting for (and if need be killing) our own child.
+        while unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } != pid {
+            if start.elapsed() > Duration::from_secs(30) {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                unsafe { libc::waitpid(pid, &mut status, 0) };
+                panic!("the confined child hung");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(libc::WIFEXITED(status), "killed: status {status}");
+        libc::WEXITSTATUS(status)
+    }
+
+    #[test]
+    fn a_confined_session_runs_threads_but_not_programs() {
+        let code = confined_child(|| {
+            // Threads start (clone, after clone3's ENOSYS): a runtime works.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build();
+            let ran = rt.is_ok_and(|rt| {
+                rt.block_on(async { tokio::spawn(async { 7 }).await }).ok() == Some(7)
+            });
+            let exec = std::process::Command::new("/bin/true").status();
+            ran && exec.is_err()
+        });
+        assert_eq!(code, 0);
     }
 
     #[test]
