@@ -1,6 +1,7 @@
 // cli_doctor_host.rs — host items of `kepr doctor`'s hardening section
 // (plan §6.2, ticket T12.35): where RAM can reach a disk (hibernation, swap)
-// and whether Thunderbolt devices can read it over DMA. Advisory only, like
+// and whether Thunderbolt devices can read it over DMA; then (plan §8,
+// T12.36) the TPM2 and Secure Boot the master key and boot chain can lean on. Advisory only, like
 // the rest of the section. Pure checks over file contents; `report_at`
 // reads them under a root directory so tests can use a fake /sys and /proc.
 
@@ -138,6 +139,40 @@ fn thunderbolt_values(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// T12.36: `/sys/class/tpm/tpm0/tpm_version_major`, and whether
+/// `/sys/class/tpm/tpm0/pcr-sha256` exists.
+pub fn check_tpm2(version_major: Option<&str>, sha256_bank: bool) -> Finding {
+    if version_major.map(str::trim) != Some("2") {
+        return f(
+            "TPM2",
+            Level::Warn,
+            "no TPM2: the master key can't be bound to this machine",
+        );
+    }
+    let bank = if sha256_bank { ", sha256 PCR bank" } else { "" };
+    f(
+        "TPM2",
+        Level::Good,
+        format!("TPM 2.0{bank}: KEPR_MASTER_KEY_SEAL=tpm2 binds new master keys to it"),
+    )
+}
+
+/// The `SecureBoot` EFI variable: 4 attribute bytes, then the value.
+pub fn check_secure_boot(var: Option<&[u8]>) -> Finding {
+    match var.and_then(|v| v.get(4)) {
+        Some(1) => f("Secure Boot", Level::Good, "enabled"),
+        Some(0) => f(
+            "Secure Boot",
+            Level::Warn,
+            "disabled: the firmware boots unsigned kernels",
+        ),
+        _ => f("Secure Boot", Level::Warn, "not a UEFI boot, or unknown"),
+    }
+}
+
+const SECURE_BOOT_VAR: &str =
+    "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c";
+
 pub fn report_at(root: &Path) -> Vec<Finding> {
     let read = |p: &str| fs::read_to_string(under(root, p)).ok();
     let resume = read("/sys/power/resume");
@@ -150,6 +185,11 @@ pub fn report_at(root: &Path) -> Vec<Finding> {
         ),
         check_swap(read("/proc/swaps").as_deref(), |d| swap_is_crypt(root, d)),
         check_thunderbolt_dma(&thunderbolt_values(root)),
+        check_tpm2(
+            read("/sys/class/tpm/tpm0/tpm_version_major").as_deref(),
+            under(root, "/sys/class/tpm/tpm0/pcr-sha256").exists(),
+        ),
+        check_secure_boot(fs::read(under(root, SECURE_BOOT_VAR)).ok().as_deref()),
     ]
 }
 
@@ -211,6 +251,50 @@ mod tests {
         let w = check_thunderbolt_dma(&v(&["1", "0"]));
         assert_eq!(w.level, Level::Warn);
         assert!(w.detail.contains("enable it in firmware"));
+    }
+
+    #[test]
+    fn tpm2_cases() {
+        let both = check_tpm2(Some("2\n"), true);
+        assert_eq!(both.level, Level::Good);
+        assert!(both.detail.contains("sha256 PCR bank"), "{}", both.detail);
+        let no_bank = check_tpm2(Some("2\n"), false);
+        assert_eq!(no_bank.level, Level::Good);
+        assert!(!no_bank.detail.contains("sha256"), "{}", no_bank.detail);
+        for v in [Some("1\n"), None] {
+            let w = check_tpm2(v, true);
+            assert_eq!(w.level, Level::Warn);
+            assert!(w.detail.contains("no TPM2"), "{}", w.detail);
+        }
+    }
+
+    #[test]
+    fn secure_boot_cases() {
+        assert_eq!(check_secure_boot(Some(&[6, 0, 0, 0, 1])).level, Level::Good);
+        assert_eq!(check_secure_boot(Some(&[6, 0, 0, 0, 0])).level, Level::Warn);
+        let none = check_secure_boot(None);
+        assert_eq!(none.level, Level::Warn);
+        assert!(none.detail.contains("not a UEFI boot, or unknown"));
+        // Attributes only, no value byte: unknown.
+        assert_eq!(check_secure_boot(Some(&[6, 0, 0, 0])).detail, none.detail);
+    }
+
+    #[test]
+    fn report_reads_tpm_and_secure_boot() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let v = report_at(root);
+        assert_eq!(level(&v, "TPM2").0, WARN);
+        assert_eq!(level(&v, "Secure Boot").0, WARN);
+        put(root, "sys/class/tpm/tpm0/tpm_version_major", "2\n");
+        fs::create_dir_all(root.join("sys/class/tpm/tpm0/pcr-sha256")).unwrap();
+        let var = "sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c";
+        fs::create_dir_all(root.join(var).parent().unwrap()).unwrap();
+        fs::write(root.join(var), [6u8, 0, 0, 0, 1]).unwrap();
+        let v = report_at(root);
+        let (good, detail) = level(&v, "TPM2");
+        assert!(good && detail.contains("sha256 PCR bank"), "{detail}");
+        assert_eq!(level(&v, "Secure Boot").0, GOOD);
     }
 
     fn put(root: &Path, rel: &str, body: &str) {

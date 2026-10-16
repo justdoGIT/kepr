@@ -171,12 +171,32 @@ pub fn check_mem_encryption(cpuinfo: Option<&str>) -> Finding {
     }
 }
 
-pub fn check_sleep_lock(gdbus: bool, system_bus: bool, opted_out: bool) -> Finding {
-    if opted_out {
+/// `mode` and `key_sealer` come from the daemon's status (T12.36); both are
+/// None when it can't be reached, and the line then says what it always did.
+pub fn check_sleep_lock(
+    gdbus: bool,
+    system_bus: bool,
+    opted_out: bool,
+    mode: Option<&str>,
+    key_sealer: Option<&str>,
+) -> Finding {
+    if mode == Some("system") {
+        f(
+            "lock on sleep",
+            Level::Warn,
+            "the system daemon doesn't watch for suspend; root's `kepr panic` locks on demand",
+        )
+    } else if opted_out {
         f(
             "lock on sleep",
             Level::Warn,
             "disabled by KEPR_LOCK_ON_SLEEP=0",
+        )
+    } else if gdbus && system_bus && mode == Some("user") && key_sealer != Some("passphrase") {
+        f(
+            "lock on sleep",
+            Level::Warn,
+            "suspend and screen lock stop gates, but the master key stays in memory: set a passphrase (`kepr lock`)",
         )
     } else if gdbus && system_bus {
         f(
@@ -244,7 +264,7 @@ fn profile_state(restrict: Option<&str>) -> Profile {
     }
 }
 
-pub fn report() -> Vec<Finding> {
+pub fn report(mode: Option<&str>, key_sealer: Option<&str>) -> Vec<Finding> {
     let restrict = read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     let iommu = std::fs::read_dir("/sys/kernel/iommu_groups")
         .map(|d| d.count())
@@ -270,6 +290,8 @@ pub fn report() -> Vec<Finding> {
             on_path("gdbus"),
             std::path::Path::new("/run/dbus/system_bus_socket").exists(),
             std::env::var("KEPR_LOCK_ON_SLEEP").as_deref() == Ok("0"),
+            mode,
+            key_sealer,
         ),
     ];
     v.extend(key_removal);
@@ -326,6 +348,35 @@ mod tests {
         );
     }
 
+    /// T12.36: the line says the store locks only when it can.
+    #[test]
+    fn sleep_lock_cases() {
+        let sys = check_sleep_lock(true, true, false, Some("system"), Some("passphrase"));
+        assert_eq!(sys.level, Level::Warn);
+        assert!(sys
+            .detail
+            .contains("system daemon doesn't watch for suspend"));
+        let file = check_sleep_lock(true, true, false, Some("user"), Some("file"));
+        assert_eq!(file.level, Level::Warn);
+        assert!(file.detail.contains("master key stays in memory"));
+        assert!(file.detail.contains("kepr lock"));
+        let pass = check_sleep_lock(true, true, false, Some("user"), Some("passphrase"));
+        assert_eq!(pass.level, Level::Good);
+        assert_eq!(
+            pass.detail,
+            check_sleep_lock(true, true, false, None, None).detail
+        );
+        // A watcher that can't run, or is turned off, says so first.
+        let no_bus = check_sleep_lock(true, false, false, Some("user"), Some("file"));
+        assert!(no_bus.detail.contains("needs gdbus"), "{}", no_bus.detail);
+        let off = check_sleep_lock(true, true, true, Some("user"), Some("file"));
+        assert!(
+            off.detail.contains("KEPR_LOCK_ON_SLEEP=0"),
+            "{}",
+            off.detail
+        );
+    }
+
     #[test]
     fn userns_profile_states() {
         let r = Some("1\n");
@@ -367,9 +418,18 @@ mod tests {
         assert!(check_memfd_secret(true)
             .detail
             .contains("KEPR_SECRET_MEMORY=locked"));
-        assert_eq!(check_sleep_lock(true, true, false).level, Level::Good);
-        assert_eq!(check_sleep_lock(true, true, true).level, Level::Warn);
-        assert_eq!(check_sleep_lock(false, true, false).level, Level::Warn);
+        assert_eq!(
+            check_sleep_lock(true, true, false, None, None).level,
+            Level::Good
+        );
+        assert_eq!(
+            check_sleep_lock(true, true, true, None, None).level,
+            Level::Warn
+        );
+        assert_eq!(
+            check_sleep_lock(false, true, false, None, None).level,
+            Level::Warn
+        );
         // T12.25: only a missing udevadm is worth a line.
         assert!(check_key_removal_lock(true, None).is_none());
         assert!(check_key_removal_lock(false, Some("0")).is_none());
