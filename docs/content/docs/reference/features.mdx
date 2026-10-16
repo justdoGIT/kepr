@@ -21,7 +21,7 @@ verbs print their usage line when called without arguments.
 | `env` | `[--env CSV\|--manifest P] [--stage S]` | Print `export` lines for `eval`. |
 | `inject` | `-i TEMPLATE [-o OUT [--allow-disk]]` | Fill `kepr://` references in a template. OUT is a new mode-0600 file on a memory-backed file system (tmpfs, ramfs, e.g. under `$XDG_RUNTIME_DIR` or `/dev/shm`); a disk path is refused, before any value is fetched, unless `--allow-disk` is given. |
 | `resolve` | `kepr://KEY[/…]` | Print what one reference stands for (an attachment raw). |
-| `copy` | `KEY [--clear SECS]` | Copy to the clipboard, cleared after SECS (default 20). |
+| `copy` | `KEY [--clear SECS]` | Copy to the clipboard, cleared after SECS (default 20). On Wayland compositors with a data-control protocol (wlroots compositors, KWin) kepr serves the selection itself, with `x-kde-passwordManagerHint` = `secret` so clipboard managers that honour the hint don't store it; elsewhere it falls back to wl-copy (under a private in-memory /tmp), xclip or xsel. |
 | `totp` | `KEY` | Current 2FA code from a stored seed or `otpauth://` URI. |
 | `strength` | — | Estimate the bits of a value typed at a hidden prompt or piped on stdin. |
 | `scan` | `[PATH...] [--staged]` | Find leaked API keys and private keys; exit 1 if any. |

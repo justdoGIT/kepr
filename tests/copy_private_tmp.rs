@@ -140,6 +140,10 @@ fn copy_feeds_wl_copy_on_stdin_with_a_memory_tmp() {
         !stderr.contains("clip-value-1")
             && !String::from_utf8_lossy(&copy.stdout).contains("clip-value-1")
     );
+    // No compositor at WAYLAND_DISPLAY: `__clipboard-serve` fails and
+    // kepr falls back to wl-copy, saying so (T12.47).
+    let all = format!("{}{stderr}", String::from_utf8_lossy(&copy.stdout));
+    assert!(all.contains("gives clipboard managers no hint"), "{all}");
     let read = |f: &str| std::fs::read_to_string(out.join(f)).unwrap_or_default();
     assert_eq!(read("value"), "clip-value-1");
     assert_eq!(read("argv"), "--type\ntext/plain;charset=utf-8\n");

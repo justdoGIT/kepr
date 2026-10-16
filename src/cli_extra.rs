@@ -40,6 +40,7 @@ pub const VERBS: &[&str] = &[
     "recovery-kit",
     "__clipboard-clear",
     "__private-tmp",
+    "__clipboard-serve",
 ];
 
 fn value_of<'a>(args: &'a [String], flags: &[&str]) -> Result<Option<&'a str>, String> {
@@ -185,6 +186,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
             "share" => crate::cli_share::cmd_share(args),
             "__clipboard-clear" => crate::cli_copy::cmd_clipboard_clear(),
             "__private-tmp" => crate::cli_memfs::cmd_private_tmp(args), // T12.46
+            "__clipboard-serve" => crate::cli_clip::cmd_clipboard_serve(), // T12.47
             "ssh" => crate::cli_ssh::cmd_ssh(args),
             "ssh-agent" => crate::cli_ssh_agent::cmd_ssh_agent(args),
             other => Response::fail(format!("unknown command: {other}")),

@@ -8,7 +8,9 @@
 // for `kepr agent add --from-clipboard` (T12.12): read once, then clear.
 // wl-copy keeps what it serves in a file under /tmp: on a disk-backed
 // /tmp it runs under `kepr __private-tmp`, which gives it a tmpfs /tmp of
-// its own (T12.46).
+// its own (T12.46). On Wayland, kepr first serves the selection itself
+// with the password-manager hint (T12.47, cli_clip/); wl-copy is the
+// fallback where that is not possible.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, Read, Write};
@@ -167,47 +169,65 @@ fn copy_value(t: Tool, value: &[u8]) -> Result<(), String> {
     }
 }
 
+/// `kepr VERB` (internal) as a detached child: its own session, so closing
+/// the terminal doesn't end it; stdin piped, output dropped.
+pub fn detached_kepr(verb: &str) -> std::io::Result<Command> {
+    let mut c = Command::new(std::env::current_exe()?);
+    c.arg(verb)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: setsid is async-signal-safe; detaches the child from the
+    // terminal so closing it doesn't cancel the clear.
+    unsafe {
+        c.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    Ok(c)
+}
+
 pub fn cmd_copy(name: &str, clear_secs: u64) -> Response {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
     let x11 = std::env::var_os("DISPLAY").is_some();
-    let Some(t) = tool(wayland, x11, &on_path) else {
+    let t = tool(wayland, x11, &on_path);
+    if t.is_none() && !wayland {
         return Response::fail(NO_TOOL);
-    };
-    let value = match DaemonFetcher.fetch(&name.to_uppercase()) {
+    }
+    let name = name.to_uppercase();
+    let value = match DaemonFetcher.fetch(&name) {
         Ok(v) => v,
         Err(e) => return Response::fail(e),
+    };
+    let copied = format!("{name} copied; clipboard clears in {clear_secs}s");
+    // T12.47: kepr serves the selection itself, with the password-manager
+    // hint, and drops it after SECS; no clearer needed.
+    if wayland && crate::cli_clip::handed_off(crate::cli_clip::Backend::Wayland, clear_secs, &value)
+    {
+        crate::cli_ui::ok(&copied);
+        return Response::Pong;
+    }
+    let Some(t) = t else {
+        return Response::fail(NO_TOOL);
     };
     if let Err(e) = copy_value(t, value.as_bytes()) {
         return Response::fail(e);
     }
+    if wayland {
+        crate::cli_ui::info(&format!(
+            "this desktop gives clipboard managers no hint; the value is cleared after {clear_secs} s"
+        ));
+    }
     let job = format!("{}\n{clear_secs}\n{}\n", t.id(), digest(value.as_bytes()));
     drop(value);
-    let clearer = std::env::current_exe().map(|exe| {
-        let mut c = Command::new(exe);
-        c.arg("__clipboard-clear")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        // SAFETY: setsid is async-signal-safe; detaches the clearer from
-        // the terminal so closing it doesn't cancel the clear.
-        unsafe {
-            c.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-        c.spawn()
-    });
-    match clearer {
-        Ok(Ok(mut child)) => {
+    match detached_kepr("__clipboard-clear").and_then(|mut c| c.spawn()) {
+        Ok(mut child) => {
             let _ = child.stdin.take().map(|mut s| s.write_all(job.as_bytes()));
         }
         _ => crate::cli_ui::warn("could not start the clipboard clearer; clear it yourself"),
     }
-    crate::cli_ui::ok(&format!(
-        "{} copied; clipboard clears in {clear_secs}s",
-        name.to_uppercase()
-    ));
+    crate::cli_ui::ok(&copied);
     Response::Pong
 }
 

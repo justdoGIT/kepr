@@ -22,6 +22,7 @@ mod cli_agent_run;
 mod cli_agent_sandbox;
 mod cli_agent_shim;
 mod cli_args;
+mod cli_clip;
 mod cli_cmds;
 mod cli_copy;
 mod cli_discover;
