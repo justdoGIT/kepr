@@ -10,7 +10,7 @@
 
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use zeroize::Zeroizing;
 
 use kepr_core::pki::PkiCa;
@@ -33,10 +33,7 @@ fn signing_key(scalar: &[u8]) -> Result<SigningKey, String> {
 
 /// The uncompressed public point of a signing key.
 pub fn public_point(k: &SigningKey) -> Vec<u8> {
-    k.verifying_key()
-        .to_encoded_point(false)
-        .as_bytes()
-        .to_vec()
+    k.verifying_key().to_sec1_point(false).as_bytes().to_vec()
 }
 
 fn random_serial() -> Result<([u8; 16], String), String> {
@@ -102,7 +99,7 @@ impl P256Public {
         let bytes = hex::decode(h.trim()).map_err(|_| "public key: not hex".to_string())?;
         let pk = p256::PublicKey::from_sec1_bytes(&bytes)
             .map_err(|_| "public key: not a P-256 point".to_string())?;
-        Ok(Self(pk.to_encoded_point(false).as_bytes().to_vec()))
+        Ok(Self(pk.to_sec1_point(false).as_bytes().to_vec()))
     }
 }
 
