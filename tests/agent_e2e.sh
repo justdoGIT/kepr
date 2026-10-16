@@ -82,12 +82,24 @@ case "$ANTHROPIC_API_KEY" in kepr-ph-*) r ok "agent sees only a placeholder";; *
 if env | grep -qF "$(cat "$REAL_FILE")"; then r bad "real key in agent env"; else r ok "real key not in agent env"; fi
 if grep -lF "$(cat "$REAL_FILE")" /proc/[0-9]*/environ 2>/dev/null | grep -q .; then r bad "real key in some /proc/*/environ"; else r ok "no /proc/*/environ holds the real key"; fi
 if "$KEPR" get ANTHROPIC_API_KEY >/dev/null 2>&1; then r bad "kepr get works inside the session"; else r ok "kepr get refused inside the session"; fi
-GATE=$(pgrep -x kepr-gate | head -1)
-if [ "$(id -u)" != 0 ]; then
+GATE=$(pgrep -u "$(id -u)" -x kepr-gate | head -1)
+if [ "$(id -u)" = 0 ]; then
+    r skip "running as root: ptrace/proc protections are bypassed by design"
+elif [ -z "$GATE" ] && [ "$1" = sandbox ]; then
+    r ok "gate process invisible from the sandbox"
+elif [ -z "$GATE" ]; then
+    r bad "no kepr-gate process found"
+else
     if head -c1 "/proc/$GATE/mem" >/dev/null 2>&1; then r bad "gate memory readable"; else r ok "gate memory unreadable"; fi
     if cat "/proc/$GATE/environ" >/dev/null 2>&1; then r bad "gate environ readable"; else r ok "gate environ unreadable"; fi
-else
-    r skip "running as root: ptrace/proc protections are bypassed by design"
+    # T12.14: no fd of the gate (the daemon channel, its sockets) opens.
+    # A blocked read (timeout's 124) means the open worked.
+    open_fds=""
+    for f in "/proc/$GATE/fd/"*; do
+        timeout 2 head -c1 "$f" >/dev/null 2>&1; rc=$?
+        if [ "$rc" = 0 ] || [ "$rc" = 124 ]; then open_fds="$open_fds ${f##*/}"; fi
+    done
+    if [ -n "$open_fds" ]; then r bad "gate fds readable:$open_fds"; else r ok "gate fds unreadable"; fi
 fi
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: sk-ant-guess' "$ANTHROPIC_BASE_URL/v1/messages" -d '{}')
 [ "$code" = 401 ] && r ok "guessed key rejected (401)" || r bad "guessed key got $code"
@@ -100,19 +112,22 @@ printf '%s' "$REAL" >"$WORK/real"
 chmod 600 "$WORK/real"
 
 echo "── malicious agent probe"
-OUT=$(REAL_FILE="$WORK/real" "$KEPR" agent run claude -- "$WORK/probe.sh" 2>&1) || true
-while read -r status msg; do
-    case "$status" in
-        ok) pass "$msg" ;;
-        bad) fail "$msg" ;;
-        skip) printf '  –  SKIP: %s\n' "$msg" ;;
-    esac
-done <<<"$OUT"
-
-sleep 2.5
-# Only this run's gates: the daemon spawns them as its children, and other
-# kepr runs on the same machine may have gates of their own.
-if pgrep -x kepr-gate -P "$DAEMON_PID" >/dev/null; then fail "gate outlived the agent"; else pass "gate exited with the agent"; fi
+# T12.14: also with --no-sandbox, where the gate process is in view (its
+# memory, environ and fds are what the probe goes after there).
+for sb in sandbox --no-sandbox; do
+    flag=""
+    [ "$sb" = sandbox ] || flag="$sb"
+    OUT=$(REAL_FILE="$WORK/real" "$KEPR" agent run claude ${flag:+"$flag"} -- "$WORK/probe.sh" "$sb" 2>&1) || true
+    while read -r status msg; do
+        case "$status" in
+            ok) pass "$msg ($sb)" ;;
+            bad) fail "$msg ($sb)" ;;
+            skip) printf '  –  SKIP: %s (%s)\n' "$msg" "$sb" ;;
+        esac
+    done <<<"$OUT"
+    sleep 2.5
+    if pgrep -u "$(id -u)" -x kepr-gate >/dev/null; then fail "gate outlived the agent ($sb)"; else pass "gate exited with the agent ($sb)"; fi
+done
 
 echo "── request cap"
 # The first request passes the cap (and may fail upstream); the second must
@@ -166,17 +181,33 @@ else:
     case "$ll" in denied) r ok "Landlock denies the store dir";; open) r bad "store dir listable under Landlock";; esac
 fi
 grep -q "CapEff:	0000000000000000" /proc/self/status && r ok "no capabilities" || r bad "capabilities present"
+if [ "${2:-}" = --isolate-net ]; then
+    # T12.14: nothing leaves the netns except through the gate; each of
+    # these must fail before it reaches the network.
+    if awk 'NR > 1 && $2 == "00000000" { found = 1 } END { exit !found }' /proc/net/route \
+        || timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then
+        r bad "a direct route out exists"
+    else
+        r ok "no direct route out"
+    fi
+    if [ -z "${HTTPS_PROXY:-}" ]; then
+        r skip "HTTPS_PROXY is unset: placeholder to an unbound host not tried"
+    else
+        c=$(curl -s -o /dev/null -w '%{http_connect}' -x "$HTTPS_PROXY" -H "x-api-key: $ANTHROPIC_API_KEY" https://example.com/)
+        if [ "$c" = 403 ]; then r ok "placeholder to an unbound host refused"; else r bad "CONNECT to an unbound host got $c"; fi
+    fi
+fi
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: wrong' "$ANTHROPIC_BASE_URL/v1/messages" -d '{}')
 [ "$code" = 401 ] && r ok "gate reachable from the sandbox" || r bad "gate unreachable ($code)"
 PROBE
 chmod +x "$WORK/sbprobe.sh"
 for run in "strict:" "strict:--isolate-net" "default:"; do
     ll="${run%%:*}" mode="${run#*:}"
-    if ! SB=$(KEPR_LANDLOCK=$ll "$KEPR" agent run claude --strict-sandbox ${mode:+"$mode"} -- "$WORK/sbprobe.sh" "$ll" 2>&1); then
+    if ! SB=$(KEPR_LANDLOCK=$ll "$KEPR" agent run claude --strict-sandbox ${mode:+"$mode"} -- "$WORK/sbprobe.sh" "$ll" "$mode" 2>&1); then
         case "$SB" in *"sandbox unavailable"*) printf '  –  SKIP: sandbox unavailable here %s\n' "$mode"; continue;; esac
     fi
     while read -r status msg; do
-        case "$status" in ok) pass "$msg ${mode} ($ll)";; bad) fail "$msg ${mode} ($ll)";; esac
+        case "$status" in ok) pass "$msg ${mode} ($ll)";; bad) fail "$msg ${mode} ($ll)";; skip) printf '  –  SKIP: %s\n' "$msg";; esac
     done <<<"$SB"
 done
 
