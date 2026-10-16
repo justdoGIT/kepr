@@ -49,6 +49,17 @@ Values are never printed. A name found with different values in two
 places, or already stored in kepr, is skipped rather than overwritten.
 `--remove` keeps no plaintext backup, on purpose.
 
+Without FILE arguments, adopt also reads the config files where agent
+harnesses save keys, since the agent can read those inside its session and
+a harness may use a key there instead of the gate's placeholder:
+`~/.codex/auth.json` (`OPENAI_API_KEY`), `~/.grok/user-settings.json`
+(grok-cli's `apiKey`), `~/.aider.conf.yml` (`openai-api-key`,
+`anthropic-api-key`, `api-key` items) and `~/.omp/agent/models.yml`
+(`apiKey`). These JSON and YAML files are read by key and never rewritten:
+with `--remove`, kepr tells you to delete the key by hand. Variable names
+and references (`KEPR_PH_ANTHROPIC`, `${VAR}`, `{env:VAR}`) are not keys
+and are left alone.
+
 ## Harnesses
 
 | Harness | Command | Key it uses |

@@ -7,6 +7,8 @@
 // kepr_core::providers::detect). Values are never printed. `--remove`
 // rewrites files without keeping a plaintext backup (a backup would
 // leave the key on disk, which is what adoption is meant to end).
+// Agent harness config files (JSON / YAML) are read by key through
+// cli_agent_adopt_harness.rs (T12.18) and never rewritten.
 
 use std::path::{Path, PathBuf};
 
@@ -21,6 +23,16 @@ pub struct Found {
     pub name: String,
     pub provider: &'static str,
     pub value: ZeroString,
+    /// The key in a structured file (T12.18); None for line-based files.
+    pub key: Option<String>,
+}
+
+/// `file:line`, or `file (key)` for a key in a JSON file (line 0).
+pub fn place(f: &Found) -> String {
+    match (&f.key, f.line) {
+        (Some(k), 0) => format!("{} ({k})", f.file.display()),
+        _ => format!("{}:{}", f.file.display(), f.line),
+    }
 }
 
 fn default_files() -> Vec<PathBuf> {
@@ -36,11 +48,16 @@ fn default_files() -> Vec<PathBuf> {
         ] {
             v.push(home.join(f));
         }
+        v.extend(
+            crate::cli_agent_adopt_harness::HARNESS_FILES
+                .iter()
+                .map(|f| home.join(f)),
+        );
     }
     v
 }
 
-fn unquote(v: &str) -> &str {
+pub fn unquote(v: &str) -> &str {
     let v = v.trim();
     for q in ['"', '\''] {
         if let Some(inner) = v.strip_prefix(q).and_then(|s| s.strip_suffix(q)) {
@@ -82,6 +99,7 @@ pub fn scan_text(file: &Path, text: &str) -> Vec<Found> {
                 name,
                 provider,
                 value: ZeroString::from_string(value),
+                key: None,
             })
         })
         .collect()
@@ -158,10 +176,7 @@ pub fn plan<'a>(
             .iter()
             .any(|f| f.value.as_str() != group[0].value.as_str())
         {
-            let places: Vec<String> = group
-                .iter()
-                .map(|f| format!("{}:{}", f.file.display(), f.line))
-                .collect();
+            let places: Vec<String> = group.iter().map(|f| place(f)).collect();
             p.skipped.push((
                 name.into(),
                 format!(
@@ -204,7 +219,11 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
     let mut found: Vec<Found> = Vec::new();
     for p in &paths {
         if let Ok(text) = std::fs::read_to_string(p) {
-            found.extend(scan_text(p, &text));
+            found.extend(if crate::cli_agent_adopt_harness::is_structured(p) {
+                crate::cli_agent_adopt_harness::scan_structured(p, &text)
+            } else {
+                scan_text(p, &text)
+            });
         }
     }
     if found.is_empty() {
@@ -212,13 +231,7 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
         return Response::Pong;
     }
     for f in &found {
-        println!(
-            "{}:{}  {}  ({})",
-            f.file.display(),
-            f.line,
-            f.name,
-            f.provider
-        );
+        println!("{}  {}  ({})", place(f), f.name, f.provider);
     }
     let plan = plan(
         &found,
@@ -247,7 +260,15 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
         cli_ui::warn("the plaintext lines are still in place; delete them or re-run with --remove");
         return Response::Pong;
     }
-    for file in &paths {
+    remove_adopted(&paths, &plan, &found, &stored);
+    Response::Pong
+}
+
+/// `--remove`: delete the source lines of the keys that were stored. A
+/// structured file (JSON / YAML) is never rewritten; the user is told to
+/// remove the key by hand.
+pub fn remove_adopted(paths: &[PathBuf], plan: &Plan, found: &[Found], stored: &[&str]) {
+    for file in paths {
         let lines: Vec<usize> = plan
             .remove
             .iter()
@@ -262,6 +283,13 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
         if lines.is_empty() {
             continue;
         }
+        if crate::cli_agent_adopt_harness::is_structured(file) {
+            cli_ui::warn(&format!(
+                "remove the key from {} by hand; under `kepr agent run` the harness gets a placeholder",
+                file.display()
+            ));
+            continue;
+        }
         let result = std::fs::read_to_string(file)
             .and_then(|t| std::fs::write(file, remove_lines(&t, &lines)));
         match result {
@@ -273,7 +301,6 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
             Err(e) => cli_ui::err(&format!("{}: {e}", file.display())),
         }
     }
-    Response::Pong
 }
 
 #[cfg(test)]
@@ -347,6 +374,53 @@ mod tests {
             .skipped
             .iter()
             .any(|(n, why)| n == "XAI_API_KEY" && why.contains("canary")));
+    }
+
+    #[test]
+    fn plan_skips_stored_and_canary_keys_from_harness_files() {
+        use crate::cli_agent_adopt_harness::scan_structured;
+        let found = scan_structured(
+            Path::new("auth.json"),
+            r#"{"OPENAI_API_KEY": "sk-proj-abcdefghijkl", "x": {"apiKey": "xai-abcdefghijkl"}}"#,
+        );
+        assert_eq!(found.len(), 2);
+        assert_eq!(place(&found[0]), "auth.json (OPENAI_API_KEY)");
+        let existing: std::collections::HashSet<String> = ["OPENAI_API_KEY".to_string()].into();
+        let decoy = crate::cli_policy::Canaries::of(&["xai-abcdefghijkl"]);
+        let p = plan(&found, &existing, &decoy);
+        assert!(p.store.is_empty() && p.remove.is_empty());
+        let why: Vec<&str> = p.skipped.iter().map(|(_, w)| w.as_str()).collect();
+        assert!(
+            why.iter().any(|w| w.contains("canary")) && why.iter().any(|w| w.contains("already"))
+        );
+    }
+
+    #[test]
+    fn remove_leaves_structured_files_byte_identical() {
+        let dir = std::env::temp_dir().join(format!("kepr-adopt-rm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let env = dir.join(".env");
+        let json = dir.join("auth.json");
+        let yml = dir.join("models.yml");
+        std::fs::write(&env, "A=1\nXAI_API_KEY=xai-abcdefghijkl\n").unwrap();
+        let json_text = "{\n  \"OPENAI_API_KEY\": \"sk-proj-abcdefghijkl\"\n}\n";
+        std::fs::write(&json, json_text).unwrap();
+        let yml_text = "providers:\n  p:\n    apiKey: sk-ant-api03-abcdefghijkl\n";
+        std::fs::write(&yml, yml_text).unwrap();
+        let mut found = scan_text(&env, &std::fs::read_to_string(&env).unwrap());
+        for f in [&json, &yml] {
+            let t = std::fs::read_to_string(f).unwrap();
+            found.extend(crate::cli_agent_adopt_harness::scan_structured(f, &t));
+        }
+        assert_eq!(found.len(), 3);
+        let p = plan(&found, &Default::default(), &Default::default());
+        let stored: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
+        let paths = vec![env.clone(), json.clone(), yml.clone()];
+        remove_adopted(&paths, &p, &found, &stored);
+        assert_eq!(std::fs::read_to_string(&env).unwrap(), "A=1\n");
+        assert_eq!(std::fs::read_to_string(&json).unwrap(), json_text);
+        assert_eq!(std::fs::read_to_string(&yml).unwrap(), yml_text);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
