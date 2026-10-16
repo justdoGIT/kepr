@@ -15,10 +15,9 @@ pub struct Row {
     pub flags: Vec<&'static str>,
 }
 
-/// Tags are not on `CredInfo` yet (T5.01 adds them); the column stays
-/// empty until then.
-fn tags_of(_c: &CredInfo) -> Vec<String> {
-    Vec::new()
+/// The credential's tags, from `kepr list` metadata (T5.01).
+fn tags_of(c: &CredInfo) -> Vec<String> {
+    c.tags.clone().unwrap_or_default()
 }
 
 impl Row {
@@ -45,7 +44,7 @@ impl Row {
         let q = q.to_lowercase();
         self.name.to_lowercase().contains(&q)
             || self.kind.contains(&q)
-            || self.tags.iter().any(|t| t.contains(&q))
+            || self.tags.iter().any(|t| t.to_lowercase().contains(&q))
     }
 }
 
@@ -292,6 +291,7 @@ mod tests {
         let mut gh = info("GITHUB_TOKEN");
         gh.expires_at = Some("2026-12-01 00:00".into());
         gh.requires_consent = Some(true);
+        gh.tags = Some(vec!["ci".into(), "team-a".into()]);
         let mut oa = info("OPENAI_API_KEY");
         oa.sealed = Some(true);
         oa.bound_hosts = Some(vec!["api.openai.com".into()]);
@@ -313,7 +313,7 @@ mod tests {
             vec![
                 " kepr ui: 3 of 3 credentials (values are never shown)",
                 "  NAME           TYPE       EXPIRES          FLAGS          TAGS",
-                "> GITHUB_TOKEN   value      2026-12-01 00:00 consent",
+                "> GITHUB_TOKEN   value      2026-12-01 00:00 consent        ci,team-a",
                 "  OPENAI_API_KEY value      -                sealed",
                 "  PROD_DB        database   -                -",
                 "",
@@ -393,6 +393,17 @@ mod tests {
         let mut empty = State::new(Vec::new());
         assert_eq!(empty.key(Key::Down), Action::None);
         assert_eq!(empty.cursor, 0);
+    }
+
+    #[test]
+    fn search_matches_tags() {
+        let mut st = fixture();
+        for c in ['/', 't', 'e', 'a', 'm'] {
+            st.key(Key::Char(c));
+        }
+        st.key(Key::Enter);
+        let names: Vec<&str> = st.visible().iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["GITHUB_TOKEN"]);
     }
 
     #[test]

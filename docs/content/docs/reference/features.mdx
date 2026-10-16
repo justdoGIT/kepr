@@ -1542,8 +1542,9 @@ and per-token rate limits.
 - Both refuse lines that carry a value (`--value`, `-v`, `--stdin`, inline
   `--field k=v`): use `--generate`, `kepr://` references, or (in the shell)
   a masked `--field k=-` prompt.
-- `kepr ui` is a full-screen credential list: `j`/`k` or arrows, `g`/`G`,
-  `/` to search, Enter or `c` to copy, `d` then `y` to delete (to the
+- `kepr ui` is a full-screen credential list with each credential's type,
+  expiry, flags and tags: `j`/`k` or arrows, `g`/`G`, `/` to search (names,
+  types and tags), Enter or `c` to copy, `d` then `y` to delete (to the
   trash), `r` to refresh, `q` to quit. It never draws a value, needs a
   terminal and doesn't run under `--json`.
 
