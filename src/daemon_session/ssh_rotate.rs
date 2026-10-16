@@ -9,7 +9,7 @@
 // already holds NEXT's key only NEXT is removed.
 
 use kepr_core::protocol::Response;
-use kepr_core::ssh_wire;
+use kepr_core::ssh_wire_ecdsa;
 
 use crate::daemon_handlers::{handle_delete, handle_set, SetFlags};
 use crate::expiry::{self, CredMeta};
@@ -41,7 +41,8 @@ fn commit(uid: u32, username: &str, name: &str, next: &str) -> Result<String, St
     let old = ssh_meta(uid, &name)?;
     let new = ssh_meta(uid, &next)?;
     let ssh = new.ssh.clone().ok_or("not an SSH key")?;
-    let line = format!("{} {} {}", ssh_wire::ED25519, ssh.public_b64, ssh.comment);
+    let kind = ssh_wire_ecdsa::type_of_b64(&ssh.public_b64);
+    let line = format!("{kind} {} {}", ssh.public_b64, ssh.comment);
     if old.ssh.as_ref().map(|s| &s.public_b64) != Some(&ssh.public_b64) {
         let seed = crate::crypto::default_backend()
             .decrypt(uid, &next)
@@ -93,6 +94,7 @@ mod tests {
             name: name.into(),
             comment: "c".into(),
             requires_consent: consent,
+            key_type: None,
         };
         match crate::daemon_ssh::dispatch(uid, 0, "t", req) {
             Response::SshKeyOk { public_line, .. } => public_line,

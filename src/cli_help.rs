@@ -85,8 +85,8 @@ COMMANDS:
   import FILE [--format auto|csv|json|env] [--prefix P] [--seal] [--overwrite] [--yes]
                                        from 1Password/Bitwarden/KeePassXC/LastPass/browser CSV,
                                        Bitwarden/Keeper/Doppler/Infisical JSON or .env
-  ssh generate KEY [--comment C] | ssh import KEY FILE | ssh list
-                                       SSH keys that stay in the daemon (sign-only)
+  ssh generate KEY [--type ed25519|ecdsa] [--comment C] | ssh import KEY FILE | ssh list
+                                       SSH keys (Ed25519, ECDSA P-256) that stay in the daemon (sign-only)
   ssh-agent [--foreground] [--socket PATH]  ssh-agent for those keys: eval "$(kepr ssh-agent)"
 {MORE}
 GLOBAL FLAGS:

@@ -128,8 +128,8 @@ verbs print their usage line when called without arguments.
 
 | Verb | Args | What it does |
 | ---- | ---- | ------------ |
-| `ssh generate` | `KEY [--comment C] [--requires-consent]` | New Ed25519 key that stays in the daemon (sign-only). |
-| `ssh import` | `KEY FILE [--requires-consent]` | Import an unencrypted OpenSSH Ed25519 key. |
+| `ssh generate` | `KEY [--type ed25519\|ecdsa] [--comment C] [--requires-consent]` | New Ed25519 (default) or ECDSA P-256 key that stays in the daemon (sign-only). |
+| `ssh import` | `KEY FILE [--requires-consent]` | Import an unencrypted OpenSSH Ed25519 or ECDSA P-256 (`ecdsa-sha2-nistp256`) key. |
 | `ssh list` | — | Public keys as `authorized_keys` lines. |
 | `ssh rotate` | `KEY --host [USER@]HOST [--port N]` | Replace KEY on one host and in the vault. |
 | `ssh-agent` | `[--foreground] [--socket PATH]` | ssh-agent for those keys: `eval "$(kepr ssh-agent)"`. |

@@ -30,6 +30,7 @@ pub mod secmem;
 pub mod shamir;
 pub mod sigv4;
 pub mod ssh_wire;
+pub mod ssh_wire_ecdsa;
 
 // ── P2–P11 ticket batches (2026-10-05): `protocol_<batch>` and other
 // shared modules, declared under each batch's marker.

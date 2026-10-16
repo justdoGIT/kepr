@@ -1,10 +1,13 @@
 //! OpenSSH wire formats for kepr's SSH agent (agent vault P2.4): the
 //! length-prefixed `string` encoding, Ed25519 public-key and signature
 //! blobs, `ssh-ed25519 AAAA… comment` lines, and parsing of unencrypted
-//! `openssh-key-v1` Ed25519 private keys (for `kepr ssh import`).
+//! `openssh-key-v1` Ed25519 and ECDSA P-256 private keys (for `kepr ssh
+//! import`; the ECDSA encodings are in ssh_wire_ecdsa.rs, T12.11).
 //! No cryptography here: signing happens in the daemon.
 
 use base64::Engine;
+
+use crate::ssh_wire_ecdsa;
 
 pub const ED25519: &str = "ssh-ed25519";
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -68,15 +71,39 @@ pub fn unb64(s: &str) -> Option<Vec<u8>> {
     B64.decode(s.trim()).ok()
 }
 
-/// An Ed25519 key parsed from an unencrypted OpenSSH private key file.
-pub struct ParsedKey {
-    pub seed: zeroize::Zeroizing<[u8; 32]>,
-    pub public: [u8; 32],
+/// The secret half of a key parsed from an OpenSSH private key file.
+pub enum KeyKind {
+    Ed25519 {
+        seed: zeroize::Zeroizing<[u8; 32]>,
+    },
+    /// T12.11: the scalar and the file's uncompressed public point.
+    EcdsaP256 {
+        scalar: zeroize::Zeroizing<[u8; 32]>,
+        q: [u8; 65],
+    },
+}
+
+/// A key parsed from an unencrypted OpenSSH private key file.
+pub struct OpensshKey {
+    pub kind: KeyKind,
     pub comment: String,
 }
 
-/// Parse `-----BEGIN OPENSSH PRIVATE KEY-----` (unencrypted Ed25519).
-pub fn parse_openssh_private(pem: &str) -> Result<ParsedKey, String> {
+/// The Ed25519 fields after the key type: `string pk ‖ string (seed ‖ pk)`.
+fn take_ed25519(sec: &mut &[u8]) -> Option<(zeroize::Zeroizing<[u8; 32]>, [u8; 32])> {
+    let pk: [u8; 32] = take_string(sec)?.try_into().ok()?;
+    let sk = take_string(sec).filter(|s| s.len() == 64)?;
+    if sk[32..] != pk {
+        return None;
+    }
+    let mut seed = zeroize::Zeroizing::new([0u8; 32]);
+    seed.copy_from_slice(&sk[..32]);
+    Some((seed, pk))
+}
+
+/// Parse `-----BEGIN OPENSSH PRIVATE KEY-----` (unencrypted Ed25519 or,
+/// since T12.11, ECDSA P-256).
+pub fn parse_openssh_private(pem: &str) -> Result<OpensshKey, String> {
     const BEGIN: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
     const END: &str = "-----END OPENSSH PRIVATE KEY-----";
     let body = pem
@@ -98,36 +125,33 @@ pub fn parse_openssh_private(pem: &str) -> Result<ParsedKey, String> {
     if take_u32(&mut buf) != Some(1) {
         return Err("only single-key files are supported".into());
     }
-    let _pub = take_string(&mut buf).ok_or_else(bad)?;
+    let pub_blob = take_string(&mut buf).ok_or_else(bad)?;
     let mut sec: &[u8] = take_string(&mut buf).ok_or_else(bad)?;
     let (c1, c2) = (take_u32(&mut sec), take_u32(&mut sec));
     if c1.is_none() || c1 != c2 {
         return Err(bad());
     }
-    if take_string(&mut sec) != Some(ED25519.as_bytes()) {
-        return Err("only ssh-ed25519 keys are supported".into());
-    }
-    let pk = take_string(&mut sec)
-        .filter(|p| p.len() == 32)
-        .ok_or_else(bad)?;
-    let sk = take_string(&mut sec)
-        .filter(|s| s.len() == 64)
-        .ok_or_else(bad)?;
+    let key_type = take_string(&mut sec);
+    // Each arm also checks that the public section names the same key.
+    let kind = if key_type == Some(ED25519.as_bytes()) {
+        let (seed, pk) = take_ed25519(&mut sec).ok_or_else(bad)?;
+        if pub_blob != ed25519_public_blob(&pk) {
+            return Err(bad());
+        }
+        KeyKind::Ed25519 { seed }
+    } else if key_type == Some(ssh_wire_ecdsa::ECDSA_P256.as_bytes()) {
+        let (scalar, q) = ssh_wire_ecdsa::take_private(&mut sec).ok_or_else(bad)?;
+        if pub_blob != ssh_wire_ecdsa::public_blob(&q) {
+            return Err(bad());
+        }
+        KeyKind::EcdsaP256 { scalar, q }
+    } else {
+        return Err("only ssh-ed25519 and ecdsa-sha2-nistp256 keys are supported".into());
+    };
     let comment = take_string(&mut sec)
         .map(|c| String::from_utf8_lossy(c).to_string())
         .unwrap_or_default();
-    if &sk[32..] != pk {
-        return Err(bad());
-    }
-    let mut seed = zeroize::Zeroizing::new([0u8; 32]);
-    seed.copy_from_slice(&sk[..32]);
-    let mut public = [0u8; 32];
-    public.copy_from_slice(pk);
-    Ok(ParsedKey {
-        seed,
-        public,
-        comment,
-    })
+    Ok(OpensshKey { kind, comment })
 }
 
 #[cfg(test)]
@@ -174,10 +198,11 @@ mod tests {
     #[test]
     fn parses_unencrypted_ed25519_and_rejects_encrypted() {
         let k = parse_openssh_private(&fake_key([1; 32], [2; 32], "none")).unwrap();
-        assert_eq!(
-            (*k.seed, k.public, k.comment.as_str()),
-            ([1; 32], [2; 32], "me@host")
-        );
+        assert_eq!(k.comment, "me@host");
+        match k.kind {
+            KeyKind::Ed25519 { seed } => assert_eq!(*seed, [1; 32]),
+            KeyKind::EcdsaP256 { .. } => panic!("parsed as ECDSA"),
+        }
         let e = parse_openssh_private(&fake_key([1; 32], [2; 32], "aes256-ctr"))
             .err()
             .unwrap();

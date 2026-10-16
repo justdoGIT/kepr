@@ -21,7 +21,7 @@ use std::process::{Command, Stdio};
 
 use kepr_core::protocol::{Request, Response, SshKeyInfo};
 use kepr_core::protocol_session::SessionRequest;
-use kepr_core::ssh_wire::ED25519;
+use kepr_core::ssh_wire_ecdsa::type_of_b64;
 
 const USAGE: &str = "usage: kepr ssh rotate NAME --host [USER@]HOST [--port N]";
 const READ: &str = "cat ~/.ssh/authorized_keys 2>/dev/null || true";
@@ -34,10 +34,12 @@ pub struct Target {
     pub port: Option<u16>,
 }
 
-/// Does `line` carry the Ed25519 key `b64` (with any options or comment)?
+/// Does `line` carry the key `b64` (Ed25519 or ECDSA; any options or comment)?
 fn line_has(line: &str, b64: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
-    words.windows(2).any(|w| w[0] == ED25519 && w[1] == b64)
+    words
+        .windows(2)
+        .any(|w| w[0] == type_of_b64(b64) && w[1] == b64)
 }
 
 pub fn has_key(text: &str, b64: &str) -> bool {
@@ -151,9 +153,14 @@ impl Drop for Agent {
 }
 
 fn line(k: &SshKeyInfo) -> String {
-    format!("{ED25519} {} {}", k.public_b64, k.comment)
-        .trim_end()
-        .to_string()
+    format!(
+        "{} {} {}",
+        type_of_b64(&k.public_b64),
+        k.public_b64,
+        k.comment
+    )
+    .trim_end()
+    .to_string()
 }
 
 /// Run `remote` on the host as `key`, with `input` on stdin.
@@ -223,6 +230,7 @@ fn old_and_next(name: &str) -> Result<(SshKeyInfo, SshKeyInfo), String> {
         name: next.clone(),
         comment: old.comment.clone(),
         requires_consent: None,
+        key_type: None,
     })?;
     let k = keys()?.into_iter().find(|k| k.name == next);
     Ok((old, k.ok_or("the new key was not stored")?))
@@ -314,6 +322,25 @@ mod tests {
             )
         );
         assert!(has_key(&out, NEW) && !has_key(&out, OLD));
+    }
+
+    #[test]
+    fn an_ecdsa_key_is_found_by_its_own_type() {
+        // T12.11: rotating an ECDSA key removes its ecdsa-sha2-nistp256 line.
+        let old = kepr_core::ssh_wire::b64(&kepr_core::ssh_wire_ecdsa::public_blob(&[4; 65]));
+        let key = SshKeyInfo {
+            name: "K".into(),
+            public_b64: old.clone(),
+            comment: "me".into(),
+        };
+        assert_eq!(line(&key), format!("ecdsa-sha2-nistp256 {old} me"));
+        let text = format!("{}\nssh-ed25519 {NEW} kepr:K\n", line(&key));
+        assert!(has_key(&text, &old));
+        assert!(!has_key(&format!("ssh-ed25519 {old} me"), &old));
+        assert_eq!(
+            remove_key(&text, &old),
+            format!("ssh-ed25519 {NEW} kepr:K\n")
+        );
     }
 
     #[test]
