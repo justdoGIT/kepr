@@ -1042,6 +1042,11 @@ open them.
   nothing new can be created directly in them, and a file replaced there by
   rename (such as `~/.claude.json`) loses access. `KEPR_LANDLOCK=0` turns
   the rules off.
+- Descriptors the caller left open above stderr (`3<DIR`) are closed in
+  the sandbox before the harness starts, so an inherited handle can't
+  reach what the mounts and Landlock hide: the harness gets stdin, stdout
+  and stderr only. If they can't be closed, the sandbox counts as
+  unavailable, as when any other setup step fails.
 - Landlock doesn't mediate `connect()` on a Unix socket, so the daemon
   socket is protected by its hiding mount. On a kernel without Landlock,
   kepr prints a warning and the mounts still apply. Not with `--no-sandbox`.
@@ -1329,8 +1334,9 @@ a file is opened, kept per file handle and zeroized on release.
   in the daemon; the daemon sees `kepr` as the reader.
 - Agent sessions can't read them: `kepr agent run` covers every `kepr
   mount` directory with an empty tmpfs, as it does the store and the
-  daemon socket, and an open from a process inside a sandbox (or one whose
-  mount table can't be read) is refused before `--exe` and `--consent`.
+  daemon socket, and closes a descriptor to it passed into the session.
+  An open from a process inside a sandbox (or one whose mount table can't
+  be read) is refused anyway, before `--exe` and `--consent`.
   A `--no-sandbox` session is not detectable; use `--exe` or `--consent`.
 - It runs in the foreground; Ctrl-C or `fusermount3 -u DIR` unmounts.
   Root mounts with mount(2), others through fusermount3; no `allow_other`.

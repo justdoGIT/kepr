@@ -1,11 +1,13 @@
 // cli_sandbox_sys.rs — low-level Linux primitives for the agent sandbox
 // (agent vault T1.18): user-namespace id maps, loopback bring-up, the
-// hiding mounts, capability drop (fd passing lives in kepr_core::fdpass).
+// hiding mounts, closing inherited fds, capability drop (fd passing lives
+// in kepr_core::fdpass).
 // Every function here is safe to call in a single-threaded child
 // between fork and exec.
 
 use std::ffi::CString;
 use std::io::Write;
+use std::os::fd::RawFd;
 
 fn os_err(what: &str) -> String {
     format!("{what}: {}", std::io::Error::last_os_error())
@@ -158,6 +160,71 @@ pub fn drop_all_caps() {
 }
 
 pub use kepr_core::fdpass::{recv_fd, send_fd};
+
+/// T12.52: close every descriptor above stderr except `keep`, so nothing
+/// the caller left open (`3<DIR`) reaches the sandbox: `close_range`
+/// around the kept fds, or a `/proc/self/fd` walk where it fails. Any
+/// other fd above 2 the process owns as an `OwnedFd` must be in `keep`.
+pub fn close_inherited(keep: &[RawFd]) -> Result<(), String> {
+    for (first, last) in gaps(keep) {
+        // SAFETY: close_range takes three integers and only closes this
+        // process's own descriptors.
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                libc::c_long::from(first),
+                libc::c_long::from(last),
+                0 as libc::c_long,
+            )
+        };
+        if r != 0 {
+            // ENOSYS before Linux 5.9, EPERM under some container filters.
+            return close_by_walk(keep);
+        }
+    }
+    Ok(())
+}
+
+/// The ranges from 3 up that hold no kept descriptor.
+fn gaps(keep: &[RawFd]) -> Vec<(u32, u32)> {
+    let mut kept: Vec<u32> = keep.iter().filter_map(|&f| u32::try_from(f).ok()).collect();
+    kept.retain(|&f| f > 2);
+    kept.sort_unstable();
+    kept.dedup();
+    let (mut out, mut from) = (Vec::new(), 3);
+    for f in kept {
+        if f > from {
+            out.push((from, f - 1));
+        }
+        from = f + 1; // f fits an i32, so this can't overflow
+    }
+    out.push((from, u32::MAX));
+    out
+}
+
+fn close_by_walk(keep: &[RawFd]) -> Result<(), String> {
+    // The directory's own fd is closed again once the listing is read.
+    let names = std::fs::read_dir("/proc/self/fd")
+        .and_then(|d| {
+            d.map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+                .collect::<Result<Vec<String>, _>>()
+        })
+        .map_err(|e| format!("list open descriptors: {e}"))?;
+    for fd in to_close(&names, keep) {
+        // SAFETY: close on a descriptor number; EBADF (the listing's
+        // own, already closed) is harmless.
+        unsafe { libc::close(fd) };
+    }
+    Ok(())
+}
+
+fn to_close(names: &[String], keep: &[RawFd]) -> Vec<RawFd> {
+    names
+        .iter()
+        .filter_map(|n| n.parse().ok())
+        .filter(|f| *f > 2 && !keep.contains(f))
+        .collect()
+}
 
 /// The fields after mountinfo's ` - ` separator: (fstype, source).
 fn fs_and_source(line: &str) -> Option<(&str, &str)> {
@@ -321,5 +388,99 @@ mod tests {
         );
         let deep: Vec<(u32, u32, &'static str)> = (2..100).map(|p| (p, p + 1, HOST)).collect();
         assert!(sandboxed_ancestor(2, &proc_of(&deep)).is_err());
+    }
+
+    #[test]
+    fn close_ranges_go_around_the_kept_descriptors() {
+        let max = u32::MAX;
+        assert_eq!(gaps(&[]), [(3, max)]);
+        assert_eq!(gaps(&[0, 1, 2]), [(3, max)], "stdio is never closed");
+        assert_eq!(gaps(&[3]), [(4, max)]);
+        assert_eq!(gaps(&[9, 5, 5, 6]), [(3, 4), (7, 8), (10, max)]);
+    }
+
+    #[test]
+    fn the_walk_closes_numbered_entries_above_stderr_only() {
+        let names = ["0", "1", "2", "3", "7", "12", ".", "x"].map(String::from);
+        assert_eq!(to_close(&names, &[7]), [3, 12]);
+    }
+
+    /// Run `close` with one kept descriptor in a forked child that also
+    /// holds an inherited pipe at a high fd (as `3<DIR` would); returns
+    /// the child's open descriptors per `/proc/self/fd`, the kept fd and
+    /// the high fd.
+    fn open_after(close: fn(&[RawFd]) -> Result<(), String>) -> (Vec<RawFd>, RawFd, RawFd) {
+        let (mut report, mut inherited) = ([0; 2], [0; 2]);
+        // SAFETY: pipe2/pipe/fcntl write two fds into stack arrays.
+        let high = unsafe {
+            assert_eq!(libc::pipe2(report.as_mut_ptr(), libc::O_CLOEXEC), 0);
+            assert_eq!(libc::pipe2(inherited.as_mut_ptr(), libc::O_CLOEXEC), 0);
+            libc::fcntl(inherited[0], libc::F_DUPFD, 500) // no close-on-exec
+        };
+        assert!(high >= 500);
+        let (rd, wr) = (report[0], report[1]);
+        // SAFETY: the child only lists /proc/self/fd, writes and _exits.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            let code = i32::from(close(&[wr]).is_err());
+            let listed: Vec<RawFd> = std::fs::read_dir("/proc/self/fd")
+                .map(|d| d.filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok()))
+                .into_iter()
+                .flatten()
+                .collect();
+            // The listing's own descriptor is closed again by now.
+            // SAFETY: F_GETFD only reads a descriptor's flags.
+            let open: Vec<String> = listed
+                .into_iter()
+                .filter(|&f| unsafe { libc::fcntl(f, libc::F_GETFD) } != -1)
+                .map(|f| f.to_string())
+                .collect();
+            let msg = open.join(" ");
+            // SAFETY: write from a live buffer, then _exit after fork.
+            unsafe {
+                libc::write(wr, msg.as_ptr().cast(), msg.len());
+                libc::_exit(code)
+            }
+        }
+        assert!(pid > 0);
+        // SAFETY: closing our own descriptors; reading into a live buffer.
+        let out = unsafe {
+            for fd in [wr, high, inherited[0], inherited[1]] {
+                libc::close(fd);
+            }
+            let mut buf = [0u8; 4096];
+            let mut out = Vec::new();
+            loop {
+                let n = libc::read(rd, buf.as_mut_ptr().cast(), buf.len());
+                if n <= 0 {
+                    break;
+                }
+                out.extend_from_slice(&buf[..n as usize]);
+            }
+            libc::close(rd);
+            out
+        };
+        let mut status = 0;
+        // SAFETY: waitpid on our own child with a valid status pointer.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+        let open = String::from_utf8(out).unwrap();
+        let open = open.split(' ').filter_map(|f| f.parse().ok()).collect();
+        (open, wr, high)
+    }
+
+    #[test]
+    fn close_inherited_leaves_stdio_and_the_kept_fd() {
+        for close in [close_inherited, close_by_walk] {
+            let (open, kept, high) = open_after(close);
+            assert!(open.contains(&kept), "kept fd {kept} closed: {open:?}");
+            assert!(!open.contains(&high), "inherited fd {high} open: {open:?}");
+            let extra: Vec<_> = open.iter().filter(|&&f| f > 2 && f != kept).collect();
+            assert!(extra.is_empty(), "left open: {extra:?}");
+            // SAFETY: F_GETFD only reads a descriptor's flags.
+            for f in (0..=2).filter(|&f| unsafe { libc::fcntl(f, libc::F_GETFD) } != -1) {
+                assert!(open.contains(&f), "stdio fd {f} closed: {open:?}");
+            }
+        }
     }
 }

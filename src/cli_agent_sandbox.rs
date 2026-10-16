@@ -5,7 +5,8 @@
 //   │                        relays sandbox connections to the gate
 //   └ child: unshare(user, mount, pid[, net]); maps our own uid/gid
 //      └ pid 1: private mounts; empty tmpfs over the vault, state and
-//        │      socket dirs; fresh /proc (host processes invisible)
+//        │      socket dirs; fresh /proc (host processes invisible);
+//        │      closes the caller's fds above stderr (T12.52)
 //        ├ acceptor [--isolate-net]: listens on 127.0.0.1:PORT inside the
 //        │   netns and hands each connection to the relay (SCM_RIGHTS)
 //        └ harness: no capabilities, no_new_privs, Landlock (T1.23),
@@ -19,6 +20,7 @@
 use std::ffi::CString;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
@@ -199,7 +201,8 @@ pub fn probe(isolate_net: bool) -> Result<(), String> {
         }
         let inner = fork();
         if inner == 0 {
-            report(sys::setup_mounts(&hide));
+            let keep = [wr.as_raw_fd()]; // T12.52: a failure makes the default warn
+            report(sys::setup_mounts(&hide).and_then(|()| sys::close_inherited(&keep)));
         }
         wait_code(inner);
         // SAFETY: _exit after fork.
@@ -248,6 +251,14 @@ fn exec_harness(plan: &Plan) -> ! {
 /// pid 1 of the sandbox: set up mounts, start the acceptor, run and reap.
 fn init(plan: &Plan, relay: Option<UnixStream>) -> ! {
     if let Err(e) = sys::setup_mounts(&plan.hide) {
+        die(&e);
+    }
+    // T12.52: no fd the caller left open reaches pid 1, the acceptors or
+    // the harness; only the acceptors' relay socket is kept (dropped
+    // before the harness forks). It runs before the harness's Landlock
+    // and seccomp, so the filter needs no new syscall.
+    let keep: Vec<RawFd> = relay.iter().map(|r| r.as_raw_fd()).collect();
+    if let Err(e) = sys::close_inherited(&keep) {
         die(&e);
     }
     // One acceptor per relayed port; each hands connections to the relay.

@@ -212,10 +212,40 @@ for run in "strict:" "strict:--isolate-net" "default:"; do
     done <<<"$SB"
 done
 
+echo "── inherited descriptors"
+# T12.52: nothing the caller left open above stderr reaches the harness.
+rc=0
+"$KEPR" agent run claude --strict-sandbox -- sh -c 'test -e /proc/self/fd/3' 3</dev/null >/dev/null 2>"$WORK/fds.err" || rc=$?
+if grep -q "sandbox unavailable" "$WORK/fds.err"; then
+    printf '  –  SKIP: sandbox unavailable here\n'
+elif [ "$rc" = 1 ]; then
+    pass "the caller's fd 3 is closed in the sandbox"
+else
+    fail "fd 3 in the sandbox: exit $rc $(cat "$WORK/fds.err")"
+fi
+if "$KEPR" agent run claude --no-sandbox -- sh -c 'test -e /proc/self/fd/3' 3</dev/null >/dev/null 2>&1; then
+    pass "--no-sandbox keeps the caller's fd 3"
+else
+    fail "--no-sandbox lost the caller's fd 3"
+fi
+# shellcheck disable=SC2016 # expanded by the inner sh
+FDS='for f in /proc/self/fd/*; do n=${f##*/}; if [ "$n" -gt 2 ] && [ -e "$f" ]; then echo "fd:$n"; fi; done'
+rc=0
+out=$("$KEPR" agent run claude --strict-sandbox --isolate-net -- sh -c "$FDS" 7</dev/null 2>"$WORK/fds.err") || rc=$?
+fds=$(printf '%s\n' "$out" | sed -n 's/^fd://p')
+if grep -q "sandbox unavailable" "$WORK/fds.err"; then
+    printf '  –  SKIP: sandbox unavailable here --isolate-net\n'
+elif [ "$rc" = 0 ] && [ -z "$fds" ]; then
+    pass "only stdio reaches the harness --isolate-net (the relay stays in pid 1)"
+else
+    fail "descriptors above 2 in the sandbox --isolate-net: ${fds:-none} (exit $rc)"
+fi
+
 echo "── kepr mount and the sandbox"
 # T12.20: a harness has our uid, but kepr mount's files stay out of reach:
-# the directory is covered like the store, and an open that gets there
-# anyway (an inherited fd, Landlock off) is refused by kepr mount itself.
+# the directory is covered like the store, and an fd to it the caller
+# passes is closed (T12.52). kepr mount also refuses an opener inside a
+# sandbox itself (OpenerGate::check_with unit tests).
 if [ -e /dev/fuse ] && { [ "$(id -u)" = 0 ] || command -v fusermount3 >/dev/null; }; then
     MNT="$WORK/mnt"
     mkdir -p "$MNT"
@@ -235,40 +265,14 @@ if [ -e /dev/fuse ] && { [ "$(id -u)" = 0 ] || command -v fusermount3 >/dev/null
             ' _ "$MNT" 2>&1) || true
         case "$SB" in *"sandbox unavailable"*) printf '  –  SKIP: sandbox unavailable here\n' ;; esac
         SB2=$(KEPR_LANDLOCK=0 "$KEPR" agent run claude --strict-sandbox -- sh -c '
+            if [ -e /proc/self/fd/3 ]; then echo "bad an fd 3 to the mount reached the sandbox"; else echo "ok an fd 3 to the mount is closed in the sandbox"; fi
             if cat /proc/self/fd/3/.env >/dev/null 2>&1; then echo "bad open through an inherited fd succeeded"; else echo "ok open through an inherited fd fails"; fi
             ' 3<"$MNT" 2>&1) || true
-        # A chroot (allowed in a nested user namespace) drops the sandbox
-        # mounts from the opener's own mountinfo; its parent still has them.
-        cat >"$WORK/chroot_open.py" <<'PY'
-import ctypes, os, sys
-try:
-    # CLONE_NEWUSER: full capabilities in the new namespace, until an exec
-    if ctypes.CDLL(None, use_errno=True).unshare(0x10000000) != 0:
-        raise OSError(ctypes.get_errno(), "unshare")
-    os.chroot(sys.argv[1])
-except OSError as e:
-    print("skip no chroot in a nested user namespace:", e)
-    sys.exit(0)
-try:
-    os.read(os.open(".env", os.O_RDONLY, dir_fd=3), 64)
-    print("bad a chrooted opener read the file")
-except OSError:
-    print("ok a chrooted opener is refused")
-PY
-        mkdir -p "$WORK/jail"
-        SB3=$(KEPR_LANDLOCK=0 "$KEPR" agent run claude --strict-sandbox -- \
-            python3 "$WORK/chroot_open.py" "$WORK/jail" 3<"$MNT" 2>&1) || true
         while read -r status msg; do
-            case "$status" in ok) pass "$msg" ;; bad) fail "$msg" ;; skip) printf '  –  SKIP: %s\n' "$msg" ;; esac
+            case "$status" in ok) pass "$msg" ;; bad) fail "$msg" ;; esac
         done <<<"$SB
-$SB2
-$SB3"
-        case "$SB$SB2$SB3" in *mount-secret*) fail "a sandbox printed the mounted value" ;; esac
-        if grep -q "the caller is inside a kepr agent sandbox" "$WORK/mount.log"; then
-            pass "kepr mount refuses an opener inside a sandbox"
-        else
-            fail "kepr mount did not refuse the sandboxed opener: $(cat "$WORK/mount.log")"
-        fi
+$SB2"
+        case "$SB$SB2" in *mount-secret*) fail "a sandbox printed the mounted value" ;; esac
     else
         fail "kepr mount did not serve $MNT/.env: $(cat "$WORK/mount.log")"
     fi
@@ -315,6 +319,7 @@ done <<<"$OUT"
 "$KEPR" delete E2E_GH --force >/dev/null 2>&1 || true
 
 echo "── history and restore"
+sleep 3 # after the agent runs above, let the per-uid rate limit refill
 "$KEPR" set E2E_HIST --value one -q >/dev/null 2>&1
 "$KEPR" set E2E_HIST --value two -q >/dev/null 2>&1
 check "$("$KEPR" list | grep -q '~' || echo ok)" "history slots hidden from list"

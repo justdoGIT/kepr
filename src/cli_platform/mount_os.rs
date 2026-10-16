@@ -368,6 +368,8 @@ mod tests {
             e(None, &plain).as_deref(),
             Some("its mount table is unreadable")
         );
+        // An opener inside a sandbox, say through an fd it inherited
+        // (closed since T12.52, so unit-tested here only).
         assert_eq!(e(Some(SANDBOX), &plain).as_deref(), Some(SANDBOXED));
         assert_eq!(e(Some(PLAIN), &plain), None);
         // A chrooted harness hides its own sandbox mounts, not its parent's.
