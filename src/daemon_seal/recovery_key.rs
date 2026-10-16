@@ -24,6 +24,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
@@ -46,6 +47,14 @@ const NOTHING: &str = "the master key unsealed; nothing to recover";
 /// The wrapped master key, next to the key file.
 pub fn path() -> PathBuf {
     crate::state_dir().join("master.key.recovery")
+}
+
+/// One enrol or unlock at a time: two first enrolments racing would
+/// both see no envelope, and the words printed first would open nothing.
+static ONE: Mutex<()> = Mutex::new(());
+
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    ONE.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// What the fences look at, read once per request.
@@ -140,6 +149,7 @@ pub fn handle_enrol(
     words: &ZeroString,
     current: Option<&ZeroString>,
 ) -> Response {
+    let _one = one_at_a_time();
     let r = enrol_at(
         uid,
         Fence::now(),
@@ -213,6 +223,7 @@ fn unlock_with(uid: u32, fence: Fence, words: &str, u: &Unlock) -> Result<Option
 }
 
 pub fn handle_unlock(uid: u32, username: &str, words: &ZeroString) -> Response {
+    let _one = one_at_a_time();
     let user = crate::user_mode();
     let key_file = crate::master_key_path();
     let u = Unlock {
@@ -229,7 +240,12 @@ pub fn handle_unlock(uid: u32, username: &str, words: &ZeroString) -> Response {
     super::audit_result("recovery-unlock", uid, username, &status);
     match r {
         Ok(None) => Response::UnlockedOk,
-        Ok(Some(error)) => Response::Seal(SealResponse::UnlockedNotResealed { error }),
+        Ok(Some(error)) => {
+            eprintln!(
+                "[kepr-daemon] recovery unlock: sealing the master key again failed: {error}"
+            );
+            Response::Seal(SealResponse::UnlockedNotResealed { error })
+        }
         Err(e) => Response::fail(e),
     }
 }
