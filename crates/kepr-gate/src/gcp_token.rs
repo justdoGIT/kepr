@@ -344,7 +344,7 @@ mod tests {
         let key = key_pair(&fixture_pem()).unwrap();
         let pk = ring::signature::UnparsedPublicKey::new(
             &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-            key.public().as_ref(),
+            crate::github_app::public_der(&key),
         );
         let input = format!("{}.{}", parts[0], parts[1]);
         assert!(pk.verify(input.as_bytes(), &dec(parts[2])).is_ok());

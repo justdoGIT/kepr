@@ -18,7 +18,15 @@ use hyper::Request;
 use kepr_core::binding::Inject;
 use kepr_core::generate::ZeroString;
 use kepr_core::github_app::{self as gh, KeyDer};
+// T12.44: a fips gate signs with aws-lc-rs, the same module as its TLS.
+#[cfg(feature = "fips")]
+use aws_lc_rs::{
+    rand::SystemRandom,
+    signature::{RsaKeyPair, RSA_PKCS1_SHA256},
+};
+#[cfg(not(feature = "fips"))]
 use ring::rand::SystemRandom;
+#[cfg(not(feature = "fips"))]
 use ring::signature::{RsaKeyPair, RSA_PKCS1_SHA256};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -40,7 +48,11 @@ pub fn key_pair(pem: &str) -> Result<RsaKeyPair, String> {
 /// RS256 (RSA PKCS#1 v1.5 with SHA-256) over `input`; shared with the
 /// Google service-account JWTs (T12.09).
 pub fn rs256(key: &RsaKeyPair, input: &[u8]) -> Result<Vec<u8>, ()> {
-    let mut sig = vec![0u8; key.public().modulus_len()];
+    #[cfg(feature = "fips")]
+    let len = key.public_modulus_len(); // aws-lc-rs has no `public()`
+    #[cfg(not(feature = "fips"))]
+    let len = key.public().modulus_len();
+    let mut sig = vec![0u8; len];
     key.sign(&RSA_PKCS1_SHA256, &SystemRandom::new(), input, &mut sig)
         .map_err(|_| ())?;
     Ok(sig)
@@ -114,6 +126,16 @@ pub async fn installation_token(
     let (token, exp) = gh::parse_token_reply(&body)?;
     state.cache.mint(key, &token, exp, now);
     Ok(token)
+}
+
+/// The DER RSAPublicKey of `key`, for tests that verify with ring.
+#[cfg(all(test, feature = "fips"))]
+pub(crate) fn public_der(key: &RsaKeyPair) -> &[u8] {
+    aws_lc_rs::signature::KeyPair::public_key(key).as_ref()
+}
+#[cfg(all(test, not(feature = "fips")))]
+pub(crate) fn public_der(key: &RsaKeyPair) -> &[u8] {
+    key.public().as_ref()
 }
 
 pub(crate) fn now_secs() -> u64 {
@@ -257,6 +279,33 @@ mod tests {
         }
     }
 
+    /// T12.44: RSA PKCS#1 v1.5 is deterministic, so the fips signer
+    /// (aws-lc-rs) and ring give the same bytes for the same key and input.
+    #[cfg(feature = "fips")]
+    #[test]
+    fn fips_signature_equals_ring_signature() {
+        let pem = fixture_pem();
+        let input = gh::jwt_signing_input(42, 1_700_000_000);
+        let fips = rs256(&key_pair(&pem).unwrap(), input.as_bytes()).unwrap();
+        let KeyDer::Pkcs1(der) = gh::pem_der(&pem).unwrap() else {
+            panic!("PKCS#1 expected");
+        };
+        let ring_key = ring::signature::RsaKeyPair::from_der(&der).unwrap();
+        let mut sig = vec![0u8; ring_key.public().modulus_len()];
+        let rng = ring::rand::SystemRandom::new();
+        let alg = &ring::signature::RSA_PKCS1_SHA256;
+        ring_key
+            .sign(alg, &rng, input.as_bytes(), &mut sig)
+            .unwrap();
+        assert_eq!(fips, sig);
+        assert_eq!(
+            key_pair("-----BEGIN RSA PRIVATE KEY-----\nMAEC\n-----END RSA PRIVATE KEY-----")
+                .err()
+                .unwrap(),
+            "not a usable RSA private key"
+        );
+    }
+
     #[test]
     fn jwt_is_rs256_signed_by_the_app_key() {
         use base64::Engine;
@@ -274,7 +323,7 @@ mod tests {
         let key = key_pair(&fixture_pem()).unwrap();
         let pk = ring::signature::UnparsedPublicKey::new(
             &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-            key.public().as_ref(),
+            public_der(&key),
         );
         let input = format!("{}.{}", parts[0], parts[1]);
         assert!(pk.verify(input.as_bytes(), &dec(parts[2])).is_ok());

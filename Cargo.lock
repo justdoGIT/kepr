@@ -1416,6 +1416,7 @@ dependencies = [
 name = "kepr-gate"
 version = "0.4.0"
 dependencies = [
+ "aws-lc-rs",
  "base64 0.22.1",
  "bytes",
  "flate2",
