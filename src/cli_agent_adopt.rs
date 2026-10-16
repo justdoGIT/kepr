@@ -71,11 +71,14 @@ pub fn literal(v: &str) -> bool {
         .any(|c| c.is_whitespace() || "$`'\"(){}<>;|&\\".contains(c))
 }
 
+/// The value up to its closing quote (`"v" # note` → v), or its first word.
 pub fn unquote(v: &str) -> &str {
     let v = v.trim();
     for q in ['"', '\''] {
-        if let Some(inner) = v.strip_prefix(q).and_then(|s| s.strip_suffix(q)) {
-            return inner;
+        if let Some(inner) = v.strip_prefix(q).and_then(|s| s.split(q).next()) {
+            if v.len() > inner.len() + 1 {
+                return inner;
+            }
         }
     }
     v.split_whitespace().next().unwrap_or_default()
@@ -313,6 +316,14 @@ mod tests {
         assert_eq!(parse_line("BAD-NAME=sk-x"), None);
         assert_eq!(
             parse_line("K=sk-x # comment"),
+            Some(("K".into(), "sk-x".into()))
+        );
+        assert_eq!(
+            parse_line("K=\"sk-x\" # comment"),
+            Some(("K".into(), "sk-x".into()))
+        );
+        assert_eq!(
+            parse_line("export K='sk-x'; claude"),
             Some(("K".into(), "sk-x".into()))
         );
     }
