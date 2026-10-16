@@ -130,6 +130,15 @@ pub fn upsert_opencode(text: &str, port: u16) -> Result<String, String> {
     Ok(out)
 }
 
+/// `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json`; a relative
+/// XDG_CONFIG_HOME is ignored, as the XDG spec says.
+fn opencode_config(home: &std::path::Path, xdg: Option<std::ffi::OsString>) -> PathBuf {
+    xdg.map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".config"))
+        .join("opencode/opencode.json")
+}
+
 /// Check first, then write through `apply`: a file opencode can read but
 /// kepr can't is left as it is, with no backup.
 fn install_opencode(path: &std::path::Path, port: u16) -> Result<bool, String> {
@@ -222,10 +231,7 @@ pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
             (p, r)
         }
         "opencode" => {
-            let p = std::env::var_os("XDG_CONFIG_HOME")
-                .filter(|v| !v.is_empty())
-                .map_or_else(|| home.join(".config"), PathBuf::from)
-                .join("opencode/opencode.json");
+            let p = opencode_config(&home, std::env::var_os("XDG_CONFIG_HOME"));
             let r = install_opencode(&p, port);
             (p, r)
         }
@@ -297,6 +303,19 @@ mod tests {
         let moved = upsert_grok(&added, 9000);
         assert!(moved.contains(":9000/xai/v1") && !moved.contains(":7878/"));
         assert_eq!(moved.matches(GROK_HEADER).count(), 1);
+    }
+
+    #[test]
+    fn opencode_config_path_ignores_a_relative_xdg_dir() {
+        let home = std::path::Path::new("/h");
+        let want = |p: &str| PathBuf::from(p).join("opencode/opencode.json");
+        assert_eq!(opencode_config(home, None), want("/h/.config"));
+        assert_eq!(opencode_config(home, Some("/x".into())), want("/x"));
+        assert_eq!(
+            opencode_config(home, Some("rel".into())),
+            want("/h/.config")
+        );
+        assert_eq!(opencode_config(home, Some("".into())), want("/h/.config"));
     }
 
     #[test]
