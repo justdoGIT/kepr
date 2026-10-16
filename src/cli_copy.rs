@@ -6,10 +6,15 @@
 // never to argv; the detached clearer (`kepr __clipboard-clear`) gets
 // only a SHA-256 of it, on stdin. `take_clipboard` goes the other way,
 // for `kepr agent add --from-clipboard` (T12.12): read once, then clear.
+// wl-copy keeps what it serves in a file under /tmp: on a disk-backed
+// /tmp it runs under `kepr __private-tmp`, which gives it a tmpfs /tmp of
+// its own (T12.46).
 
+use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, Read, Write};
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::process::{Command, ExitStatus, Stdio};
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
@@ -45,7 +50,8 @@ impl Tool {
     }
     fn copy_cmd(self) -> &'static [&'static str] {
         match self {
-            Tool::WlCopy => &["wl-copy"],
+            // An explicit type: wl-copy never sniffs the value (xdg-mime).
+            Tool::WlCopy => &["wl-copy", "--type", "text/plain;charset=utf-8"],
             Tool::Xclip => &["xclip", "-selection", "clipboard"],
             Tool::Xsel => &["xsel", "--clipboard", "--input"],
         }
@@ -87,8 +93,10 @@ fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn run(cmd: &[&str], input: Option<&[u8]>) -> Option<Vec<u8>> {
-    let mut child = Command::new(cmd[0])
+/// Run `cmd` with `input` on its stdin (or read its stdout): its exit
+/// status and output, None when it could not start.
+fn run<S: AsRef<OsStr>>(cmd: &[S], input: Option<&[u8]>) -> Option<(ExitStatus, Vec<u8>)> {
+    let mut child = Command::new(&cmd[0])
         .args(&cmd[1..])
         .stdin(if input.is_some() {
             Stdio::piped()
@@ -107,11 +115,56 @@ fn run(cmd: &[&str], input: Option<&[u8]>) -> Option<Vec<u8>> {
         .spawn()
         .ok()?;
     if let Some(data) = input {
-        child.stdin.take()?.write_all(data).ok()?; // stdin closes on drop
-        return child.wait().ok()?.success().then(Vec::new);
+        // A child that exits before reading (`__private-tmp` exit 3) breaks
+        // the pipe: its exit status, not the write error, is the answer.
+        let _ = child.stdin.take()?.write_all(data); // stdin closes on drop
+        return Some((child.wait().ok()?, Vec::new()));
     }
     let out = child.wait_with_output().ok()?;
-    out.status.success().then_some(out.stdout)
+    Some((out.status, out.stdout))
+}
+
+fn run_ok<S: AsRef<OsStr>>(cmd: &[S], input: Option<&[u8]>) -> Option<Vec<u8>> {
+    run(cmd, input).and_then(|(st, out)| st.success().then_some(out))
+}
+
+/// wl-copy, under `kepr __private-tmp` unless /tmp is already in memory.
+fn wl_copy_argv(tmp_on_memory: bool, kepr: &Path) -> Vec<OsString> {
+    let plain = Tool::WlCopy.copy_cmd().iter().map(OsString::from);
+    if tmp_on_memory {
+        return plain.collect();
+    }
+    let wrap = [
+        kepr.as_os_str().to_owned(),
+        "__private-tmp".into(),
+        "--".into(),
+    ];
+    wrap.into_iter().chain(plain).collect()
+}
+
+/// Hand `value` to the clipboard tool on stdin.
+fn copy_value(t: Tool, value: &[u8]) -> Result<(), String> {
+    let failed = || Err(format!("{} failed", t.copy_cmd()[0]));
+    let tmp_on_memory = crate::cli_memfs::path_on_memory_fs(Path::new("/tmp"));
+    if t == Tool::WlCopy && !tmp_on_memory {
+        let wrapped = std::env::current_exe()
+            .ok()
+            .and_then(|kepr| run(&wl_copy_argv(false, &kepr), Some(value)));
+        match wrapped.map(|(st, _)| (st.success(), st.code())) {
+            Some((true, _)) => return Ok(()),
+            Some((false, Some(crate::cli_memfs::PRIVATE_TMP_UNAVAILABLE))) | None => {
+                crate::cli_ui::warn(
+                    "the value passes through a file in /tmp while it is on the clipboard \
+                 (user namespaces unavailable)",
+                )
+            }
+            Some((false, _)) => return failed(),
+        }
+    }
+    match run_ok(t.copy_cmd(), Some(value)) {
+        Some(_) => Ok(()),
+        None => failed(),
+    }
 }
 
 pub fn cmd_copy(name: &str, clear_secs: u64) -> Response {
@@ -124,8 +177,8 @@ pub fn cmd_copy(name: &str, clear_secs: u64) -> Response {
         Ok(v) => v,
         Err(e) => return Response::fail(e),
     };
-    if run(t.copy_cmd(), Some(value.as_bytes())).is_none() {
-        return Response::fail(format!("{} failed", t.copy_cmd()[0]));
+    if let Err(e) = copy_value(t, value.as_bytes()) {
+        return Response::fail(e);
     }
     let job = format!("{}\n{clear_secs}\n{}\n", t.id(), digest(value.as_bytes()));
     drop(value);
@@ -204,7 +257,7 @@ pub fn take_clipboard() -> Result<ZeroString, String> {
     let x11 = std::env::var_os("DISPLAY").is_some();
     // Empty stdin and no stdout pipe: xclip's forked selection server
     // must not hold a pipe this process would wait on.
-    let mut clear = |cmd: &[&str]| run(cmd, Some(&[])).is_some();
+    let mut clear = |cmd: &[&str]| run_ok(cmd, Some(&[])).is_some();
     take_with(tool(wayland, x11, &on_path), &mut paste, &mut clear)
 }
 
@@ -245,7 +298,8 @@ pub fn cmd_clipboard_clear() -> Response {
         return Response::fail("bad clipboard-clear job");
     };
     std::thread::sleep(std::time::Duration::from_secs(secs));
-    if run(t.paste_cmd(), None).is_some_and(|now| &digest(&zeroize::Zeroizing::new(now)) == want) {
+    if run_ok(t.paste_cmd(), None).is_some_and(|now| &digest(&zeroize::Zeroizing::new(now)) == want)
+    {
         run(t.clear_cmd(), None);
     }
     Response::Pong
@@ -346,6 +400,42 @@ mod tests {
         for pkg in ["wl-clipboard", "xclip", "xsel"] {
             assert!(e.contains(pkg), "{e}");
         }
+    }
+
+    #[test]
+    fn wl_copy_offers_text_plain() {
+        assert_eq!(
+            Tool::WlCopy.copy_cmd(),
+            ["wl-copy", "--type", "text/plain;charset=utf-8"]
+        );
+    }
+
+    #[test]
+    fn xclip_and_xsel_argv_unchanged() {
+        assert_eq!(Tool::Xclip.copy_cmd(), ["xclip", "-selection", "clipboard"]);
+        assert_eq!(Tool::Xsel.copy_cmd(), ["xsel", "--clipboard", "--input"]);
+    }
+
+    #[test]
+    fn wl_copy_runs_plain_when_tmp_is_in_memory() {
+        let argv = wl_copy_argv(true, Path::new("/usr/bin/kepr"));
+        assert_eq!(argv, ["wl-copy", "--type", "text/plain;charset=utf-8"]);
+    }
+
+    #[test]
+    fn wl_copy_gets_a_private_tmp_when_tmp_is_on_disk() {
+        let argv = wl_copy_argv(false, Path::new("/usr/bin/kepr"));
+        assert_eq!(
+            argv,
+            [
+                "/usr/bin/kepr",
+                "__private-tmp",
+                "--",
+                "wl-copy",
+                "--type",
+                "text/plain;charset=utf-8"
+            ]
+        );
     }
 
     #[test]

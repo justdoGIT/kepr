@@ -1,7 +1,8 @@
 // cli_sandbox_sys.rs — low-level Linux primitives for the agent sandbox
 // (agent vault T1.18): user-namespace id maps, loopback bring-up, the
 // hiding mounts, closing inherited fds, capability drop (fd passing lives
-// in kepr_core::fdpass).
+// in kepr_core::fdpass), and the private /tmp `kepr copy` gives wl-copy
+// (T12.46).
 // Every function here is safe to call in a single-threaded child
 // between fork and exec.
 
@@ -93,10 +94,8 @@ fn mount(
     Ok(())
 }
 
-/// Make our mount tree private, cover each `hide` directory with an
-/// empty read-only tmpfs, and mount a /proc for the new PID namespace
-/// (so host processes, and their /proc/PID/root, are invisible).
-pub fn setup_mounts(hide: &[CString]) -> Result<(), String> {
+/// Stop mount events crossing into or out of our new mount namespace.
+fn make_mounts_private() -> Result<(), String> {
     let root = CString::new("/").expect("static path");
     // SAFETY: MS_REC|MS_PRIVATE on "/" with null source/type/data.
     let r = unsafe {
@@ -111,6 +110,38 @@ pub fn setup_mounts(hide: &[CString]) -> Result<(), String> {
     if r != 0 {
         return Err(os_err("make mounts private"));
     }
+    Ok(())
+}
+
+/// A private, memory-backed /tmp for this process and what it execs
+/// (`kepr __private-tmp`, T12.46): new user and mount namespaces, our own
+/// uid/gid mapped, then a small tmpfs over /tmp. The host's /tmp is
+/// untouched. Must run single-threaded (unshare refuses otherwise).
+pub fn private_tmp() -> Result<(), String> {
+    // SAFETY: getuid / getgid cannot fail. Read before unshare: inside the
+    // new namespace they read as the overflow id until the maps exist.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    // SAFETY: unshare with constant flags and no pointers.
+    if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) } != 0 {
+        return Err(os_err("unshare"));
+    }
+    write_id_maps(uid, gid)?;
+    make_mounts_private()?;
+    let tmp = CString::new("/tmp").expect("static path");
+    mount(
+        "kepr-tmp",
+        &tmp,
+        "tmpfs",
+        libc::MS_NOSUID | libc::MS_NODEV,
+        "size=1m,mode=0700",
+    )
+}
+
+/// Make our mount tree private, cover each `hide` directory with an
+/// empty read-only tmpfs, and mount a /proc for the new PID namespace
+/// (so host processes, and their /proc/PID/root, are invisible).
+pub fn setup_mounts(hide: &[CString]) -> Result<(), String> {
+    make_mounts_private()?;
     let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_RDONLY;
     for dir in hide {
         mount("kepr-hidden", dir, "tmpfs", flags, "size=4k,mode=0500")?;
