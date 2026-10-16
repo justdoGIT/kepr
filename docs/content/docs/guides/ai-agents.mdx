@@ -262,6 +262,29 @@ kepr agent run claude                # GH_TOKEN / GITHUB_TOKEN are placeholders 
   are refused, so the agent reaches only the providers its keys are bound
   to.
 
+### Google Cloud: `kepr gcp add`
+
+A long-lived Google credential never reaches the session. Store a
+service-account key, or the `authorized_user` file that
+`gcloud auth application-default login` writes, sealed:
+
+```bash
+kepr gcp add GCP_DEPLOY --key-file sa.json
+kepr gcp add GCP_ME --key-file ~/.config/gcloud/application_default_credentials.json \
+  --impersonate deploy@my-proj.iam.gserviceaccount.com
+kepr agent run claude                # gcloud sees a CLOUDSDK_AUTH_ACCESS_TOKEN placeholder
+```
+
+- **Bindings:** `www.googleapis.com` and the common `*.googleapis.com`
+  services gcloud calls, with the scope `cloud-platform` unless you pass
+  `--scope URL` (up to 8).
+- **Tokens:** the gate mints a 1-hour access token per session, from a
+  signed service-account JWT or the refresh token, then for the
+  `--impersonate` service account if you named one. It renews the token 5
+  minutes before it expires. Tokens come only from
+  `oauth2.googleapis.com`; a `token_uri` in the file is ignored.
+- **Errors** carry the HTTP status only, never Google's reply.
+
 ## Databases
 
 ```bash
