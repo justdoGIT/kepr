@@ -141,6 +141,31 @@ fn gate_service_unit_keeps_its_isolation() {
     );
 }
 
+/// T12.02–T12.04: a session gate keeps values in secret memory and
+/// installs its own syscall filter and Landlock ruleset. None of those
+/// calls is in @system-service, and the unit kills on a filtered call.
+#[test]
+fn gate_service_unit_lets_sessions_confine_themselves() {
+    let unit = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("systemd/kepr-gate.service"),
+    )
+    .expect("read kepr-gate.service");
+    let allowed: Vec<&str> = unit
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("SystemCallFilter="))
+        .filter(|v| !v.starts_with('~'))
+        .flat_map(str::split_whitespace)
+        .collect();
+    for call in [
+        "memfd_secret",
+        "landlock_create_ruleset",
+        "landlock_add_rule",
+        "landlock_restrict_self",
+    ] {
+        assert!(allowed.contains(&call), "kepr-gate.service filters {call}");
+    }
+}
+
 /// The `seal` batch (T4.08, T4.11–T4.13): sealers that need a device or
 /// the network get it from opt-in drop-ins under `systemd/kepr.service.d/`;
 /// the base unit keeps no device, no network and only local sockets.

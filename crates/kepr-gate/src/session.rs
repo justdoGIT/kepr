@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kepr_core::gate_protocol::{ReadyLine, SessionConfig};
@@ -74,12 +75,102 @@ pub(crate) fn pidfd_open(pid: i32) -> Result<OwnedFd, String> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
 }
 
-/// T12.03: confine the session before any thread exists (a filter covers
-/// only the calling thread and those it starts later). Never called by
-/// `service::serve`, which starts session gates.
+/// T12.03 + T12.04: confine the session before any thread exists (both
+/// cover only the calling thread and those it starts later). Never
+/// called by `service::serve`, which starts session gates.
 pub(crate) fn confine() -> Result<(), String> {
-    use kepr_core::seccomp;
-    seccomp::install(&seccomp::gate_program()).map_err(|e| format!("cannot harden the gate: {e}"))
+    use kepr_core::{landlock, seccomp};
+    fn failed(e: impl std::fmt::Display) -> String {
+        format!("cannot harden the gate: {e}")
+    }
+    if !landlock::restrict_read_only(&gate_read_paths()).map_err(failed)? {
+        eprintln!("kepr-gate: this kernel has no Landlock; file access is not fenced");
+    }
+    seccomp::install(&seccomp::gate_program()).map_err(failed)
+}
+
+const READ_DIRS: [&str; 7] = [
+    "/etc",
+    "/usr",
+    "/lib",
+    "/lib64",
+    "/nix/store",
+    "/proc",
+    "/sys",
+];
+
+/// T12.04: what a session may read (nothing is writable): libraries,
+/// NSS and resolver files, /proc and /sys. Existing entries only,
+/// canonical, and none at, above or under a path in `never_paths`.
+pub(crate) fn gate_read_paths() -> Vec<PathBuf> {
+    let never = never_paths();
+    let mut v: Vec<PathBuf> = READ_DIRS
+        .iter()
+        .filter_map(|d| std::fs::canonicalize(d).ok())
+        .collect();
+    if let Ok(conf) = std::fs::canonicalize("/etc/resolv.conf") {
+        v.push(resolver_path(&conf, &never));
+    }
+    v.retain(|p| !reaches(p, &never));
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// The directory holding the resolver file (/run/systemd/resolve for
+/// systemd-resolved), or the file alone when that directory is `/` or
+/// reaches a path in `never` (/run, which holds /run/user).
+fn resolver_path(conf: &Path, never: &[PathBuf]) -> PathBuf {
+    match conf.parent() {
+        Some(dir) if dir.parent().is_some() && !reaches(dir, never) => dir.to_path_buf(),
+        _ => conf.to_path_buf(),
+    }
+}
+
+/// `p` is at, above or under one of `never`.
+fn reaches(p: &Path, never: &[PathBuf]) -> bool {
+    never.iter().any(|n| p.starts_with(n) || n.starts_with(p))
+}
+
+/// Home directories, /run/user and the daemon's state. The daemon starts
+/// a session with a cleared environment, so this user's home also comes
+/// from the passwd entry; `/` (a DynamicUser's home) is left out.
+fn never_paths() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = ["/root", "/home", "/run/user", "/var/lib/kepr"]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    v.extend(std::env::var_os("HOME").map(PathBuf::from));
+    v.extend(passwd_home());
+    let canonical: Vec<PathBuf> = v.iter().filter_map(|p| p.canonicalize().ok()).collect();
+    v.extend(canonical);
+    v.retain(|p| p.is_absolute() && p.parent().is_some());
+    v
+}
+
+fn passwd_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: an all-zero passwd is a valid value of this plain C struct.
+    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut out: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: getpwuid_r fills `pw` and `buf`, both valid for the sizes
+    // given, and sets `out` to `&pw` or NULL.
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pw,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut out,
+        )
+    };
+    if rc != 0 || out.is_null() || pw.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: pw_dir points to a NUL-terminated string inside `buf`.
+    let dir = unsafe { std::ffi::CStr::from_ptr(pw.pw_dir) };
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
 }
 
 fn fd3_is_open() -> bool {
@@ -336,6 +427,68 @@ mod tests {
             let exec = std::process::Command::new("/bin/true").status();
             ran && exec.is_err()
         });
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn gate_read_paths_never_include_home() {
+        let paths = gate_read_paths();
+        assert!(paths.contains(&PathBuf::from("/etc")), "{paths:?}");
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = home.filter(|h| h.parent().is_some()); // not `/`
+        for p in &paths {
+            for never in home.iter().map(PathBuf::as_path).chain([
+                Path::new("/root"),
+                Path::new("/home"),
+                Path::new("/run/user"),
+                Path::new("/var/lib/kepr"),
+            ]) {
+                assert!(
+                    !p.starts_with(never) && !never.starts_with(p),
+                    "{p:?} reaches {never:?}"
+                );
+            }
+        }
+        assert!(paths.iter().all(|p| p.exists() && p.is_absolute()));
+    }
+
+    #[test]
+    fn a_too_wide_resolver_directory_falls_back_to_the_file() {
+        let never = [PathBuf::from("/run/user"), PathBuf::from("/root")];
+        let pick = |conf: &str| resolver_path(Path::new(conf), &never);
+        assert_eq!(
+            pick("/run/systemd/resolve/stub-resolv.conf"),
+            PathBuf::from("/run/systemd/resolve")
+        );
+        assert_eq!(pick("/run/resolv.conf"), PathBuf::from("/run/resolv.conf"));
+        assert_eq!(pick("/resolv.conf"), PathBuf::from("/resolv.conf"));
+        assert_eq!(pick("/etc/resolv.conf"), PathBuf::from("/etc"));
+    }
+
+    #[test]
+    fn a_confined_session_reads_system_files_and_resolves_names_only() {
+        use std::net::ToSocketAddrs;
+        let landlock = kepr_core::landlock::abi() > 0;
+        let tmp = std::env::temp_dir().join(format!("kepr-gate-ll-{}", std::process::id()));
+        std::fs::write(&tmp, "x").unwrap();
+        // Name resolution needs the network; without it, check the rest.
+        let dns = ("api.anthropic.com", 443).to_socket_addrs().is_ok();
+        let code = confined_child(|| {
+            let hosts =
+                std::fs::metadata("/etc/hosts").is_err() || std::fs::read("/etc/hosts").is_ok();
+            let other = std::fs::read(&tmp).map_err(|e| e.raw_os_error());
+            let fenced = !landlock || other == Err(Some(libc::EACCES));
+            let written = std::fs::write(std::env::temp_dir().join("kepr-gate-w"), "x");
+            let unwritable = !landlock || written.is_err();
+            let resolves = !dns || ("api.anthropic.com", 443).to_socket_addrs().is_ok();
+            let local = ("localhost", 80).to_socket_addrs().is_ok();
+            hosts && fenced && unwritable && resolves && local
+        });
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(std::env::temp_dir().join("kepr-gate-w"));
+        if !landlock {
+            eprintln!("skip: this kernel has no Landlock (checked the filter only)");
+        }
         assert_eq!(code, 0);
     }
 
