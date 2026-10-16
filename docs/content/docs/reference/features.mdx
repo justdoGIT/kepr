@@ -748,7 +748,7 @@ kepr vault init --size 64M     # MiB, 1-4096 (default 64), filled with random no
 # set KEPR_STORE=image for the daemon and restart it, then:
 kepr vault migrate             # move per-file credentials in (each one read back first)
 kepr vault verify              # check every used slot and the Merkle root
-kepr vault status              # active store, size and fill, files left to move
+kepr vault status              # active store, size and fill, rollback guard, files left to move
 ```
 
 What the image protects:
@@ -770,6 +770,16 @@ What the image protects:
   key derived from the master key. Delete drops the wrapped key, scrubs the
   record's pages and bumps the epoch. The daemon keeps the highest epoch it
   has seen and refuses an older copy of the image.
+- **Rollback:** that epoch lives in the state file (`cred-versions.json`),
+  so a copy of the whole disk, image and state file together, would still
+  open. With `KEPR_TPM2_IMAGE_NV_INDEX=0x01800A12` the header also carries
+  an anchor to a TPM2 NV counter that every commit raises, and an image
+  behind the counter is refused. `kepr vault status` names the guard in
+  use. The cost: each commit runs `tpm2_nvincrement` plus `tpm2_nvread`
+  (with `tpm2_nvreadpublic` checks, about five tool runs, each an NV
+  access on the TPM), and each open reads the counter. An image made
+  before the counter is anchored by its next write; once the counter
+  exists, an unanchored image, or one bound to another index, is refused.
 
 Limits:
 
@@ -819,8 +829,9 @@ Notes and limits:
 
 - **TPM2 PIN and counter:** both need `KEPR_MASTER_KEY_SEAL` unset or
   `tpm2`. The NV index defaults to `0x01800A11` when either option is set.
-  The counter protects the sealed master key, not the vault image (which
-  has its own epoch check). Seal and unseal run in salted, encrypting
+  The counter protects the sealed master key, not the vault image, which
+  takes a counter of its own with `KEPR_TPM2_IMAGE_NV_INDEX` (with any
+  master-key sealer; it must be another index). Seal and unseal run in salted, encrypting
   sessions, so sniffing a discrete TPM's bus yields ciphertext; this needs
   tpm2-tools 5.0 or newer (`tpm2_sessionconfig`). A missing tool gives an
   error naming the tpm2-tools package.
@@ -1643,6 +1654,7 @@ starts `kepr-daemon --user`).
 | `KEPR_TPM2_PCRS` | PCRs to bind a TPM2 seal to, e.g. `7+11`. |
 | `KEPR_TPM2_PIN=1`, `KEPR_TPM2_PIN_FILE` | TPM2 seal that also needs the PIN in that file (absolute path). |
 | `KEPR_TPM2_NV_INDEX` | NV index of the anti-rollback counter (`0x01000000`-`0x01FFFFFF`; default `0x01800A11`). |
+| `KEPR_TPM2_IMAGE_NV_INDEX` | NV index of the vault image's own anti-rollback counter, e.g. `0x01800A12`; never the master key's. Unset: the state file only. A bad value stops start-up. |
 | `KEPR_KMS_ENDPOINT` | Override the AWS KMS or Cloud KMS endpoint. |
 | `KEPR_PKCS11_PIN_FILE` | PIN file for the PKCS#11 sealer. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `GCP_ACCESS_TOKEN`, `AZURE_ACCESS_TOKEN` | Credentials for the key-service sealers, read once at start-up. |

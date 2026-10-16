@@ -60,6 +60,10 @@ pub enum VaultResponse {
         /// Credentials still in per-file storage (the caller's own, or
         /// everyone's for the owner).
         legacy_files: usize,
+        /// What refuses an older copy of the image (T12.30): `tpm2` (an
+        /// NV counter as well as the state file) or `state-file`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        rollback_guard: Option<String>,
     },
 }
 
@@ -108,6 +112,7 @@ mod tests {
                 used_slots: None,
                 epoch: Some(7),
                 legacy_files: 0,
+                rollback_guard: Some("tpm2".into()),
             },
         ] {
             let r = Response::Vault(r);
@@ -118,5 +123,29 @@ mod tests {
         }
         let err: Response = serde_json::from_str(r#"{"kind":"err","error":"x"}"#).unwrap();
         assert!(matches!(err, Response::Err { .. }));
+    }
+
+    #[test]
+    fn an_older_status_reply_without_rollback_guard_still_parses() {
+        let old = r#"{"kind":"vault_status_ok","backend":"image","image":true,
+            "size_mib":16,"legacy_files":0}"#;
+        let r: Response = serde_json::from_str(old).unwrap();
+        let Response::Vault(VaultResponse::VaultStatusOk { rollback_guard, .. }) = r else {
+            panic!("{r:?}");
+        };
+        assert_eq!(rollback_guard, None);
+        // And None stays out of the JSON.
+        let none = serde_json::to_string(&VaultResponse::VaultStatusOk {
+            backend: "file".into(),
+            image: false,
+            size_mib: None,
+            used_percent: None,
+            used_slots: None,
+            epoch: None,
+            legacy_files: 0,
+            rollback_guard: None,
+        })
+        .unwrap();
+        assert!(!none.contains("rollback_guard"), "{none}");
     }
 }

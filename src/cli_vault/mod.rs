@@ -59,6 +59,17 @@ fn parse_mib(s: &str) -> Result<u32, String> {
 
 const BAD_SIZE: &str = "--size: use MiB: 64, 64M or 64MiB";
 
+/// `vault status`'s line for the daemon's `rollback_guard` (T12.30).
+fn guard_line(guard: &str) -> Option<&'static str> {
+    match guard {
+        "tpm2" => Some("rollback guard: TPM2 counter"),
+        "state-file" => Some(
+            "rollback guard: state file only (a restored copy of the whole disk is not caught)",
+        ),
+        _ => None,
+    }
+}
+
 fn show(v: &VaultResponse) {
     match v {
         VaultResponse::VaultInitOk { size_mib } => {
@@ -94,6 +105,7 @@ fn show_status(v: &VaultResponse) {
         used_slots,
         epoch,
         legacy_files,
+        rollback_guard,
     } = v
     else {
         return;
@@ -113,6 +125,10 @@ fn show_status(v: &VaultResponse) {
             let ep = epoch.map_or(String::new(), |e| format!(", {e} commit(s)"));
             cli_ui::info(&format!("vault image: {mib} MiB, {pct}% used{exact}{ep}"));
         }
+    }
+    let guard = rollback_guard.as_deref().and_then(guard_line);
+    if let (true, Some(line)) = (*image || backend == "image", guard) {
+        cli_ui::info(line);
     }
     if *legacy_files > 0 {
         cli_ui::info(&format!(
@@ -214,6 +230,18 @@ mod tests {
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn status_names_the_rollback_guard() {
+        assert_eq!(guard_line("tpm2"), Some("rollback guard: TPM2 counter"));
+        assert_eq!(
+            guard_line("state-file"),
+            Some(
+                "rollback guard: state file only (a restored copy of the whole disk is not caught)"
+            )
+        );
+        assert_eq!(guard_line("something-newer"), None);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //   tpm        T4.08 TPM2 PIN + anti-rollback counter (tpm2-tools);
 //   tpm_blob   its sealed-key file format
 //   tpm_config its environment
+//   tpm_counter its NV counters, also the vault image's (T12.30)
 //   tpm_session T12.29 salted, encrypting sessions for it
 //   fido2_kek  T4.09 the `kepr_pw2` envelope: passphrase + security key
 //              (used by key_unlock.rs; the CLI drives the device)
@@ -33,14 +34,17 @@ mod runner;
 mod tpm;
 mod tpm_blob;
 mod tpm_config;
+mod tpm_counter;
 mod tpm_session;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_seal::SealRequest;
 
 use crate::audit::{self, AuditEvent, AuditResult};
+use crate::daemon_vault::rollback::EpochCounter;
 use crate::master_key::Sealer;
 
 /// The sealer `KEPR_MASTER_KEY_SEAL` (`seal`) and the TPM2 options ask
@@ -68,6 +72,17 @@ pub fn sealer_for(seal: Option<&str>, work: &Path) -> Result<Option<Box<dyn Seal
         })));
     }
     Ok(None)
+}
+
+/// The vault image's anti-rollback counter (T12.30): a TPM2 NV counter
+/// when KEPR_TPM2_IMAGE_NV_INDEX names one, whatever seals the master key.
+pub fn image_counter_from_env() -> Result<Option<Arc<dyn EpochCounter>>, String> {
+    Ok(tpm_config::image_index_from_env()?.map(|index| {
+        Arc::new(tpm_counter::NvCounter {
+            index,
+            runner: runner::SystemRunner,
+        }) as Arc<dyn EpochCounter>
+    }))
 }
 
 pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: SealRequest) -> Response {

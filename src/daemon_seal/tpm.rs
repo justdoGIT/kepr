@@ -9,8 +9,8 @@
 // with parameter encryption (T12.29, tpm_session.rs), so the TPM bus
 // carries ciphertext.
 //
-// The NV counter is defined (`nt=counter`) on the first seal and
-// incremented on every seal, i.e. every new master key. Its value is
+// The NV counter (tpm_counter.rs) is defined (`nt=counter`) on the first
+// seal and incremented on every seal, i.e. every new master key. Its value is
 // sealed in the TPM object with the key and the index (key ‖ counter ‖
 // index) and written in the blob's header; unseal refuses a blob whose
 // sealed counter is lower than the TPM's: an older copy of the key. The
@@ -25,20 +25,20 @@ use zeroize::Zeroizing;
 use super::runner::{Cmd, RunError, Runner};
 use super::tpm_blob::{Blob, FLAG_PCRS, FLAG_PIN};
 use super::tpm_config::TpmConfig;
+use super::tpm_counter::{bump_counter, read_counter, COUNTER_FAILED};
 use super::tpm_session::Session;
 use crate::master_key::Sealer;
 
 const PAYLOAD: usize = 32 + 8 + 4;
 pub(super) const SEAL_FAILED: &str = "master-key seal failed";
 const UNSEAL_FAILED: &str = "master-key unseal failed";
-const COUNTER_FAILED: &str = "cannot use the TPM2 anti-rollback counter";
 const MISSING: &str = "TPM2 sealing needs the tpm2-tools package installed";
 /// tpm2_sessionconfig came with tpm2-tools 5.0.
 const MISSING_SESSIONS: &str =
     "TPM2 sealing needs the tpm2-tools package installed (tpm2-tools 5.0 or newer)";
 
 /// A tool's failure as the user sees it: never its stderr.
-fn tool_err(e: RunError, missing: &str, failed: &str) -> String {
+pub(super) fn tool_err(e: RunError, missing: &str, failed: &str) -> String {
     match e {
         RunError::Missing => missing.into(),
         RunError::Failed => failed.into(),
@@ -102,32 +102,15 @@ impl<R: Runner> TpmSealer<R> {
             .map_err(|e| tool_err(e, MISSING_SESSIONS, failed))
     }
 
+    /// The value of the master key's counter (tpm_counter.rs).
     fn read_counter(&self, index: u32) -> Result<u64, String> {
-        let i = format!("{index:#010x}");
-        let out = self.run(
-            Cmd::new("tpm2_nvread", &["-C", "o", "-s", "8", &i]),
-            COUNTER_FAILED,
-        )?;
-        let b: [u8; 8] = out[..].try_into().map_err(|_| COUNTER_FAILED)?;
-        Ok(u64::from_be_bytes(b))
+        read_counter(&self.runner, index).map_err(|e| tool_err(e, MISSING, COUNTER_FAILED))
     }
 
     /// Define the counter on first use, increment it, return the value.
     fn bump_counter(&self) -> Result<u64, String> {
-        let i = format!("{:#010x}", self.cfg.nv_index);
-        if let Err(e) = self.runner.run(&Cmd::new("tpm2_nvreadpublic", &[&i])) {
-            if e == RunError::Missing {
-                return Err(MISSING.into());
-            }
-            let attrs = "nt=counter|ownerread|ownerwrite";
-            let define = ["-C", "o", "-s", "8", "-a", attrs, &i];
-            self.run(Cmd::new("tpm2_nvdefine", &define), COUNTER_FAILED)?;
-        }
-        self.run(
-            Cmd::new("tpm2_nvincrement", &["-C", "o", &i]),
-            COUNTER_FAILED,
-        )?;
-        self.read_counter(self.cfg.nv_index)
+        bump_counter(&self.runner, self.cfg.nv_index)
+            .map_err(|e| tool_err(e, MISSING, COUNTER_FAILED))
     }
 
     fn primary(&self, w: &WorkDir, failed: &str) -> Result<String, String> {

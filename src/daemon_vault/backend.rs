@@ -63,7 +63,6 @@ impl ImageBackend {
     }
 
     /// Bind the image to an anti-rollback counter kept off the disk.
-    #[allow(dead_code)] // the TPM2 counter (T12.30) is its first user
     pub fn with_counter(mut self, c: Arc<dyn EpochCounter>) -> Self {
         self.counter = Some(c);
         self
