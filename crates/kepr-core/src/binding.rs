@@ -43,6 +43,15 @@ pub enum Inject {
     /// signs an app JWT and injects the 1-hour installation token it
     /// exchanges that for (`Authorization: Bearer`). api.github.com only.
     GithubApp { app_id: u64, installation_id: u64 },
+    /// T12.08: a Google service-account key or `authorized_user` file
+    /// (JSON). The gate mints a 1-hour access token with it (then, with
+    /// `impersonate`, one for that service account) and injects that as
+    /// `Authorization: Bearer`. `*.googleapis.com:443` only.
+    GcpToken {
+        scopes: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        impersonate: Option<String>,
+    },
 }
 
 impl Inject {
@@ -139,6 +148,10 @@ pub fn validate_binding(b: &Binding) -> Result<(), String> {
                     .into(),
             )
         }
+        Inject::GcpToken {
+            scopes,
+            impersonate,
+        } => crate::gcp_token::validate(&b.host, b.port, scopes, impersonate.as_deref()),
         _ => Ok(()),
     }
 }
@@ -325,6 +338,43 @@ mod tests {
         );
         let err = parse_binding("github.com:basic-pass").unwrap_err();
         assert!(err.contains("basic-password"), "{err}");
+    }
+
+    #[test]
+    fn gcp_token_binds_only_google_api_hosts() {
+        let gcp = |scopes: &[&str], imp: Option<&str>| Inject::GcpToken {
+            scopes: scopes.iter().map(|s| s.to_string()).collect(),
+            impersonate: imp.map(str::to_string),
+        };
+        let cloud = "https://www.googleapis.com/auth/cloud-platform";
+        let email = "deploy@proj.iam.gserviceaccount.com";
+        let sa = Some(email);
+        assert!(validate_binding(&b("storage.googleapis.com", 443, gcp(&[cloud], None))).is_ok());
+        assert!(validate_binding(&b("www.googleapis.com", 443, gcp(&[cloud], sa))).is_ok());
+        assert!(validate_binding(&b("api.openai.com", 443, gcp(&[cloud], None))).is_err());
+        let bad_scope = gcp(&["https://evil.example/scope"], None);
+        assert!(validate_binding(&b("storage.googleapis.com", 443, bad_scope)).is_err());
+        let bad_sa = gcp(&[cloud], Some("me@example.com"));
+        assert!(validate_binding(&b("storage.googleapis.com", 443, bad_sa)).is_err());
+
+        let bb = b("storage.googleapis.com", 443, gcp(&[cloud], sa));
+        let j = serde_json::to_string(&bb).unwrap();
+        assert!(
+            j.contains(&format!(
+                r#"{{"kind":"gcp_token","scopes":["{cloud}"],"impersonate":"{}"}}"#,
+                email
+            )),
+            "{j}"
+        );
+        assert_eq!(serde_json::from_str::<Binding>(&j).unwrap(), bb);
+        let plain = format!(
+            r#"{{"host":"x.googleapis.com","inject":{{"kind":"gcp_token","scopes":["{cloud}"]}}}}"#
+        );
+        let back: Binding = serde_json::from_str(&plain).unwrap();
+        assert_eq!(back.inject, gcp(&[cloud], None));
+        assert!(!serde_json::to_string(&back)
+            .unwrap()
+            .contains("impersonate"));
     }
 
     #[test]

@@ -81,4 +81,6 @@ pub mod protocol_session;
 // batch: gate-sec (P12)
 pub mod landlock;
 pub mod seccomp;
+// batch: gate-providers (P12)
+pub mod gcp_token;
 // end of batches
