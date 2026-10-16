@@ -31,6 +31,9 @@ struct SecretFields {
     secret_access_key: Option<serde_json::Value>,
     session_token: Option<serde_json::Value>,
     private_key: Option<serde_json::Value>,
+    /// T12.09: a Google `authorized_user` file.
+    client_secret: Option<serde_json::Value>,
+    refresh_token: Option<serde_json::Value>,
 }
 
 /// The secret parts of one value: a JSON object's secret string fields,
@@ -44,6 +47,8 @@ fn secret_parts(value: &str) -> Vec<ZeroString> {
                 f.secret_access_key,
                 f.session_token,
                 f.private_key,
+                f.client_secret,
+                f.refresh_token,
             ];
             return (fields.into_iter().flatten())
                 .filter_map(|v| match v {
@@ -443,6 +448,12 @@ mod tests {
             .map(|z| z.to_owned_string())
             .collect();
         assert_eq!(plain, vec!["sk-live-abcdefgh".to_string()]);
+        // T12.09: a Google authorized_user file's secrets.
+        let user = r#"{"type":"authorized_user","client_id":"cid.apps.example","client_secret":"user-secret-1","refresh_token":"1//refresh-1"}"#;
+        let got: Vec<String> = forms(user).iter().map(|z| z.to_owned_string()).collect();
+        assert!(got.contains(&"user-secret-1".to_string()));
+        assert!(got.contains(&"1//refresh-1".to_string()));
+        assert!(!got.iter().any(|g| g.contains("cid.apps")));
     }
 
     #[test]
