@@ -69,8 +69,9 @@ COMMANDS:
                                        incident, show where to revoke it at the provider; --rotate:
                                        replace an AWS IAM key through the IAM API instead
   totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
-  inject -i TEMPLATE [-o OUT]          fill kepr:// references (OUT 0600): NAME, NAME/field[i][sub],
-                                       NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape)
+  inject -i TEMPLATE [-o OUT [--allow-disk]]  fill kepr:// references: NAME, NAME/field[i][sub],
+                                       NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape);
+                                       OUT is new, 0600, on tmpfs / ramfs unless --allow-disk
   scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
   copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
   record add KEY --type T [--field k=v|k=-|k[]=v]... [--custom LABEL=v]...  typed record

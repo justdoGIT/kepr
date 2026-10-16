@@ -43,6 +43,7 @@ mod cli_leaked;
 mod cli_manifest;
 mod cli_mask;
 mod cli_mcp;
+mod cli_memfs;
 mod cli_mode;
 mod cli_more;
 mod cli_record;

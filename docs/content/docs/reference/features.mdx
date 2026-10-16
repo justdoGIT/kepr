@@ -19,7 +19,7 @@ verbs print their usage line when called without arguments.
 | `check` | — | Decrypt-check every credential. |
 | `exec` | `[--env CSV\|--env VAR=kepr://…] [--memfd CSV] [--pull KEY,…] [--manifest P] [--stage S] [--mask] -- CMD` | Run CMD with credentials in its environment, in sealed memfds, or fetched by CMD on demand. |
 | `env` | `[--env CSV\|--manifest P] [--stage S]` | Print `export` lines for `eval`. |
-| `inject` | `-i TEMPLATE [-o OUT]` | Fill `kepr://` references in a template (OUT is mode 0600). |
+| `inject` | `-i TEMPLATE [-o OUT [--allow-disk]]` | Fill `kepr://` references in a template. OUT is a new mode-0600 file on a memory-backed file system (tmpfs, ramfs, e.g. under `$XDG_RUNTIME_DIR` or `/dev/shm`); a disk path is refused, before any value is fetched, unless `--allow-disk` is given. |
 | `resolve` | `kepr://KEY[/…]` | Print what one reference stands for (an attachment raw). |
 | `copy` | `KEY [--clear SECS]` | Copy to the clipboard, cleared after SECS (default 20). |
 | `totp` | `KEY` | Current 2FA code from a stored seed or `otpauth://` URI. |

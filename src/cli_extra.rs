@@ -3,7 +3,7 @@
 //
 //   kepr agent …                       see cli_agent_cmd.rs
 //   kepr totp NAME
-//   kepr inject -i TEMPLATE [-o OUT]
+//   kepr inject -i TEMPLATE [-o OUT [--allow-disk]]
 //   kepr scan [PATH...] [--staged]
 //   kepr copy NAME [--clear SECS]
 //   kepr history NAME
@@ -74,6 +74,20 @@ pub fn positionals(args: &[String], value_flags: &[&str]) -> Vec<String> {
     out
 }
 
+const INJECT_USAGE: &str = "usage: kepr inject -i TEMPLATE [-o OUT [--allow-disk]]";
+
+/// `-i TEMPLATE`, `-o OUT` and `--allow-disk` (T12.45), which only
+/// means something with `-o`.
+fn inject_args(args: &[String]) -> Result<(&str, Option<&str>, bool), String> {
+    let input = value_of(args, &["-i", "--input"])?.ok_or(INJECT_USAGE)?;
+    let output = value_of(args, &["-o", "--output"])?;
+    let allow_disk = args.iter().any(|a| a == "--allow-disk");
+    if allow_disk && output.is_none() {
+        return Err(INJECT_USAGE.into());
+    }
+    Ok((input, output, allow_disk))
+}
+
 fn one_name(args: &[String], verb: &str, value_flags: &[&str]) -> Result<String, Response> {
     match positionals(args, value_flags).as_slice() {
         [n] => Ok(n.clone()),
@@ -87,12 +101,8 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
             "agent" => crate::cli_agent_cmd::main(args),
             "totp" => crate::cli_totp::cmd_totp(&one_name(args, verb, &[])?),
             "inject" => {
-                let input = value_of(args, &["-i", "--input"]).map_err(Response::fail)?;
-                let output = value_of(args, &["-o", "--output"]).map_err(Response::fail)?;
-                match input {
-                    Some(i) => crate::cli_inject::cmd_inject(i, output),
-                    None => Response::fail("usage: kepr inject -i TEMPLATE [-o OUT]"),
-                }
+                let (input, output, allow_disk) = inject_args(args).map_err(Response::fail)?;
+                crate::cli_inject::cmd_inject(input, output, allow_disk)
             }
             "scan" => crate::cli_scan::cmd_scan(
                 &positionals(args, &[]),
@@ -196,6 +206,20 @@ mod tests {
         assert_eq!(positionals(&a, &["--clear"]), v(&["NAME"]));
         assert!(value_of(&v(&["--clear"]), &["--clear"]).is_err());
         assert_eq!(value_of(&v(&["x"]), &["-i"]).unwrap(), None);
+    }
+
+    #[test]
+    fn inject_parses_allow_disk() {
+        let a = v(&["-i", "t.tpl", "-o", "/dev/shm/o", "--allow-disk"]);
+        assert_eq!(
+            inject_args(&a).unwrap(),
+            ("t.tpl", Some("/dev/shm/o"), true)
+        );
+        let a = v(&["--input", "t.tpl", "--output", "o"]);
+        assert_eq!(inject_args(&a).unwrap(), ("t.tpl", Some("o"), false));
+        assert_eq!(inject_args(&v(&["-i", "t"])).unwrap(), ("t", None, false));
+        assert!(inject_args(&v(&["-i", "t", "--allow-disk"])).is_err());
+        assert!(inject_args(&v(&["-o", "x"])).is_err());
     }
 
     #[test]
