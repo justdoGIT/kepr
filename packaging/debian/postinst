@@ -14,4 +14,11 @@ if [ -d /run/systemd/system ]; then
     systemctl --system daemon-reload >/dev/null || true
     systemctl restart kepr.service >/dev/null || true
 fi
+
+# Agent sandbox: Ubuntu 24.04+ restricts unprivileged user namespaces
+# through AppArmor; the kepr profile lets /usr/local/bin/kepr make one.
+# Loaded only where AppArmor runs, and never fails the install.
+if command -v apparmor_parser >/dev/null 2>&1 && [ -d /sys/kernel/security/apparmor ]; then
+    apparmor_parser -r -W /etc/apparmor.d/kepr || true
+fi
 exit 0

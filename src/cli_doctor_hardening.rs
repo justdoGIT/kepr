@@ -115,10 +115,23 @@ pub fn check_landlock(lsm: Option<&str>) -> Finding {
     }
 }
 
+/// T12.34: where the kepr AppArmor profile stands. `Loaded` means the
+/// sandbox probe got its user namespace; `Installed` that the file is in
+/// /etc/apparmor.d but the probe still failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    Loaded,
+    Installed,
+    Missing,
+}
+
+const PROFILE_PATH: &str = "/etc/apparmor.d/kepr";
+
 pub fn check_userns(
     clone_sysctl: Option<&str>,
     apparmor_restrict: Option<&str>,
     max_userns: Option<&str>,
+    profile: Profile,
 ) -> Finding {
     if clone_sysctl.map(str::trim) == Some("0") || max_userns.map(str::trim) == Some("0") {
         return f(
@@ -128,11 +141,21 @@ pub fn check_userns(
         );
     }
     if apparmor_restrict.map(str::trim) == Some("1") {
-        return f(
-            "user namespaces",
-            Level::Warn,
-            "restricted by AppArmor: install the kepr AppArmor profile",
-        );
+        let (level, detail) = match profile {
+            Profile::Loaded => (
+                Level::Good,
+                "restricted by AppArmor; the kepr profile allows the sandbox",
+            ),
+            Profile::Installed => (
+                Level::Warn,
+                "kepr AppArmor profile installed but not loaded: sudo apparmor_parser -r /etc/apparmor.d/kepr",
+            ),
+            Profile::Missing => (
+                Level::Warn,
+                "restricted by AppArmor: install the kepr AppArmor profile",
+            ),
+        };
+        return f("user namespaces", level, detail);
     }
     f(
         "user namespaces",
@@ -222,7 +245,22 @@ fn on_path(tool: &str) -> bool {
         .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(tool).is_file()))
 }
 
+/// Only asked when AppArmor restricts user namespaces: the probe forks a
+/// sandbox, which is wasted work when nothing restricts it.
+fn profile_state(restrict: Option<&str>) -> Profile {
+    if restrict.map(str::trim) != Some("1") {
+        Profile::Missing
+    } else if crate::cli_agent_sandbox::probe(false).is_ok() {
+        Profile::Loaded
+    } else if std::path::Path::new(PROFILE_PATH).exists() {
+        Profile::Installed
+    } else {
+        Profile::Missing
+    }
+}
+
 pub fn report() -> Vec<Finding> {
+    let restrict = read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     let iommu = std::fs::read_dir("/sys/kernel/iommu_groups")
         .map(|d| d.count())
         .unwrap_or(0);
@@ -238,8 +276,9 @@ pub fn report() -> Vec<Finding> {
         check_landlock(read("/sys/kernel/security/lsm").as_deref()),
         check_userns(
             read("/proc/sys/kernel/unprivileged_userns_clone").as_deref(),
-            read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").as_deref(),
+            restrict.as_deref(),
             read("/proc/sys/user/max_user_namespaces").as_deref(),
+            profile_state(restrict.as_deref()),
         ),
         check_mem_encryption(read("/proc/cpuinfo").as_deref()),
         check_iommu(iommu),
@@ -298,12 +337,38 @@ mod tests {
             Level::Good
         );
         assert_eq!(check_landlock(Some("capability,yama")).level, Level::Warn);
-        assert_eq!(check_userns(None, Some("1"), None).level, Level::Warn);
-        assert_eq!(check_userns(Some("0"), None, None).level, Level::Warn);
+        let m = || Profile::Missing;
+        assert_eq!(check_userns(None, Some("1"), None, m()).level, Level::Warn);
+        assert_eq!(check_userns(Some("0"), None, None, m()).level, Level::Warn);
         assert_eq!(
-            check_userns(None, Some("0"), Some("63000")).level,
+            check_userns(None, Some("0"), Some("63000"), m()).level,
             Level::Good
         );
+    }
+
+    #[test]
+    fn userns_profile_states() {
+        let r = Some("1\n");
+        let loaded = check_userns(None, r, None, Profile::Loaded);
+        assert_eq!(loaded.level, Level::Good);
+        assert!(loaded.detail.contains("kepr profile allows the sandbox"));
+        let installed = check_userns(None, r, None, Profile::Installed);
+        assert_eq!(installed.level, Level::Warn);
+        assert!(installed
+            .detail
+            .contains("sudo apparmor_parser -r /etc/apparmor.d/kepr"));
+        let missing = check_userns(None, r, None, Profile::Missing);
+        assert_eq!(missing.level, Level::Warn);
+        assert!(missing.detail.contains("install the kepr AppArmor profile"));
+        // Without the restriction the profile state doesn't matter.
+        for p in [Profile::Loaded, Profile::Installed, Profile::Missing] {
+            let x = check_userns(None, Some("0"), None, p);
+            assert_eq!(x.level, Level::Good);
+            assert_eq!(x.detail, "unprivileged user namespaces available");
+        }
+        // Disabled outright beats any profile.
+        let off = check_userns(Some("0"), r, None, Profile::Loaded);
+        assert_eq!(off.level, Level::Warn);
     }
 
     #[test]

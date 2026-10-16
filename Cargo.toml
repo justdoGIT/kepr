@@ -188,6 +188,7 @@ assets = [
     ["target/release/docker-credential-kepr",  "/usr/local/bin/docker-credential-kepr", "0755"],
     ["systemd/kepr.service",       "/lib/systemd/system/kepr.service","0644"],
     ["completions/kepr.bash",      "/usr/share/bash-completion/completions/kepr", "0644"],
+    ["packaging/apparmor/kepr",    "/etc/apparmor.d/kepr",            "0644"],
     ["README.md",                  "/usr/share/doc/kepr/README.md",   "0644"],
     ["SECURITY.md",                "/usr/share/doc/kepr/SECURITY.md", "0644"],
     ["LICENSE-MIT",                "/usr/share/doc/kepr/LICENSE-MIT", "0644"],
@@ -211,6 +212,7 @@ assets = [
     { source = "target/release/docker-credential-kepr", dest = "/usr/local/bin/docker-credential-kepr", mode = "0755" },
     { source = "systemd/kepr.service",       dest = "/lib/systemd/system/kepr.service",mode = "0644" },
     { source = "completions/kepr.bash",      dest = "/usr/share/bash-completion/completions/kepr", mode = "0644" },
+    { source = "packaging/apparmor/kepr",    dest = "/etc/apparmor.d/kepr",            mode = "0644", config = true },
     { source = "README.md",                  dest = "/usr/share/doc/kepr/README.md",   mode = "0644", doc = true },
     { source = "SECURITY.md",                dest = "/usr/share/doc/kepr/SECURITY.md", mode = "0644", doc = true },
     { source = "LICENSE-MIT",                dest = "/usr/share/doc/kepr/LICENSE-MIT", mode = "0644", doc = true },
@@ -221,6 +223,11 @@ if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm= 2>/dev/null)" =
   getent group kepr >/dev/null || groupadd --system kepr
   systemctl daemon-reload || true
   systemctl enable --now kepr.service || true
+fi
+# Agent sandbox: let kepr make its user namespace where AppArmor
+# restricts them (Ubuntu 24.04+). Never fails the install.
+if command -v apparmor_parser >/dev/null 2>&1 && [ -d /sys/kernel/security/apparmor ]; then
+  apparmor_parser -r -W /etc/apparmor.d/kepr || true
 fi
 """
 pre_uninstall_script = """

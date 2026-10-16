@@ -106,6 +106,9 @@ jobs:
           cp target/release/kepr-daemon "dist/${STAGE}/"
           cp systemd/kepr.service       "dist/${STAGE}/"
           cp completions/kepr.bash      "dist/${STAGE}/"
+          # install.sh loads the agent sandbox's AppArmor profile from here.
+          mkdir -p "dist/${STAGE}/packaging/apparmor"
+          cp packaging/apparmor/kepr    "dist/${STAGE}/packaging/apparmor/kepr"
           cp install.sh README.md SECURITY.md LICENSE-MIT LICENSE-APACHE "dist/${STAGE}/"
           tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
           rm -rf "dist/${STAGE}"
