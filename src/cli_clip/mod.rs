@@ -1,5 +1,5 @@
 // cli_clip/mod.rs — `kepr copy` owns the clipboard selection itself
-// (T12.47 Wayland data-control), so it can offer the value as text plus
+// (T12.47 Wayland data-control, T12.48 X11 CLIPBOARD), so it can offer the value as text plus
 // `x-kde-passwordManagerHint` = `secret`: clipboard managers that honour
 // the hint (KDE Klipper, and others that follow it) don't store it. The
 // detached internal verb `kepr __clipboard-serve` reads the job and the
@@ -9,6 +9,9 @@
 
 pub mod wayland;
 pub mod wl_wire;
+pub mod x11;
+pub mod x11_auth;
+pub mod x11_wire;
 
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
@@ -40,16 +43,20 @@ const HEADER_MAX: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Wayland,
+    X11,
 }
 
 impl Backend {
     fn id(self) -> &'static str {
         match self {
             Backend::Wayland => "wayland",
+            Backend::X11 => "x11",
         }
     }
     fn from_id(s: &str) -> Option<Self> {
-        [Backend::Wayland].into_iter().find(|b| b.id() == s)
+        [Backend::Wayland, Backend::X11]
+            .into_iter()
+            .find(|b| b.id() == s)
     }
 }
 
@@ -156,12 +163,15 @@ pub fn cmd_clipboard_serve() -> Response {
         Err(e) => return Response::fail(e),
     };
     let r = match b {
-        Backend::Wayland => wayland::serve(&value, secs, say_ready),
+        Backend::Wayland => match wayland::serve(&value, secs, say_ready) {
+            Err(wayland::WlError::NoDataControl) => std::process::exit(UNSUPPORTED),
+            r => r.map_err(|e| e.to_string()),
+        },
+        Backend::X11 => x11::serve(&value, secs, say_ready), // T12.48
     };
     match r {
         Ok(()) => Response::Pong,
-        Err(wayland::WlError::NoDataControl) => std::process::exit(UNSUPPORTED),
-        Err(e) => Response::fail(e.to_string()),
+        Err(e) => Response::fail(e),
     }
 }
 
@@ -178,6 +188,8 @@ mod tests {
         );
         assert!(read_job(&mut &b"wayland\n20"[..]).is_err());
         assert!(read_job(&mut &b"gnome\n20\nv"[..]).is_err());
+        let (b, _, v) = read_job(&mut &b"x11\n0\nv"[..]).unwrap();
+        assert_eq!((b, v.as_str()), (Backend::X11, "v"));
         assert!(read_job(&mut &b"wayland\nsoon\nv"[..]).is_err());
     }
 

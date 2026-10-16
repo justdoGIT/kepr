@@ -9,8 +9,9 @@
 // wl-copy keeps what it serves in a file under /tmp: on a disk-backed
 // /tmp it runs under `kepr __private-tmp`, which gives it a tmpfs /tmp of
 // its own (T12.46). On Wayland, kepr first serves the selection itself
-// with the password-manager hint (T12.47, cli_clip/); wl-copy is the
-// fallback where that is not possible.
+// with the password-manager hint (T12.47, cli_clip/), as it does on X11
+// (T12.48); wl-copy, xclip and xsel are the fallbacks where that is not
+// possible.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, Read, Write};
@@ -192,7 +193,7 @@ pub fn cmd_copy(name: &str, clear_secs: u64) -> Response {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
     let x11 = std::env::var_os("DISPLAY").is_some();
     let t = tool(wayland, x11, &on_path);
-    if t.is_none() && !wayland {
+    if !wayland && !x11 {
         return Response::fail(NO_TOOL);
     }
     let name = name.to_uppercase();
@@ -201,10 +202,17 @@ pub fn cmd_copy(name: &str, clear_secs: u64) -> Response {
         Err(e) => return Response::fail(e),
     };
     let copied = format!("{name} copied; clipboard clears in {clear_secs}s");
-    // T12.47: kepr serves the selection itself, with the password-manager
-    // hint, and drops it after SECS; no clearer needed.
-    if wayland && crate::cli_clip::handed_off(crate::cli_clip::Backend::Wayland, clear_secs, &value)
-    {
+    // T12.47 / T12.48: kepr serves the selection itself, with the
+    // password-manager hint, and drops it after SECS; no clearer needed.
+    // An X11 session is one without WAYLAND_DISPLAY (XWayland goes the
+    // Wayland way).
+    use crate::cli_clip::Backend;
+    let backend = if wayland {
+        Backend::Wayland
+    } else {
+        Backend::X11
+    };
+    if crate::cli_clip::handed_off(backend, clear_secs, &value) {
         crate::cli_ui::ok(&copied);
         return Response::Pong;
     }
@@ -214,11 +222,9 @@ pub fn cmd_copy(name: &str, clear_secs: u64) -> Response {
     if let Err(e) = copy_value(t, value.as_bytes()) {
         return Response::fail(e);
     }
-    if wayland {
-        crate::cli_ui::info(&format!(
-            "this desktop gives clipboard managers no hint; the value is cleared after {clear_secs} s"
-        ));
-    }
+    crate::cli_ui::info(&format!(
+        "this desktop gives clipboard managers no hint; the value is cleared after {clear_secs} s"
+    ));
     let job = format!("{}\n{clear_secs}\n{}\n", t.id(), digest(value.as_bytes()));
     drop(value);
     match detached_kepr("__clipboard-clear").and_then(|mut c| c.spawn()) {
