@@ -32,6 +32,7 @@ const REVEALING: &[&str] = &[
     "inject",
     "copy",
     "recovery-kit",
+    "recovery-key",
     "record",
     // These move a value somewhere the agent may control.
     "share",
@@ -218,6 +219,8 @@ mod tests {
             "kepr record get DB password",
             "kepr share send OPENAI_API_KEY --to kepr-pub1-AAAA",
             "VAULT_ADDR=https://x kepr sync-push K --url vault:a/b",
+            "kepr recovery-key enrol",
+            "kepr --json recovery-key enrol --replace",
         ] {
             assert!(revealing_verb(c).is_some(), "{c}");
         }
@@ -237,6 +240,7 @@ mod tests {
     fn pre_tool_blocks_reveals_and_key_literals() {
         let bash = |c: &str| json!({"tool_name": "Bash", "tool_input": {"command": c}});
         assert!(blocked(pre_tool(&bash("kepr get A"))));
+        assert!(blocked(pre_tool(&bash("kepr recovery-key enrol"))));
         assert!(!blocked(pre_tool(&bash("ls -la"))));
         assert!(blocked(pre_tool(&bash(
             "curl -H 'x-api-key: sk-ant-api03-abcdefghijklmnopqrstuvwx' https://x"

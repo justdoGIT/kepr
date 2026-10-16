@@ -4,6 +4,7 @@
 //
 //   recovery   T4.10 recovery words (create / restore), fenced like the
 //              recovery kit in daemon_recovery.rs
+//   recovery_key T12.31 a recovery key for a sealed master key
 //   runner     the helper-tool runner the sealers share (fake in tests)
 //   tpm        T4.08 TPM2 PIN + anti-rollback counter (tpm2-tools);
 //   tpm_blob   its sealed-key file format
@@ -30,6 +31,7 @@ mod kms_aws;
 mod kms_cloud;
 mod pkcs11;
 mod recovery;
+pub mod recovery_key;
 mod runner;
 mod tpm;
 mod tpm_blob;
@@ -95,6 +97,9 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: SealRequest) 
             new_password,
         } => recovery::handle_restore(uid, username, &words, new_password.as_bytes()),
         SealRequest::Fido2UnlockParams => fido2_kek::handle_params(uid, username),
+        SealRequest::RecoveryKeyEnrol { words, current } => {
+            recovery_key::handle_enrol(uid, username, &words, current.as_ref())
+        }
     }
 }
 

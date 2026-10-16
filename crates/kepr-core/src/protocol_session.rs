@@ -84,6 +84,10 @@ pub struct StatusInfo {
     /// The FIPS-validated crypto module is in use (T7.16).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fips: Option<bool>,
+    /// A recovery key for the sealed master key is enrolled (T12.31);
+    /// `None` on a passphrase store that has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_key: Option<bool>,
 }
 
 #[cfg(test)]
@@ -101,6 +105,7 @@ mod tests {
             gates: Some(2),
             escrow: Some(false),
             fips: Some(false),
+            recovery_key: Some(true),
         };
         let r = Response::StatusOk {
             locked: false,
@@ -119,6 +124,7 @@ mod tests {
             "gates",
             "escrow",
             "fips",
+            "recovery_key",
         ] {
             assert!(v.get(k).is_some(), "{k} missing from {v}");
         }

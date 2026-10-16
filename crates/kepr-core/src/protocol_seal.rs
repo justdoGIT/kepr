@@ -3,7 +3,9 @@
 // Carried by `Request::Seal` / `Response::Seal`.
 //
 // The sealers themselves (TPM2, KMS, PKCS#11, Keychain) run only at
-// daemon start-up and have no requests.
+// daemon start-up and have no requests. T12.31 adds a recovery key for a
+// sealed master key: the CLI makes it, and its words only ever travel
+// from the CLI to the daemon, never back.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +26,15 @@ pub enum SealRequest {
     },
     /// T4.09: the security key `kepr unlock` must also use, if any.
     Fido2UnlockParams,
+    /// T12.31: keep the master key of a sealed (not passphrase-protected)
+    /// store wrapped under a recovery key the CLI made, sent as its 24
+    /// words. Replacing an enrolled one needs its words (`current`). The
+    /// owner only, no agent gate running, audited; the reply has no key.
+    RecoveryKeyEnrol {
+        words: ZeroString,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<ZeroString>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,6 +42,15 @@ pub enum SealRequest {
 pub enum SealResponse {
     RecoveryWordsOk {
         /// Same fingerprint as the recovery kit's shares.
+        fingerprint: String,
+        words: ZeroString,
+    },
+    /// T12.31: the recovery key is enrolled. The master key's
+    /// fingerprint, as the recovery kits show it; never key material.
+    RecoveryKeyEnrolled { fingerprint: String },
+    /// T12.31: what `kepr recovery-key enrol --json` prints, made by the
+    /// CLI from its own words. The daemon never sends it.
+    RecoveryKeyWords {
         fingerprint: String,
         words: ZeroString,
     },
@@ -67,6 +87,14 @@ mod tests {
             new_password: "pw2".into(),
         }));
         round_trip_request(Request::Seal(SealRequest::Fido2UnlockParams));
+        round_trip_request(Request::Seal(SealRequest::RecoveryKeyEnrol {
+            words: "abacus zoom".into(),
+            current: None,
+        }));
+        round_trip_request(Request::Seal(SealRequest::RecoveryKeyEnrol {
+            words: "abacus zoom".into(),
+            current: Some("acorn yodel".into()),
+        }));
         // Core requests still parse as themselves.
         let r: Request = serde_json::from_str(
             r#"{"cmd":"recoverykitcreate","password":"p","threshold":2,"shares":3}"#,
@@ -79,6 +107,47 @@ mod tests {
             raw,
             Request::Seal(SealRequest::RecoveryWordsCreate { .. })
         ));
+    }
+
+    #[test]
+    fn recovery_key_words_stay_out_of_debug() {
+        let r = Request::Seal(SealRequest::RecoveryKeyEnrol {
+            words: "abacus zoom".into(),
+            current: Some("acorn yodel".into()),
+        });
+        let d = format!("{r:?}");
+        assert!(!d.contains("abacus") && !d.contains("acorn"), "{d}");
+        // No `current` on a first enrolment: the field is left out.
+        let first = Request::Seal(SealRequest::RecoveryKeyEnrol {
+            words: "abacus zoom".into(),
+            current: None,
+        });
+        let json = serde_json::to_string(&first).unwrap();
+        assert_eq!(
+            json,
+            r#"{"cmd":"recovery_key_enrol","words":"abacus zoom"}"#
+        );
+        let done = Response::Seal(SealResponse::RecoveryKeyEnrolled {
+            fingerprint: "00ff".into(),
+        });
+        let json = serde_json::to_string(&done).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"recovery_key_enrolled","fingerprint":"00ff"}"#
+        );
+        let back: Response = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            Response::Seal(SealResponse::RecoveryKeyEnrolled { .. })
+        ));
+        let shown = Response::Seal(SealResponse::RecoveryKeyWords {
+            fingerprint: "00ff".into(),
+            words: "abacus zoom".into(),
+        });
+        assert!(!format!("{shown:?}").contains("abacus"));
+        let json = serde_json::to_string(&shown).unwrap();
+        let back: Response = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
     #[test]

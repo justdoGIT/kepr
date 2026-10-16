@@ -1,7 +1,8 @@
 // daemon_session/status.rs — `Request::Status` (T11.24): the lock state
 // plus mode, profile, store backend, what seals the master key, the
-// caller's running gates, escrow and FIPS. Nothing here is secret; the
-// gate count is the caller's own.
+// caller's running gates, escrow, FIPS and (T12.31) whether a recovery
+// key is enrolled. Nothing here is secret; the gate count is the caller's
+// own.
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_session::StatusInfo;
@@ -15,6 +16,13 @@ pub fn key_sealer(password_protected: bool, user_mode: bool) -> &'static str {
     } else {
         "host"
     }
+}
+
+/// T12.31: whether a recovery key is enrolled, on a sealed store; on a
+/// passphrase store (which has the recovery kit instead) only when one is
+/// left from before `kepr lock`.
+pub fn recovery_key(password_protected: bool, enrolled: bool) -> Option<bool> {
+    (!password_protected || enrolled).then_some(enrolled)
 }
 
 pub fn handle(uid: u32) -> Response {
@@ -36,6 +44,10 @@ pub fn handle(uid: u32) -> Response {
             gates: Some(crate::daemon_gate_registry::gates_for(uid) as u32),
             escrow: Some(crate::state_dir().join("escrow.bin").exists()),
             fips: Some(crate::daemon_eco::cipher::describe().1),
+            recovery_key: recovery_key(
+                password_protected,
+                crate::daemon_seal::recovery_key::path().exists(),
+            ),
         },
     }
 }
@@ -50,6 +62,14 @@ mod tests {
         assert_eq!(key_sealer(true, true), "passphrase");
         assert_eq!(key_sealer(false, true), "file");
         assert_eq!(key_sealer(false, false), "host");
+    }
+
+    #[test]
+    fn recovery_key_shows_on_sealed_stores() {
+        assert_eq!(recovery_key(false, false), Some(false));
+        assert_eq!(recovery_key(false, true), Some(true));
+        assert_eq!(recovery_key(true, false), None);
+        assert_eq!(recovery_key(true, true), Some(true));
     }
 
     #[test]

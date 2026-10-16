@@ -1,6 +1,7 @@
 // cli_status.rs — `kepr status`: store lock state, then (T11.24) mode,
-// profile, store backend, what seals the master key, running gates and
-// escrow, then the crypto backend line with the FIPS flag (T7.16). An
+// profile, store backend, what seals the master key, running gates,
+// escrow and the recovery key (T12.31), then the crypto backend line with
+// the FIPS flag (T7.16). An
 // older daemon sends only the lock state; then only that line prints.
 
 use crate::cli_args::Args;
@@ -69,6 +70,14 @@ pub fn status_lines(s: &StatusInfo) -> Vec<String> {
     if let Some(e) = s.escrow {
         out.push(format!("Escrow: {}", if e { "on" } else { "off" }));
     }
+    if let Some(r) = s.recovery_key {
+        let state = if r {
+            "enrolled"
+        } else {
+            "none (kepr recovery-key enrol)"
+        };
+        out.push(format!("Recovery key: {state}"));
+    }
     out
 }
 
@@ -86,6 +95,7 @@ mod tests {
             gates: Some(2),
             escrow: Some(true),
             fips: Some(false),
+            recovery_key: Some(true),
         };
         assert_eq!(
             status_lines(&s),
@@ -95,7 +105,16 @@ mod tests {
                 "Master key: store passphrase (Argon2id)",
                 "Agent gates: 2 running",
                 "Escrow: on",
+                "Recovery key: enrolled",
             ]
+        );
+        let none = StatusInfo {
+            recovery_key: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            status_lines(&none),
+            ["Recovery key: none (kepr recovery-key enrol)"]
         );
     }
 

@@ -40,6 +40,7 @@ verbs print their usage line when called without arguments.
 | `reauth` | `KEY [--on\|--off]` | Enter the passphrase now (KEY readable for 60 s), or turn KEY's re-auth requirement on or off. |
 | `recovery-kit create` | `[--threshold K] [--shares N] [--out-dir DIR]` · `--words` | Split the master key into K-of-N shares (default 3 of 5), or print it as 24 words and a QR code. |
 | `recovery-kit restore` | `[--words]` | Rebuild a lost master key from K shares or the 24 words, under a new passphrase. |
+| `recovery-key` | `enrol [--replace]` | On a store with no passphrase: print a recovery key (24 words and a QR code) once; the daemon keeps the master key wrapped under it. |
 | `break-glass` | `NAME` | Reveal a sealed credential once with k recovery-kit shares (audited; marks it must-rotate). |
 | `escrow` | `enable ADMIN_KEY\|CONTACT` · `disable` · `status` · `open FILE [--out-dir DIR]` | Wrap the master key to an administrator's share key; the admin opens it as a 2-of-2 recovery kit. |
 | `panic` | — | Stop all agent gates; lock the store if it is passphrase-protected. |
@@ -894,6 +895,25 @@ gate running) and are audited as `recovery-words` / `recovery-restore`.
 An unknown word is reported by its position. A wrong but valid word fails
 the checksum, which can't say which word it was.
 
+### Recovery key for a sealed master key
+
+A store whose master key is sealed (host key, TPM2, a key service, a token
+or the keychain) has no passphrase, so the recovery kit and recovery words
+don't apply. `kepr recovery-key enrol` makes a random 256-bit recovery key,
+prints it once as 24 words and a QR code, and the daemon keeps the master
+key wrapped under it (Argon2id + AES-256-GCM) in `master.key.recovery` next
+to the key file. Only the master key's fingerprint comes back from the
+daemon. `kepr recovery-key enrol --replace` asks for the enrolled key's
+words first and swaps in a new key. Enrolling is refused on a passphrase
+store, while any agent gate runs and, in system mode, for anyone but root;
+every attempt is audited as `recovery-key-enrol`. `kepr status` shows
+whether one is enrolled.
+
+<Warning>
+  The words and the `master.key.recovery` file together open the store.
+  Keep the words offline, never next to the machine.
+</Warning>
+
 ### FIPS build
 
 An off-by-default `fips` cargo feature routes the daemon's AES-256-GCM and
@@ -1511,7 +1531,8 @@ and per-token rate limits.
 
 `kepr status` prints the lock state plus mode, profile, store backend
 (files or image), what protects the master key (passphrase, file or host),
-your running agent gates, whether escrow is on, and the crypto module.
+your running agent gates, whether escrow is on, whether a recovery key is
+enrolled (on a store with no passphrase), and the crypto module.
 
 ## Client SDKs
 
