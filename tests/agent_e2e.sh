@@ -95,7 +95,9 @@ while read -r status msg; do
 done <<<"$OUT"
 
 sleep 2.5
-if pgrep -x kepr-gate >/dev/null; then fail "gate outlived the agent"; else pass "gate exited with the agent"; fi
+# Only this run's gates: the daemon spawns them as its children, and other
+# kepr runs on the same machine may have gates of their own.
+if pgrep -x kepr-gate -P "$DAEMON_PID" >/dev/null; then fail "gate outlived the agent"; else pass "gate exited with the agent"; fi
 
 echo "── request cap"
 # The first request passes the cap (and may fail upstream); the second must
