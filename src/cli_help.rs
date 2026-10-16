@@ -35,6 +35,8 @@ COMMANDS:
                                        store a write-only key (paste once); --from-clipboard reads
                                        it once and clears the clipboard (a clipboard manager may
                                        keep its own copy)
+                                       --for github also binds github.com (git over HTTPS); add an
+                                       existing sealed GitHub key again to gain that binding
   agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox]
             [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
             [--max-requests-day N] [--max-tokens-day N]  per key per day, across sessions

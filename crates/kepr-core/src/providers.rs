@@ -109,6 +109,18 @@ pub const PROVIDERS: &[Provider] = &[
         keys_url: "https://github.com/settings/tokens",
         egress_env: &["GH_TOKEN", "GITHUB_TOKEN"],
     },
+    // T12.06: git over HTTPS. `--for github` binds github.com too; git
+    // reads the placeholder from git-credential-kepr, so no hints,
+    // prefixes or variables (`detect` never picks this row).
+    Provider {
+        name: "git",
+        host: "github.com",
+        header: Some(BASIC_PASSWORD),
+        prefixes: &[],
+        name_hints: &[],
+        keys_url: "https://github.com/settings/tokens",
+        egress_env: &[],
+    },
     // T2.04 (batch: aws): presets for common CLIs through the egress proxy.
     Provider {
         name: "stripe",
@@ -159,6 +171,23 @@ pub const BASIC_AUTH: &str = ":basic";
 
 /// T12.05: `Provider::header` sentinel for `Inject::BasicPassword`.
 pub const BASIC_PASSWORD: &str = ":basic-password";
+
+/// T12.06: git-credential-kepr's credential name for a git host
+/// (`github.com` → `GIT_GITHUB_COM`).
+pub fn git_cred_name(host: &str) -> String {
+    let mapped: String = host
+        .chars()
+        .map(|c| match c.is_ascii_alphanumeric() {
+            true => c.to_ascii_uppercase(),
+            false => '_',
+        })
+        .collect();
+    format!("GIT_{mapped}")
+}
+
+/// T12.06: inside `kepr agent run`, `<GIT_PH_PREFIX><git_cred_name>`
+/// holds the session placeholder git-credential-kepr hands to git.
+pub const GIT_PH_PREFIX: &str = "KEPR_PH_";
 
 /// T2.04: providers whose key works on every host under a domain. The
 /// gate intercepts a CONNECT to such a host when the session's key for
@@ -312,5 +341,20 @@ mod tests {
             assert_eq!(under_domain(h), Some("gcloud"));
             assert!(crate::binding::validate_host(h).is_ok());
         }
+    }
+
+    #[test]
+    fn git_over_https_on_github_com() {
+        assert_eq!(detect(None, "ghp_x").map(|p| p.name), Some("github"));
+        assert_eq!(by_host("github.com").map(|p| p.name), Some("git"));
+        assert_eq!(by_host("api.github.com").map(|p| p.name), Some("github"));
+        let git = lookup("git").unwrap();
+        assert_eq!(git.binding().inject, Inject::BasicPassword);
+        assert!(git.prefixes.is_empty() && git.name_hints.is_empty());
+        assert_eq!(git_cred_name("github.com"), "GIT_GITHUB_COM");
+        assert_eq!(
+            git_cred_name("git.example.net:8443"),
+            "GIT_GIT_EXAMPLE_NET_8443"
+        );
     }
 }
