@@ -12,6 +12,8 @@ mod canary;
 mod db;
 mod dlp;
 mod egress;
+mod forward;
+mod git_http;
 mod github_app;
 mod journal;
 mod limits;

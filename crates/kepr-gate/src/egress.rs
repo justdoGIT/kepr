@@ -68,6 +68,8 @@ enum To {
     Provider(&'static str),
     Aws(String),
     Domain(&'static str, String),
+    /// T12.07: github.com, smart-HTTP only (git_http.rs).
+    Git,
 }
 
 /// Accept the agent's TLS with a session-CA leaf for `host` and serve the
@@ -98,6 +100,7 @@ fn intercept(
                     To::Provider(pname) => proxy_request(st, pname, &path, r).await,
                     To::Aws(h) => crate::aws_egress::handle(st, h, r).await,
                     To::Domain(p, h) => proxy_request_to(st, p, Some(h), &path, r).await,
+                    To::Git => crate::git_http::handle(st, &path, r).await,
                 }
             }
         });
@@ -118,7 +121,11 @@ pub async fn connect(state: Arc<State>, req: Request<Incoming>) -> Response<Body
     let target = format!("{host}:{port}");
 
     if let Some(pname) = bound_provider(&state, &host, port) {
-        return intercept(state, req, (&host, &target), start, To::Provider(pname));
+        let to = match pname {
+            "git" => To::Git,
+            p => To::Provider(p),
+        };
+        return intercept(state, req, (&host, &target), start, to);
     }
     if let Some(pname) = domain_bound(&state, &host, port).await {
         let to = To::Domain(pname, host.clone());
@@ -250,6 +257,94 @@ mod tests {
             }
         }
         (s, status)
+    }
+
+    struct GitHub;
+    impl Resolve for GitHub {
+        fn generation(&self) -> Result<u64, String> {
+            Ok(1)
+        }
+        fn resolve(&self, _: &str, host: &str, _: u16) -> Result<(ZeroString, Inject), String> {
+            assert_eq!(host, "github.com");
+            Ok((ZeroString::from("REAL-GH-TOKEN"), Inject::BasicPassword))
+        }
+    }
+
+    /// TLS through the gate to `host` with the session CA, as a tool would.
+    async fn tls_to(
+        gate: &str,
+        ca: &crate::ca::SessionCa,
+        host: &'static str,
+    ) -> hyper::client::conn::http1::SendRequest<Full<Bytes>> {
+        let (stream, status) = connect(gate, &format!("{host}:443")).await;
+        assert!(status.contains("200"), "{status}");
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca.ca_der()).unwrap();
+        let cfg =
+            rustls::ClientConfig::builder_with_provider(Arc::new(crate::tls_provider::provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg))
+            .connect(host.try_into().unwrap(), stream)
+            .await
+            .expect("TLS with the session CA");
+        let (tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .unwrap();
+        tokio::spawn(conn);
+        tx
+    }
+
+    #[tokio::test]
+    async fn github_com_is_served_by_the_git_route() {
+        use base64::Engine;
+        let (base, mut rx) = upstream().await;
+        let cache = Arc::new(Cache::new(Box::new(GitHub), DEFAULT_TTL));
+        let ca =
+            Arc::new(crate::ca::SessionCa::with_suffixes(&["github.com".into()], &[]).unwrap());
+        let route = Route {
+            cred: "GH".into(),
+            slot: 0,
+        };
+        let routes = [("git".to_string(), route)].into();
+        let mut st = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
+            .with_egress(Some(ca.clone()), false);
+        st.client = build_client(true);
+        st.base_override = Some(base);
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gate = l.local_addr().unwrap().to_string();
+        tokio::spawn(crate::proxy::serve(l, Arc::new(st)));
+
+        let mut tx = tls_to(&gate, &ca, "github.com").await;
+        let b64 = |s: String| base64::engine::general_purpose::STANDARD.encode(s);
+        let ph = crate::placeholder::make(&KEY, SID, 0);
+        let auth = format!("Basic {}", b64(format!("x-access-token:{ph}")));
+        let get = |path: &str| {
+            Request::get(path)
+                .header("host", "github.com")
+                .header("authorization", auth.as_str())
+                .body(Full::new(Bytes::new()))
+                .unwrap()
+        };
+        let r = tx.send_request(get("/settings/tokens")).await.unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let r = (tx.send_request(get("/o/r.git/info/refs?service=git-upload-pack")))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let seen = rx.recv().await.unwrap();
+        assert!(
+            seen.starts_with("GET /o/r.git/info/refs?service=git-upload-pack "),
+            "{seen}"
+        );
+        let want = b64("x-access-token:REAL-GH-TOKEN".into());
+        assert!(
+            seen.contains(&format!("authorization: Basic {want}")),
+            "{seen}"
+        );
+        assert!(rx.try_recv().is_err(), "/settings/tokens reached upstream");
     }
 
     #[tokio::test]

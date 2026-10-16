@@ -36,6 +36,9 @@ time = "0.3"
 webpki-roots = "1"
 # T7.08: RS256 GitHub App JWTs (already in the tree through rustls).
 ring = "0.17"
+# T12.07: inflate gzip git upload-pack bodies for the DLP scan (pure-Rust
+# backend; already in the lock through the root crate).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [features]
 # T7.16 FIPS mode: rustls and the session CA (rcgen) on aws-lc-rs instead of

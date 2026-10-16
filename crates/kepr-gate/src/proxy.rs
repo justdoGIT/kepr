@@ -9,16 +9,16 @@ use std::time::Instant;
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, Limited};
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode, Uri};
+use hyper::{Request, Response, StatusCode};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use kepr_core::secmem::SplitKey;
 
 use crate::dlp;
+use crate::forward;
 use crate::journal::Log;
 use crate::limits::{reports_usage, Limiter, UsageMeter};
 use crate::placeholder;
-use crate::rewrite::{placeholders_in, upstream_headers, upstream_query};
 use crate::routes;
 use crate::vault::Cache;
 
@@ -51,9 +51,12 @@ pub struct State {
     pub(crate) base_override: Option<String>,
 }
 
-pub(crate) fn build_client(
-    allow_plain_http: bool,
-) -> Client<HttpsConnector<HttpConnector>, Full<Bytes>> {
+/// T12.07: generic over the request body, for git pushes streamed upstream.
+pub(crate) fn build_client<B>(allow_plain_http: bool) -> Client<HttpsConnector<HttpConnector>, B>
+where
+    B: hyper::body::Body + Send,
+    B::Data: Send,
+{
     // Compiled-in roots only: never trust CA files or proxies from the
     // environment, which the agent may control.
     let b = hyper_rustls::HttpsConnectorBuilder::new()
@@ -163,6 +166,9 @@ pub async fn proxy_request_to(
     rest: &str,
     req: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
+    if pname == "git" {
+        return crate::git_http::handle(state, rest, req).await; // T12.07: smart-HTTP only
+    }
     let not_found = || kepr_error(StatusCode::NOT_FOUND, "kepr", "unknown kepr route");
     let (Some(provider), Some(route)) = (routes::lookup(pname), state.routes.get(pname)) else {
         return Ok(not_found());
@@ -177,53 +183,10 @@ pub async fn proxy_request_to(
         path: rest,
         start: Instant::now(),
     };
-    let query = req.uri().query().map(str::to_string);
-    let head = crate::canary::screen(&state.cache, req.headers(), query.as_deref(), None);
-    if let Some((r, why)) = head.await {
-        return Ok(log.reply(r, 0, Some(why))); // T9.08
-    }
-
-    let phs = placeholders_in(req.headers(), query.as_deref());
-    if phs.is_empty() || !phs.iter().all(|p| state.valid_placeholder(p, route.slot)) {
-        let r = kepr_error(
-            StatusCode::UNAUTHORIZED,
-            "kepr",
-            "invalid or missing kepr placeholder",
-        );
-        return Ok(log.reply(r, 0, None));
-    }
-
-    if let Err(refusal) = state.limiter.admit(Instant::now()) {
-        return Ok(log.reply(limit_response(refusal), 0, Some("limit")));
-    }
-    let today = state
-        .limiter
-        .admit_today(state.cache.clone(), route.cred.clone());
-    if let Err(refusal) = today.await {
-        return Ok(log.reply(limit_response(refusal), 0, Some("limit"))); // T9.06
-    }
-
-    let (cache, cred, h) = (state.cache.clone(), route.cred.clone(), host.clone());
-    let (value, inject) = match tokio::task::spawn_blocking(move || cache.get(&cred, &h, 443)).await
+    let (value, inject) = match forward::admit(&log, route, req.headers(), req.uri().query()).await
     {
-        Ok(Ok(v)) => v,
-        _ => {
-            let r = kepr_error(
-                StatusCode::BAD_GATEWAY,
-                "kepr",
-                "kepr could not obtain the credential",
-            );
-            return Ok(log.reply(r, 0, None));
-        }
-    };
-    // T7.08: a GitHub App key becomes an installation token here.
-    let Ok((value, inject)) = crate::github_app::swap(&state, value, inject).await else {
-        let r = kepr_error(
-            StatusCode::BAD_GATEWAY,
-            "kepr",
-            "kepr could not obtain a token",
-        );
-        return Ok(log.reply(r, 0, None));
+        Ok(v) => v,
+        Err(r) => return Ok(r),
     };
 
     let (parts, body) = req.into_parts();
@@ -249,46 +212,22 @@ pub async fn proxy_request_to(
     }
 
     let conn = state.recorder.http_request(pname, &method, rest, &bytes);
-    let base = state
-        .base_override
-        .clone()
-        .unwrap_or_else(|| format!("https://{host}"));
-    let q = upstream_query(query.as_deref(), &inject, value.as_str())
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
-    let built = format!("{base}{rest}{q}")
-        .parse::<Uri>()
-        .map_err(|_| ())
-        .and_then(|uri| {
-            let headers =
-                upstream_headers(&parts.headers, &inject, value.as_str()).map_err(|_| ())?;
-            let mut up = Request::builder()
-                .method(parts.method.clone())
-                .uri(uri)
-                .body(Full::new(bytes.clone()))
-                .map_err(|_| ())?;
-            *up.headers_mut() = headers;
-            Ok(up)
-        });
+    let built = forward::upstream_request(
+        &log,
+        &parts,
+        &inject,
+        value.as_str(),
+        Full::new(bytes.clone()),
+    );
     let own = crate::mask::forms(value.as_str()); // T12.01, even if the cache empties
     drop(value);
-    let Ok(up) = built else {
-        let r = kepr_error(
-            StatusCode::BAD_REQUEST,
-            "kepr",
-            "kepr could not build the upstream request",
-        );
-        return Ok(log.reply(r, bytes.len(), None));
+    let Some(up) = built else {
+        return Ok(log.reply(forward::cannot_build(), bytes.len(), None));
     };
 
     match state.client.request(up).await {
         Ok(resp) => {
-            let (mut p, b) = resp.into_parts();
-            crate::rewrite::clean_response(&mut p.headers, &inject);
-            let mut n = state.cache.needles();
-            n.extend(own);
-            crate::mask::headers(&mut p.headers, &n);
-            let b = crate::mask::body(b.boxed(), n);
+            let (p, b) = forward::for_agent(&state, resp, &inject, own);
             let line = log.line(p.status, bytes.len(), None);
             let status = p.status.as_u16();
             let b = (state.recorder).http_response(conn, pname, status, b);
@@ -307,10 +246,7 @@ pub async fn proxy_request_to(
             });
             Ok(Response::from_parts(p, b.boxed()))
         }
-        Err(_) => {
-            let r = kepr_error(StatusCode::BAD_GATEWAY, "kepr", "upstream request failed");
-            Ok(log.reply(r, bytes.len(), None))
-        }
+        Err(_) => Ok(log.reply(forward::upstream_failed(), bytes.len(), None)),
     }
 }
 
@@ -336,6 +272,7 @@ pub async fn serve(listener: tokio::net::TcpListener, state: Arc<State>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rewrite::{placeholders_in, upstream_headers, upstream_query};
     use hyper::header::{HeaderMap, HeaderValue, AUTHORIZATION};
     use kepr_core::binding::Inject;
 
