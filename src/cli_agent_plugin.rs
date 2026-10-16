@@ -61,12 +61,15 @@ pub fn guidance_path(
     }
 }
 
-/// Byte range of the first line at or after `from` that is `marker`.
-fn marker_line(text: &str, marker: &str, from: usize) -> Option<(usize, usize)> {
-    let mut at = from;
-    for line in text[from..].split_inclusive('\n') {
-        if line.trim_end() == marker {
-            return Some((at, at + line.len()));
+/// Byte range of kepr's block: the first end marker line and the last
+/// begin marker line above it, so a stray begin marker stays user text.
+fn block_span(text: &str) -> Option<(usize, usize)> {
+    let (mut at, mut begin) = (0, None);
+    for line in text.split_inclusive('\n') {
+        match line.trim_end() {
+            BEGIN => begin = Some(at),
+            END if begin.is_some() => return begin.map(|b| (b, at + line.len())),
+            _ => {}
         }
         at += line.len();
     }
@@ -77,9 +80,7 @@ fn marker_line(text: &str, marker: &str, from: usize) -> Option<(usize, usize)> 
 /// `body`: replaced in place, or appended. Text outside it is untouched.
 pub fn upsert_block(text: &str, body: &str) -> String {
     let block = format!("{BEGIN}\n{}\n{END}\n", body.trim_end());
-    let span = marker_line(text, BEGIN, 0)
-        .and_then(|(b, e)| marker_line(text, END, e).map(|(_, end)| (b, end)));
-    if let Some((b, e)) = span {
+    if let Some((b, e)) = block_span(text) {
         return format!("{}{block}{}", &text[..b], &text[e..]);
     }
     let sep = match text {
@@ -271,6 +272,15 @@ mod tests {
         let replaced = upsert_block(&around, "new rules");
         assert_eq!(replaced, format!("top\n{B}\nnew rules\n{E}\nbottom\n"));
         assert_eq!(upsert_block(&replaced, "new rules"), replaced);
+        // A stray begin marker (no end) stays user text, on every run.
+        let stray = format!("top\n{B}\nmine\n");
+        let once = upsert_block(&stray, "r");
+        assert_eq!(once, format!("{stray}\n{B}\nr\n{E}\n"));
+        assert_eq!(upsert_block(&once, "r"), once);
+        assert_eq!(
+            upsert_block(&once, "r2"),
+            format!("{stray}\n{B}\nr2\n{E}\n")
+        );
     }
 
     #[test]
