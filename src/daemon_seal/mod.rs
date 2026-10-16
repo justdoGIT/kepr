@@ -6,6 +6,7 @@
 //              recovery kit in daemon_recovery.rs
 //   recovery_key T12.31 a recovery key for a sealed master key, and
 //              T12.32 unlocking with it
+//   describe   T12.33 what seals the master key, for `kepr status`
 //   startup    T12.32 the master key at start-up: start locked when the
 //              sealed key won't unseal and a recovery key is enrolled
 //   runner     the helper-tool runner the sealers share (fake in tests)
@@ -26,6 +27,7 @@
 // `sealer_for` picks a sealer from the environment for
 // master_key::sealer_from_env; `None` keeps the default one.
 
+pub mod describe;
 pub mod fido2_kek;
 mod http;
 mod keychain;
@@ -78,6 +80,23 @@ pub fn sealer_for(seal: Option<&str>, work: &Path) -> Result<Option<Box<dyn Seal
         })));
     }
     Ok(None)
+}
+
+/// T12.33: does the environment pick a sealer other than the default
+/// one (what `sealer_for` would build)? Builds nothing.
+pub fn configured(seal: Option<&str>, tpm: Result<bool, String>) -> bool {
+    let byok = seal
+        .and_then(|s| s.split_once(':'))
+        .is_some_and(|(k, _)| matches!(k, "aws-kms" | "gcp-kms" | "azure-kv" | "pkcs11"));
+    // `tpm`: the TPM2 PIN / counter options are set; an error means
+    // sealer_for refuses, so the default sealer was never in use.
+    seal == Some("keychain") || byok || tpm.unwrap_or(true)
+}
+
+pub fn configured_from_env() -> bool {
+    let seal = std::env::var("KEPR_MASTER_KEY_SEAL").ok();
+    let tpm = tpm_config::TpmConfig::from_env(seal.as_deref()).map(|c| c.is_some());
+    configured(seal.as_deref(), tpm)
 }
 
 /// The vault image's anti-rollback counter (T12.30): a TPM2 NV counter
@@ -145,5 +164,35 @@ mod tests {
             let e = sealer_for(Some("keychain"), dir).err().unwrap();
             assert!(e.contains("only available on macOS"), "{e}");
         }
+    }
+
+    #[test]
+    fn configured_matches_the_sealers_sealer_for_builds() {
+        for seal in [
+            None,
+            Some("host"),
+            Some("tpm2"),
+            Some("host+tpm2"),
+            Some("auto"),
+        ] {
+            assert!(!configured(seal, Ok(false)), "{seal:?}");
+            // The TPM2 PIN / counter options pick the TPM2 sealer.
+            assert!(configured(seal, Ok(true)), "{seal:?}");
+        }
+        for seal in [
+            "keychain",
+            "aws-kms:arn:aws:kms:eu-west-1:1:key/k",
+            "gcp-kms:projects/p/locations/l/keyRings/r/cryptoKeys/k",
+            "azure-kv:https://v.vault.azure.net/keys/k/1",
+            "pkcs11:/m.so:L",
+        ] {
+            assert!(configured(Some(seal), Ok(false)), "{seal}");
+        }
+        // A broken TPM2 setting stops sealer_for: never call it the default.
+        assert!(configured(None, Err("bad".into())));
+        assert!(
+            !configured(Some("aws-kms"), Ok(false)),
+            "no key: not a sealer"
+        );
     }
 }

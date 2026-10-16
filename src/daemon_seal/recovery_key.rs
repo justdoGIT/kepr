@@ -199,7 +199,9 @@ fn unlock_with(uid: u32, fence: Fence, words: &str, u: &Unlock) -> Result<Option
     let resealed = (u.sealer)().and_then(|s| {
         let blob = s.seal(&key)?;
         crate::atomic_file::write(u.key_file, &blob, 0o600)
-            .map_err(|e| format!("cannot write master key: {e}"))
+            .map_err(|e| format!("cannot write master key: {e}"))?;
+        crate::master_key::record_seal_kind(u.key_file, s.as_ref()); // T12.33
+        Ok(())
     });
     match resealed {
         Ok(()) => {
@@ -427,7 +429,11 @@ mod tests {
     #[test]
     fn right_words_unlock_and_reseal_once() {
         let rig = Rig::new();
+        // What sealed the old key no longer applies (T12.33).
+        let record = crate::master_key::seal_record_path(&rig.key_file());
+        std::fs::write(&record, b"host+tpm2").unwrap();
         assert_eq!(rig.run(0, OPEN, words(1).as_str()), Ok(None));
+        assert!(!record.exists(), "a sealer that can't say drops the record");
         assert_eq!(rig.installed(), Some(LIVE));
         assert_eq!(rig.sealer.seals(), 1);
         let blob = std::fs::read(rig.key_file()).unwrap();

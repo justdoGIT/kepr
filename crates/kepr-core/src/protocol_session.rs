@@ -71,8 +71,12 @@ pub struct StatusInfo {
     /// `file` or `image` (T4.06 vault image).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_backend: Option<String>,
-    /// What protects the master key at rest: `passphrase`, `host` (the
-    /// credential backend, system mode) or `file` (owner-only key file).
+    /// What protects the master key at rest: `passphrase` or
+    /// `passphrase+fido2`; `file` (owner-only key file); the credential
+    /// backend's `host`, `tpm2` or `host+tpm2` (`host-unrecorded` for a
+    /// key sealed before that was recorded); `tpm2+pin+pcrs+counter` (or
+    /// a subset) for the TPM2 PIN / counter sealer; `aws-kms`, `gcp-kms`,
+    /// `azure-kv`, `pkcs11`; `keychain`; `unseal-failed` (T12.32).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_sealer: Option<String>,
     /// Agent gates running for the caller.

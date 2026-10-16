@@ -862,8 +862,12 @@ Notes and limits:
   (opens `/dev/tpmrm0`), `kms.conf.example` (opens `AF_INET`/`AF_INET6` and
   loads `/etc/kepr/kms.env`) or `pkcs11.conf.example` (YubiHSM connector
   and USB).
-- `kepr status` reports the protection as passphrase, file or host only; it
-  doesn't show which of these sealers is in use.
+- `kepr status` names the sealer: TPM2 with its PIN, PCR and counter
+  options, the key service or token, the keychain, or for the default
+  system sealer whether the key is bound to the host key alone or also to
+  the TPM (`auto` is recorded as what it picked, in `master.key.seal`), so
+  a host that fell back from TPM2 to the host key shows it. Keys sealed
+  before that record existed show as host-bound with TPM use unrecorded.
 
 ### Passphrase plus security key
 
@@ -1546,7 +1550,10 @@ and per-token rate limits.
 ### Status
 
 `kepr status` prints the lock state plus mode, profile, store backend
-(files or image), what protects the master key (passphrase, file or host),
+(files or image), what protects the master key (the passphrase, with or
+without a security key; the owner-only key file; or the sealer: host key,
+TPM2 and its options, a key service or token, the keychain; or that it did
+not unseal at start-up),
 your running agent gates, whether escrow is on, whether a recovery key is
 enrolled (on a store with no passphrase), and the crypto module.
 
