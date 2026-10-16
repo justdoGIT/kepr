@@ -145,6 +145,13 @@ fn wl_copy_argv(tmp_on_memory: bool, kepr: &Path) -> Vec<OsString> {
     wrap.into_iter().chain(plain).collect()
 }
 
+/// A human-mode note (stdout carries the JSON reply in `--json` mode).
+fn note(say: &dyn Fn()) {
+    if !crate::cli_ui::json_mode() {
+        say();
+    }
+}
+
 /// Hand `value` to the clipboard tool on stdin.
 fn copy_value(t: Tool, value: &[u8]) -> Result<(), String> {
     let failed = || Err(format!("{} failed", t.copy_cmd()[0]));
@@ -155,12 +162,12 @@ fn copy_value(t: Tool, value: &[u8]) -> Result<(), String> {
             .and_then(|kepr| run(&wl_copy_argv(false, &kepr), Some(value)));
         match wrapped.map(|(st, _)| (st.success(), st.code())) {
             Some((true, _)) => return Ok(()),
-            Some((false, Some(crate::cli_memfs::PRIVATE_TMP_UNAVAILABLE))) | None => {
+            Some((false, Some(crate::cli_memfs::PRIVATE_TMP_UNAVAILABLE))) | None => note(&|| {
                 crate::cli_ui::warn(
                     "the value passes through a file in /tmp while it is on the clipboard \
-                 (user namespaces unavailable)",
+                     (user namespaces unavailable)",
                 )
-            }
+            }),
             Some((false, _)) => return failed(),
         }
     }
@@ -222,9 +229,11 @@ pub fn cmd_copy(name: &str, clear_secs: u64) -> Response {
     if let Err(e) = copy_value(t, value.as_bytes()) {
         return Response::fail(e);
     }
-    crate::cli_ui::info(&format!(
-        "this desktop gives clipboard managers no hint; the value is cleared after {clear_secs} s"
-    ));
+    note(&|| {
+        crate::cli_ui::info(&format!(
+            "this desktop gives clipboard managers no hint; the value is cleared after {clear_secs} s"
+        ))
+    });
     let job = format!("{}\n{clear_secs}\n{}\n", t.id(), digest(value.as_bytes()));
     drop(value);
     match detached_kepr("__clipboard-clear").and_then(|mut c| c.spawn()) {
