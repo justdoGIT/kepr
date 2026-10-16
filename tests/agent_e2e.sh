@@ -236,11 +236,33 @@ if [ -e /dev/fuse ] && { [ "$(id -u)" = 0 ] || command -v fusermount3 >/dev/null
         SB2=$(KEPR_LANDLOCK=0 "$KEPR" agent run claude --strict-sandbox -- sh -c '
             if cat /proc/self/fd/3/.env >/dev/null 2>&1; then echo "bad open through an inherited fd succeeded"; else echo "ok open through an inherited fd fails"; fi
             ' 3<"$MNT" 2>&1) || true
+        # A chroot (allowed in a nested user namespace) drops the sandbox
+        # mounts from the opener's own mountinfo; its parent still has them.
+        cat >"$WORK/chroot_open.py" <<'PY'
+import ctypes, os, sys
+try:
+    # CLONE_NEWUSER: full capabilities in the new namespace, until an exec
+    if ctypes.CDLL(None, use_errno=True).unshare(0x10000000) != 0:
+        raise OSError(ctypes.get_errno(), "unshare")
+    os.chroot(sys.argv[1])
+except OSError as e:
+    print("skip no chroot in a nested user namespace:", e)
+    sys.exit(0)
+try:
+    os.read(os.open(".env", os.O_RDONLY, dir_fd=3), 64)
+    print("bad a chrooted opener read the file")
+except OSError:
+    print("ok a chrooted opener is refused")
+PY
+        mkdir -p "$WORK/jail"
+        SB3=$(KEPR_LANDLOCK=0 "$KEPR" agent run claude --strict-sandbox -- \
+            python3 "$WORK/chroot_open.py" "$WORK/jail" 3<"$MNT" 2>&1) || true
         while read -r status msg; do
-            case "$status" in ok) pass "$msg" ;; bad) fail "$msg" ;; esac
+            case "$status" in ok) pass "$msg" ;; bad) fail "$msg" ;; skip) printf '  –  SKIP: %s\n' "$msg" ;; esac
         done <<<"$SB
-$SB2"
-        case "$SB$SB2" in *mount-secret*) fail "a sandbox printed the mounted value" ;; esac
+$SB2
+$SB3"
+        case "$SB$SB2$SB3" in *mount-secret*) fail "a sandbox printed the mounted value" ;; esac
         if grep -q "the caller is inside a kepr agent sandbox" "$WORK/mount.log"; then
             pass "kepr mount refuses an opener inside a sandbox"
         else

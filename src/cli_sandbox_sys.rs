@@ -207,6 +207,38 @@ pub fn in_kepr_sandbox(mountinfo: &str) -> bool {
         .any(|l| fs_and_source(l).is_some_and(|(_, src)| src == "kepr-hidden"))
 }
 
+/// T12.20: is an ancestor of `pid` inside a sandbox? A harness can hide
+/// its own sandbox mounts (mountinfo leaves out what lies outside a
+/// chroot, and a nested user namespace allows one), not its parents'.
+/// `read(pid, file)` reads /proc/PID/FILE. The walk ends at pid 1 or at
+/// an ancestor it can't read (another user's process under hidepid).
+pub fn sandboxed_ancestor(
+    pid: u32,
+    read: &dyn Fn(u32, &str) -> Option<String>,
+) -> Result<bool, String> {
+    let ppid = |p: u32| {
+        let stat = read(p, "stat")?;
+        let (_, rest) = stat.rsplit_once(") ")?;
+        rest.split_whitespace().nth(1)?.parse::<u32>().ok()
+    };
+    let mut p = ppid(pid).ok_or("its parent is unknown")?;
+    for _ in 0..64 {
+        if p <= 1 {
+            return Ok(false);
+        }
+        match read(p, "mountinfo") {
+            Some(mi) if in_kepr_sandbox(&mi) => return Ok(true),
+            Some(_) => {}
+            None => return Ok(false),
+        }
+        p = match ppid(p) {
+            Some(next) => next,
+            None => return Ok(false),
+        };
+    }
+    Err("its process tree is too deep".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +276,50 @@ mod tests {
         assert!(!in_kepr_sandbox(
             "50 40 0:40 / /kepr-hidden rw - tmpfs tmpfs rw\n"
         ));
+    }
+
+    /// A fake /proc: pid -> (ppid, mountinfo).
+    fn proc_of<'a>(
+        procs: &'a [(u32, u32, &'static str)],
+    ) -> impl Fn(u32, &str) -> Option<String> + 'a {
+        move |pid, file| {
+            let &(_, ppid, mi) = procs.iter().find(|p| p.0 == pid)?;
+            match file {
+                "stat" => Some(format!("{pid} (a b) c) S {ppid} 1 1 0 -1")),
+                "mountinfo" => Some(mi.to_string()),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn a_sandboxed_ancestor_gives_away_a_chrooted_opener() {
+        // A chroot in a nested user namespace drops the sandbox's mounts
+        // from the opener's own mountinfo, but not from its parents'.
+        let sb = "2 1 0:40 / /h/.local/share/kepr ro - tmpfs kepr-hidden ro\n";
+        let chrooted = "9 8 0:50 / / rw - tmpfs none rw\n";
+        let tree = [
+            (1, 0, HOST),
+            (50, 1, HOST),
+            (60, 50, sb),
+            (70, 60, chrooted),
+        ];
+        let read = proc_of(&tree);
+        assert_eq!(sandboxed_ancestor(70, &read), Ok(true));
+        assert_eq!(
+            sandboxed_ancestor(60, &read),
+            Ok(false),
+            "its own table is checked apart"
+        );
+        assert_eq!(sandboxed_ancestor(50, &read), Ok(false));
+        // An ancestor we can't see (another user's, hidepid) ends the walk.
+        let hidden = [(70, 66, chrooted)];
+        assert_eq!(sandboxed_ancestor(70, &proc_of(&hidden)), Ok(false));
+        assert!(
+            sandboxed_ancestor(99, &read).is_err(),
+            "the opener's parent must be known"
+        );
+        let deep: Vec<(u32, u32, &'static str)> = (2..100).map(|p| (p, p + 1, HOST)).collect();
+        assert!(sandboxed_ancestor(2, &proc_of(&deep)).is_err());
     }
 }
