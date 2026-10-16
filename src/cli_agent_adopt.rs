@@ -8,13 +8,18 @@
 // rewrites files without keeping a plaintext backup (a backup would
 // leave the key on disk, which is what adoption is meant to end).
 // Agent harness config files (JSON / YAML) are read by key through
-// cli_agent_adopt_harness.rs (T12.18) and never rewritten.
+// cli_agent_adopt_harness.rs (T12.18) and never rewritten; shell history
+// through cli_agent_adopt_history.rs (T12.19). `--remove` is in
+// cli_agent_adopt_remove.rs.
 
 use std::path::{Path, PathBuf};
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
+use zeroize::Zeroizing;
 
+use crate::cli_agent_adopt_history::{is_history_file, scan_history};
+use crate::cli_agent_adopt_remove::remove_adopted;
 use crate::{cli_agent_detect, cli_ui, client};
 
 pub struct Found {
@@ -53,8 +58,17 @@ fn default_files() -> Vec<PathBuf> {
                 .iter()
                 .map(|f| home.join(f)),
         );
+        let env = |k: &str| std::env::var(k).ok();
+        v.extend(crate::cli_agent_adopt_history::history_files(&home, &env));
     }
     v
+}
+
+/// A value written out in full: not `$VAR`, `$(…)`, `` `…` ``, a
+/// half-quoted word or several words.
+pub fn literal(v: &str) -> bool {
+    !v.chars()
+        .any(|c| c.is_whitespace() || "$`'\"(){}<>;|&\\".contains(c))
 }
 
 pub fn unquote(v: &str) -> &str {
@@ -92,31 +106,40 @@ pub fn scan_text(file: &Path, text: &str) -> Vec<Found> {
         .enumerate()
         .filter_map(|(i, l)| {
             let (name, value) = parse_line(l)?;
+            let mut value = Zeroizing::new(value);
+            if !literal(&value) {
+                return None;
+            }
             let provider = kepr_core::providers::detect(Some(&name), &value)?.name;
             Some(Found {
                 file: file.to_path_buf(),
                 line: i + 1,
                 name,
                 provider,
-                value: ZeroString::from_string(value),
+                value: ZeroString::from_string(std::mem::take(&mut *value)),
                 key: None,
             })
         })
         .collect()
 }
 
-/// Delete the given 1-based line numbers from `text`.
-pub fn remove_lines(text: &str, lines: &[usize]) -> String {
-    let mut out: String = text
-        .lines()
-        .enumerate()
-        .filter(|(i, _)| !lines.contains(&(i + 1)))
-        .map(|(_, l)| format!("{l}\n"))
-        .collect();
-    if !text.ends_with('\n') && out.ends_with('\n') {
-        out.pop();
+/// Read one file the way its kind needs: a history file even when it is
+/// not UTF-8 (zsh), any other file only when it is.
+pub fn scan_file(p: &Path, history: bool) -> Vec<Found> {
+    let Ok(bytes) = std::fs::read(p).map(Zeroizing::new) else {
+        return Vec::new();
+    };
+    if history {
+        let text = Zeroizing::new(String::from_utf8_lossy(&bytes).into_owned());
+        return scan_history(p, &text);
     }
-    out
+    match std::str::from_utf8(&bytes) {
+        Ok(t) if crate::cli_agent_adopt_harness::is_structured(p) => {
+            crate::cli_agent_adopt_harness::scan_structured(p, t)
+        }
+        Ok(t) => scan_text(p, t),
+        Err(_) => Vec::new(),
+    }
 }
 
 fn store(f: &Found) -> Result<(), String> {
@@ -216,16 +239,12 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
         .collect();
     paths.sort();
     paths.dedup();
-    let mut found: Vec<Found> = Vec::new();
-    for p in &paths {
-        if let Ok(text) = std::fs::read_to_string(p) {
-            found.extend(if crate::cli_agent_adopt_harness::is_structured(p) {
-                crate::cli_agent_adopt_harness::scan_structured(p, &text)
-            } else {
-                scan_text(p, &text)
-            });
-        }
-    }
+    let known = crate::cli_agent_adopt_history::known_files();
+    let is_history = |p: &Path| is_history_file(p, &known);
+    let found: Vec<Found> = paths
+        .iter()
+        .flat_map(|p| scan_file(p, is_history(p)))
+        .collect();
     if found.is_empty() {
         cli_ui::info("no provider API keys found in the scanned files");
         return Response::Pong;
@@ -260,47 +279,11 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
         cli_ui::warn("the plaintext lines are still in place; delete them or re-run with --remove");
         return Response::Pong;
     }
-    remove_adopted(&paths, &plan, &found, &stored);
-    Response::Pong
-}
-
-/// `--remove`: delete the source lines of the keys that were stored. A
-/// structured file (JSON / YAML) is never rewritten; the user is told to
-/// remove the key by hand.
-pub fn remove_adopted(paths: &[PathBuf], plan: &Plan, found: &[Found], stored: &[&str]) {
-    for file in paths {
-        let lines: Vec<usize> = plan
-            .remove
-            .iter()
-            .filter(|(p, _)| p == file)
-            .filter(|(p, l)| {
-                found
-                    .iter()
-                    .any(|f| &f.file == p && f.line == *l && stored.contains(&f.name.as_str()))
-            })
-            .map(|(_, l)| *l)
-            .collect();
-        if lines.is_empty() {
-            continue;
-        }
-        if crate::cli_agent_adopt_harness::is_structured(file) {
-            cli_ui::warn(&format!(
-                "remove the key from {} by hand; under `kepr agent run` the harness gets a placeholder",
-                file.display()
-            ));
-            continue;
-        }
-        let result = std::fs::read_to_string(file)
-            .and_then(|t| std::fs::write(file, remove_lines(&t, &lines)));
-        match result {
-            Ok(()) => cli_ui::ok(&format!(
-                "removed {} line(s) from {}",
-                lines.len(),
-                file.display()
-            )),
-            Err(e) => cli_ui::err(&format!("{}: {e}", file.display())),
-        }
+    let rewritten = remove_adopted(&paths, &plan, &found, &stored);
+    if rewritten.iter().any(|p| is_history(p)) {
+        cli_ui::warn(crate::cli_agent_adopt_history::REMOVE_WARNING);
     }
+    Response::Pong
 }
 
 #[cfg(test)]
@@ -396,37 +379,11 @@ mod tests {
     }
 
     #[test]
-    fn remove_leaves_structured_files_byte_identical() {
-        let dir = std::env::temp_dir().join(format!("kepr-adopt-rm-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let env = dir.join(".env");
-        let json = dir.join("auth.json");
-        let yml = dir.join("models.yml");
-        std::fs::write(&env, "A=1\nXAI_API_KEY=xai-abcdefghijkl\n").unwrap();
-        let json_text = "{\n  \"OPENAI_API_KEY\": \"sk-proj-abcdefghijkl\"\n}\n";
-        std::fs::write(&json, json_text).unwrap();
-        let yml_text = "providers:\n  p:\n    apiKey: sk-ant-api03-abcdefghijkl\n";
-        std::fs::write(&yml, yml_text).unwrap();
-        let mut found = scan_text(&env, &std::fs::read_to_string(&env).unwrap());
-        for f in [&json, &yml] {
-            let t = std::fs::read_to_string(f).unwrap();
-            found.extend(crate::cli_agent_adopt_harness::scan_structured(f, &t));
-        }
-        assert_eq!(found.len(), 3);
-        let p = plan(&found, &Default::default(), &Default::default());
-        let stored: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
-        let paths = vec![env.clone(), json.clone(), yml.clone()];
-        remove_adopted(&paths, &p, &found, &stored);
-        assert_eq!(std::fs::read_to_string(&env).unwrap(), "A=1\n");
-        assert_eq!(std::fs::read_to_string(&json).unwrap(), json_text);
-        assert_eq!(std::fs::read_to_string(&yml).unwrap(), yml_text);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn remove_lines_keeps_the_rest() {
-        assert_eq!(remove_lines("a\nb\nc\n", &[2]), "a\nc\n");
-        assert_eq!(remove_lines("a\nb", &[2]), "a");
-        assert_eq!(remove_lines("a\nb\nc", &[1, 3]), "b");
+    fn values_that_are_not_written_out_are_left_alone() {
+        let text = "export OPENAI_API_KEY=$(pass show openai)\nXAI_API_KEY=\"$XAI\"\n\
+                    ANTHROPIC_API_KEY=`cat k`\n";
+        assert!(scan_text(Path::new(".bashrc"), text).is_empty());
+        assert!(literal("sk-proj-abc_DEF.1/2+3="));
+        assert!(!literal("${X}") && !literal("'half") && !literal("a b"));
     }
 }

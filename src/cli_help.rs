@@ -54,8 +54,9 @@ COMMANDS:
                                        launcher so typing `claude` (etc.) runs it through
                                        `kepr agent run`; put DIR (~/.local/share/kepr/shims) first on PATH
   hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
-  agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc / harness config files
-                                       into kepr (JSON / YAML files are never rewritten)
+  agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc / shell history /
+                                       harness config files into kepr (JSON / YAML files are
+                                       never rewritten)
   agent ls | agent revoke KEY          list / delete sealed keys
   mcp                                  MCP server (stdio): list keys, call provider APIs, no values
   panic                                stop all agent gates; lock the store if passphrase-protected

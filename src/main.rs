@@ -8,6 +8,8 @@ mod cli_activity;
 mod cli_agent_adapters;
 mod cli_agent_adopt;
 mod cli_agent_adopt_harness;
+mod cli_agent_adopt_history;
+mod cli_agent_adopt_remove;
 mod cli_agent_cmd;
 mod cli_agent_db;
 mod cli_agent_db_rotate;

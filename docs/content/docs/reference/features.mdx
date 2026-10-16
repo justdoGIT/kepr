@@ -147,7 +147,7 @@ See the [AI agents guide](/docs/guides/ai-agents) for the full walkthrough.
 | `agent install` | `omp\|grok\|opencode\|claude\|codex [--port N]` | Point the harness's config at the gate and install kepr's plugin (omp, Grok Build); for `claude` and `codex`, install kepr's guidance for the model (a Claude Code skill, a block in Codex's `AGENTS.md`). |
 | `agent doctor` | `[--port N] [--json]` | Check that omp and Grok Build still route through the gate and that kepr's plugin is installed and current; prints each problem's fix, exits non-zero on any. Prints paths only, never file contents. |
 | `agent shim` | `HARNESS [--dir DIR] [--remove]` | Write a launcher so typing the harness's own command runs it through `kepr agent run` (default DIR `~/.local/share/kepr/shims`, to put first on `PATH`). |
-| `agent adopt` | `[FILE...] [--yes] [--remove]` | Move keys from `.env`, shell rc and agent harness config files into kepr; JSON / YAML files are never rewritten. |
+| `agent adopt` | `[FILE...] [--yes] [--remove]` | Move keys from `.env`, shell rc, shell history (bash, zsh, fish) and agent harness config files into kepr; JSON / YAML files and non-UTF-8 history are never rewritten. |
 | `agent ls` / `agent revoke` | `[KEY] [--force]` | List or delete sealed keys. |
 | `agent replay` | `[SESSION]` · `SESSION --typescript FILE --timing FILE` | List or print recorded sessions; export PostgreSQL traffic for `scriptreplay`. |
 | `agent logs` | `[SESSION] [-n N] [--follow]` | The gate's request journal. |

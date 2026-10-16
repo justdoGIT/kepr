@@ -60,6 +60,19 @@ with `--remove`, kepr tells you to delete the key by hand. Variable names
 and references (`KEPR_PH_ANTHROPIC`, `${VAR}`, `{env:VAR}`) are not keys
 and are left alone.
 
+It also reads your shell history: `$HISTFILE` (or `~/.bash_history`),
+`~/.zsh_history` and `${XDG_DATA_HOME:-~/.local/share}/fish/fish_history`.
+A key typed as `export XAI_API_KEY=xai-…`, `set -gx OPENAI_API_KEY sk-…` or
+`OPENAI_API_KEY=sk-… python app.py` is found; one read from elsewhere
+(`$(pass show …)`, `$OTHER`) is not a key. With `--remove` the whole
+history entry is deleted and the other lines stay byte-identical. Open
+shells keep their history in memory and may write the line back when they
+exit, so run `history -c` in them or close them. A history file that is not
+valid UTF-8 (zsh stores non-ASCII bytes its own way) is read but never
+rewritten; kepr names the lines to delete by hand. Keys passed other ways,
+such as `curl -H "Authorization: Bearer …"`, are left to `kepr scan
+~/.bash_history`.
+
 ## Harnesses
 
 | Harness | Command | Key it uses |
