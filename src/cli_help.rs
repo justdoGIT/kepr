@@ -26,6 +26,8 @@ COMMANDS:
   doctor                               diagnose common setup issues
   env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval
   rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid|words]   atomic rotation
+  rotate --due                         run your due scheduled rotations (under the system daemon,
+                                       from the kepr-rotate.timer user timer)
   audit-verify                         verify the hash-chained audit log
   sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:|gcp-sm:)
   sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally

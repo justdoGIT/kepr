@@ -106,6 +106,10 @@ if $SYSTEM_MODE; then
     sudo cp systemd/kepr-gate.service /etc/systemd/system/kepr-gate.service
     sudo systemctl daemon-reload
     sudo systemctl enable --now kepr-gate.service || warn "kepr-gate.service did not start; agent sessions need it in system mode"
+    # Scheduled rotations (T12.50): the system daemon never runs user
+    # rotators, so each user's own timer runs `kepr rotate --due`.
+    sudo install -d -m 0755 /usr/lib/systemd/user
+    sudo install -m 0644 systemd/user/kepr-rotate.service systemd/user/kepr-rotate.timer /usr/lib/systemd/user/
     sudo systemctl enable kepr.service
     sudo systemctl restart kepr.service
     sleep 1
@@ -116,6 +120,7 @@ if $SYSTEM_MODE; then
         echo 'export KEPR_SYSTEM_MODE=1' | sudo tee /etc/profile.d/kepr.sh >/dev/null
         sudo chmod 0644 /etc/profile.d/kepr.sh
         ok "KEPR_SYSTEM_MODE=1 for login shells → /etc/profile.d/kepr.sh"
+        info "Scheduled rotations (kepr rotate NAME --every DUR) need, per user: systemctl --user enable --now kepr-rotate.timer"
     else
         echo "kepr.service failed to start:" >&2
         sudo journalctl -u kepr.service -n 20 --no-pager >&2

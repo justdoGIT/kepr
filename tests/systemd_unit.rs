@@ -219,3 +219,30 @@ fn sealer_dropins_leave_the_base_unit_closed() {
         );
     }
 }
+
+/// T12.50: the system daemon never runs user rotators, so a systemd user
+/// timer runs each user's due rotations with `kepr rotate --due`, talking
+/// to the system daemon; a missed hour runs at the next boot.
+#[test]
+fn rotate_user_timer_runs_due_rotations_against_the_system_daemon() {
+    let read = |p: &str| {
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(p))
+            .unwrap_or_else(|e| panic!("read {p}: {e}"))
+    };
+    let timer = read("systemd/user/kepr-rotate.timer");
+    for d in [
+        "OnCalendar=hourly",
+        "RandomizedDelaySec=5m",
+        "Persistent=true",
+    ] {
+        assert!(timer.contains(d), "kepr-rotate.timer lost `{d}`");
+    }
+    let service = read("systemd/user/kepr-rotate.service");
+    for d in [
+        "Type=oneshot",
+        "Environment=KEPR_SYSTEM_MODE=1",
+        "ExecStart=/usr/local/bin/kepr rotate --due",
+    ] {
+        assert!(service.contains(d), "kepr-rotate.service lost `{d}`");
+    }
+}
