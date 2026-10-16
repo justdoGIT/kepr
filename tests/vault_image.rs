@@ -466,6 +466,61 @@ fn attachments_follow_their_credential_on_the_image() {
     assert!(cred_files(&d).is_empty(), "{:?}", cred_files(&d));
 }
 
+/// `kepr recovery-key unlock`, the words on stdin.
+fn recovery_unlock(d: &Daemon, words: &str) -> Output {
+    use std::io::Write;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kepr"));
+    env(&mut cmd, d.home.path());
+    let mut child = cmd
+        .args(["recovery-key", "unlock"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{words}").unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// T12.31 / T12.32: a key file that no longer unseals leaves the daemon
+/// running locked, and the recovery key opens the image (the only thing
+/// it can prove itself against here) and seals the key again.
+#[test]
+fn a_recovery_key_opens_an_image_whose_key_file_broke() {
+    let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["set", "KEPT", "--value", "kept-value"]);
+    assert_eq!(json(&d, &["status"])["recovery_key"], false);
+    let enrolled = json(&d, &["recovery-key", "enrol"]);
+    assert_eq!(enrolled["kind"], "recovery_key_words");
+    let words = enrolled["words"].as_str().unwrap().to_string();
+    assert_eq!(words.split_whitespace().count(), 24);
+    assert_eq!(json(&d, &["status"])["recovery_key"], true);
+    let key_file = d.home.path().join("state/kepr/master.key");
+    std::fs::write(&key_file, b"no longer unseals").unwrap();
+
+    let d = restart(d, Some("image"));
+    let status = json(&d, &["status"]);
+    assert_eq!(status["locked"], true, "{status}");
+    assert_eq!(status["key_sealer"], "unseal-failed", "{status}");
+    assert!(!kepr(&d, &["get", "KEPT"]).status.success());
+    let out = recovery_unlock(&d, &words);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(ok(&d, &["get", "KEPT", "--quiet"]).trim(), "kept-value");
+    assert_ne!(std::fs::read(&key_file).unwrap(), b"no longer unseals");
+
+    // Sealed again: the next start needs no recovery.
+    let d = restart(d, Some("image"));
+    let status = json(&d, &["status"]);
+    assert_eq!(status["locked"], false, "{status}");
+    assert_eq!(ok(&d, &["get", "KEPT", "--quiet"]).trim(), "kept-value");
+    let again = recovery_unlock(&d, &words);
+    assert!(String::from_utf8_lossy(&again.stderr).contains("nothing to recover"));
+}
+
 fn uid() -> String {
     // SAFETY: getuid(2) has no preconditions.
     unsafe { libc::getuid() }.to_string()

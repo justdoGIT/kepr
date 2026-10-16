@@ -1,12 +1,15 @@
 // cli_seal/recovery_key.rs — `kepr recovery-key enrol [--replace]`
-// (T12.31): a recovery key for a sealed master key.
+// (T12.31): a recovery key for a sealed master key, and `kepr
+// recovery-key unlock` (T12.32) for when that key did not unseal.
 //
 // The key is 32 random bytes made here and sent to the daemon as 24
 // recovery words; the daemon keeps the master key wrapped under them and
 // answers only the master key's fingerprint. The words are printed after
 // the daemon confirms, once, with a QR code (as `recovery-kit create
 // --words` does); with --json they are the reply's `words`. `--replace`
-// first asks for the enrolled key's words, masked.
+// first asks for the enrolled key's words, masked. `unlock` reads the
+// words (masked), checks them here so a typo is reported by position, and
+// the daemon opens the store and seals the key again.
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
@@ -17,11 +20,12 @@ use zeroize::Zeroizing;
 use crate::cli_input::read_masked;
 use crate::{cli_mode, cli_ui, client};
 
-const USAGE: &str = "usage: kepr recovery-key enrol [--replace]";
+const USAGE: &str = "usage: kepr recovery-key enrol [--replace] | unlock";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Cmd {
     Enrol { replace: bool },
+    Unlock,
 }
 
 pub fn parse(args: &[String]) -> Result<Cmd, String> {
@@ -33,6 +37,7 @@ pub fn parse(args: &[String]) -> Result<Cmd, String> {
     match args.as_slice() {
         ["enrol"] => Ok(Cmd::Enrol { replace: false }),
         ["enrol", "--replace"] => Ok(Cmd::Enrol { replace: true }),
+        ["unlock"] => Ok(Cmd::Unlock),
         _ => Err(USAGE.into()),
     }
 }
@@ -40,8 +45,39 @@ pub fn parse(args: &[String]) -> Result<Cmd, String> {
 pub fn dispatch(args: &[String]) -> Response {
     match parse(args) {
         Ok(Cmd::Enrol { replace }) => enrol(replace),
+        Ok(Cmd::Unlock) => unlock(),
         Err(e) => Response::fail(e),
     }
+}
+
+/// The words, masked, checked here first so a typo names its position.
+fn read_words(prompt: &str) -> Result<ZeroString, String> {
+    let w = read_masked(prompt);
+    recovery_words::decode(w.as_str())?;
+    Ok(w)
+}
+
+fn unlock() -> Response {
+    let words = match read_words("  Recovery words (24, in order): ") {
+        Ok(w) => w,
+        Err(e) => return Response::fail(e),
+    };
+    let r = client::send_request(&Request::Seal(SealRequest::RecoveryKeyUnlock { words }))
+        .unwrap_or_else(Response::fail);
+    if !cli_mode::json_mode() {
+        match &r {
+            Response::UnlockedOk => cli_ui::ok(
+                "store unlocked; the master key is sealed again for this machine's current \
+                 boot state",
+            ),
+            Response::Seal(SealResponse::UnlockedNotResealed { error }) => cli_ui::warn(&format!(
+                "store unlocked for now, but sealing the key again failed ({error}); the next \
+                 start needs the recovery key again"
+            )),
+            _ => {}
+        }
+    }
+    r
 }
 
 /// A fresh recovery key, as its 24 words.
@@ -53,12 +89,10 @@ fn new_words() -> Result<ZeroString, String> {
 
 fn enrol(replace: bool) -> Response {
     let current = if replace {
-        let w = read_masked("  Current recovery words (24, in order): ");
-        // Report a typo by position here, before the daemon's check.
-        if let Err(e) = recovery_words::decode(w.as_str()) {
-            return Response::fail(e);
+        match read_words("  Current recovery words (24, in order): ") {
+            Ok(w) => Some(w),
+            Err(e) => return Response::fail(e),
         }
-        Some(w)
     } else {
         None
     };
@@ -108,12 +142,14 @@ mod tests {
             parse(&args(&["enrol", "--replace", "--json"])),
             Ok(Cmd::Enrol { replace: true })
         );
+        assert_eq!(parse(&args(&["unlock"])), Ok(Cmd::Unlock));
         for bad in [
             &[][..],
             &["enroll"],
             &["enrol", "--force"],
             &["enrol", "x"],
             &["--replace"],
+            &["unlock", "--replace"],
         ] {
             assert_eq!(parse(&args(bad)), Err(USAGE.into()), "{bad:?}");
         }

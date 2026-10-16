@@ -35,6 +35,11 @@ pub enum SealRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         current: Option<ZeroString>,
     },
+    /// T12.32: open a store whose sealed master key did not unseal at
+    /// start-up with the enrolled recovery key, and seal the key again
+    /// for the current boot state. Answered with `Response::UnlockedOk`,
+    /// or `UnlockedNotResealed` when sealing again failed.
+    RecoveryKeyUnlock { words: ZeroString },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,6 +59,9 @@ pub enum SealResponse {
         fingerprint: String,
         words: ZeroString,
     },
+    /// T12.32: the store is unlocked for this run, but sealing the key
+    /// again failed (`error`); the next start needs the recovery key again.
+    UnlockedNotResealed { error: String },
     /// T4.09: public parameters of the store's FIDO2 factor (base64);
     /// `None` when the store needs only its passphrase.
     Fido2UnlockParamsOk {
@@ -95,6 +103,9 @@ mod tests {
             words: "abacus zoom".into(),
             current: Some("acorn yodel".into()),
         }));
+        round_trip_request(Request::Seal(SealRequest::RecoveryKeyUnlock {
+            words: "abacus zoom".into(),
+        }));
         // Core requests still parse as themselves.
         let r: Request = serde_json::from_str(
             r#"{"cmd":"recoverykitcreate","password":"p","threshold":2,"shares":3}"#,
@@ -117,6 +128,17 @@ mod tests {
         });
         let d = format!("{r:?}");
         assert!(!d.contains("abacus") && !d.contains("acorn"), "{d}");
+        let u = Request::Seal(SealRequest::RecoveryKeyUnlock {
+            words: "abacus zoom".into(),
+        });
+        assert!(!format!("{u:?}").contains("abacus"));
+        let half = Response::Seal(SealResponse::UnlockedNotResealed {
+            error: "master-key seal failed".into(),
+        });
+        let json = serde_json::to_string(&half).unwrap();
+        let back: Response = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        assert!(back.is_success(), "the store is unlocked");
         // No `current` on a first enrolment: the field is left out.
         let first = Request::Seal(SealRequest::RecoveryKeyEnrol {
             words: "abacus zoom".into(),

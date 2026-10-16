@@ -7,10 +7,14 @@
 use kepr_core::protocol::Response;
 use kepr_core::protocol_session::StatusInfo;
 
-/// What protects the master key at rest (never the backend's name).
-pub fn key_sealer(password_protected: bool, user_mode: bool) -> &'static str {
+/// What protects the master key at rest (never the backend's name);
+/// T12.32: `unseal-failed` while a sealed key that did not unseal at
+/// start-up waits for `kepr recovery-key unlock`.
+pub fn key_sealer(password_protected: bool, user_mode: bool, unseal_failed: bool) -> &'static str {
     if password_protected {
         "passphrase"
+    } else if unseal_failed {
+        "unseal-failed"
     } else if user_mode {
         "file"
     } else {
@@ -40,7 +44,14 @@ pub fn handle(uid: u32) -> Response {
             mode: Some(if user { "user" } else { "system" }.into()),
             profile: Some(kepr_core::profile::display_name()),
             store_backend: Some(backend.into()),
-            key_sealer: Some(key_sealer(password_protected, user).into()),
+            key_sealer: Some(
+                key_sealer(
+                    password_protected,
+                    user,
+                    crate::daemon_seal::startup::unseal_failed(),
+                )
+                .into(),
+            ),
             gates: Some(crate::daemon_gate_registry::gates_for(uid) as u32),
             escrow: Some(crate::state_dir().join("escrow.bin").exists()),
             fips: Some(crate::daemon_eco::cipher::describe().1),
@@ -58,10 +69,15 @@ mod tests {
 
     #[test]
     fn sealer_names_never_the_backend() {
-        assert_eq!(key_sealer(true, false), "passphrase");
-        assert_eq!(key_sealer(true, true), "passphrase");
-        assert_eq!(key_sealer(false, true), "file");
-        assert_eq!(key_sealer(false, false), "host");
+        assert_eq!(key_sealer(true, false, false), "passphrase");
+        assert_eq!(key_sealer(true, true, false), "passphrase");
+        assert_eq!(key_sealer(false, true, false), "file");
+        assert_eq!(key_sealer(false, false, false), "host");
+        // T12.32: a sealed key that did not unseal at start-up.
+        assert_eq!(key_sealer(false, false, true), "unseal-failed");
+        assert_eq!(key_sealer(false, true, true), "unseal-failed");
+        // A passphrase put in place since (a recovery-kit restore) wins.
+        assert_eq!(key_sealer(true, false, true), "passphrase");
     }
 
     #[test]

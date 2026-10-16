@@ -44,6 +44,7 @@ fn sealer_text(s: &str) -> String {
         "passphrase" => "store passphrase (Argon2id)".into(),
         "host" => "host-bound (the credential backend)".into(),
         "file" => "owner-only key file".into(),
+        "unseal-failed" => "did not unseal at start-up; run `kepr recovery-key unlock`".into(),
         other => other.into(),
     }
 }
@@ -127,5 +128,13 @@ mod tests {
         };
         let lines = status_lines(&s);
         assert_eq!(lines, ["Master key: host-bound (the credential backend)"]);
+        let s = StatusInfo {
+            key_sealer: Some("unseal-failed".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            status_lines(&s),
+            ["Master key: did not unseal at start-up; run `kepr recovery-key unlock`"]
+        );
     }
 }

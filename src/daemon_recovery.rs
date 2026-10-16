@@ -49,7 +49,7 @@ fn opens(key: &[u8; 32], uid: u32, name: &str, blob: &[u8]) -> bool {
 }
 
 /// (files the key opens, files checked) over the whole store.
-fn probe(key: &[u8; 32]) -> (usize, usize) {
+pub(crate) fn probe(key: &[u8; 32]) -> (usize, usize) {
     // T4.06: the vault image, if there is one, counts as one more file.
     let (mut ok, mut total) = crate::daemon_vault::probe_image(key);
     let Ok(dir) = std::fs::read_dir(store::store_dir()) else {

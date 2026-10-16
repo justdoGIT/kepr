@@ -7,7 +7,7 @@
 //   words   `kepr recovery-kit create|restore --words` (T4.10)
 //   fido2   `kepr lock --fido2` and the security-key side of `kepr
 //           unlock` / passphrase prompts (T4.09)
-//   recovery_key `kepr recovery-key enrol` (T12.31)
+//   recovery_key `kepr recovery-key enrol` (T12.31) and `unlock` (T12.32)
 
 pub mod fido2;
 pub mod qr;
@@ -27,6 +27,9 @@ pub const HELP: &str = "\
   recovery-key enrol [--replace]       a sealed store: print a recovery key once (24 words
                                        and a QR code) that the daemon keeps the master key
                                        wrapped under
+  recovery-key unlock                  the sealed key did not unseal at start-up: open the
+                                       store with the recovery key and seal it again for
+                                       this boot state (only on a machine you trust)
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {

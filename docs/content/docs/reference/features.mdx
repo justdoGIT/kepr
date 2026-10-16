@@ -40,7 +40,7 @@ verbs print their usage line when called without arguments.
 | `reauth` | `KEY [--on\|--off]` | Enter the passphrase now (KEY readable for 60 s), or turn KEY's re-auth requirement on or off. |
 | `recovery-kit create` | `[--threshold K] [--shares N] [--out-dir DIR]` · `--words` | Split the master key into K-of-N shares (default 3 of 5), or print it as 24 words and a QR code. |
 | `recovery-kit restore` | `[--words]` | Rebuild a lost master key from K shares or the 24 words, under a new passphrase. |
-| `recovery-key` | `enrol [--replace]` | On a store with no passphrase: print a recovery key (24 words and a QR code) once; the daemon keeps the master key wrapped under it. |
+| `recovery-key` | `enrol [--replace]` · `unlock` | On a store with no passphrase: print a recovery key (24 words and a QR code) once; the daemon keeps the master key wrapped under it. `unlock` opens the store with it when the sealed key did not unseal at start-up. |
 | `break-glass` | `NAME` | Reveal a sealed credential once with k recovery-kit shares (audited; marks it must-rotate). |
 | `escrow` | `enable ADMIN_KEY\|CONTACT` · `disable` · `status` · `open FILE [--out-dir DIR]` | Wrap the master key to an administrator's share key; the admin opens it as a 2-of-2 recovery kit. |
 | `panic` | — | Stop all agent gates; lock the store if it is passphrase-protected. |
@@ -909,9 +909,25 @@ store, while any agent gate runs and, in system mode, for anyone but root;
 every attempt is audited as `recovery-key-enrol`. `kepr status` shows
 whether one is enrolled.
 
+When the sealed key won't unseal at start-up (PCRs changed after a firmware
+or kernel update, a changed boot chain, a lost key service) and a recovery
+key is enrolled, the daemon starts locked instead of exiting; it does the
+same when the key file is gone, rather than making a new key that would
+orphan the credentials. `kepr status` then says `Master key: did not unseal
+at start-up`. `kepr recovery-key unlock` asks for the 24 words, checks that
+the recovered key opens the credential files, unlocks the store and seals
+the key again for the current boot state (audited as `recovery-unlock`).
+Wrong words get one error after a one-second pause. If sealing again fails,
+the store stays unlocked until the daemon stops and the next start needs
+the words again. Without a recovery key, a key that won't unseal still
+stops the daemon.
+
 <Warning>
   The words and the `master.key.recovery` file together open the store.
-  Keep the words offline, never next to the machine.
+  Keep the words offline, never next to the machine. Sealing again binds
+  the key to whatever boot chain is running now, so kepr can't tell a
+  firmware update from a tampered boot: only run `kepr recovery-key unlock`
+  on a machine you trust.
 </Warning>
 
 ### FIPS build

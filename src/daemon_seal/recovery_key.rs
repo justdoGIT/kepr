@@ -13,8 +13,17 @@
 // recovery kit and recovery words), the store unlocked. Replacing an
 // enrolled key needs its words, which must open the old envelope to the
 // running key. Every attempt is audited as `recovery-key-enrol` (op only).
+//
+// T12.32: `kepr recovery-key unlock` is the one path that opens the
+// envelope, and only while the sealed key did not unseal at start-up
+// (startup.rs), under the same fences. Any wrong word gets one error after
+// a 1 s pause; the key must open at least one credential file (or the
+// vault image) before it is installed; then it is sealed again for the
+// current boot state and written over the key file. Audited as
+// `recovery-unlock`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
@@ -23,6 +32,7 @@ use kepr_core::recovery_words;
 use zeroize::Zeroizing;
 
 use crate::daemon_recovery::fingerprint;
+use crate::master_key::Sealer;
 use crate::{crypto, key_unlock};
 
 const OWNER: &str = "only root may manage the recovery key of the shared store";
@@ -30,6 +40,8 @@ const GATES: &str = "stop running agent sessions first (kepr panic)";
 const PASSPHRASE: &str = "this store has a passphrase: use `kepr recovery-kit create --words`";
 const ENROLLED: &str = "a recovery key is already enrolled: `kepr recovery-key enrol --replace`";
 const WRONG_CURRENT: &str = "the current recovery words do not open the enrolled recovery key";
+const WRONG: &str = "these words do not open the enrolled recovery key";
+const NOTHING: &str = "the master key unsealed; nothing to recover";
 
 /// The wrapped master key, next to the key file.
 pub fn path() -> PathBuf {
@@ -140,6 +152,82 @@ pub fn handle_enrol(
     super::audit_result("recovery-key-enrol", uid, username, &status);
     match r {
         Ok(fingerprint) => Response::Seal(SealResponse::RecoveryKeyEnrolled { fingerprint }),
+        Err(e) => Response::fail(e),
+    }
+}
+
+/// What `kepr recovery-key unlock` works on, injected for tests.
+pub(crate) struct Unlock<'a> {
+    /// startup.rs's "did not unseal" flag.
+    pub flag: &'a AtomicBool,
+    pub envelope: &'a Path,
+    pub key_file: &'a Path,
+    /// (credential files the key opens, files checked), image included.
+    pub probe: &'a dyn Fn(&[u8; 32]) -> (usize, usize),
+    /// Install the key in the backend (unlocks the store).
+    pub install: &'a dyn Fn(&[u8; 32]) -> Result<(), String>,
+    pub sealer: &'a dyn Fn() -> Result<Box<dyn Sealer>, String>,
+    /// The pause before a wrong-words reply.
+    pub pause: &'a dyn Fn(),
+}
+
+/// Ok(None): unlocked and sealed again. Ok(Some(e)): unlocked for this
+/// run only, sealing again failed with `e`.
+fn unlock_with(uid: u32, fence: Fence, words: &str, u: &Unlock) -> Result<Option<String>, String> {
+    fence.check(uid)?;
+    if !u.flag.load(Ordering::SeqCst) {
+        return Err(NOTHING.into());
+    }
+    // One answer, after a pause, for words that don't decode, a missing
+    // envelope or one they don't open.
+    let opened = std::fs::read(u.envelope).map_err(|_| ()).and_then(|env| {
+        let key = recovery_words::decode(words).map_err(|_| ())?;
+        key_unlock::unwrap(&env, key.as_ref()).map_err(|_| ())
+    });
+    let Ok(key) = opened else {
+        (u.pause)();
+        return Err(WRONG.into());
+    };
+    let (opens, total) = (u.probe)(&key);
+    if opens == 0 {
+        return Err(format!(
+            "the recovered key opens none of the {total} credential file(s) here; \
+             nothing was changed"
+        ));
+    }
+    (u.install)(&key)?;
+    let resealed = (u.sealer)().and_then(|s| {
+        let blob = s.seal(&key)?;
+        crate::atomic_file::write(u.key_file, &blob, 0o600)
+            .map_err(|e| format!("cannot write master key: {e}"))
+    });
+    match resealed {
+        Ok(()) => {
+            u.flag.store(false, Ordering::SeqCst);
+            Ok(None)
+        }
+        Err(e) => Ok(Some(e)),
+    }
+}
+
+pub fn handle_unlock(uid: u32, username: &str, words: &ZeroString) -> Response {
+    let user = crate::user_mode();
+    let key_file = crate::master_key_path();
+    let u = Unlock {
+        flag: super::startup::unseal_failed_flag(),
+        envelope: &path(),
+        key_file: &key_file,
+        probe: &crate::daemon_recovery::probe,
+        install: &crypto::unlock_backend,
+        sealer: &|| crate::master_key::sealer_from_env(user, &key_file),
+        pause: &|| std::thread::sleep(std::time::Duration::from_secs(1)),
+    };
+    let r = unlock_with(uid, Fence::now(), words.as_str(), &u);
+    let status = r.as_ref().map(|_| ()).map_err(Clone::clone);
+    super::audit_result("recovery-unlock", uid, username, &status);
+    match r {
+        Ok(None) => Response::UnlockedOk,
+        Ok(Some(error)) => Response::Seal(SealResponse::UnlockedNotResealed { error }),
         Err(e) => Response::fail(e),
     }
 }
@@ -263,6 +351,161 @@ mod tests {
         let r = enrol_at(0, OPEN, locked, &file, words(1).as_str(), None);
         assert_eq!(r.unwrap_err(), "credential store is locked");
         assert!(!file.exists());
+    }
+
+    use crate::daemon_seal::startup::mock::Counting;
+    use std::cell::Cell;
+
+    /// An unlock over temp files: a key file that won't unseal and an
+    /// envelope of LIVE under words(1).
+    struct Rig {
+        dir: tempfile::TempDir,
+        flag: AtomicBool,
+        sealer: std::sync::Arc<Counting>,
+        installed: std::sync::Mutex<Option<[u8; 32]>>,
+        pauses: Cell<u32>,
+        opens: usize,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let env = enrol(&LIVE, None, words(1).as_str(), None).unwrap();
+            std::fs::write(dir.path().join("rec"), env).unwrap();
+            std::fs::write(dir.path().join("key"), b"sealed elsewhere").unwrap();
+            Self {
+                dir,
+                flag: AtomicBool::new(true),
+                sealer: Default::default(),
+                installed: Default::default(),
+                pauses: Cell::new(0),
+                opens: 2,
+            }
+        }
+
+        fn key_file(&self) -> PathBuf {
+            self.dir.path().join("key")
+        }
+
+        fn run(&self, uid: u32, fence: Fence, w: &str) -> Result<Option<String>, String> {
+            let (env, key) = (self.dir.path().join("rec"), self.key_file());
+            let sealer = self.sealer.clone();
+            let probe = |k: &[u8; 32]| (if *k == LIVE { self.opens } else { 0 }, 3);
+            let install = |k: &[u8; 32]| {
+                *self.installed.lock().unwrap() = Some(*k);
+                Ok(())
+            };
+            let u = Unlock {
+                flag: &self.flag,
+                envelope: &env,
+                key_file: &key,
+                probe: &probe,
+                install: &install,
+                sealer: &move || Ok(Box::new(Shared(sealer.clone())) as Box<dyn Sealer>),
+                pause: &|| self.pauses.set(self.pauses.get() + 1),
+            };
+            unlock_with(uid, fence, w, &u)
+        }
+
+        fn installed(&self) -> Option<[u8; 32]> {
+            *self.installed.lock().unwrap()
+        }
+    }
+
+    /// The rig's counting sealer behind a Box.
+    struct Shared(std::sync::Arc<Counting>);
+
+    impl Sealer for Shared {
+        fn seal(&self, key: &[u8; 32]) -> Result<Vec<u8>, String> {
+            self.0.seal(key)
+        }
+        fn unseal(&self, blob: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+            self.0.unseal(blob)
+        }
+    }
+
+    #[test]
+    fn right_words_unlock_and_reseal_once() {
+        let rig = Rig::new();
+        assert_eq!(rig.run(0, OPEN, words(1).as_str()), Ok(None));
+        assert_eq!(rig.installed(), Some(LIVE));
+        assert_eq!(rig.sealer.seals(), 1);
+        let blob = std::fs::read(rig.key_file()).unwrap();
+        assert_eq!(
+            blob,
+            [b"MOCK".as_slice(), &LIVE].concat(),
+            "key file replaced"
+        );
+        assert!(!rig.flag.load(Ordering::SeqCst), "the flag is cleared");
+        assert_eq!(rig.pauses.get(), 0);
+        // Sealed again: a second unlock has nothing to do.
+        assert_eq!(rig.run(0, OPEN, words(1).as_str()).unwrap_err(), NOTHING);
+    }
+
+    #[test]
+    fn wrong_words_keep_the_store_locked() {
+        let rig = Rig::new();
+        for w in [words(2).as_str(), "abacus nope", ""] {
+            assert_eq!(rig.run(0, OPEN, w).unwrap_err(), WRONG, "{w:?}");
+        }
+        assert_eq!(rig.pauses.get(), 3, "every wrong answer waits");
+        assert_eq!(rig.installed(), None);
+        assert_eq!(rig.sealer.seals(), 0);
+        assert!(rig.flag.load(Ordering::SeqCst));
+        assert_eq!(std::fs::read(rig.key_file()).unwrap(), b"sealed elsewhere");
+    }
+
+    #[test]
+    fn a_key_that_opens_no_credential_is_refused() {
+        let mut rig = Rig::new();
+        rig.opens = 0;
+        let e = rig.run(0, OPEN, words(1).as_str()).unwrap_err();
+        assert!(e.contains("none of the 3 credential"), "{e}");
+        assert_eq!((rig.installed(), rig.sealer.seals()), (None, 0));
+        assert!(rig.flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_failed_reseal_leaves_it_unlocked_for_this_run() {
+        let mut rig = Rig::new();
+        rig.sealer = std::sync::Arc::new(Counting::broken());
+        let r = rig.run(0, OPEN, words(1).as_str()).unwrap();
+        assert_eq!(r.as_deref(), Some("master-key seal failed"));
+        assert_eq!(rig.installed(), Some(LIVE));
+        assert_eq!(std::fs::read(rig.key_file()).unwrap(), b"sealed elsewhere");
+        // The next start needs the recovery key again; so may a retry now.
+        assert!(rig.flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn refused_when_the_key_unsealed() {
+        let rig = Rig::new();
+        rig.flag.store(false, Ordering::SeqCst);
+        assert_eq!(rig.run(0, OPEN, words(1).as_str()).unwrap_err(), NOTHING);
+        assert_eq!((rig.installed(), rig.pauses.get()), (None, 0));
+    }
+
+    #[test]
+    fn unlock_is_fenced_like_enrol() {
+        let rig = Rig::new();
+        let w = words(1);
+        let system = Fence {
+            user_mode: false,
+            ..OPEN
+        };
+        assert_eq!(rig.run(1000, system, w.as_str()).unwrap_err(), OWNER);
+        let gate = Fence {
+            gates_running: true,
+            ..OPEN
+        };
+        assert_eq!(rig.run(0, gate, w.as_str()).unwrap_err(), GATES);
+        // A store that got a passphrase since (a recovery-kit restore).
+        let pw = Fence {
+            passphrase: true,
+            ..OPEN
+        };
+        assert_eq!(rig.run(0, pw, w.as_str()).unwrap_err(), PASSPHRASE);
+        assert_eq!((rig.installed(), rig.sealer.seals()), (None, 0));
     }
 
     #[test]
