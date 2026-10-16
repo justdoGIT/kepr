@@ -1164,8 +1164,11 @@ Bound to `api.github.com` only (no GitHub Enterprise Server host).
   second checkout is refused until `kepr checkin KEY` with the printed
   token (saved under `$XDG_STATE_HOME/kepr/holds`; `--token` or
   `KEPR_HOLD_TOKEN` override). `checkin --rotate` runs KEY's schedule first
-  and keeps the hold if that fails. Holds coordinate within one account:
-  they don't stop the owner reading KEY, and they can't block another user.
+  and keeps the hold if that fails. A hold that runs out without a check-in
+  is cleared by the user-mode daemon (audited `checkout-lapsed`), and if KEY
+  has a rotation schedule it is rotated on the next sweep. Holds coordinate
+  within one account: they don't stop the owner reading KEY, and they can't
+  block another user.
 
 ### Cloud secret stores
 

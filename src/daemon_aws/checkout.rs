@@ -9,7 +9,8 @@
 // the token checks it back in — a different session, which never saw the
 // token, can't release someone else's hold. Every hold runs out
 // (`HOLD_MAX_SECS`), so a lost token can't lock a credential for good,
-// and the sweeper clears the spent ones.
+// and the sweeper clears the spent ones; one with a rotation schedule is
+// rotated on the next sweep (T12.51), as nobody vouched for the value.
 //
 // What it enforces: one holder, accountable check-in, and no reads by
 // *another* uid (a shared credential) while a hold is live. It is not a
@@ -164,8 +165,34 @@ pub fn carry_over(uid: u32, upper: &str, meta: &mut CredMeta) {
     }
 }
 
+/// What a sweep did to one hold.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Lapse {
+    Live,
+    Cleared,
+    /// Cleared, and the credential's scheduled rotation is due now.
+    ClearedRotate,
+}
+
+/// Clear a hold that has run out at `now` (T12.51). A value handed out
+/// and never checked back in may still be in use somewhere, so when the
+/// credential has a rotation schedule its rotation becomes due at once
+/// (the user-mode sweeper runs it on its next tick).
+pub fn lapse(m: &mut CredMeta, now: u64) -> Lapse {
+    if m.checkout.as_ref().is_none_or(|h| h.until > now) {
+        return Lapse::Live;
+    }
+    m.checkout = None;
+    if m.rotate_every_secs.is_some() && m.rotate_via.is_some() {
+        m.rotate_next_at = Some(now);
+        return Lapse::ClearedRotate;
+    }
+    Lapse::Cleared
+}
+
 /// Sweeper: clear the holds that have run out, so `kepr list` and the
-/// read gate don't carry a hold nobody has.
+/// read gate don't carry a hold nobody has; each is audited as
+/// `checkout-lapsed`.
 pub fn sweep(uid: u32, now: u64) {
     for (name, path) in crate::store::list_for_uid(uid) {
         let mp = expiry::meta_path_for(&path);
@@ -175,14 +202,18 @@ pub fn sweep(uid: u32, now: u64) {
             continue;
         }
         let _lock = crate::daemon_credlock::lock(uid, &name);
-        if let Some(Ok(mut m)) = expiry::read_meta(&mp) {
-            if m.checkout.as_ref().is_some_and(|h| h.until <= now) {
-                m.checkout = None;
-                if let Err(e) = write(&mp, &mut m) {
-                    eprintln!("[kepr-daemon] checkout sweep: {e}");
-                }
-            }
+        let Some(Ok(mut m)) = expiry::read_meta(&mp) else {
+            continue;
+        };
+        if lapse(&mut m, now) == Lapse::Live {
+            continue;
         }
+        let r = write(&mp, &mut m);
+        if let Err(e) = &r {
+            eprintln!("[kepr-daemon] checkout sweep: {e}");
+        }
+        let user = crate::audit::username_for_uid(uid);
+        super::audit_op("checkout-lapsed", &name, uid, &user, r.as_ref().map(drop));
     }
 }
 
@@ -246,6 +277,68 @@ mod tests {
             .is_some());
         // Free again: the next session can take it.
         assert!(out(uid, "K", 60).is_success());
+    }
+
+    fn held(until: u64, scheduled: bool) -> CredMeta {
+        CredMeta {
+            checkout: Some(Hold {
+                uid: 1,
+                token_sha256: "00".repeat(32),
+                until,
+            }),
+            rotate_every_secs: scheduled.then_some(86_400),
+            rotate_via: scheduled.then(|| "aws-iam".to_string()),
+            rotate_next_at: scheduled.then_some(9_999_999),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_spent_hold_with_a_schedule_rotates_now() {
+        let mut m = held(100, true);
+        assert_eq!(lapse(&mut m, 100), Lapse::ClearedRotate);
+        assert_eq!((m.checkout, m.rotate_next_at), (None, Some(100)));
+    }
+
+    #[test]
+    fn a_spent_hold_without_a_schedule_is_only_cleared() {
+        let mut m = held(100, false);
+        assert_eq!(lapse(&mut m, 150), Lapse::Cleared);
+        assert_eq!((m.checkout, m.rotate_next_at), (None, None));
+        // A schedule needs both an interval and a rotator.
+        let mut m = held(100, true);
+        m.rotate_via = None;
+        assert_eq!(lapse(&mut m, 150), Lapse::Cleared);
+        assert_eq!(m.rotate_next_at, Some(9_999_999));
+    }
+
+    #[test]
+    fn a_live_hold_lapses_nothing() {
+        let mut m = held(100, true);
+        let before = m.clone();
+        assert_eq!(lapse(&mut m, 99), Lapse::Live);
+        assert_eq!(m, before);
+        let mut none = CredMeta::default();
+        assert_eq!(lapse(&mut none, 99), Lapse::Live);
+    }
+
+    #[test]
+    fn the_sweeper_queues_the_rotation_of_a_lapsed_scheduled_hold() {
+        let uid = testkit::uid();
+        testkit::set(uid, "R", "v");
+        let mp = expiry::meta_path_for(&cred_path(uid, "R"));
+        let mut m = testkit::meta(uid, "R");
+        m.rotate_every_secs = Some(86_400);
+        m.rotate_via = Some("aws-iam".into());
+        m.rotate_next_at = Some(u64::MAX - 1);
+        expiry::write_meta(&mp, &m).unwrap();
+        let now = expiry::now_unix();
+        let _ = token_of(out(uid, "R", 1));
+        sweep(uid, now + 10);
+        let m = testkit::meta(uid, "R");
+        assert_eq!(m.checkout, None);
+        assert_eq!(m.rotate_next_at, Some(now + 10));
+        assert!(super::super::rotate_sched::due(&m, now + 10));
     }
 
     #[test]
