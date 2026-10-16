@@ -23,7 +23,21 @@ command -v curl >/dev/null || { echo "curl not in PATH"; exit 1; }
 
 WORK=$(mktemp -d)
 DAEMON_PID=""
+MOUNT_PID=""
+stop_mount() {
+    if [ -n "$MOUNT_PID" ]; then
+        kill -INT "$MOUNT_PID" 2>/dev/null || true
+        for _ in $(seq 1 30); do kill -0 "$MOUNT_PID" 2>/dev/null || break; sleep 0.1; done
+        kill -INT "$MOUNT_PID" 2>/dev/null || true # a second signal exits at once
+        wait "$MOUNT_PID" 2>/dev/null || true
+        MOUNT_PID=""
+    fi
+    if grep -qF " $WORK/mnt " /proc/self/mountinfo; then
+        umount -l "$WORK/mnt" 2>/dev/null || fusermount3 -uz "$WORK/mnt" 2>/dev/null || true
+    fi
+}
 cleanup() {
+    stop_mount
     [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null || true
     rm -rf "$WORK"
 }
@@ -33,6 +47,7 @@ export HOME="$WORK/home" XDG_RUNTIME_DIR="$WORK/run" KEPR_GATE_BIN="$BIN_DIR/kep
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 KEPR="$BIN_DIR/kepr"
+export KEPR # the probes call it too
 
 PASS=0
 FAIL=0
@@ -85,7 +100,7 @@ printf '%s' "$REAL" >"$WORK/real"
 chmod 600 "$WORK/real"
 
 echo "── malicious agent probe"
-OUT=$(REAL_FILE="$WORK/real" KEPR="$KEPR" "$KEPR" agent run claude -- "$WORK/probe.sh" 2>&1) || true
+OUT=$(REAL_FILE="$WORK/real" "$KEPR" agent run claude -- "$WORK/probe.sh" 2>&1) || true
 while read -r status msg; do
     case "$status" in
         ok) pass "$msg" ;;
@@ -102,6 +117,7 @@ if pgrep -x kepr-gate -P "$DAEMON_PID" >/dev/null; then fail "gate outlived the 
 echo "── request cap"
 # The first request passes the cap (and may fail upstream); the second must
 # be refused by the gate itself.
+# shellcheck disable=SC2016 # expanded by the inner sh
 codes=$("$KEPR" agent run claude --max-requests 1 -- sh -c '
     for _ in 1 2; do
         curl -s -o /dev/null -w "%{http_code} " -X POST -H "x-api-key: $ANTHROPIC_API_KEY" \
@@ -156,13 +172,57 @@ PROBE
 chmod +x "$WORK/sbprobe.sh"
 for run in "strict:" "strict:--isolate-net" "default:"; do
     ll="${run%%:*}" mode="${run#*:}"
-    if ! SB=$(KEPR_LANDLOCK=$ll "$KEPR" agent run claude --strict-sandbox $mode -- "$WORK/sbprobe.sh" "$ll" 2>&1); then
+    if ! SB=$(KEPR_LANDLOCK=$ll "$KEPR" agent run claude --strict-sandbox ${mode:+"$mode"} -- "$WORK/sbprobe.sh" "$ll" 2>&1); then
         case "$SB" in *"sandbox unavailable"*) printf '  –  SKIP: sandbox unavailable here %s\n' "$mode"; continue;; esac
     fi
     while read -r status msg; do
         case "$status" in ok) pass "$msg ${mode} ($ll)";; bad) fail "$msg ${mode} ($ll)";; esac
     done <<<"$SB"
 done
+
+echo "── kepr mount and the sandbox"
+# T12.20: a harness has our uid, but kepr mount's files stay out of reach:
+# the directory is covered like the store, and an open that gets there
+# anyway (an inherited fd, Landlock off) is refused by kepr mount itself.
+if [ -e /dev/fuse ] && { [ "$(id -u)" = 0 ] || command -v fusermount3 >/dev/null; }; then
+    MNT="$WORK/mnt"
+    mkdir -p "$MNT"
+    "$KEPR" set E2E_MNT --value "mount-secret-0123456789" -q >/dev/null 2>&1
+    "$KEPR" mount "$MNT" --file .env=E2E_MNT >"$WORK/mount.log" 2>&1 &
+    MOUNT_PID=$!
+    for _ in $(seq 1 50); do
+        grep -F " $MNT " /proc/self/mountinfo | grep -qF " - fuse.kepr " && break
+        sleep 0.1
+    done
+    if grep -qF "mount-secret-0123456789" "$MNT/.env" 2>/dev/null; then
+        pass "kepr mount serves its file outside a sandbox"
+        # shellcheck disable=SC2016 # expanded by the inner sh
+        SB=$("$KEPR" agent run claude --strict-sandbox -- sh -c '
+            if cat "$1/.env" >/dev/null 2>&1; then echo "bad sandboxed cat MOUNT/.env succeeded"; else echo "ok sandboxed cat MOUNT/.env fails"; fi
+            if [ -z "$(ls -A "$1" 2>/dev/null)" ]; then echo "ok kepr mount directory empty in the sandbox"; else echo "bad kepr mount directory visible in the sandbox"; fi
+            ' _ "$MNT" 2>&1) || true
+        case "$SB" in *"sandbox unavailable"*) printf '  –  SKIP: sandbox unavailable here\n' ;; esac
+        SB2=$(KEPR_LANDLOCK=0 "$KEPR" agent run claude --strict-sandbox -- sh -c '
+            if cat /proc/self/fd/3/.env >/dev/null 2>&1; then echo "bad open through an inherited fd succeeded"; else echo "ok open through an inherited fd fails"; fi
+            ' 3<"$MNT" 2>&1) || true
+        while read -r status msg; do
+            case "$status" in ok) pass "$msg" ;; bad) fail "$msg" ;; esac
+        done <<<"$SB
+$SB2"
+        case "$SB$SB2" in *mount-secret*) fail "a sandbox printed the mounted value" ;; esac
+        if grep -q "the caller is inside a kepr agent sandbox" "$WORK/mount.log"; then
+            pass "kepr mount refuses an opener inside a sandbox"
+        else
+            fail "kepr mount did not refuse the sandboxed opener: $(cat "$WORK/mount.log")"
+        fi
+    else
+        fail "kepr mount did not serve $MNT/.env: $(cat "$WORK/mount.log")"
+    fi
+    stop_mount
+    "$KEPR" delete E2E_MNT --force >/dev/null 2>&1 || true
+else
+    printf '  –  SKIP: kepr mount needs /dev/fuse and fusermount3 (or root)\n'
+fi
 
 echo "── public socket"
 if command -v python3 >/dev/null; then
@@ -181,6 +241,7 @@ fi
 
 echo "── output masking"
 "$KEPR" set E2E_MASK --value "mask-me-0123456789" -q >/dev/null 2>&1
+# shellcheck disable=SC2016 # expanded by the inner sh
 masked=$("$KEPR" exec --env E2E_MASK --mask -- sh -c 'echo "v=$E2E_MASK"')
 check "$([ "$masked" = "v=****" ] && echo ok)" "exec --mask hides the value"
 

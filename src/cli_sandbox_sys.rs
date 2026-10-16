@@ -158,3 +158,91 @@ pub fn drop_all_caps() {
 }
 
 pub use kepr_core::fdpass::{recv_fd, send_fd};
+
+/// The fields after mountinfo's ` - ` separator: (fstype, source).
+fn fs_and_source(line: &str) -> Option<(&str, &str)> {
+    let mut f = line.split(' ').skip(6).skip_while(|w| *w != "-").skip(1);
+    Some((f.next()?, f.next()?))
+}
+
+/// mountinfo's `\ooo` escapes (space, tab, newline, backslash) decoded.
+fn unescape(field: &str) -> std::path::PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    let b = field.as_bytes();
+    let (mut out, mut i) = (Vec::with_capacity(b.len()), 0);
+    while i < b.len() {
+        let oct = b
+            .get(i + 1..i + 4)
+            .filter(|o| o.iter().all(|c| (b'0'..=b'7').contains(c)));
+        match (b[i], oct) {
+            (b'\\', Some(o)) => {
+                out.push(o.iter().fold(0u8, |v, c| v.wrapping_mul(8) + (c - b'0')));
+                i += 4;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    std::ffi::OsString::from_vec(out).into()
+}
+
+/// T12.20: the mount points of `kepr mount` file systems (fstype
+/// `fuse.kepr`) in a /proc/PID/mountinfo text, octal escapes decoded.
+/// Not for the forked child (it allocates): `hide_dirs` runs before.
+pub fn fuse_kepr_mounts(mountinfo: &str) -> Vec<std::path::PathBuf> {
+    mountinfo
+        .lines()
+        .filter(|l| fs_and_source(l).is_some_and(|(fs, _)| fs == "fuse.kepr"))
+        .filter_map(|l| l.split(' ').nth(4).map(unescape))
+        .collect()
+}
+
+/// T12.20: does this mountinfo belong to a process inside a `kepr agent
+/// run` sandbox (a mount whose source is `setup_mounts`' `kepr-hidden`)?
+pub fn in_kepr_sandbox(mountinfo: &str) -> bool {
+    mountinfo
+        .lines()
+        .any(|l| fs_and_source(l).is_some_and(|(_, src)| src == "kepr-hidden"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    const HOST: &str = "\
+22 1 0:20 / / rw,relatime shared:1 - ext4 /dev/vda rw
+40 22 0:35 / /home/u/my\\040secrets rw,nosuid,nodev,relatime shared:20 - fuse.kepr kepr ro,user_id=1000,group_id=1000,default_permissions
+41 22 0:36 / /home/u/remote rw,nosuid,nodev,relatime shared:21 - fuse.sshfs u@h: rw,user_id=1000
+42 22 0:37 / /mnt/t\\011n\\012b\\134x rw master:3 propagate_from:2 - fuse.kepr kepr ro
+43 22 0:38 / /mnt/fuse.kepr rw - tmpfs fuse.kepr rw
+";
+
+    #[test]
+    fn finds_kepr_fuse_mounts_and_decodes_escapes() {
+        assert_eq!(
+            fuse_kepr_mounts(HOST),
+            [
+                PathBuf::from("/home/u/my secrets"),
+                PathBuf::from("/mnt/t\tn\nb\\x")
+            ]
+        );
+        assert!(fuse_kepr_mounts("").is_empty());
+        assert!(fuse_kepr_mounts("garbage\n1 2 3\n").is_empty());
+    }
+
+    #[test]
+    fn a_kepr_hidden_tmpfs_marks_a_sandbox() {
+        assert!(!in_kepr_sandbox(HOST));
+        let sandbox = format!(
+            "{HOST}50 40 0:40 / /home/u/.local/share/kepr ro,nosuid,nodev,noexec - tmpfs \
+             kepr-hidden ro,size=4k,mode=500\n"
+        );
+        assert!(in_kepr_sandbox(&sandbox));
+        assert!(!in_kepr_sandbox(
+            "50 40 0:40 / /kepr-hidden rw - tmpfs tmpfs rw\n"
+        ));
+    }
+}

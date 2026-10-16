@@ -1327,6 +1327,11 @@ a file is opened, kept per file handle and zeroized on release.
   reading programs by digest, and `--consent` asks polkit on every open
   (60 s to decide). These checks run in your own `kepr mount` process, not
   in the daemon; the daemon sees `kepr` as the reader.
+- Agent sessions can't read them: `kepr agent run` covers every `kepr
+  mount` directory with an empty tmpfs, as it does the store and the
+  daemon socket, and an open from a process inside a sandbox (or one whose
+  mount table can't be read) is refused before `--exe` and `--consent`.
+  A `--no-sandbox` session is not detectable; use `--exe` or `--consent`.
 - It runs in the foreground; Ctrl-C or `fusermount3 -u DIR` unmounts.
   Root mounts with mount(2), others through fusermount3; no `allow_other`.
 

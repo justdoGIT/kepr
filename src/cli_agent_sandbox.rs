@@ -44,8 +44,13 @@ fn base(var: &str, default_rel: &str) -> Option<PathBuf> {
 }
 
 /// Directories the agent must not see: credential store, daemon state
-/// (master key, audit log), the daemon socket, and the system-mode paths.
+/// (master key, audit log), the daemon socket, the system-mode paths,
+/// and every `kepr mount` directory (T12.20).
 pub fn hide_dirs() -> Vec<PathBuf> {
+    hide_dirs_with(&std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default())
+}
+
+fn hide_dirs_with(mountinfo: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = [
         base("XDG_DATA_HOME", ".local/share"),
         base("XDG_STATE_HOME", ".local/state"),
@@ -57,6 +62,7 @@ pub fn hide_dirs() -> Vec<PathBuf> {
     v.push(kepr_core::protocol::socket_dir());
     v.push(kepr_core::protocol::runtime_root()); // T11.16: every profile's socket
     v.extend(["/etc/credstore.encrypted", "/var/lib/kepr", "/run/kepr"].map(PathBuf::from));
+    v.extend(sys::fuse_kepr_mounts(mountinfo));
     outermost(v.into_iter().filter(|p| p.is_dir()).collect())
 }
 
@@ -339,6 +345,25 @@ mod tests {
             ]),
             [p("/r/kepr"), p("/r/kepr2"), p("/s/kepr")]
         );
+    }
+
+    #[test]
+    fn kepr_mount_points_are_hidden_too() {
+        // T12.20: a `kepr mount` directory gets the same empty tmpfs.
+        let dir = std::env::temp_dir().join(format!("kepr hide {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let escaped = dir.display().to_string().replace(' ', "\\040");
+        let mi = format!("40 22 0:35 / {escaped} ro,nosuid - fuse.kepr kepr ro\n");
+        let gone = dir.join("missing");
+        let mi = format!(
+            "{mi}41 22 0:36 / {} ro - fuse.kepr kepr ro\n",
+            gone.display()
+        );
+        let hidden = hide_dirs_with(&mi);
+        assert!(hidden.contains(&dir), "{hidden:?}");
+        assert!(!hidden.contains(&gone), "only existing directories");
+        assert!(!hide_dirs_with("").contains(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
