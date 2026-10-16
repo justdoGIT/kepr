@@ -218,8 +218,21 @@ uses=$("$KEPR" usage 2>/dev/null | awk '$1 == "E2E_MASK" { print $2 }')
 check "$([ "${uses:-0}" -ge 1 ] && echo ok)" "usage counts the masked exec read"
 
 echo "── health"
-"$KEPR" set E2E_WEAK --value password1 -q >/dev/null 2>&1
-check "$("$KEPR" health 2>/dev/null | grep -q '^E2E_WEAK: common password' && echo ok)" "health flags a common password"
+# Under load a request here can meet the per-uid rate limit: retry, and show
+# the report (names and flags only) if it still never flags the password.
+weak=""
+for _ in 1 2 3; do
+    "$KEPR" set E2E_WEAK --value password1 -q >/dev/null 2>&1 || { sleep 1; continue; }
+    weak=$("$KEPR" health 2>&1) || true
+    if printf '%s\n' "$weak" | grep -q '^E2E_WEAK: common password'; then break; fi
+    sleep 1
+done
+if printf '%s\n' "$weak" | grep -q '^E2E_WEAK: common password'; then
+    pass "health flags a common password"
+else
+    fail "health flags a common password"
+    printf '%s\n' "$weak" | head -20 | sed 's/^/      /'
+fi
 
 echo "── typed records"
 "$KEPR" record add E2E_REC --type login --field username=me --field password=pw-123 >/dev/null 2>&1
