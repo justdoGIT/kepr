@@ -16,7 +16,7 @@ pub struct Finding {
     pub detail: String,
 }
 
-fn f(name: &'static str, level: Level, detail: impl Into<String>) -> Finding {
+pub(crate) fn f(name: &'static str, level: Level, detail: impl Into<String>) -> Finding {
     Finding {
         name,
         level,
@@ -81,21 +81,6 @@ pub fn check_lockdown(content: Option<&str>) -> Finding {
             Level::Warn,
             "off: consider lockdown=confidentiality on the kernel cmdline",
         ),
-    }
-}
-
-pub fn check_swap(proc_swaps: Option<&str>) -> Finding {
-    let active = proc_swaps
-        .map(|s| s.lines().skip(1).filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0);
-    if active == 0 {
-        f("swap", Level::Good, "no active swap")
-    } else {
-        f(
-            "swap",
-            Level::Warn,
-            format!("{active} swap device(s) active: make sure swap is encrypted"),
-        )
     }
 }
 
@@ -272,7 +257,6 @@ pub fn report() -> Vec<Finding> {
         check_memfd_secret(kepr_core::secmem::memfd_secret_available()),
         check_yama(read("/proc/sys/kernel/yama/ptrace_scope").as_deref()),
         check_lockdown(read("/sys/kernel/security/lockdown").as_deref()),
-        check_swap(read("/proc/swaps").as_deref()),
         check_landlock(read("/sys/kernel/security/lsm").as_deref()),
         check_userns(
             read("/proc/sys/kernel/unprivileged_userns_clone").as_deref(),
@@ -289,6 +273,7 @@ pub fn report() -> Vec<Finding> {
         ),
     ];
     v.extend(key_removal);
+    v.extend(crate::cli_doctor_host::report()); // T12.35
     v
 }
 
@@ -325,13 +310,8 @@ mod tests {
     }
 
     #[test]
-    fn swap_landlock_userns() {
-        let header = "Filename Type Size Used Priority\n";
-        assert_eq!(check_swap(Some(header)).level, Level::Good);
-        assert_eq!(
-            check_swap(Some(&format!("{header}/dev/sda2 partition 1 0 -2\n"))).level,
-            Level::Warn
-        );
+    fn landlock_userns() {
+        // T12.35: the swap check moved to cli_doctor_host.
         assert_eq!(
             check_landlock(Some("lockdown,capability,landlock,yama")).level,
             Level::Good

@@ -28,6 +28,7 @@ mod cli_copy;
 mod cli_discover;
 mod cli_doctor;
 mod cli_doctor_hardening;
+mod cli_doctor_host;
 mod cli_envdump;
 mod cli_exec;
 mod cli_extra;
