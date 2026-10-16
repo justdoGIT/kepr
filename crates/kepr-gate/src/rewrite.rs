@@ -5,6 +5,7 @@
 use base64::Engine;
 use hyper::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 use kepr_core::binding::Inject;
+use zeroize::Zeroizing;
 
 use crate::placeholder::PREFIX;
 
@@ -50,9 +51,9 @@ pub fn placeholders_in(headers: &HeaderMap, query: Option<&str>) -> Vec<String> 
     out
 }
 
-/// T2.04: the placeholder in `Basic base64(user:placeholder)` (docker
-/// and registry clients log in this way).
-pub fn basic_placeholder(header: &str) -> Option<String> {
+/// `(user, password)` of a `Basic base64(user:password)` header. Only
+/// ever called on the agent's own headers, which carry placeholders.
+fn basic_parts(header: &str) -> Option<(String, String)> {
     let (scheme, b64) = header.trim().split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("basic") {
         return None;
@@ -61,8 +62,30 @@ pub fn basic_placeholder(header: &str) -> Option<String> {
         .decode(b64.trim())
         .ok()?;
     let text = String::from_utf8(raw).ok()?;
-    let (_, pass) = text.split_once(':')?;
-    pass.starts_with(PREFIX).then(|| pass.to_string())
+    let (user, pass) = text.split_once(':')?;
+    Some((user.to_string(), pass.to_string()))
+}
+
+/// T2.04: the placeholder in `Basic base64(user:placeholder)` (docker
+/// and registry clients log in this way).
+pub fn basic_placeholder(header: &str) -> Option<String> {
+    let (_, pass) = basic_parts(header)?;
+    pass.starts_with(PREFIX).then_some(pass)
+}
+
+/// T12.05: the user part of a `Basic` header, for `Inject::BasicPassword`.
+pub fn basic_user(header: &str) -> Option<String> {
+    basic_parts(header).map(|(user, _)| user)
+}
+
+/// The user `Inject::BasicPassword` sends: the agent's own Basic user,
+/// else `x-access-token` (what GitHub expects with a token).
+fn basic_password_user(src: &HeaderMap) -> String {
+    src.get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(basic_user)
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "x-access-token".to_string())
 }
 
 fn pct_encode(s: &str) -> String {
@@ -137,6 +160,11 @@ pub fn upstream_headers(
         Inject::Basic => {
             let enc = base64::engine::general_purpose::STANDARD.encode(value);
             out.insert(AUTHORIZATION, sensitive(format!("Basic {enc}"))?);
+        }
+        Inject::BasicPassword => {
+            let login = Zeroizing::new(format!("{}:{value}", basic_password_user(src)));
+            let enc = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(&*login));
+            out.insert(AUTHORIZATION, sensitive(format!("Basic {}", *enc))?);
         }
         Inject::Query { .. } => {}
         // A database login is never sent as an HTTP header; an AWS key
@@ -239,6 +267,54 @@ mod tests {
         for other in ["Basic !!!", "Basic bWU6cGFzcw==", "Bearer x", "basic"] {
             assert_eq!(basic_placeholder(other), None, "{other}");
         }
+    }
+
+    fn b64(s: &str) -> String {
+        base64::engine::general_purpose::STANDARD.encode(s)
+    }
+
+    fn with_auth(v: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(AUTHORIZATION, HeaderValue::from_str(v).unwrap());
+        h
+    }
+
+    const PH: &str = "kepr-ph-0123456789abcdef-0001-0011223344556677";
+
+    #[test]
+    fn basic_password_keeps_the_clients_user_name() {
+        let src = with_auth(&format!("Basic {}", b64(&format!("alice:{PH}"))));
+        assert_eq!(
+            basic_user(src[AUTHORIZATION].to_str().unwrap()),
+            Some("alice".into())
+        );
+        let out = upstream_headers(&src, &Inject::BasicPassword, "REAL").unwrap();
+        let auth = &out[AUTHORIZATION];
+        assert_eq!(auth, format!("Basic {}", b64("alice:REAL")).as_str());
+        assert!(auth.is_sensitive());
+        assert_eq!(
+            out.get_all(AUTHORIZATION).iter().count(),
+            1,
+            "placeholder gone"
+        );
+        assert!(!format!("{out:?}").contains(PH));
+    }
+
+    #[test]
+    fn basic_password_without_a_basic_user_uses_x_access_token() {
+        let want = format!("Basic {}", b64("x-access-token:REAL"));
+        for src in [
+            with_auth(&format!("Bearer {PH}")),
+            with_auth(&format!("Basic {}", b64(&format!(":{PH}")))),
+            HeaderMap::new(),
+        ] {
+            let out = upstream_headers(&src, &Inject::BasicPassword, "REAL").unwrap();
+            assert_eq!(out[AUTHORIZATION], want.as_str());
+        }
+        assert_eq!(basic_user("Bearer x"), None);
+        assert_eq!(basic_user("Basic !!!"), None);
+        let not_utf8 = base64::engine::general_purpose::STANDARD.encode([0xff, b':', b'x']);
+        assert_eq!(basic_user(&format!("Basic {not_utf8}")), None);
     }
 
     #[test]

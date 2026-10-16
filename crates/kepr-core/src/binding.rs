@@ -19,6 +19,11 @@ pub enum Inject {
     /// `Authorization: Basic base64(<value>)`; store the value as
     /// `user:password`.
     Basic,
+    /// T12.05: the value is a password or token alone. The gate keeps the
+    /// user name of the client's own `Authorization: Basic` header (or
+    /// `x-access-token` when it has none) and sends
+    /// `Basic base64(<user>:<value>)`. git over HTTPS logs in this way.
+    BasicPassword,
     /// P7.1: a PostgreSQL login. The value is a `database` record (JSON:
     /// user, password, database, sslmode, optional ca_pem); the gate logs
     /// in to host:port with it on the agent's behalf.
@@ -142,6 +147,7 @@ fn parse_inject(s: &str) -> Result<Inject, String> {
     match s {
         "bearer" => Ok(Inject::Bearer),
         "basic" => Ok(Inject::Basic),
+        "basic-password" => Ok(Inject::BasicPassword),
         "sigv4" => Ok(Inject::Sigv4),
         _ => {
             if let Some(n) = s.strip_prefix("header=") {
@@ -154,7 +160,7 @@ fn parse_inject(s: &str) -> Result<Inject, String> {
                 })
             } else {
                 Err(format!(
-                    "unknown inject '{s}' (use bearer, basic, sigv4, header=NAME or query=NAME)"
+                    "unknown inject '{s}' (use bearer, basic, basic-password, sigv4, header=NAME or query=NAME)"
                 ))
             }
         }
@@ -303,6 +309,22 @@ mod tests {
             serde_json::from_str::<Binding>(&j).unwrap().inject,
             app(7, 9)
         );
+    }
+
+    #[test]
+    fn basic_password_binds_like_basic() {
+        assert_eq!(
+            parse_binding("github.com:basic-password").unwrap(),
+            b("github.com", 443, Inject::BasicPassword)
+        );
+        let j = serde_json::to_string(&b("github.com", 443, Inject::BasicPassword)).unwrap();
+        assert!(j.contains(r#"{"kind":"basic_password"}"#), "{j}");
+        assert_eq!(
+            serde_json::from_str::<Binding>(&j).unwrap().inject,
+            Inject::BasicPassword
+        );
+        let err = parse_binding("github.com:basic-pass").unwrap_err();
+        assert!(err.contains("basic-password"), "{err}");
     }
 
     #[test]

@@ -11,7 +11,9 @@ pub struct Provider {
     /// Upstream TLS host (port 443).
     pub host: &'static str,
     /// `None` = `Authorization: Bearer`; `Some(h)` = header `h`;
-    /// `Some(BASIC_AUTH)` = `Authorization: Basic` (value `user:password`).
+    /// `Some(BASIC_AUTH)` = `Authorization: Basic` (value `user:password`);
+    /// `Some(BASIC_PASSWORD)` = Basic with the client's user name and the
+    /// value as the password (T12.05).
     pub header: Option<&'static str>,
     /// Key prefixes that identify this provider unambiguously.
     pub prefixes: &'static [&'static str],
@@ -155,6 +157,9 @@ pub const PROVIDERS: &[Provider] = &[
 /// appears in a header name, so it can't clash with a real header.
 pub const BASIC_AUTH: &str = ":basic";
 
+/// T12.05: `Provider::header` sentinel for `Inject::BasicPassword`.
+pub const BASIC_PASSWORD: &str = ":basic-password";
+
 /// T2.04: providers whose key works on every host under a domain. The
 /// gate intercepts a CONNECT to such a host when the session's key for
 /// the provider is bound to that exact host (the daemon decides).
@@ -210,6 +215,7 @@ impl Provider {
             inject: match self.header {
                 None => Inject::Bearer,
                 Some(BASIC_AUTH) => Inject::Basic,
+                Some(BASIC_PASSWORD) => Inject::BasicPassword,
                 Some(h) => Inject::Header {
                     name: h.to_string(),
                 },
