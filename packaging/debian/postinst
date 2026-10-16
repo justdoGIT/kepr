@@ -9,9 +9,14 @@ getent group kepr >/dev/null || addgroup --system kepr
 # by dh-systemd; fall back to systemctl if absent.
 if command -v deb-systemd-helper >/dev/null 2>&1; then
     deb-systemd-helper enable kepr.service >/dev/null || true
+    deb-systemd-helper enable kepr-gate.service >/dev/null || true
 fi
 if [ -d /run/systemd/system ]; then
     systemctl --system daemon-reload >/dev/null || true
+    # Agent sessions under the system daemon run in kepr-gate.service
+    # (as install.sh sets up); restart picks up a new gate on upgrade.
+    systemctl --system enable kepr-gate.service >/dev/null 2>&1 || true
+    systemctl --system restart kepr-gate.service >/dev/null || true
     systemctl restart kepr.service >/dev/null || true
 fi
 

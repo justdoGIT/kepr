@@ -84,7 +84,9 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: cargo build --release
-        run: cargo build --release --bins
+        run: |
+          cargo build --release --bins
+          cargo build --release -p kepr-gate
 
       - name: Install cargo-deb and cargo-generate-rpm
         run: |
@@ -102,9 +104,14 @@ jobs:
           set -euo pipefail
           STAGE="kepr-${VERSION}-x86_64-linux"
           mkdir -p "dist/${STAGE}"
-          cp target/release/kepr        "dist/${STAGE}/"
-          cp target/release/kepr-daemon "dist/${STAGE}/"
-          cp systemd/kepr.service       "dist/${STAGE}/"
+          cp target/release/kepr                   "dist/${STAGE}/"
+          cp target/release/kepr-daemon            "dist/${STAGE}/"
+          cp target/release/kepr-gate              "dist/${STAGE}/"
+          cp target/release/docker-credential-kepr "dist/${STAGE}/"
+          cp target/release/git-credential-kepr    "dist/${STAGE}/"
+          cp systemd/kepr.service                  "dist/${STAGE}/"
+          cp systemd/kepr-gate.service             "dist/${STAGE}/"
+          cp systemd/polkit/io.kepr.policy         "dist/${STAGE}/"
           cp completions/kepr.bash      "dist/${STAGE}/"
           # install.sh loads the agent sandbox's AppArmor profile from here.
           mkdir -p "dist/${STAGE}/packaging/apparmor"

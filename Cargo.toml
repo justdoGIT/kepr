@@ -186,7 +186,11 @@ assets = [
     ["target/release/kepr",                    "/usr/local/bin/kepr",                   "0755"],
     ["target/release/kepr-daemon",             "/usr/local/bin/kepr-daemon",            "0755"],
     ["target/release/docker-credential-kepr",  "/usr/local/bin/docker-credential-kepr", "0755"],
+    ["target/release/git-credential-kepr",     "/usr/local/bin/git-credential-kepr",    "0755"],
+    ["target/release/kepr-gate",               "/usr/local/bin/kepr-gate",              "0755"],
     ["systemd/kepr.service",       "/lib/systemd/system/kepr.service","0644"],
+    ["systemd/kepr-gate.service",  "/lib/systemd/system/kepr-gate.service", "0644"],
+    ["systemd/polkit/io.kepr.policy", "/usr/share/polkit-1/actions/io.kepr.policy", "0644"],
     ["completions/kepr.bash",      "/usr/share/bash-completion/completions/kepr", "0644"],
     ["packaging/apparmor/kepr",    "/etc/apparmor.d/kepr",            "0644"],
     ["README.md",                  "/usr/share/doc/kepr/README.md",   "0644"],
@@ -210,7 +214,11 @@ assets = [
     { source = "target/release/kepr",                   dest = "/usr/local/bin/kepr",                   mode = "0755" },
     { source = "target/release/kepr-daemon",            dest = "/usr/local/bin/kepr-daemon",            mode = "0755" },
     { source = "target/release/docker-credential-kepr", dest = "/usr/local/bin/docker-credential-kepr", mode = "0755" },
+    { source = "target/release/git-credential-kepr",    dest = "/usr/local/bin/git-credential-kepr",    mode = "0755" },
+    { source = "target/release/kepr-gate",              dest = "/usr/local/bin/kepr-gate",              mode = "0755" },
     { source = "systemd/kepr.service",       dest = "/lib/systemd/system/kepr.service",mode = "0644" },
+    { source = "systemd/kepr-gate.service",  dest = "/lib/systemd/system/kepr-gate.service", mode = "0644" },
+    { source = "systemd/polkit/io.kepr.policy", dest = "/usr/share/polkit-1/actions/io.kepr.policy", mode = "0644" },
     { source = "completions/kepr.bash",      dest = "/usr/share/bash-completion/completions/kepr", mode = "0644" },
     { source = "packaging/apparmor/kepr",    dest = "/etc/apparmor.d/kepr",            mode = "0644", config = true },
     { source = "README.md",                  dest = "/usr/share/doc/kepr/README.md",   mode = "0644", doc = true },
@@ -222,6 +230,10 @@ post_install_script = """
 if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm= 2>/dev/null)" = systemd ]; then
   getent group kepr >/dev/null || groupadd --system kepr
   systemctl daemon-reload || true
+  # Agent sessions under the system daemon run in kepr-gate.service;
+  # restart picks up a new gate binary on upgrade.
+  systemctl enable kepr-gate.service || true
+  systemctl restart kepr-gate.service || true
   systemctl enable --now kepr.service || true
 fi
 # Agent sandbox: let kepr make its user namespace where AppArmor
@@ -231,12 +243,13 @@ if command -v apparmor_parser >/dev/null 2>&1 && [ -d /sys/kernel/security/appar
 fi
 """
 pre_uninstall_script = """
-if [ $1 -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+if [ "$1" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
   systemctl disable --now kepr.service || true
+  systemctl disable --now kepr-gate.service || true
 fi
 """
 post_uninstall_script = """
-if [ $1 -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+if [ "$1" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
 fi
 """
