@@ -149,7 +149,7 @@ export PATH="$HOME/.local/share/kepr/shims:$PATH"   # in your shell profile
 claude                            # now runs: kepr agent run claude -- /path/to/claude
 ```
 
-The shim is a three-line `sh` script holding only paths: the real binary
+The shim is a four-line `sh` script holding only paths: the real binary
 (the first one on `PATH` outside the shim directory) and `kepr`. Inside a
 `kepr agent run` session it starts the real binary directly, so sessions
 never nest. The default directory is
