@@ -126,7 +126,8 @@ for sb in sandbox --no-sandbox; do
         esac
     done <<<"$OUT"
     sleep 2.5
-    if pgrep -u "$(id -u)" -x kepr-gate >/dev/null; then fail "gate outlived the agent ($sb)"; else pass "gate exited with the agent ($sb)"; fi
+    # This run's gates only: the daemon spawns each one itself.
+    if pgrep -P "$DAEMON_PID" -x kepr-gate >/dev/null; then fail "gate outlived the agent ($sb)"; else pass "gate exited with the agent ($sb)"; fi
 done
 
 echo "── request cap"
