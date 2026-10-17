@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -15,13 +16,82 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides which jobs a pull request needs. Pushes to main and manual runs
+  # always run everything. A draft PR runs nothing until it is ready for review.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.pull_request.draft != true
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ github.event_name != 'pull_request' || steps.rust.outputs.rust == 'true' }}
+      python: ${{ github.event_name != 'pull_request' || steps.some.outputs.python == 'true' }}
+      node: ${{ github.event_name != 'pull_request' || steps.some.outputs.node == 'true' }}
+      go: ${{ github.event_name != 'pull_request' || steps.some.outputs.go == 'true' }}
+      templates: ${{ github.event_name != 'pull_request' || steps.some.outputs.templates == 'true' }}
+      csi: ${{ github.event_name != 'pull_request' || steps.some.outputs.csi == 'true' }}
+      terraform: ${{ github.event_name != 'pull_request' || steps.some.outputs.terraform == 'true' }}
+      docs: ${{ github.event_name != 'pull_request' || steps.some.outputs.docs == 'true' }}
+    steps:
+      # Everything except the directories that have their own jobs below.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        if: github.event_name == 'pull_request'
+        id: rust
+        with:
+          predicate-quantifier: every
+          filters: |
+            rust:
+              - '**'
+              - '!docs/**'
+              - '!sdk/**'
+              - '!integrations/**'
+              - '!plugins/**'
+              - '!**/*.md'
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        if: github.event_name == 'pull_request'
+        id: some
+        with:
+          filters: |
+            python:
+              - 'sdk/python/**'
+              - 'integrations/ansible/**'
+              - '.github/workflows/ci.yml'
+            node:
+              - 'sdk/node/**'
+              - 'integrations/vscode/**'
+              - '.github/workflows/ci.yml'
+            go:
+              - 'sdk/go/**'
+              - '.github/workflows/ci.yml'
+            templates:
+              - 'integrations/ci/**'
+              - 'integrations/podman/**'
+              - 'integrations/gitlab/**'
+              - 'integrations/github-action/**'
+              - '.github/workflows/**'
+            csi:
+              - 'integrations/csi-provider/**'
+              - '.github/workflows/ci.yml'
+            terraform:
+              - 'integrations/terraform-provider-kepr/**'
+              - '.github/workflows/ci.yml'
+            docs:
+              - 'docs/**'
+              - '.github/workflows/ci.yml'
+
   rust:
     name: Rust (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
-        toolchain: ["1.87.0", stable, beta]
+        # beta is an early-warning job: it runs on main and manual runs, not on every PR push.
+        toolchain: ${{ fromJSON(github.event_name == 'pull_request' && '["1.87.0","stable"]' || '["1.87.0","stable","beta"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -53,6 +123,8 @@ jobs:
     # build only, which needs just a C compiler.
     name: Rust (FIPS module)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -79,6 +151,8 @@ jobs:
   python-sdk:
     name: Python SDK
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: unittest
@@ -89,6 +163,8 @@ jobs:
   node-sdk:
     name: Node SDK
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.node == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: node --test
@@ -101,6 +177,8 @@ jobs:
   go-sdk:
     name: Go SDK
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: go vet + test
@@ -113,6 +191,8 @@ jobs:
   ci-templates:
     name: GitHub Action + GitLab template
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.templates == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: actionlint (workflows, and the action's inputs via its example)
@@ -138,6 +218,8 @@ jobs:
   csi-provider:
     name: Secrets Store CSI provider
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.csi == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: go vet + test
@@ -150,6 +232,8 @@ jobs:
   terraform-provider:
     name: Terraform provider
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: go vet + test
@@ -162,6 +246,8 @@ jobs:
   docs:
     name: Docs (Fumadocs)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
     defaults:
       run:
         working-directory: docs
