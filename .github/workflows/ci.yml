@@ -20,7 +20,9 @@ jobs:
   # always run everything. A draft PR runs nothing until it is ready for review.
   changes:
     name: Changed paths
-    runs-on: ubuntu-latest
+    # CI_RUNS_ON (repo variable, JSON) selects the runner for every job here, e.g. ["self-hosted","hp"];
+    # unset means GitHub-hosted. The same variable is used by security.yml and pr-reviewer.yml.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     if: github.event.pull_request.draft != true
     permissions:
@@ -84,7 +86,7 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     strategy:
@@ -122,7 +124,7 @@ jobs:
     # ubuntu-latest. The `--all-features` lint above links AWS-LC's ordinary
     # build only, which needs just a C compiler.
     name: Rust (FIPS module)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     steps:
@@ -150,7 +152,7 @@ jobs:
 
   python-sdk:
     name: Python SDK
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.python == 'true'
     steps:
@@ -162,7 +164,7 @@ jobs:
 
   node-sdk:
     name: Node SDK
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.node == 'true'
     steps:
@@ -176,7 +178,7 @@ jobs:
 
   go-sdk:
     name: Go SDK
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.go == 'true'
     steps:
@@ -190,7 +192,7 @@ jobs:
 
   ci-templates:
     name: GitHub Action + GitLab template
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.templates == 'true'
     steps:
@@ -211,13 +213,13 @@ jobs:
           bash integrations/podman/test_kepr_podman_driver.sh
       - name: GitLab template parses
         run: |
-          python3 -m pip install --quiet pyyaml
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
           python3 -c "import yaml; yaml.safe_load(open('integrations/gitlab/kepr.gitlab-ci.yml'))"
 
   # batch: platform
   csi-provider:
     name: Secrets Store CSI provider
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.csi == 'true'
     steps:
@@ -231,7 +233,7 @@ jobs:
 
   terraform-provider:
     name: Terraform provider
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.terraform == 'true'
     steps:
@@ -245,7 +247,7 @@ jobs:
 
   docs:
     name: Docs (Fumadocs)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.docs == 'true'
     defaults:
