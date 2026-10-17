@@ -230,7 +230,7 @@ pub(super) mod tests {
 
     pub(crate) fn es_fixture() -> (p256::ecdsa::SigningKey, Jwks) {
         let sk = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
-        let pt = sk.verifying_key().to_encoded_point(false);
+        let pt = sk.verifying_key().to_sec1_point(false);
         let jwk = json!({"kty": "EC", "crv": "P-256", "kid": "e1",
             "x": B64.encode(pt.x().unwrap()), "y": B64.encode(pt.y().unwrap())});
         (
