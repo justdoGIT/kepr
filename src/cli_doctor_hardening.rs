@@ -250,18 +250,38 @@ fn on_path(tool: &str) -> bool {
         .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(tool).is_file()))
 }
 
-/// Only asked when AppArmor restricts user namespaces: the probe forks a
-/// sandbox, which is wasted work when nothing restricts it.
-fn profile_state(restrict: Option<&str>) -> Profile {
-    if restrict.map(str::trim) != Some("1") {
-        Profile::Missing
-    } else if crate::cli_agent_sandbox::probe(false).is_ok() {
+/// `/sys/kernel/security/apparmor/profiles` lines read `NAME (MODE)`.
+fn profile_listed(profiles: Option<&str>) -> bool {
+    profiles.is_some_and(|p| {
+        p.lines()
+            .any(|l| l.split_whitespace().next() == Some("kepr"))
+    })
+}
+
+/// Root makes user namespaces whatever AppArmor says, so its probe proves
+/// nothing about the profile; only the loaded list counts then.
+fn profile_from(listed: bool, root: bool, probe_ok: bool, installed: bool) -> Profile {
+    if listed || (!root && probe_ok) {
         Profile::Loaded
-    } else if std::path::Path::new(PROFILE_PATH).exists() {
+    } else if installed {
         Profile::Installed
     } else {
         Profile::Missing
     }
+}
+
+/// Only asked when AppArmor restricts user namespaces: the probe forks a
+/// sandbox, which is wasted work when nothing restricts it.
+fn profile_state(restrict: Option<&str>) -> Profile {
+    if restrict.map(str::trim) != Some("1") {
+        return Profile::Missing;
+    }
+    let listed = profile_listed(read("/sys/kernel/security/apparmor/profiles").as_deref());
+    // SAFETY: geteuid has no failure modes.
+    let root = unsafe { libc::geteuid() } == 0;
+    let probe_ok = !listed && !root && crate::cli_agent_sandbox::probe(false).is_ok();
+    let installed = std::path::Path::new(PROFILE_PATH).exists();
+    profile_from(listed, root, probe_ok, installed)
 }
 
 pub fn report(mode: Option<&str>, key_sealer: Option<&str>) -> Vec<Finding> {
@@ -375,6 +395,22 @@ mod tests {
             "{}",
             off.detail
         );
+    }
+
+    /// Root makes user namespaces whatever AppArmor says, so only the
+    /// loaded-profile list counts for root; a user's probe counts too.
+    #[test]
+    fn profile_facts() {
+        let list = "snap.x (enforce)\nkepr (unconfined)\n";
+        assert!(profile_listed(Some(list)));
+        assert!(!profile_listed(Some("kepr-other (enforce)\n")));
+        assert!(!profile_listed(None));
+        // (listed, root, probe ok, file installed)
+        assert_eq!(profile_from(true, true, false, true), Profile::Loaded);
+        assert_eq!(profile_from(false, false, true, false), Profile::Loaded);
+        assert_eq!(profile_from(false, true, true, true), Profile::Installed);
+        assert_eq!(profile_from(false, true, true, false), Profile::Missing);
+        assert_eq!(profile_from(false, false, false, true), Profile::Installed);
     }
 
     #[test]
