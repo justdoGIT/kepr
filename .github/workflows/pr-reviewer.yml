@@ -65,7 +65,9 @@ jobs:
         if: steps.provider.outputs.enabled == 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "20"
+          # pi-coding-agent@0.86.1 declares engines.node >=22.19.0 (it imports node:module's enableCompileCache);
+          # Node 20 dies with a SyntaxError on import, so no review was ever posted.
+          node-version: "22"
 
       - name: Install Pi agent
         if: steps.provider.outputs.enabled == 'true'
