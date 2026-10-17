@@ -80,24 +80,37 @@ jobs:
           ref: ${{ needs.tag-check.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          # Exact, and the MSRV CI already tests (ci.yml): a re-run of a
+          # tag builds with the same compiler.
+          toolchain: 1.87.0
 
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      # T12.38: no build cache (a cache another run wrote could change what
+      # this build compiles). Sources come from Cargo.lock only, fetched
+      # here, before the build loses the network.
+      - name: Fetch locked sources
+        run: cargo fetch --locked
 
-      - name: cargo build --release
+      # The build runs in a network namespace with no interfaces. The probe
+      # must fail, which proves there is no network; --frozen keeps cargo on
+      # Cargo.lock and the fetched sources.
+      - name: cargo build --release (no network)
         run: |
-          cargo build --release --bins
-          cargo build --release -p kepr-gate
+          set -euo pipefail
+          sudo unshare --net -- sudo -u "$USER" env PATH="$PATH" HOME="$HOME" CARGO_NET_OFFLINE=true sh -c '! curl -fsS --max-time 5 https://index.crates.io/config.json && cargo build --release --frozen --bins && cargo build --release --frozen -p kepr-gate'
 
+      # Exact versions, the newest that build on the pinned toolchain
+      # (cargo-deb 3.7+ and cargo-generate-rpm 0.21 need Rust 1.88).
       - name: Install cargo-deb and cargo-generate-rpm
         run: |
-          cargo install cargo-deb --locked
-          cargo install cargo-generate-rpm --locked
+          cargo install cargo-deb --locked --version 3.6.4
+          cargo install cargo-generate-rpm --locked --version 0.20.0
 
       - name: cargo deb
-        run: cargo deb --no-build --output dist/kepr_${VERSION}_amd64.deb
+        run: cargo deb --no-build --output "dist/kepr_${VERSION}_amd64.deb"
 
       - name: cargo generate-rpm
-        run: cargo generate-rpm --output dist/kepr-${VERSION}-1.x86_64.rpm
+        run: cargo generate-rpm --output "dist/kepr-${VERSION}-1.x86_64.rpm"
 
       - name: Build tarball
         run: |
