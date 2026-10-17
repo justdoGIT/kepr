@@ -66,7 +66,7 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           # pi-coding-agent@0.86.1 declares engines.node >=22.19.0 (it imports node:module's enableCompileCache);
-          # Node 20 dies with a SyntaxError on import, so no review was ever posted.
+          # Node 20 dies with a SyntaxError on import (seen on the hp runner, 2026-10-17).
           node-version: "22"
 
       - name: Install Pi agent
