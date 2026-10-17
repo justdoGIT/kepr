@@ -11,15 +11,19 @@ updates:
     commit-message:
       prefix: "kepr"
       include: scope
+    # One PR for all minor and patch updates (each Dependabot PR otherwise runs
+    # its own update job and a full CI run). Majors stay separate.
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: npm
     directory: "/docs"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "docs"
       include: scope
@@ -49,15 +53,23 @@ updates:
       fumadocs:
         patterns:
           - "fumadocs-*"
+      # Everything else: one PR per month instead of one per package.
+      docs-minor-patch:
+        patterns:
+          - "*"
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
     commit-message:
       prefix: "ci"
       include: scope
+    groups:
+      actions:
+        patterns:
+          - "*"
