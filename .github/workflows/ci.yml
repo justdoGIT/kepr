@@ -80,6 +80,8 @@ jobs:
               - 'integrations/ci/**'
               - 'integrations/podman/**'
               - 'integrations/gitlab/**'
+              - 'integrations/bitbucket/**'
+              - 'integrations/jenkins/**'
               - 'integrations/github-action/**'
               - '.github/workflows/**'
             csi:
