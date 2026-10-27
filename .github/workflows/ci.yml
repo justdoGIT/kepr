@@ -34,6 +34,7 @@ jobs:
       node: ${{ github.event_name != 'pull_request' || steps.some.outputs.node == 'true' }}
       go: ${{ github.event_name != 'pull_request' || steps.some.outputs.go == 'true' }}
       ruby: ${{ github.event_name != 'pull_request' || steps.some.outputs.ruby == 'true' }}
+      java: ${{ github.event_name != 'pull_request' || steps.some.outputs.java == 'true' }}
       templates: ${{ github.event_name != 'pull_request' || steps.some.outputs.templates == 'true' }}
       csi: ${{ github.event_name != 'pull_request' || steps.some.outputs.csi == 'true' }}
       terraform: ${{ github.event_name != 'pull_request' || steps.some.outputs.terraform == 'true' }}
@@ -71,6 +72,9 @@ jobs:
               - '.github/workflows/ci.yml'
             ruby:
               - 'sdk/ruby/**'
+              - '.github/workflows/ci.yml'
+            java:
+              - 'sdk/java/**'
               - '.github/workflows/ci.yml'
             templates:
               - 'integrations/ci/**'
@@ -190,6 +194,16 @@ jobs:
       - name: minitest
         working-directory: sdk/ruby
         run: ruby test/test_kepr.rb
+
+  java-sdk:
+    name: Java SDK
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.java == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: javac + fake-daemon tests
+        run: bash sdk/java/test.sh
 
   go-sdk:
     name: Go SDK
