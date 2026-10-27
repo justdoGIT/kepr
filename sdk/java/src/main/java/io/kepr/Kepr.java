@@ -67,17 +67,21 @@ public final class Kepr {
     public Map<String, Object> request(Map<String, Object> req) {
         byte[] payload = Json.write(req).getBytes(StandardCharsets.UTF_8);
         if (payload.length > MAX_MSG_BYTES) throw new KeprException("request too large");
-        try (SocketChannel ch = SocketChannel.open(StandardProtocolFamily.UNIX)) {
+        try (SocketChannel ch = SocketChannel.open(StandardProtocolFamily.UNIX);
+                Selector sel = Selector.open()) {
             ch.connect(UnixDomainSocketAddress.of(socket));
+            ch.configureBlocking(false);
+            SelectionKey key = ch.register(sel, SelectionKey.OP_READ);
+            long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
             ByteBuffer out = ByteBuffer.allocate(4 + payload.length).putInt(payload.length).put(payload);
             out.flip();
-            while (out.hasRemaining()) ch.write(out);
-            ch.configureBlocking(false);
-            long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
-            ByteBuffer head = readExact(ch, 4, deadline);
+            while (out.hasRemaining()) {
+                if (ch.write(out) == 0) await(key, SelectionKey.OP_WRITE, deadline);
+            }
+            ByteBuffer head = readExact(key, 4, deadline);
             int n = head.getInt();
             if (n < 0 || n > MAX_MSG_BYTES) throw new KeprException("reply too large");
-            String body = new String(readExact(ch, n, deadline).array(), StandardCharsets.UTF_8);
+            String body = new String(readExact(key, n, deadline).array(), StandardCharsets.UTF_8);
             Object parsed = Json.parse(body);
             if (!(parsed instanceof Map)) throw new KeprException("malformed reply");
             Map<String, Object> resp = (Map<String, Object>) parsed;
@@ -92,20 +96,22 @@ public final class Kepr {
         }
     }
 
-    /** Read exactly {@code n} bytes before {@code deadline} (System.nanoTime), else "timed out". */
-    private static ByteBuffer readExact(SocketChannel ch, int n, long deadline) throws IOException {
+    /** Wait for {@code op} on the channel, or fail once the deadline (System.nanoTime) passes. */
+    private static void await(SelectionKey key, int op, long deadline) throws IOException {
+        long left = deadline - System.nanoTime();
+        if (left <= 0) throw new KeprException("timed out");
+        key.interestOps(op);
+        key.selector().select((left + 999_999L) / 1_000_000L);
+        key.selector().selectedKeys().clear();
+    }
+
+    private static ByteBuffer readExact(SelectionKey key, int n, long deadline) throws IOException {
+        SocketChannel ch = (SocketChannel) key.channel();
         ByteBuffer b = ByteBuffer.allocate(n);
-        try (Selector sel = Selector.open()) {
-            ch.register(sel, SelectionKey.OP_READ);
-            while (b.hasRemaining()) {
-                int r = ch.read(b);
-                if (r < 0) throw new KeprException("connection closed by the credential service");
-                if (r > 0) continue;
-                long left = (deadline - System.nanoTime()) / 1_000_000L;
-                if (left <= 0) throw new KeprException("timed out");
-                sel.select(left);
-                sel.selectedKeys().clear();
-            }
+        while (b.hasRemaining()) {
+            int r = ch.read(b);
+            if (r < 0) throw new KeprException("connection closed by the credential service");
+            if (r == 0) await(key, SelectionKey.OP_READ, deadline);
         }
         b.flip();
         return b;

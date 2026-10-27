@@ -174,6 +174,31 @@ public final class KeprTest {
             check(ms >= 250 && ms < 2500, "timed out after " + ms + " ms");
         }
         expectError(() -> new Kepr(sock, 0), "positive");
+        stalledPeerWithFullBufferTimesOutOnWrite();
+    }
+
+    /** A peer that never reads: a request bigger than the socket buffers must still time out. */
+    static void stalledPeerWithFullBufferTimesOutOnWrite() throws Exception {
+        Path sock = tmp().resolve("kepr.sock");
+        try (ServerSocketChannel server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
+            server.bind(UnixDomainSocketAddress.of(sock));
+            Thread t = new Thread(() -> {
+                try {
+                    SocketChannel c = server.accept();
+                    Thread.sleep(3000);
+                    c.close();
+                } catch (Exception ignored) {
+                }
+            });
+            t.setDaemon(true);
+            t.start();
+            java.util.Map<String, Object> big = new java.util.LinkedHashMap<>();
+            big.put("cmd", "x");
+            big.put("pad", "a".repeat(Kepr.MAX_MSG_BYTES - 64));
+            long start = System.nanoTime();
+            expectError(() -> new Kepr(sock, 300).request(big), "timed out");
+            check((System.nanoTime() - start) / 1_000_000L < 2500, "write timeout too slow");
+        }
     }
 
     static void sshSignRoundTripsBase64() throws Exception {
