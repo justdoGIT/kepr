@@ -32,8 +32,6 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -239,6 +237,24 @@ impl VersionState {
         Ok(())
     }
 
+    /// Raise `name`'s high-water mark to `value` if that is higher (never
+    /// lowers it). The vault image records its epoch here (daemon_vault),
+    /// so an older copy of the image is refused like an older cred file.
+    pub fn raise(&self, name: &str, value: u64) -> Result<(), String> {
+        let mut map = self.counters.lock().unwrap();
+        let current = map.get(name).copied().unwrap_or(0);
+        if value <= current {
+            return Ok(());
+        }
+        map.insert(name.to_string(), value);
+        let snapshot = map.clone();
+        if let Err(e) = self.persist(&snapshot) {
+            map.insert(name.to_string(), current);
+            return Err(e);
+        }
+        Ok(())
+    }
+
     fn persist(&self, counters: &HashMap<String, u64>) -> Result<(), String> {
         let state = StateFile {
             counters: counters.clone(),
@@ -248,42 +264,7 @@ impl VersionState {
         if !parent.exists() {
             fs::create_dir_all(parent).map_err(|e| format!("create state dir: {e}"))?;
         }
-        let tmp = self.path.with_extension(format!(
-            "tmp.{}.{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        // create_new(true) so mode(0o600) is honoured at open time.
-        // EEXIST means a stale tempfile from a crashed run; remove
-        // and retry once. Same shape as crypto_inproc::write_atomic.
-        let mut f = match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-        {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = fs::remove_file(&tmp);
-                fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&tmp)
-                    .map_err(|e| format!("open state temp (after stale-cleanup): {e}"))?
-            }
-            Err(e) => return Err(format!("open state temp: {e}")),
-        };
-        if let Err(e) = f.write_all(&bytes) {
-            drop(f);
-            let _ = fs::remove_file(&tmp);
-            return Err(format!("write state: {e}"));
-        }
-        drop(f);
-        fs::rename(&tmp, &self.path).map_err(|e| {
-            let _ = fs::remove_file(&tmp);
-            format!("install state: {e}")
-        })
+        crate::atomic_file::write(&self.path, &bytes, 0o600)
     }
 }
 
@@ -495,5 +476,16 @@ mod tests {
         fs::write(&path, b"not valid json").unwrap();
         let err = VersionState::load(path).expect_err("must reject garbage");
         assert!(err.contains("parse state"), "got: {err}");
+    }
+
+    #[test]
+    fn raise_only_moves_up_and_persists() {
+        let (s, dir) = fresh_state();
+        s.raise("kepr-vault-x", 5).unwrap();
+        s.raise("kepr-vault-x", 3).unwrap();
+        assert!(s.verify("kepr-vault-x", 4).is_err());
+        assert!(s.verify("kepr-vault-x", 5).is_ok());
+        let again = VersionState::load(dir.path().join("cred-versions.json")).unwrap();
+        assert!(again.verify("kepr-vault-x", 4).is_err());
     }
 }

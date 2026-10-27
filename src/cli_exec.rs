@@ -41,15 +41,33 @@ pub trait CredFetcher {
 pub struct DaemonFetcher;
 
 impl CredFetcher for DaemonFetcher {
+    /// `Get`, running the FIDO2 touch when the credential asks for one,
+    /// so every command that reads a value (exec, env, inject, copy,
+    /// records, sync) honours `--requires-fido2` the way `kepr get` does.
     fn fetch(&self, name: &str) -> Result<ZeroString, String> {
-        match client::send_request(&Request::Get {
-            name: name.to_string(),
-            fido2_assertion: None,
-        }) {
-            Ok(Response::GetOk { value, .. }) => Ok(value),
-            Ok(Response::Err { error }) => Err(error),
-            Ok(other) => Err(format!("unexpected daemon response: {other:?}")),
-            Err(e) => Err(format!("daemon unreachable: {e}")),
+        let get = |fido2_assertion| {
+            client::send_request(&Request::Get {
+                name: name.to_string(),
+                fido2_assertion,
+            })
+            .map_err(|e| format!("daemon unreachable: {e}"))
+        };
+        // T11.14: ask for the store passphrase when the value needs it.
+        let reply = match crate::cli_session::reauth::get_or_ask(name, || get(None))? {
+            Response::Fido2Needed {
+                challenge,
+                credential_ids,
+                ..
+            } => get(Some(crate::cli_fido2::run_fido2_ceremony(
+                &challenge,
+                &credential_ids,
+            )?))?,
+            other => other,
+        };
+        match reply {
+            Response::GetOk { value, .. } => Ok(value),
+            Response::Err { error } => Err(error),
+            _ => Err("unexpected daemon response".into()),
         }
     }
 }
@@ -69,11 +87,8 @@ pub fn build_env<F: CredFetcher>(
     fetcher: &F,
 ) -> Result<HashMap<String, String>, String> {
     let mut out = HashMap::with_capacity(vars.len());
-    for v in vars {
-        let upper = v.to_uppercase();
-        let value = fetcher
-            .fetch(&upper)
-            .map_err(|e| format!("cannot resolve {upper}: {e}"))?;
+    // T5.06: `VAR=kepr://…` entries too; one fetch per credential.
+    for (upper, value) in crate::cli_recordsx::refs::entries(vars, fetcher)? {
         // Convert ZeroString → String AT THE LAST POSSIBLE POINT.
         // The String we hand to Command::envs lives until execvp,
         // which clears the parent process image; until then the
@@ -92,11 +107,8 @@ pub fn build_memfd_env<F: CredFetcher>(
     fetcher: &F,
 ) -> Result<HashMap<String, String>, String> {
     let mut out = HashMap::with_capacity(vars.len());
-    for v in vars {
-        let upper = v.to_uppercase();
-        let value = fetcher
-            .fetch(&upper)
-            .map_err(|e| format!("cannot resolve {upper}: {e}"))?;
+    for (var, value) in crate::cli_recordsx::refs::entries(vars, fetcher)? {
+        let upper = var.to_uppercase();
         let fd = kepr_core::memfd::create_sealed_memfd(&upper, value.as_str().as_bytes())
             .map_err(|e| format!("cannot create sealed memfd for {upper}: {e}"))?;
         out.insert(format!("KEPR_FD_{upper}"), fd.to_string());
@@ -113,7 +125,10 @@ pub fn parse_env_csv(csv: &str) -> Result<Vec<String>, String> {
     if csv.is_empty() {
         return Err("--env requires at least one variable name".to_string());
     }
-    let parts: Vec<String> = csv.split(',').map(|s| s.trim().to_string()).collect();
+    let parts: Vec<String> = crate::cli_recordsx::refs::split_entries(csv) // `\,` (T5.06)
+        .iter()
+        .map(|s| s.trim().to_string())
+        .collect();
     if parts.iter().any(|s| s.is_empty()) {
         return Err(format!(
             "--env contains an empty entry (got: {csv:?}); \
@@ -150,15 +165,24 @@ pub fn run_exec(env: HashMap<String, String>, argv: &[String]) -> Response {
 /// Top-level handler. Returns `Response::Err` for any pre-exec
 /// failure; on success this function does not return because the
 /// process image has been replaced.
-pub fn cmd_exec(env_vars: &[String], memfd_vars: &[String], argv: &[String]) -> Response {
+pub fn cmd_exec(
+    env_vars: &[String],
+    memfd_vars: &[String],
+    argv: &[String],
+    mask: bool,
+) -> Response {
     if env_vars.is_empty() && memfd_vars.is_empty() {
         return Response::fail("`kepr exec` requires --env or --memfd VAR[,VAR…]");
     }
     let fetcher = DaemonFetcher;
     let mut env = HashMap::new();
+    let mut secret_names: Vec<String> = Vec::new();
     if !env_vars.is_empty() {
         match build_env(env_vars, &fetcher) {
-            Ok(e) => env.extend(e),
+            Ok(e) => {
+                secret_names.extend(e.keys().cloned());
+                env.extend(e);
+            }
             Err(e) => return Response::fail(e),
         }
     }
@@ -167,6 +191,9 @@ pub fn cmd_exec(env_vars: &[String], memfd_vars: &[String], argv: &[String]) -> 
             Ok(e) => env.extend(e),
             Err(e) => return Response::fail(e),
         }
+    }
+    if mask {
+        return crate::cli_mask::run_masked(env, &secret_names, argv);
     }
     run_exec(env, argv)
 }
@@ -253,6 +280,26 @@ mod tests {
     }
 
     #[test]
+    fn build_env_resolves_references_next_to_plain_names() {
+        let f = fetcher_with(&[
+            ("DB", Ok(r#"{"url":"postgres://h/d","hosts":["a","b"]}"#)),
+            ("API", Ok("k")),
+        ]);
+        let vars = parse_env_csv("API,DB_URL=kepr://db/url,H=kepr://DB/hosts[]").unwrap();
+        let env = build_env(&vars, &f).unwrap();
+        assert_eq!(env["API"], "k");
+        assert_eq!(env["DB_URL"], "postgres://h/d");
+        assert_eq!(env["H"], r#"["a","b"]"#);
+        let e = build_env(&["X=kepr://API/url".to_string()], &f).unwrap_err();
+        assert!(
+            e.contains("cannot resolve X") && e.contains("not a record"),
+            "{e}"
+        );
+        let memfd = build_memfd_env(&["db_url=kepr://DB/url".to_string()], &f).unwrap();
+        assert!(memfd.contains_key("KEPR_FD_DB_URL"));
+    }
+
+    #[test]
     fn build_env_zero_vars_yields_empty_map() {
         // Defensive: caller (cmd_exec) rejects this case before
         // build_env is invoked, but the function itself should be
@@ -302,7 +349,7 @@ mod tests {
 
     #[test]
     fn cmd_exec_rejects_empty_env_and_memfd_vars() {
-        let resp = cmd_exec(&[], &[], &["/bin/echo".to_string()]);
+        let resp = cmd_exec(&[], &[], &["/bin/echo".to_string()], false);
         match resp {
             Response::Err { error } => {
                 assert!(

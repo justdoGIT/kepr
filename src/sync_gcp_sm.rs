@@ -95,34 +95,18 @@ impl GcpSmSyncer {
     }
 
     fn http_post(url: &str, token: &ZeroString, body: &[u8]) -> Result<(u16, String), String> {
-        let response = ureq::post(url)
+        let req = crate::sync_http::agent()
+            .post(url)
             .set("Authorization", &format!("Bearer {}", token.as_str()))
-            .set("Content-Type", "application/json")
-            .send_bytes(body);
-        match response {
-            Ok(r) => {
-                let status = r.status();
-                let body = r.into_string().unwrap_or_default();
-                Ok((status, body))
-            }
-            Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
-            Err(e) => Err(format!("gcp-sm transport: {e}")),
-        }
+            .set("Content-Type", "application/json");
+        crate::sync_http::send(req, Some(body)).map_err(|e| format!("gcp-sm transport: {e}"))
     }
 
     fn http_get(url: &str, token: &ZeroString) -> Result<(u16, String), String> {
-        let response = ureq::get(url)
-            .set("Authorization", &format!("Bearer {}", token.as_str()))
-            .call();
-        match response {
-            Ok(r) => {
-                let status = r.status();
-                let body = r.into_string().unwrap_or_default();
-                Ok((status, body))
-            }
-            Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
-            Err(e) => Err(format!("gcp-sm transport: {e}")),
-        }
+        let req = crate::sync_http::agent()
+            .get(url)
+            .set("Authorization", &format!("Bearer {}", token.as_str()));
+        crate::sync_http::send(req, None).map_err(|e| format!("gcp-sm transport: {e}"))
     }
 }
 
@@ -150,7 +134,10 @@ impl Syncer for GcpSmSyncer {
             return Ok(());
         }
         if status != 404 {
-            return Err(format!("gcp-sm addVersion: HTTP {status} {response}"));
+            return Err(format!(
+                "gcp-sm addVersion: HTTP {status} {}",
+                crate::sync_http::error_summary(&response)
+            ));
         }
 
         // Create the secret (no payload — that's a separate call)
@@ -165,7 +152,8 @@ impl Syncer for GcpSmSyncer {
             Self::http_post(&create_url, &token, create_body.to_string().as_bytes())?;
         if !(200..300).contains(&cs_status) {
             return Err(format!(
-                "gcp-sm CreateSecret: HTTP {cs_status} {cs_response}"
+                "gcp-sm CreateSecret: HTTP {cs_status} {}",
+                crate::sync_http::error_summary(&cs_response)
             ));
         }
         // Retry the addVersion. If it still fails the secret
@@ -175,35 +163,156 @@ impl Syncer for GcpSmSyncer {
             Ok(())
         } else {
             Err(format!(
-                "gcp-sm addVersion (after CreateSecret): HTTP {status2} {response2}"
+                "gcp-sm addVersion (after CreateSecret): HTTP {status2} {}",
+                crate::sync_http::error_summary(&response2)
             ))
         }
     }
 
     fn pull(&self) -> Result<String, String> {
+        match self.fetch()? {
+            Some(v) => Ok(v.as_str().to_string()),
+            None => Err("gcp-sm access: HTTP 404 ".into()),
+        }
+    }
+
+    fn fetch(&self) -> Result<Option<zeroize::Zeroizing<String>>, String> {
         let _ = self.parse_path()?; // surface a path-shape error before the network round-trip
         let token = Self::read_token()?;
         let url = format!("{GCP_SM_HOST}/v1/{}/versions/latest:access", self.path);
         let (status, response) = Self::http_get(&url, &token)?;
+        let response = zeroize::Zeroizing::new(response);
+        if status == 404 {
+            return Ok(None); // T11.17: no such secret (or no version yet)
+        }
         if !(200..300).contains(&status) {
-            return Err(format!("gcp-sm access: HTTP {status} {response}"));
+            return Err(format!(
+                "gcp-sm access: HTTP {status} {}",
+                crate::sync_http::error_summary(&response)
+            ));
         }
         let parsed: serde_json::Value =
             serde_json::from_str(&response).map_err(|e| format!("gcp-sm: parse JSON: {e}"))?;
         let b64 = parsed
             .pointer("/payload/data")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("gcp-sm access: response missing /payload/data: {response}"))?;
+            .ok_or("gcp-sm access: response missing /payload/data")?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .map_err(|e| format!("gcp-sm: base64 decode: {e}"))?;
-        String::from_utf8(bytes).map_err(|e| format!("gcp-sm: payload not valid UTF-8: {e}"))
+        String::from_utf8(bytes)
+            .map(|s| Some(zeroize::Zeroizing::new(s)))
+            .map_err(|e| format!("gcp-sm: payload not valid UTF-8: {e}"))
     }
+}
+
+/// T11.17: the secret ids (`projects/P/secrets/ID` → `ID`) on one
+/// `GET /v1/projects/P/secrets` page, and its nextPageToken.
+pub fn parse_list(body: &str, project: &str) -> Result<(Vec<String>, Option<String>), String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "gcp-sm list: reply is not JSON")?;
+    if !v.is_object() {
+        return Err("gcp-sm list: reply is not an object".into());
+    }
+    let want = format!("projects/{project}/secrets/");
+    // An empty project lists no `secrets` key at all.
+    let names = v
+        .get("secrets")
+        .and_then(|s| s.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.get("name")?.as_str()?.strip_prefix(want.as_str()))
+                .filter(|id| !id.is_empty() && !id.contains('/'))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let next = v
+        .get("nextPageToken")
+        .and_then(|t| t.as_str())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    Ok((names, next))
+}
+
+/// T11.17: every secret of `projects/P` whose id starts with `prefix`, as
+/// `(id, gcp-sm:projects/P/secrets/id)`.
+pub fn list(from: &str, prefix: &str) -> Result<Vec<(String, String)>, String> {
+    let project = match from.trim_end_matches('/').split('/').collect::<Vec<_>>()[..] {
+        ["projects", p] if !p.is_empty() => p.to_string(),
+        _ => {
+            return Err(format!(
+                "gcp-sm: list needs projects/<PROJECT>, got {from:?}"
+            ))
+        }
+    };
+    // It goes into the URL path.
+    if !project
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b':')
+    {
+        return Err(format!("gcp-sm: {project:?} is not a project id"));
+    }
+    let token = GcpSmSyncer::read_token()?;
+    let (mut out, mut page) = (Vec::new(), None::<String>);
+    for _ in 0..50 {
+        let mut url = format!("{GCP_SM_HOST}/v1/projects/{project}/secrets?pageSize=250");
+        if let Some(t) = &page {
+            let t: String = t
+                .bytes()
+                .flat_map(|b| match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                        vec![b as char]
+                    }
+                    _ => format!("%{b:02X}").chars().collect(),
+                })
+                .collect();
+            url.push_str(&format!("&pageToken={t}"));
+        }
+        let (status, body) = GcpSmSyncer::http_get(&url, &token)?;
+        if !(200..300).contains(&status) {
+            return Err(format!(
+                "gcp-sm list: HTTP {status} {}",
+                crate::sync_http::error_summary(&body)
+            ));
+        }
+        let (ids, next) = parse_list(&body, &project)?;
+        out.extend(
+            ids.into_iter()
+                .filter(|id| id.starts_with(prefix))
+                .map(|id| {
+                    let url = format!("gcp-sm:projects/{project}/secrets/{id}");
+                    (id, url)
+                }),
+        );
+        match next {
+            Some(t) => page = Some(t),
+            None => return Ok(out),
+        }
+    }
+    Err("gcp-sm list: too many pages".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_pages_parse_ids_and_next_token() {
+        let body = r#"{"secrets":[
+            {"name":"projects/p1/secrets/prod-db","replication":{}},
+            {"name":"projects/p1/secrets/api"},
+            {"name":"projects/other/secrets/x"},
+            {"name":"projects/p1/secrets/a/b"}],
+            "nextPageToken":"pg2","totalSize":4}"#;
+        let (ids, next) = parse_list(body, "p1").unwrap();
+        assert_eq!(ids, ["prod-db", "api"]);
+        assert_eq!(next.as_deref(), Some("pg2"));
+        assert_eq!(parse_list("{}", "p1").unwrap(), (vec![], None));
+        assert!(parse_list("[]", "p1").is_err());
+        assert!(list("p1", "").unwrap_err().contains("projects/"));
+        assert!(list("projects/p 1", "").is_err());
+    }
 
     #[test]
     fn from_path_stores_path_verbatim() {

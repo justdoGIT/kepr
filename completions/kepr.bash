@@ -6,7 +6,7 @@
 # Features:
 #   - verbs:   set / get / list / ls / delete / rm / check
 #   - flags:   context-aware per subcommand
-#   - values:  --gen-kind => hex | base62 | pass | uuid
+#   - values:  --gen-kind => hex | base62 | pass | uuid | words
 #   - dynamic: get / delete / rm complete existing credential names via
 #              `kepr --json list | jq -r '.credentials[]?.name'`
 #
@@ -34,7 +34,7 @@ _kepr() {
     fi
 
     local GLOBAL_FLAGS='--json --color --no-color --help --version'
-    local CMDS='set get list ls delete rm check'
+    local CMDS='set get list ls delete rm check exec env doctor rotate lock unlock status audit-verify sync-push sync-pull fido2-register fido2-list agent mcp panic leaked recovery-kit record share totp inject scan copy history restore usage health import discover ssh ssh-agent'
 
     # Flag-argument completion must come first: if $prev is a flag that
     # takes a value, $cur is that value and we never want to offer verbs
@@ -44,7 +44,7 @@ _kepr() {
             # Free-form secret value; no suggestion.
             return ;;
         --gen-kind)
-            COMPREPLY=( $(compgen -W 'hex base62 pass uuid' -- "$cur") )
+            COMPREPLY=( $(compgen -W 'hex base62 pass uuid words' -- "$cur") )
             return ;;
     esac
 

@@ -1,0 +1,31 @@
+# kepr.service drop-in: wrap the master key with a cloud KMS key
+# ("bring your own key", T4.11 / T4.12). The base unit has no network
+# (PrivateNetwork=yes, AF_UNIX/AF_NETLINK only); the KMS call happens once,
+# when the daemon starts, so this opens outbound IP for this service only.
+#
+# Install:
+#   sudo mkdir -p /etc/systemd/system/kepr.service.d
+#   sudo cp kms.conf.example /etc/systemd/system/kepr.service.d/kms.conf
+#   sudo install -m 0600 /dev/null /etc/kepr/kms.env   # then fill it in
+#   sudo systemctl daemon-reload && sudo systemctl restart kepr.service
+#
+# Applies to a newly created master key; an existing one keeps the
+# sealing it was made with (the daemon says which, if they differ).
+
+[Service]
+PrivateNetwork=no
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+
+# Pick one key service:
+#Environment=KEPR_MASTER_KEY_SEAL=aws-kms:arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab
+#Environment=KEPR_MASTER_KEY_SEAL=gcp-kms:projects/P/locations/global/keyRings/R/cryptoKeys/K
+#Environment=KEPR_MASTER_KEY_SEAL=azure-kv:https://NAME.vault.azure.net/keys/KEY/VERSION
+
+# Credentials, kept out of the unit file (mode 0600, root only):
+#   AWS_ACCESS_KEY_ID=…  AWS_SECRET_ACCESS_KEY=…  [AWS_SESSION_TOKEN=…]
+#   GCP_ACCESS_TOKEN=…   (gcloud auth print-access-token)
+#   AZURE_ACCESS_TOKEN=… (az account get-access-token --resource https://vault.azure.net)
+EnvironmentFile=-/etc/kepr/kms.env
+
+# Optional: a VPC / FIPS / private endpoint instead of the public one.
+#Environment=KEPR_KMS_ENDPOINT=https://vpce-0123.kms.eu-west-1.vpce.amazonaws.com/

@@ -1,20 +1,1505 @@
 ---
 title: "Features"
-description: "Command surface, generators, audit log, environment variables, exit codes."
+description: "Command surface, records and references, vault image, master-key sealers, sharing and sync, rotation, policy, platform integrations, session features, environment variables, exit codes."
 ---
 
 ## Command surface
 
-| Verb     | Aliases | Args                                                | Output                |
-| -------- | ------- | --------------------------------------------------- | --------------------- |
-| `set`    |         | `KEY [--generate] [--value V] [--gen-kind ...]`     | `SetOk`               |
-| `get`    |         | `KEY [--quiet] [--export]`                          | `GetOk { value }`     |
-| `list`   | `ls`    | —                                                   | `ListOk { credentials }` |
-| `delete` | `rm`    | `KEY [--force]`                                     | `DeleteOk`            |
-| `check`  |         | —                                                   | `CheckOk { all_ok }`  |
+Every verb, grouped by area. `kepr --help` prints the same list, and most
+verbs print their usage line when called without arguments.
+
+### Store, read and run
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `set` | `KEY [--stdin\|--value V\|--generate] [--gen-kind K] [--profile P] [--ttl SECS] [--requires-consent] [--requires-fido2] [--reauth] [--exe PATH]...` | Store a value (masked prompt by default). |
+| `get` | `KEY [--quiet] [--export]` | Print a value. |
+| `list` (`ls`) | `[--tag TAG] [--folder FOLDER]` | Names, types and flags; never values. |
+| `delete` (`rm`) | `KEY [--force]` · `--all --yes` | Move KEY to the trash; `--force` deletes at once; `--all --yes` deletes everything you own. |
+| `check` | — | Decrypt-check every credential. |
+| `exec` | `[--env CSV\|--env VAR=kepr://…] [--memfd CSV] [--pull KEY,…] [--manifest P] [--stage S] [--mask] -- CMD` | Run CMD with credentials in its environment, in sealed memfds, or fetched by CMD on demand. |
+| `env` | `[--env CSV\|--manifest P] [--stage S]` | Print `export` lines for `eval`. |
+| `inject` | `-i TEMPLATE [-o OUT]` | Fill `kepr://` references in a template (OUT is mode 0600). |
+| `resolve` | `kepr://KEY[/…]` | Print what one reference stands for (an attachment raw). |
+| `copy` | `KEY [--clear SECS]` | Copy to the clipboard, cleared after SECS (default 20). |
+| `totp` | `KEY` | Current 2FA code from a stored seed or `otpauth://` URI. |
+| `strength` | — | Estimate the bits of a value typed at a hidden prompt or piped on stdin. |
+| `scan` | `[PATH...] [--staged]` | Find leaked API keys and private keys; exit 1 if any. |
+| `history` | `KEY [--diff A B]` | Saved versions (no values); `--diff` names the record fields that changed. |
+| `restore` | `KEY --version N` | Make version N current again (undoable). |
+| `doctor` | `[--verify]` | Setup and hardening checks; `--verify` decrypt-checks the whole store. |
+| `audit-verify` | — | Verify the hash-chained audit log. |
+
+### Lock, unlock and recovery
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `lock` | `[--fido2]` | Protect the master key with a passphrase (Argon2id); `--fido2` also needs a security-key touch to unlock. |
+| `unlock` | `[--fingerprint]` | Unlock with the passphrase; `--fingerprint` reopens a store the idle timer or sleep watcher locked. |
+| `status` | — | Lock state, mode, profile, store backend, master-key protection, your running gates, escrow, crypto module. |
+| `reauth` | `KEY [--on\|--off]` | Enter the passphrase now (KEY readable for 60 s), or turn KEY's re-auth requirement on or off. |
+| `recovery-kit create` | `[--threshold K] [--shares N] [--out-dir DIR]` · `--words` | Split the master key into K-of-N shares (default 3 of 5), or print it as 24 words and a QR code. |
+| `recovery-kit restore` | `[--words]` | Rebuild a lost master key from K shares or the 24 words, under a new passphrase. |
+| `break-glass` | `NAME` | Reveal a sealed credential once with k recovery-kit shares (audited; marks it must-rotate). |
+| `escrow` | `enable ADMIN_KEY\|CONTACT` · `disable` · `status` · `open FILE [--out-dir DIR]` | Wrap the master key to an administrator's share key; the admin opens it as a 2-of-2 recovery kit. |
+| `panic` | — | Stop all agent gates; lock the store if it is passphrase-protected. |
+| `fido2-register` | `LABEL CRED_ID COSE_KEY` | Register a FIDO2 key for per-credential assertions. |
+| `fido2-list` | — | List registered FIDO2 keys. |
+
+### Organise the store
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `tag` | `KEY [+TAG\|-TAG\|TAG]...` | Add or remove tags (up to 16); with no TAG, show them. |
+| `mv` | `KEY FOLDER` · `KEY /` | File KEY under FOLDER (`a/b/c`); `/` clears it. |
+| `search` | `PATTERN` | Find keys by name, alias, tag, folder, record type and non-secret record fields; never values. |
+| `trash` | `[ls]` · `restore KEY` · `purge [KEY] [--yes]` | List, restore or purge deleted credentials. |
+| `ln` | `ALIAS KEY` | ALIAS reads KEY's value under KEY's policy. |
+| `dupes` | `[--merge KEEP]` | Group keys holding the same value; `--merge` makes the others aliases of KEEP. |
+| `vault` | `init [--size MIB]` · `migrate` · `verify` · `status` | Create, fill, check and inspect the vault image. |
+
+### Records, attachments, import and export
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `record add` | `KEY [--type T] [--from-file F\|--clone OTHER] [--field k=v\|k=-\|k[]=v]... [--custom LABEL=v]... [--ref k=OTHER]... [--generate FIELD]... [--profile P] [--requires-consent]` | Store a typed record. |
+| `record show` | `KEY [--reveal]` | Fields, masked ones starred unless `--reveal`. |
+| `record get` | `KEY FIELD` | One field, raw (`FIELD[i]`, `FIELD[i][sub]` work too). |
+| `record types` | `[--export DIR]` | Built-in types and yours. |
+| `record template` | `TYPE` | JSON skeleton to fill in for `record add --from-file`. |
+| `record convert` | `KEY TYPE` | Re-type a record (the old value goes to history). |
+| `attach` | `add KEY FILE [--as NAME]` · `get KEY NAME [-o OUT] [--force]` · `ls KEY` · `rm KEY NAME` | Encrypted file attachments. |
+| `import` | `FILE [--format auto\|csv\|json\|env] [--prefix P] [--seal] [--overwrite] [--yes]` | Import a password-manager export, `.env`, KeePass `.kdbx`, an encrypted bundle or a folder bundle. |
+| `export` | `--encrypted -o FILE` | Everything `get` can read now, in a passphrase-encrypted bundle. |
+| `discover` | `[--seal] [--overwrite] [--yes]` | Find plain-text credentials in CLI config files and import them. |
+
+### Sharing, devices and sync
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `share key` | — | Print your share public key (`kepr-pk2-…`). |
+| `share send` | `KEY --to NAME\|PUBKEY [--ttl SECS] [-o FILE] [--qr] [--view-window DUR]` | Encrypt KEY to another kepr user (single use). |
+| `share send --once` | `KEY [--ttl DUR] [--relay URL\|-o FILE] [--qr] [--self-destruct] [--view-window DUR]` | Make a one-time link `kepr://share/…#key`. |
+| `share receive` | `[FILE] [--as KEY]` | Store a received envelope. |
+| `share open` | `LINK [--from FILE] [--as KEY]` | Fetch (relay) or read (file) a one-time link and store it. |
+| `share check` | — | Ask the relays which of your links were opened. |
+| `share contact` | `add NAME KEY` · `ls` · `rm NAME` | Pin contacts' share keys. |
+| `share report` | — | Sent shares: to whom, when, expiry, opened. |
+| `folder` | `share FOLDER --to NAME\|KEY [--to …] -o FILE [--sealed]` · `import FILE [--overwrite] [--yes]` | Signed bundle of a folder for chosen share keys. |
+| `device` | `add LABEL [--oidc ISSUER]` · `enroll TOKEN [-o FILE]` · `enroll --from FILE` · `ls` · `rm ID\|LABEL` | Enrol your other machines; `enroll` also takes `--oidc ISSUER --client-id ID [--subject WHO]`. |
+| `sync remote` | `add URL` · `rm URL` · `ls` | Where devices meet: `dir:PATH`, `git:URL` or `s3:BUCKET[/PREFIX]`. |
+| `sync now` | `[--remote URL]` | Merge the other devices' bundles, then push this device's. |
+| `sync push` | `--map FILE [--dry-run]` | Push many credentials to cloud secret stores. |
+| `sync import` | `--from SRC [--prefix P] [--name-prefix N] [--seal] [--overwrite] [--yes]` | Import a cloud store's secrets. |
+| `sync-push` / `sync-pull` | `KEY --url vault:…\|aws-sm:…\|gcp-sm:…\|azure-kv:VAULT/SECRET\|json:PATH#KEY` | Push or pull one credential. |
+| `emergency` | `add CONTACT --delay DUR (--names A,B\|--all)` · `ls` · `deny CONTACT` · `rm CONTACT` · `request OWNER_KEY [-o FILE]` · `request --proof FILE` · `fetch [-o DIR]` | Time-delayed emergency access. |
+
+### Policy, approvals and monitoring
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `policy` | `test FILE` · `status` · `reload` | Run a policy file's test cases; show or reload what the daemon enforces. |
+| `report access` | `KEY` | Every path KEY can take: bindings, shares, gate releases, reads, aliases, devices, policy. |
+| `quorum` | `set KEY N\|off` · `request KEY [--for DUR]` · `approve ID [--with APPROVAL]` · `sign REQUEST` · `ls` | M-of-N approvals before each use window. |
+| `approvals` | `set KEY --via desktop\|ntfy\|any` · `set KEY --off` · `serve [--desktop] [--ntfy URL --listen ADDR:PORT [--callback-url URL]]` | Answer consent prompts from a notification. |
+| `canary` | `plant [--for PROVIDER] [--name NAME] [--in FILE\|DIR]` · `ls` · `rm NAME` · `listen --listen ADDR:PORT` | Decoy keys that raise an alarm when used. |
+| `exe` | `KEY [--allow PATH]... [--clear]` | Show, replace or drop the programs allowed to read KEY. |
+| `audit forward` | `--to jsonl:PATH\|syslog:udp://HOST[:PORT]\|otlp:URL [--once] [--interval SECS] [--state FILE]` | Stream audit events (never values) to a SIEM. |
+| `alerts` | `check [--file F]` · `run [--once] [--file F] [--interval SECS] [--state FILE]` | Post matching audit events to webhooks. |
+| `anomaly` | `check [--rules F]` · `run [--journal daemon\|FILE\|-] [--rules F] [--once] [--interval SECS] [--state F]` | Watch the gate journal for unusual traffic. |
+| `usage` | `[--days N]` · `--report [--days N] [--unused-days N] [--prices FILE]` | Uses per key; `--report`: agent traffic, cost and unused bindings. |
+| `health` | `[--max-age DAYS] [--breach] [--period N[d\|w\|m\|y]] [--policy FILE] [--ignore KEY:KIND[,KIND]] [--unignore KEY[:KIND,…]] [--notify URL [--format F]]` | Weak, reused, old, breached and expiring values (flags only). |
+| `leaked` | `KEY [--yes] [--rotate]` | Stop agent sessions, delete KEY and its history, log an incident, show where to revoke it; `--rotate` replaces an AWS IAM key. |
+
+### Rotation and access windows
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `rotate` | `KEY --hook PATH [--gen-kind K]` · `KEY --aws-iam` · `KEY --db` | Rotate now: through a hook, the AWS IAM API or the database. |
+| `rotate` | `KEY --every DUR (--hook CMD\|--aws-iam\|--db)` · `KEY --every off` · `KEY --scheduled` | Rotate on a schedule; `--scheduled` runs a due rotation now. |
+| `grant` | `KEY [--to HARNESS --for DUR\|--revoke [--to HARNESS]\|--jit on\|off]` | Just-in-time windows for a sealed key; no flags shows the state. |
+| `checkout` | `KEY [--for DUR]` | Take a hold on KEY; a second checkout is refused. |
+| `checkin` | `KEY [--token T] [--rotate]` | Give KEY back, optionally rotating it first. |
+| `aws whoami` | `KEY [--region R]` | Which AWS account and principal a stored key is. |
+| `aws credential-process` | `KEY [--duration SECS] [--region R] [--role-arn ARN]` | `credential_process` output: STS temporary credentials, never the long-lived key. |
+| `github-app add` | `KEY --app-id N --installation-id N [--key-file PEM]` | Store a GitHub App private key sealed; agent sessions get installation tokens. |
+
+### SSH
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `ssh generate` | `KEY [--comment C] [--requires-consent]` | New Ed25519 key that stays in the daemon (sign-only). |
+| `ssh import` | `KEY FILE [--requires-consent]` | Import an unencrypted OpenSSH Ed25519 key. |
+| `ssh list` | — | Public keys as `authorized_keys` lines. |
+| `ssh rotate` | `KEY --host [USER@]HOST [--port N]` | Replace KEY on one host and in the vault. |
+| `ssh-agent` | `[--foreground] [--socket PATH]` | ssh-agent for those keys: `eval "$(kepr ssh-agent)"`. |
+
+### AI agents
+
+See the [AI agents guide](/docs/guides/ai-agents) for the full walkthrough.
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `agent add` | `KEY [--for PROVIDER\|HOST[:PORT]:INJECT]... [--requires-consent] [--stdin]` | Store a write-only key bound to a provider or host (INJECT: `bearer`, `basic`, `header=NAME`, `query=NAME`, `sigv4`). |
+| `agent add-db` | `KEY --url postgres\|mysql\|redis[s]://USER@HOST[:PORT]/DB [--kind K] [--sslmode verify-full\|disable] [--ca FILE] [--stdin] [--requires-consent]` | Store a sealed database login. |
+| `agent rotate-db` | `KEY [--abort]` | Set a new random database password; nobody sees the old or new one. |
+| `agent run` | `HARNESS [--port N] [--isolate-net\|--no-sandbox\|--strict-sandbox] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [--tunnel NAME=HOST:PORT]... [--grant NAME=ROLE:ADMIN]... [--record] [-- ARGV]` | Run a harness sandboxed, with placeholders and a gate. |
+| `agent install` | `omp\|grok [--port N]` | Point the harness's config at the gate and install kepr's plugin. |
+| `agent adopt` | `[FILE...] [--yes] [--remove]` | Move keys from `.env` and shell rc files into kepr. |
+| `agent ls` / `agent revoke` | `[KEY] [--force]` | List or delete sealed keys. |
+| `agent replay` | `[SESSION]` · `SESSION --typescript FILE --timing FILE` | List or print recorded sessions; export PostgreSQL traffic for `scriptreplay`. |
+| `agent logs` | `[SESSION] [-n N] [--follow]` | The gate's request journal. |
+| `hook` | `pre-tool\|prompt\|session-start\|redact` | Harness-hook policy (JSON on stdin; used by the plugins). |
+| `mcp` | `[--read-only] [--ssh [USER@]HOST]... [--context TARGET=NOTE]...` | MCP server (stdio); never returns a credential. |
+
+### Platform and tools
+
+| Verb | Args | What it does |
+| ---- | ---- | ------------ |
+| `mount` | `DIR --file NAME=KEY1,KEY2 [--file …] [--exe PATH]... [--consent]` | Read-only FUSE files, fetched on open. |
+| `keyring add` | `KEY --desc SUBTYPE:REST [--keyring @u\|@s\|@us\|SERIAL] [--decode hex\|base64]` | Add KEY to a kernel keyring as a `logon` key. |
+| `systemd-cred` | `KEY [--name CRED] [--tpm2]` | Print an encrypted `SetCredentialEncrypted=` line for a unit file. |
+| `pki` | `init [--days N] [--force]` · `ca` · `issue NAME... [--days N] [--out DIR] [--force]` · `ls` | Local CA whose key stays sealed in the store. |
+| `pki svid` | `spiffe://TD/PATH [--ttl DUR] [--out DIR] [--force] [--ak HANDLE\|CTX]` | Short-lived X.509 SVID from the local CA. |
+| `pki tpm-enroll` | `--ak-pub PEM --ak HANDLE\|CTX` | Require a TPM2 quote over PCR 7 for every SVID. |
+| `serve` | `(--listen 127.0.0.1:PORT\|--socket PATH) --allow list,get [--rate N]` | Local read-only REST API. |
+| `shell` | — | Interactive prompt for kepr verbs. |
+| `batch` | `FILE\|- [--keep-going]` | Run one kepr command per line. |
+| `ui` | — | Full-screen credential list: search, copy, delete. |
 
 Global flags: `--json` (machine output, suppress stderr on clean
-errors), `--color` / `--no-color` (opt-in ANSI), `--version`, `--help`.
+errors), `--color` / `--no-color` (opt-in ANSI), `--profile NAME`
+(another store, see [Session features](#session-features)), `--version`,
+`--help`.
+
+## Typed records
+
+A record is one credential holding several named fields:
+
+```bash
+kepr record add PROD_DB --type database --field host=db.internal --field port=5432 \
+    --field user=app --field password=-     # `-` = ask, input hidden
+kepr record show PROD_DB                    # field names, values masked (--reveal shows them)
+kepr record get PROD_DB password            # one field, raw
+```
+
+Types and their standard fields (`kepr record types`):
+
+| Type | Standard fields |
+| --- | --- |
+| `login` | username, password, url, totp |
+| `card` | holder, number, expiry, cvv, pin |
+| `database` | host, port, user, password, database |
+| `server` | host, port, user, password |
+| `api` | key, secret, url |
+| `note` | text |
+| `custom` | any fields |
+
+With no `--field`, kepr asks for the standard ones. Field names are
+lower-case (`a-z`, `0-9`, `_`), and a record holds up to 64 fields. The
+record is encrypted as one value, and its type shows in `kepr list` as
+`[database]`.
+
+Every read goes through a normal `get`, so TTL, consent and FIDO2 apply to
+the whole record. Templates read single fields:
+
+```text
+DATABASE_URL=postgres://kepr://PROD_DB/user:kepr://PROD_DB/password@kepr://PROD_DB/host/app
+```
+
+Fields can also hold lists (`--field k[]=v`, repeatable), structured
+values, custom fields (`--custom LABEL=v`) and links to other records
+(`--ref k=OTHER`, see [References](#references)).
+
+### Your own types
+
+Put user types in `~/.config/kepr/types/*.toml` (`$XDG_CONFIG_HOME`
+respected):
+
+```toml
+name = "wifi"
+fields = [
+  { name = "ssid", type = "text", required = true },
+  { name = "password", type = "secret" },        # masked by default
+  { name = "router", type = "ref" },             # a link to another record
+]
+```
+
+Field types are `text`, `secret`, `multiline`, `url`, `email`, `phone`,
+`date`, `number` and `ref`.
+
+- `kepr record add` asks for a type's fields, refuses a record missing a
+  required one, and `record show` stars masked fields (and custom ones)
+  unless `--reveal`. These rules are checked by the CLI; the daemon checks
+  only the type name and the value's shape.
+- `kepr record template TYPE` prints a JSON skeleton; fill it in and store
+  it with `record add KEY --from-file F`. `--clone OTHER` starts from
+  another record's fields (read with a normal `get`; attachments and
+  history are not copied).
+- `kepr record convert KEY TYPE` re-types a record inside the daemon. It
+  keeps policy, tags, folder and attachments, turns unmatched fields into
+  custom fields, and saves the old value in history, so `kepr restore`
+  undoes it. Sealed records, SSH and share keys, and aliases can't be
+  converted.
+- `kepr record types --export DIR` writes your types out. A type with a
+  built-in name or a duplicate name is refused; a broken file is skipped
+  with a warning.
+
+## Tags, folders, attachments and references
+
+### Tags and folders
+
+```bash
+kepr tag OPENAI_API_KEY +ai +prod      # a bare word adds too; -TAG removes; no words shows them
+kepr mv OPENAI_API_KEY work/ml         # one folder per key; `kepr mv KEY /` clears it
+kepr ls --tag ai --folder work         # work and everything below it; --folder / = no folder
+kepr search '/^prod_.*db$/'            # or a plain substring
+```
+
+- A key carries up to 16 tags (`a-z 0-9 _ -`, lower-cased) and one
+  `/`-separated folder. Both survive `set` and `restore`.
+- Tags and folders only organise: they grant or restrict nothing.
+- `search` matches a case-insensitive substring, or a `/regex/` with only
+  `.`, `*`, `^`, `$`, `[…]` classes and `\` escapes (no `+`, `?`, groups
+  or alternation), at most 256 characters. It looks at names, aliases,
+  tags, folders, record types and the record fields `username`, `user`,
+  `url`, `host` and `holder`, and never at values. Record fields are
+  searched only when a plain `get` would succeed without a prompt; sealed,
+  SSH, share-key, gated and expired keys match on name, tags, folder and
+  type only.
+
+### Trash, aliases and duplicates
+
+- **Trash:** `kepr rm KEY` moves KEY, with its history, attachments and
+  metadata (so a sealed key stays sealed), to the trash for
+  `KEPR_TRASH_DAYS` days (default 30; `0` turns the trash off). `rm --force`
+  deletes at once. `kepr trash restore KEY` brings back the newest entry for
+  that name unless the name exists again; `kepr trash purge [KEY]` empties
+  it (all entries need `--yes`). The plain delete that the SDKs and
+  `kepr ui` send goes to the trash too; `kepr leaked` skips it, and `rm` is
+  refused while the store is locked.
+- **Aliases:** `kepr ln ALIAS KEY` makes ALIAS read KEY's value under KEY's
+  own seal, consent, FIDO2 and expiry, and `kepr ls` shows `ALIAS -> KEY`.
+  One hop only (an alias of an alias is refused). `rm ALIAS` removes only
+  the alias; deleting KEY leaves dangling aliases, which `rm` warns about
+  and `doctor --verify` reports.
+- **Duplicates:** `kepr dupes` groups keys holding exactly the same value,
+  compared by SHA-256 inside the daemon; only names come back. Sealed, SSH,
+  share-key, gated and expired values are left out. `--merge KEEP` moves
+  the other values of each group to the trash and makes each of those keys
+  an alias of KEEP, keeping its tags and folder.
+- **Delete everything:** `kepr delete --all --yes` deletes every key you
+  own, sealed ones included, with history, trash and aliases, as one
+  `delete-all` audit event. The CLI and the daemon both refuse it without
+  `--yes`, and it can't be undone.
+- **Deep check:** `kepr doctor --verify` decrypt-checks every value you own
+  (sealed values are decrypted and dropped unread), parses every metadata
+  file, and reports orphan history slots, metadata without a value,
+  dangling aliases and attachment manifests that don't match their chunks.
+  The exit code is 1 if anything is wrong.
+
+### Attachments
+
+```bash
+kepr attach add PROD_DB ./ca.pem               # --as NAME to store it under another name
+kepr attach ls PROD_DB
+kepr attach get PROD_DB ca.pem -o ./ca.pem     # mode 0600, checked against its SHA-256; -o - = stdout
+kepr attach rm PROD_DB ca.pem
+```
+
+- Up to 16 MiB per file, 32 files and 64 MiB per key, stored as encrypted
+  chunks. One upload per key at a time.
+- Attachments follow their key into the trash and back, and are purged
+  with it (delete, purge, expiry, `delete --all`).
+- Sealed, SSH and share keys take none. Attachments of consent- or
+  FIDO2-gated keys can't be read (there is no prompt per chunk).
+
+### References
+
+A `kepr://` reference names a value, a field or a file:
+
+| Reference | Reads |
+| --- | --- |
+| `kepr://NAME` | the whole value |
+| `kepr://NAME/field` | one record field |
+| `kepr://NAME/field[i]` · `kepr://NAME/field[]` | list item i · the whole list as a JSON array |
+| `kepr://NAME/field[i][sub]` · `kepr://NAME/field[sub]` | part of a structured value |
+| `kepr://NAME/custom_field/LABEL` | a custom field |
+| `kepr://NAME/file/FILE` | an attachment |
+| `kepr://CARD/billing/city` | through a link: `city` of the record that CARD's `billing` field links to |
+
+Escape `/`, `[`, `]` and `\` with a backslash (`\ ` for a space in
+templates). Parse errors name the column.
+
+References work in:
+
+- `kepr inject -i TEMPLATE` and `kepr record get`;
+- `kepr exec` / `kepr env --env VAR=kepr://…` (repeatable; `\,` escapes a
+  comma) and `kepr exec --memfd VAR=kepr://…`;
+- `.kepr.toml` `[env.map]` tables (checked when the manifest loads);
+- `kepr resolve kepr://…`, which prints the value to stdout (an attachment
+  raw).
+
+Each referenced credential is read with one normal `get` per run, so
+sealed keys are refused and gated ones prompt once. A link (a field
+holding `{"ref": "OTHER"}`) is followed with one `get` per record, up to 4
+links deep; a cycle is refused when it is resolved. On write, the daemon
+refuses self-links and links to sealed, SSH or share keys. In templates
+and `exec`, `file/` needs a UTF-8 attachment; use `kepr attach get` or
+`kepr resolve` for binary files.
+
+### Per-stage environments
+
+```toml
+# .kepr.toml
+[env]
+required = ["API_KEY"]
+[env.map]
+LOG_TOKEN = "kepr://LOGS/token"
+[env.dev]
+required = ["DEV_DB_PASS"]
+[env.dev.map]
+DATABASE_URL = "kepr://DEV_DB/url"
+```
+
+`kepr exec --stage dev --manifest .kepr.toml -- ./app` (or
+`KEPR_STAGE=dev`) provisions the base set plus the stage's; a stage's map
+entry replaces a base entry for the same variable. `--stage` needs a
+manifest in use (`--manifest PATH` or `KEPR_AUTO_MANIFEST=1`) and can't
+be combined with `--env`; `KEPR_STAGE` is ignored when no manifest is
+used.
+
+## Sharing with another kepr user
+
+```bash
+kepr share key                                    # bob: print his public key (kepr-pk2-…)
+kepr share send DB_PASS --to kepr-pk2-… -o db.share --ttl 3600    # alice
+kepr share receive db.share                       # bob: stored as DB_PASS (or --as NAME)
+```
+
+How it works:
+
+- **Encryption:** the sender's daemon encrypts the value to the recipient's
+  key with a hybrid of an ephemeral X25519 key and ML-KEM-768 (post-quantum),
+  HKDF-SHA256 and AES-256-GCM: reading it needs both to be broken. The
+  envelope is bound to that recipient and is tamper-evident. Older
+  `kepr-pub1-…` keys still work (they get an X25519-only envelope);
+  `kepr share key` upgrades your own key in place.
+- **Decryption:** only the recipient's daemon can decrypt it, and it stores
+  the value directly. Neither CLI sees the plaintext.
+- **Expiry:** shares expire after `--ttl` (default 24 h, at most 30 days).
+- **Single use:** a share can be received once; replaying the same file is
+  refused.
+- **What can't be shared:** sealed agent keys, SSH keys and the share key
+  itself.
+
+There's no server: move the envelope by any channel. On its own it is
+useless to anyone but the recipient.
+
+### Contacts, QR codes and view windows
+
+```bash
+kepr share contact add bob kepr-pk2-…         # pin bob's key once
+kepr share send DB_PASS --to bob --view-window 5m --qr
+kepr share report                             # to whom, when, expiry, opened?
+```
+
+- A contact name stays pinned to one key (remove it before re-adding); at
+  most 256 contacts. `--to` still takes a raw public key.
+- `--qr` prints the envelope as chunked QR codes. kepr doesn't scan QR
+  codes: feed the `KQ<i>/<n>:` chunk text to `share receive`, which joins
+  them.
+- `--view-window DUR` (1 s to 30 days): the receiver's copy deletes itself
+  DUR after its first `get`, enforced by the receiving daemon.
+- `share report` merges the sent-share ledger with the audit log. "Opened"
+  is known only for one-time links or a recipient on the same daemon.
+
+### One-time links
+
+```bash
+kepr share send DB_PASS --once --ttl 1h --relay https://relay.example.com
+#   → kepr://share/<id>?relay=…#<key>
+kepr share send DB_PASS --once -o db.once      # no relay: the blob goes to a file
+kepr share open 'kepr://share/…#…' --from db.once --as DB_PASS
+kepr share check                               # which of my links were opened?
+```
+
+- The daemon encrypts the value under a fresh key that goes only into the
+  link's `#fragment`, never to the relay. The link is a bearer link: anyone
+  holding it can open it; it is not bound to a recipient key.
+- With a relay, the blob is fetched and deleted in one request. Without
+  one, single use holds per receiving store (its received-id list), not
+  globally.
+- `--self-destruct` deletes the record and its history (trash skipped,
+  audited `self-destruct`) once the link is opened or expires. The owner's
+  daemon learns of an open when it receives the share itself, when
+  `kepr share check` sees the relay blob gone, or at expiry; a file link
+  opened elsewhere self-destructs only at expiry. A new `set` cancels it.
+- `kepr-relay [--listen ADDR] [--max-ttl SECS] [--rate PER_MINUTE]` is the
+  relay: blobs in memory only (lost on restart), plain HTTP (put TLS in a
+  reverse proxy), default `127.0.0.1:8737`, 7-day maximum TTL, 60 requests
+  per minute per address, 64 connections, 1 MiB per blob.
+
+## Devices, sync and emergency access
+
+### Devices
+
+```bash
+kepr device add laptop                 # first machine: single-use KD1- token, valid 15 min
+kepr device enroll KD1-… -o laptop.req # new machine: enrolment request, HMAC'd with the token
+kepr device enroll --from laptop.req   # first machine: check it and pin the new device's key
+kepr device ls
+kepr device rm laptop
+```
+
+- Enrolment goes by file (or stdout). Pinning is one-directional: for sync,
+  devices must enrol each other both ways.
+- At most 32 devices and 8 pending tokens; labels are 1-64 printable
+  characters.
+- **OIDC:** a token made with `device add LABEL --oidc ISSUER` requires an
+  identity-provider device-code login. The new machine runs
+  `device enroll TOKEN --oidc ISSUER --client-id ID`, and the first machine
+  runs `device enroll --from FILE --oidc ISSUER --client-id ID
+  [--subject WHO]`, which re-verifies the ID token (RS256 or ES256 against
+  the issuer's JWKS; `iss`, `aud`, `exp`; 60 s leeway; `alg: none`, HMAC
+  algorithms and RSA keys under 2048 bits refused). The owner's CLI checks
+  the signature, not the daemon (which has no network).
+
+### Multi-device sync
+
+```bash
+kepr sync remote add dir:/mnt/usb/kepr       # or git:URL, s3:BUCKET[/PREFIX]
+kepr sync now
+```
+
+`kepr sync now` merges the other enrolled devices' bundles (newest change
+wins, ties broken by device id), then pushes this device's bundle,
+encrypted to every enrolled device with a per-device sender MAC.
+
+- Bundles carry values and metadata, not history or attachments. Deletes
+  travel as tombstones (kept 30 days); a merged delete moves the key to the
+  trash.
+- Sealed, SSH, share-key and gated credentials never sync, and a merge
+  never replaces or deletes them.
+- Sync is manual: there is no background schedule.
+- `s3:` signs with the `AWS_*` variables (`KEPR_S3_ENDPOINT` points at
+  another S3-compatible endpoint); `git:` uses the git CLI with a clone
+  under `~/.cache/kepr/sync`.
+
+### Shared folders
+
+`kepr folder share FOLDER --to NAME|KEY [--to …] -o FILE [--sealed]`
+writes a bundle of the folder's readable credentials for up to 64 share
+keys, signed by you. `kepr folder import FILE [--overwrite] [--yes]` (or
+`kepr import FILE`) opens one from a pinned contact; importing a newer
+bundle later updates only what changed in it.
+
+- Only values `get` can read now are exported; sealed, SSH, share-key and
+  consent/FIDO2-gated credentials are listed by name only.
+- With `--sealed`, importers store the values sealed, each bound to its
+  provider's host (by key prefix or name); a value with no known provider
+  is skipped.
+- An existing name that didn't come from this folder is left alone unless
+  `--overwrite`. SSH and share keys are never replaced, and a sealed
+  credential is never replaced by a plain one. Bundles are capped at 16 MiB.
+
+### Encrypted export
+
+`kepr export --encrypted -o FILE` writes every credential `get` can read
+now (values, history, attachments, and its record type, tags, folder,
+expiry and re-auth flag) into a bundle encrypted with Argon2id and
+AES-256-GCM under a passphrase of at least 10 characters. `kepr import
+FILE [--prefix P] [--overwrite] [--yes]` detects the bundle and reports
+create / update / unchanged per credential.
+
+- Sealed, SSH, share-key and gated credentials are listed by name only.
+- The bundle is capped at 16 MiB; items beyond that are listed as omitted.
+- Import never replaces sealed or SSH credentials. The access policy is
+  checked as `set` on import and `export` on export.
+
+### Emergency access
+
+```bash
+kepr emergency add alice --delay 7d --names DB_PASS,BANK   # or --all
+kepr emergency request OWNER_KEY -o access.req             # alice, on her machine
+kepr emergency request --proof access.req                  # the owner's daemon accepts it
+kepr emergency deny alice                                  # the owner, within the delay
+kepr emergency fetch -o DIR                                # alice, after the release
+```
+
+An owner lets up to 5 contacts (a pinned contact name or a share key)
+request access to chosen credentials. Unless the owner denies the request
+within the delay (1 hour to 90 days), the owner's daemon releases share
+envelopes for the contact. `kepr status` warns of pending requests.
+
+- Requests are authenticated with an HMAC under a key derived from both
+  share keys (X25519) and must be fresh (7 days).
+- Release runs in the owner's daemon, so that daemon must be running.
+  There is no relay transport: released envelopes are held on the owner's
+  daemon for 30 days, and a contact on another machine needs someone with
+  access to that daemon to pass them on.
+- Sealed, SSH, share-key and consent/FIDO2-gated values are never released.
+
+### Break-glass and escrow
+
+Like the recovery kit, both are deliberate, narrow exceptions to the rule
+that the master key and sealed values never leave the daemon.
+
+- **Break-glass:** `kepr break-glass NAME` asks for k recovery-kit shares
+  (at least 2) at masked prompts. If they rebuild exactly the running master
+  key, the sealed value is printed once. It works on sealed credentials only
+  (never SSH or share keys), is refused while any user's agent gate runs,
+  marks the key `must_rotate` before decrypting (shown by `kepr list` until
+  the next `set`), and is audited as `break-glass`. It adds no capability,
+  since k shares plus the credential files already decrypt everything
+  offline; it makes that access loud.
+- **Escrow:** `kepr escrow enable ADMIN_KEY|CONTACT` wraps the master key to
+  an administrator's share key in `escrow.bin` in the state directory. It is
+  fenced like the recovery kit: passphrase-protected store, passphrase
+  re-checked, owner or root only, no agent gate running, audited. The admin
+  gets `escrow.bin` by other means and runs `kepr escrow open FILE
+  [--out-dir DIR]` on their machine, which returns a 2-of-2 recovery kit for
+  `kepr recovery-kit restore` (it needs their share key, no gate of theirs
+  running and a matching key fingerprint). `escrow disable` needs the
+  passphrase; copies of `escrow.bin` already handed out still open the key.
+  `kepr status` shows when escrow is on.
+
+## Credential history
+
+Every `set`, `rotate` or `restore` first saves the value being replaced.
+The last **5** are kept, each encrypted like a credential and bound to
+its slot name (`<cred>~N` on disk; never listed, never nameable in a
+request). `kepr history KEY` shows version numbers, times and sizes, but
+never values. `kepr restore KEY --version N` makes one current again under the
+credential's current policy, and saves the value it replaces, so a restore
+can itself be undone.
+
+- A value saved while the credential was sealed is only restored into a
+  sealed credential.
+- SSH keys keep no history.
+- `delete` and TTL expiry remove the history with the credential.
+
+`kepr history KEY --diff A B` lists which record fields were added,
+removed or changed between two versions (`0` is the current value, `1`
+the newest saved one), by name only. A plain value reports only "value
+changed". It is refused for sealed, SSH, share-key, gated and expired
+credentials and for versions saved while sealed, so a set-then-diff can't
+test a guess.
+
+## Usage report
+
+`kepr usage [--days N]` reads the caller's own entries from the
+hash-chained audit log. For each current credential it shows:
+
+- successful uses (`get`, gate `resolve`, `ssh-sign`) and refusals in the
+  window;
+- the last use ever;
+- the number of agent gate sessions.
+
+Never-used keys are listed so they can be removed. If the audit chain
+fails verification, the report says so.
+
+`kepr usage --report [--days N] [--unused-days N] [--prices FILE]` shows
+agent-gate traffic per harness × credential × host, with an estimated cost
+from a price table (`~/.config/kepr/prices` by default), and lists bound
+hosts no request reached in `--unused-days` (default 30): over-scoped
+bindings.
+
+```text
+# HOST-GLOB            USD per million tokens (first match wins)
+api.anthropic.com      6.00
+*.openai.com           4.00
+```
+
+Tokens are what providers report in JSON or SSE responses, with one
+blended price per host glob. Sessions without a recorded harness show as
+`unknown`; a reply holds at most 150 rows and 50 unused bindings.
+
+## Health and breach checks
+
+`kepr health` asks the daemon to look at every value it holds. Each
+credential can be flagged as:
+
+- weak, short or a common password;
+- reused (the same value as another credential, compared by digest inside
+  the daemon);
+- not changed in over `--max-age` days (default 365);
+- expired;
+- a certificate from `kepr pki` that expires within 14 days.
+
+Only the flags come back.
+
+`--breach` adds a [Have I Been Pwned](https://haveibeenpwned.com/API/v3#PwnedPasswords)
+range check:
+
+1. The daemon gives the CLI the first 5 hex digits of each value's SHA-1.
+   Sealed keys and SSH keys get none.
+2. The CLI downloads the public list of suffixes for that prefix, with
+   padding.
+3. The CLI sends the suffixes back, and the daemon answers yes or no.
+
+Neither the value nor its full hash leaves the daemon. If the lookup
+fails, the CLI prints a warning and still shows the local report.
+
+More options:
+
+- `--period N[d|w|m|y]` sets the age threshold (default unit days) and
+  prints an aging report, oldest first.
+- `--policy FILE` checks hygiene rules, with stricter ones per tag. The
+  report names the rule broken, never the value. Values the caller can't
+  `get` (sealed, consent- or FIDO2-gated) are checked for age only.
+
+  ```toml
+  min_length = 16
+  classes = ["lower", "upper", "digit"]
+  max_age_days = 365
+  [tag.prod]                  # on top, for keys tagged prod
+  min_length = 24
+  max_age_days = 90
+  ```
+
+- `--ignore KEY:KIND[,KIND]` lists those findings as ignored instead of
+  failing, until KEY's value changes; `--unignore KEY[:KIND,…]` undoes it.
+  Kinds: `weak`, `common`, `short`, `reused`, `old`, `expired`,
+  `breached`, `policy`, `unreadable`, `cert`.
+- `--notify URL [--format slack|teams|discord|ntfy|json]` posts names and
+  finding flags (never values or hash prefixes) to a webhook; the format is
+  guessed from the URL when omitted, and URL may be `kepr:NAME` (read from
+  the vault). Posting runs in the CLI, without retry, and a non-2xx reply
+  is an error.
+
+## Import
+
+`kepr import FILE` reads another manager's export:
+
+- CSV from 1Password, Bitwarden, KeePassXC, LastPass or a browser (columns
+  are found by header name);
+- JSON from Bitwarden or Keeper;
+- flat JSON or key/value arrays (Doppler, Infisical);
+- `.env` files;
+- KeePass KDBX 4 databases (`.kdbx`), after asking for the database
+  password;
+- kepr's own encrypted bundles and shared-folder bundles (see
+  [Devices, sync and emergency access](#devices-sync-and-emergency-access)).
+
+A record titled `GitHub` becomes `GITHUB` (the password), plus
+`GITHUB_USERNAME`, `GITHUB_TOTP` and one name per custom field.
+
+The first run prints the names (never values). `--yes` stores them.
+Names that already exist are skipped unless you pass `--overwrite`. With
+`--seal`, values that look like a known provider's API key are stored
+write-only and bound to that provider, as `kepr agent add` does. Planted
+[canaries](#canaries) are skipped.
+
+KeePass limits: KDBX 4 with an Argon2 KDF (AES-256 or ChaCha20) only; key
+files, AES-KDF and KDBX 3.x are refused. Protected custom fields are
+imported; URLs, notes, unprotected custom fields, attachments, history
+and the recycle bin are not. Other encrypted exports and binary vaults
+(for example `.1pux`) aren't read: export to CSV or JSON, import, then
+delete the export.
+
+`kepr sync import --from SRC` imports from a cloud secret store the same
+way (see [Rotation and cloud secrets](#rotation-and-cloud-secrets)).
+
+## Discover
+
+`kepr discover` looks for credentials that CLI tools keep in plain text:
+
+- `~/.aws/credentials`
+- `~/.git-credentials`
+- `~/.netrc`
+- `~/.npmrc`
+- `~/.pypirc`
+- `~/.docker/config.json`
+- gh's `hosts.yml`
+- the kubeconfig
+
+It imports them through the same plan / `--yes` flow as `kepr import`.
+
+Git and Docker entries are stored as `GIT_<HOST>` and `DOCKER_<HOST>`
+records in the format `git-credential-kepr` and `docker-credential-kepr`
+read. Pointing those tools at the kepr helper therefore works at once.
+Source files are never changed. For each file, the report says how to stop
+keeping the secret there.
+
+Rules in `~/.config/kepr/discover.toml` decide entries ahead of time,
+first match wins:
+
+```toml
+[[rule]]
+match = "aws:*prod*"      # SOURCE:GLOB or a bare GLOB, against the kepr name
+action = "add"            # add (no --yes needed) | ignore | ask
+```
+
+Sources are `aws`, `git`, `netrc`, `npm`, `pypi`, `docker`, `gh`, `kube`
+or `*`. `ask` prompts on a terminal and skips the entry without one;
+unmatched entries keep the usual plan. A broken rules file stops discover.
+
+## Vault image
+
+By default every credential is its own encrypted file. With
+`KEPR_STORE=image` in the daemon's environment, the daemon instead keeps
+every credential, its metadata, history, trash entries, aliases and
+attachment chunks as records in one fixed-size file, `vault.img` in the
+store directory.
+
+```bash
+kepr vault init --size 64      # MiB, 1-4096 (default 16), filled with random noise
+# set KEPR_STORE=image for the daemon and restart it, then:
+kepr vault migrate             # move per-file credentials in (each one read back first)
+kepr vault verify              # check every used slot and the Merkle root
+kepr vault status              # active store, size and fill, files left to move
+```
+
+What the image protects:
+
+- **Count and size:** the file is 4 KiB slots of random noise from the
+  start. Only a magic string and a salt are plaintext; the header, the
+  index and every record are encrypted.
+- **Integrity:** each slot is sealed with AES-256-GCM, with the image id,
+  slot number and epoch as associated data. A Merkle root over the used
+  slots lets `vault verify` name damaged slots.
+- **Placement:** record pages go to keyed pseudo-random free slots, and
+  every write also rewrites 3 random free slots with fresh noise.
+- **Crash safety:** commits go through a journal slot; after a crash the
+  image opens in the old state or the new one.
+- **Crypto-shred:** every write uses a fresh record key, wrapped under a
+  key derived from the master key. Delete drops the wrapped key, scrubs the
+  record's pages and bumps the epoch. The daemon keeps the highest epoch it
+  has seen and refuses an older copy of the image.
+
+Limits:
+
+- The size is fixed at creation; there is no resize, and a full image
+  refuses writes ("vault image is full"). The index is capped at 256 slots
+  (about 1 MiB).
+- There is no migration back to files. While the image is active, keys
+  still in per-file storage are not listed or served until
+  `kepr vault migrate`, which needs `KEPR_STORE=image` and is refused while
+  any user's agent gate runs.
+- `init` and `migrate` are for the store owner (you in user mode, root for
+  the system store). Other users see the fill rounded to 10 %.
+- One image serves every uid of the daemon, with records keyed by uid. One
+  lock serialises every image operation, and every operation fails while
+  the store is locked.
+- Crypto-shred covers the current image only: offline, an older copy of the
+  file plus the master key still opens the values it held.
+- The image test suite covers the store features (trash, history, aliases,
+  folders, duplicates, `delete --all`, `doctor --verify`, attachments);
+  later features are not yet exercised against the image.
+
+The design is described in the [vault image plan](/docs/architecture/vault-image-plan).
+
+## Master key protection
+
+By default the system daemon seals the master key with the credential
+backend's host key, and the user daemon keeps it in a 0600 file;
+`kepr lock` wraps either under a passphrase (Argon2id). The settings
+below go in the daemon's environment and apply when a master key is
+**created**: an existing key keeps the sealing it was made with, and there
+is no re-seal command.
+
+| Setting | Master key sealed by |
+| --- | --- |
+| `KEPR_MASTER_KEY_SEAL=tpm2`, `host+tpm2` or `auto`, optionally `KEPR_TPM2_PCRS=7+11` | the credential backend, bound to the TPM (and those PCRs) |
+| `KEPR_TPM2_PIN=1` and `KEPR_TPM2_PIN_FILE=/abs/path` | the TPM through tpm2-tools; unsealing also needs the PIN, read by the tools from that file, never from argv |
+| `KEPR_TPM2_NV_INDEX=0x01800A11` | the TPM with an anti-rollback NV counter: an older sealed copy of the key is refused |
+| `KEPR_MASTER_KEY_SEAL=aws-kms:ARN` | AWS KMS (key or alias ARN; region from the ARN), with encryption context `{"kepr":"master-key"}` |
+| `KEPR_MASTER_KEY_SEAL=gcp-kms:projects/P/locations/L/keyRings/R/cryptoKeys/K` | Google Cloud KMS |
+| `KEPR_MASTER_KEY_SEAL=azure-kv:https://NAME.vault.azure.net/keys/KEY/VERSION` | Azure Key Vault wrap / unwrap (RSA-OAEP-256) |
+| `KEPR_MASTER_KEY_SEAL=pkcs11:/path/module.so:LABEL` and `KEPR_PKCS11_PIN_FILE` | a token's RSA key pair (RSA-OAEP, SHA-256) through OpenSC's pkcs11-tool 0.23+ (YubiHSM and others) |
+| `KEPR_MASTER_KEY_SEAL=keychain` (macOS) | the login keychain, with an access list naming only the daemon binary |
+
+Notes and limits:
+
+- **TPM2 PIN and counter:** both need `KEPR_MASTER_KEY_SEAL` unset or
+  `tpm2`. The NV index defaults to `0x01800A11` when either option is set.
+  The counter protects the sealed master key, not the vault image (which
+  has its own epoch check). A missing tool gives an error naming the
+  tpm2-tools package.
+- **Key services:** credentials come only from the daemon's environment:
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and optional
+  `AWS_SESSION_TOKEN` for AWS (no instance role or profile lookup),
+  `GCP_ACCESS_TOKEN` or `AZURE_ACCESS_TOKEN` bearer tokens for the others,
+  read once at start-up and never refreshed. The service must be reachable
+  at every daemon start. `KEPR_KMS_ENDPOINT` overrides the AWS or GCP
+  endpoint. Azure accepts `vault.azure.net`, `vault.azure.cn`,
+  `vault.usgovcloudapi.net` and `managedhsm.azure.net` hosts and needs the
+  key VERSION. Errors carry only the HTTP status and the provider's error
+  code.
+- **PKCS#11:** the RSA key pair must already exist on the token under the
+  label; kepr doesn't generate it. Unsealing needs the PIN file; the PIN
+  reaches only the tool's own environment.
+- **Keychain:** the key is added with `/usr/bin/security` (on stdin, never
+  argv) and read back by the daemon through Security.framework, so the
+  access list applies and starts don't prompt. A failed read (item gone,
+  keychain locked, no login session, or a rebuilt daemon binary the access
+  list no longer matches) fails the unseal; there is no fallback to a
+  prompting read. No macOS CI job runs this path yet.
+- **System service:** the base unit has no network and hides devices. Copy
+  the matching drop-in from `systemd/kepr.service.d/`: `tpm2.conf.example`
+  (opens `/dev/tpmrm0`), `kms.conf.example` (opens `AF_INET`/`AF_INET6` and
+  loads `/etc/kepr/kms.env`) or `pkcs11.conf.example` (YubiHSM connector
+  and USB).
+- `kepr status` reports the protection as passphrase, file or host only; it
+  doesn't show which of these sealers is in use.
+
+### Passphrase plus security key
+
+After `kepr lock --fido2`, unlocking needs the passphrase **and** a touch
+of the registered FIDO2 security key (its `hmac-secret` output is mixed
+with the Argon2id passphrase key). `kepr unlock` and `kepr recovery-kit
+create` ask for the touch.
+
+- One security key per store. It is added by `lock --fido2`, which is
+  refused on a store that is already passphrase-protected.
+- Needs libfido2's tools (the `fido2-tools` package). `KEPR_FIDO2_DEVICE`
+  picks the device; the default is the first one `fido2-token -L` lists.
+
+### Recovery words
+
+`kepr recovery-kit create --words` prints the master key as 24 words from
+the EFF list (20 key words plus 4 checksum words) and a terminal QR code of
+them; `kepr recovery-kit restore --words` rebuilds the key and locks the
+store under a new passphrase. Both use the recovery-kit fences
+(passphrase-protected store, passphrase re-checked, owner only, no agent
+gate running) and are audited as `recovery-words` / `recovery-restore`.
+
+<Warning>
+  Unlike recovery-kit shares, the 24 words are the **whole** master key:
+  anyone holding them can decrypt the store files. Keep them like the
+  passphrase.
+</Warning>
+
+An unknown word is reported by its position. A wrong but valid word fails
+the checksum, which can't say which word it was.
+
+### FIPS build
+
+An off-by-default `fips` cargo feature routes the daemon's AES-256-GCM and
+SHA-256, and the gate's TLS and session CA, through aws-lc-rs:
+
+```bash
+cargo build --release --features fips,aws-lc-rs/fips
+cargo build --release -p kepr-gate --features fips,rustls/fips
+```
+
+`kepr status` prints a Crypto line and claims FIPS only when the validated
+module is linked and passed its self tests (`--features fips` alone links
+AWS-LC's ordinary build). HMAC (SigV4, SCRAM, share HKDF), Argon2id,
+X25519 and ML-KEM are not routed through the FIPS module. The FIPS build
+needs Go and CMake.
+
+## Agent sessions
+
+These extend `kepr agent run`; the [AI agents guide](/docs/guides/ai-agents)
+covers the basics.
+
+### AWS keys
+
+```bash
+kepr agent add PROD_AWS --for s3.eu-west-1.amazonaws.com:sigv4 --for sts.amazonaws.com:sigv4
+# value: {"access_key_id": "…", "secret_access_key": "…", "session_token": "…"}  (token optional)
+```
+
+Sessions get a placeholder key pair (`AWS_ACCESS_KEY_ID=KEPRPH…`). The
+gate checks the SDK's SigV4 signature, made with the placeholder secret, and
+re-signs the request with the real key, only toward the hosts the key is
+bound to.
+
+- Each service or region host needs its own `--for`; only hosts under
+  `.amazonaws.com` on port 443 are accepted (`.amazonaws.com.cn` and custom
+  endpoints are refused). A CONNECT to an unbound AWS host is tunnelled
+  as is (AWS then rejects the placeholder signature) or refused under
+  `--isolate-net`.
+- Refused with 403: presigned URLs, SigV4a, signed streaming uploads, and
+  credential-minting calls (STS GetSessionToken, GetFederationToken,
+  AssumeRole*, AssumeRoot; IAM CreateAccessKey, login-profile and
+  service-specific-credential calls). Bodies are buffered up to 8 MiB
+  (413 above) and pass through DLP.
+- Only the first AWS key by name is exposed as `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY`; each key also gets `KEPR_AWS_<NAME>`, for
+  `kepr aws credential-process NAME` profiles. Inherited `AWS_*`
+  credentials, `AWS_PROFILE` and `AWS_CA_BUNDLE` are withheld from the
+  harness.
+- Per-day caps don't apply to AWS traffic; per-session limits do.
+
+### CLI presets
+
+`kepr agent add NAME --for stripe|npm|gcloud|docker` (or auto-detection by
+key prefix) binds those tools' keys. Sessions get placeholders plus an
+`.npmrc`, a docker `config.json` (also as `REGISTRY_AUTH_FILE` for podman,
+skopeo and buildah) and gcloud's CA setting, in the session's private
+directory.
+
+- **gcloud:** the value is an OAuth access token (`ya29.…`), injected as
+  Bearer and never refreshed. It is bound to `www.googleapis.com` and 16
+  common `*.googleapis.com` service hosts; others need their own
+  `--for HOST`.
+- **docker:** store the value as `USER:TOKEN` (Basic auth against Docker
+  Hub's token service). The Docker Engine pulls from its own daemon
+  outside the session, so the preset serves only clients that call the
+  registry themselves.
+- There is no preset for git over HTTPS; `gh` uses the existing `github`
+  row.
+
+### Databases and tunnels
+
+- `kepr agent add-db` also takes `mysql://` and `redis://` / `rediss://`
+  URLs. The gate logs in upstream with the sealed record, and agents get
+  `MYSQL_*` or `REDIS_URL` (as `DATABASE_URL` for PostgreSQL) pointing at a
+  local gate port, with the session placeholder as password.
+  - **MySQL:** the gate checks the agent's scramble of the placeholder and
+    logs in with `mysql_native_password` or `caching_sha2_password` (full
+    `caching_sha2_password` authentication only over TLS). Upstream TLS is
+    verified unless `sslmode=disable`.
+  - **Redis:** only the client's first command (AUTH or HELLO … AUTH) is
+    parsed; upstream login is AUTH plus SELECT for a database other than 0.
+    `rediss://` means verified TLS.
+- `kepr agent rotate-db` (or `kepr rotate KEY --db`) also rotates MySQL
+  logins, with `ALTER USER CURRENT_USER() IDENTIFIED BY`. Unlike
+  PostgreSQL's SCRAM verifier, the new password travels in the SQL text
+  (over TLS unless `sslmode=disable`); backslash and NUL are refused.
+- `--tunnel NAME=HOST:PORT` gives the session a loopback port
+  (`KEPR_TUNNEL_<NAME>`) that the gate pipes to that host without injecting
+  anything, also under `--isolate-net`. HOST is a fully-qualified name or
+  an IPv4 address.
+- `--grant NAME=ROLE:ADMIN` grants a PostgreSQL role just in time: before
+  route NAME's first login, the gate GRANTs ROLE to the route's user using
+  the sealed ADMIN record, and REVOKEs it when the agent exits. An existing
+  membership is left alone. A gate killed outright (for example by
+  `kepr panic`) can't revoke: the role stays until an administrator
+  removes it.
+
+### Recording, journal and daily caps
+
+- `--record` keeps what the agent sent and received (HTTP bodies after DLP,
+  database and tunnel streams after login, keys masked), encrypted under a
+  per-session key wrapped by a master-key-derived key. `kepr agent replay`
+  lists and prints sessions, and exports PostgreSQL traffic as
+  `scriptreplay` typescript and timing files. 50 recordings per user,
+  256 MiB each.
+- `kepr agent logs [SESSION] [-n N] [--follow]` prints the request journal
+  of every session: method, host, templated path, status, bytes and blocked
+  reason. It keeps two rotating files of about 512 KiB per user; `-n` is at
+  most 10000.
+- `--max-requests-day N` and `--max-tokens-day N` cap each credential's use
+  per local calendar day across all sessions started with a daily cap; over
+  the cap the gate answers 403 `kepr_limit`. Sessions without a daily cap
+  don't count, nor do database and tunnel connections. If the daemon can't
+  answer, the request is refused.
+
+### MCP tools
+
+`kepr mcp [--read-only] [--ssh [USER@]HOST]... [--context TARGET=NOTE]...`
+adds two tools that never return a credential:
+
+- `db_query(target, sql[, read_only])` runs one PostgreSQL statement through
+  the gate's database proxy (500 rows / 256 KiB kept). Read-only mode sets
+  `default_transaction_read_only` and wraps the statement in
+  `BEGIN READ ONLY … ROLLBACK`: a guard against mistakes; the real boundary
+  is a role without write grants.
+- `ssh_run(host, cmd)` runs ssh, signed by daemon-held keys, only to hosts
+  given with `--ssh`, in BatchMode (unknown host keys refused, no
+  forwarding).
+
+Both time out after 120 s, output is capped at 64 KiB, and key-shaped
+strings and placeholders are masked. `--context` notes describe targets to
+the model.
+
+### Landlock
+
+Inside the sandbox the harness also runs under Landlock: read and execute
+on `/`; read and write on `$HOME`, `/tmp`, `/dev`, `/proc`,
+`$XDG_RUNTIME_DIR` and the working directory; the hidden kepr directories
+get no rule. If a hiding mount were undone, the harness still couldn't
+open them.
+
+- By default the hidden directories under `$HOME` (the user-mode store and
+  state) rely on their hiding mounts alone, so harnesses can still create
+  and rename-replace files in `$HOME`. `KEPR_LANDLOCK=strict` fences them
+  too, at a cost: `$HOME`, `~/.local` and `~/.local/share` can't be listed,
+  nothing new can be created directly in them, and a file replaced there by
+  rename (such as `~/.claude.json`) loses access. `KEPR_LANDLOCK=0` turns
+  the rules off.
+- Landlock doesn't mediate `connect()` on a Unix socket, so the daemon
+  socket is protected by its hiding mount. On a kernel without Landlock,
+  kepr prints a warning and the mounts still apply. Not with `--no-sandbox`.
+
+## Rotation and cloud secrets
+
+### Rotating
+
+| Command | What happens |
+| --- | --- |
+| `kepr rotate KEY --hook PATH [--gen-kind K]` | generate, validate through the hook, commit on exit 0 |
+| `kepr rotate KEY --aws-iam` | create a new IAM access key, verify it with STS (same ARN, retried), store it, then delete the old key; on failure the new key is deleted and the old one kept |
+| `kepr rotate KEY --db` | same as `kepr agent rotate-db KEY` (PostgreSQL or MySQL) |
+| `kepr ssh rotate KEY --host [USER@]HOST [--port N]` | new Ed25519 key (as `KEY_NEXT`, so a failed run resumes), installed on the host using the old key, a login checked with it, the old key's lines removed, then KEY replaced |
+| `kepr leaked KEY --rotate` | a leaked AWS IAM user key is replaced through the IAM API; other values fall back to the provider's revocation URL |
+
+- `--aws-iam` refuses when the IAM user already has 2 keys and refuses
+  sealed keys (the CLI signs with the key). The stored value is JSON
+  `{"access_key_id", "secret_access_key", "session_token"?}`; calls go to
+  `iam.amazonaws.com`, for the calling user only.
+- `ssh rotate` handles one host per run and edits only
+  `~/.ssh/authorized_keys`. After the commit the old key is gone, so other
+  hosts that trust only it lose access. The host must already be in
+  `known_hosts` (BatchMode).
+
+**Schedules:** `kepr rotate KEY --every 30d --hook CMD` (or `--aws-iam`,
+`--db`) stores a schedule. The user-mode daemon runs `kepr rotate KEY
+--scheduled` when it is due, audits it, and backs off after a failure
+(15 minutes, doubling, up to a day or the interval). `kepr list` shows the
+next rotation, a `set` restarts the clock, and `--every off` stops it.
+Intervals are 1 hour to 10 years; a run times out after 600 s. The system
+daemon never runs user hooks: there the schedule is only shown, and
+`--scheduled` must be run by hand.
+
+### AWS
+
+- `kepr aws whoami KEY [--region R]` shows the account and principal of a
+  stored key (STS GetCallerIdentity). Sealed keys are refused.
+- `kepr aws credential-process KEY [--duration SECS] [--region R]
+  [--role-arn ARN]` prints `credential_process` JSON:
+
+  ```ini
+  # ~/.aws/config
+  [profile prod]
+  credential_process = kepr aws credential-process PROD_AWS --duration 3600
+  ```
+
+  Outside an agent session it prints STS temporary credentials (900-43200 s,
+  default 3600; AssumeRole with session name `kepr` when `--role-arn` is
+  given), signed by the CLI with the stored key, which must be unsealed.
+  Inside `kepr agent run` it prints the session's placeholder pair for KEY
+  (one of the session's sigv4 keys), without asking the daemon. It never
+  prints the long-lived key.
+
+### GitHub App tokens
+
+`kepr github-app add KEY --app-id N --installation-id N [--key-file PEM]`
+stores a GitHub App private key sealed (PEM up to 16 KiB). In agent
+sessions the gate signs the app JWT, exchanges it for a 1-hour installation
+token and injects it into `gh` / `GH_TOKEN` traffic; key, JWT and token
+never leave the gate. Tokens are cached until 5 minutes before expiry.
+Bound to `api.github.com` only (no GitHub Enterprise Server host).
+
+### Just-in-time grants and check-out
+
+- `kepr grant KEY --jit on` makes a sealed KEY resolve for an agent session
+  only inside an open window for that session's harness:
+  `kepr grant KEY --to claude --for 2h`. `--revoke [--to HARNESS]` closes
+  windows now; `kepr grant KEY` shows the state and `kepr list` the windows.
+  Windows last up to 7 days and survive rotation. The harness name is
+  claimed by whoever starts the session, so a grant bounds *when* a key is
+  usable, not which program uses it. A window that runs out lets a gate
+  keep a cached value for up to 300 s; a revoke drops it at once.
+- `kepr checkout KEY [--for 2h]` takes a hold (default 1 h, at most 24 h): a
+  second checkout is refused until `kepr checkin KEY` with the printed
+  token (saved under `$XDG_STATE_HOME/kepr/holds`; `--token` or
+  `KEPR_HOLD_TOKEN` override). `checkin --rotate` runs KEY's schedule first
+  and keeps the hold if that fails. Holds coordinate within one account:
+  they don't stop the owner reading KEY, and they can't block another user.
+
+### Cloud secret stores
+
+- `sync-push` / `sync-pull` also take `--url azure-kv:VAULT/SECRET` (bearer
+  token from `AZURE_ACCESS_TOKEN`; VAULT is a vault name or a full
+  sovereign-cloud host; no client-secret, certificate or managed-identity
+  flow) and `--url json:PATH#a.b` (one dotted key of a JSON object file,
+  rewritten atomically at mode 0600 with keys sorted; the file holds
+  plaintext, and a key containing a dot can't be addressed).
+- `kepr sync push --map FILE [--dry-run]` pushes every `NAME = "SCHEME:PATH"`
+  line of FILE. `--dry-run` prints create / update / unchanged, comparing
+  SHA-256 hashes client-side; no value or hash is printed. Push only.
+- `kepr sync import --from SRC` lists a store (`aws-sm`,
+  `gcp-sm:projects/P`, `vault:MOUNT[/PATH]`, `azure-kv:VAULT`, `json:FILE`)
+  and shows names only; `--yes` pulls the values. `--prefix P` keeps ids
+  starting with P and drops P from the name; `--name-prefix N` adds one.
+  Existing names are kept unless `--overwrite`; `--seal` stores provider
+  API keys write-only.
+- Sealed, SSH and share keys are never pushed. The
+  [cloud sync guide](/docs/guides/cloud-sync) covers authentication for
+  Vault, AWS and GCP.
+
+## Policy, approvals and canaries
+
+### Access policy
+
+Once a policy file exists (`~/.config/kepr/policy.toml` in user mode,
+`/etc/kepr/policy.toml` for the system daemon, or `KEPR_POLICY_FILE`), the
+daemon denies every `get`, `exec`, `export`, `share`, `set` and `seal`
+unless the first rule that matches allows it. `kepr exec --pull` fetches,
+one-time links and `kepr serve` reads are governed too.
+
+```toml
+[[rule]]
+effect = "allow"
+ops = ["get", "exec"]
+names = ["GITHUB_*"]
+parent = ["/usr/bin/git"]     # the program that ran the kepr client
+
+[[rule]]
+effect = "allow"
+ops = ["seal"]
+names = ["OPENAI_*"]
+hosts = ["api.openai.com"]    # every binding must be one of these
+max_ttl = 2592000             # seconds; a key without a TTL is refused
+
+[[test]]
+op = "get"
+name = "GITHUB_TOKEN"
+parent = "/usr/bin/git"
+expect = "allow"
+```
+
+Rule conditions are `names`, `exe`, `parent` (globs), `agent` (inside
+`kepr agent run` or not), `harness`, `hosts` and `max_ttl`; unknown keys
+are errors. `kepr policy test FILE` runs the `[[test]]` cases,
+`kepr policy status` shows what the daemon enforces, and
+`kepr policy reload` (or SIGHUP) re-reads the file.
+
+- An invalid file denies every governed operation (fail closed).
+- A denied read answers the generic "credential unavailable"; the reason
+  goes to the audit log as `policy-deny`.
+- `exe`, `parent` and `harness` come from `/proc`. For the system daemon,
+  the unit's `ProtectProc=` hides other users' processes, so such rules
+  don't match there (deny). Agent and harness detection is a routing aid,
+  not an isolation boundary.
+
+`kepr report access KEY` lists every path KEY can take: gate bindings,
+aliases, folder, sync devices and the policy rules that allow it, plus
+shares sent, one-time links, agent-gate releases, reads and SSH signatures
+counted from your own audit-chain entries.
+
+### Program bindings
+
+`kepr set KEY … --exe /usr/bin/app` (repeatable, up to 16 programs) lets
+only those programs read KEY: before decrypting, the daemon compares the
+connecting process's executable with the stored SHA-256 or fs-verity
+digest. `kepr exe KEY` shows the binding, `--allow PATH` replaces it and
+`--clear` drops it; changing it needs an allowed program, otherwise delete
+and re-create KEY. The binding survives `set`.
+
+- The checked process is the one that connects: `kepr get` and `kepr exec`
+  read as `kepr` itself; your own program counts when it uses an SDK. It
+  applies wherever the read pre-check runs (`get`, `share send`, `export`).
+- It doesn't stop same-uid ptrace or `LD_PRELOAD` of an allowed program, an
+  allowed interpreter running another script, or a hand-off of the socket.
+  Deleted executables are refused.
+- The daemon must be able to open the caller's `/proc/PID/exe`; new
+  bindings are refused when it can't. A system daemon needs
+  `CAP_SYS_PTRACE` for that, which the shipped `kepr.service` doesn't
+  grant.
+
+### M-of-N approvals
+
+```bash
+kepr quorum set PROD_DB 2              # 2-9 approvals before each use window
+kepr quorum request PROD_DB --for 1h   # prints a request (valid 15 min) for enrolled devices
+kepr quorum sign REQUEST               # on an enrolled device: prints an approval
+kepr quorum approve ID                 # the owner, here (polkit)
+kepr quorum approve ID --with APPROVAL # add a device's approval
+kepr quorum ls
+```
+
+With `approvals = N` set, KEY is not read or released to a gate until N
+distinct approvers approve a request. An approved request opens a use
+window (default 1 h, up to 24 h); for a [jit](#just-in-time-grants-and-check-out)
+credential it opens a persisted `approved` grant instead, and the owner's
+own `kepr grant` doesn't satisfy the requirement. Lowering N or turning it
+off is itself a request that needs the current N, and `set` keeps it.
+
+- Approvers are devices, not people: each enrolled device of the same user
+  counts once, and approvals are carried by hand.
+- Use windows are kept in memory and lost on daemon restart (fail closed).
+  At most 32 pending requests. `kepr serve` refuses quorum-gated keys.
+
+### Consent from a notification
+
+For a key stored with `--requires-consent`, `kepr approvals set KEY --via
+desktop|ntfy|any` lets a running `kepr approvals serve` answer its consent
+prompts (including gate releases and SSH signatures) instead of polkit:
+
+```bash
+kepr approvals set PROD_DB --via any
+kepr approvals serve --desktop
+kepr approvals serve --ntfy URL|kepr:NAME --listen ADDR:PORT [--callback-url URL]
+```
+
+- Desktop prompts use `notify-send --wait` actions (libnotify 0.7.10 or
+  newer). ntfy notifications carry buttons that call back to `--listen`.
+- No answer within 60 s is a deny. With no live approver (none polled in
+  15 s), polkit is asked as before. At most 16 pending requests per user.
+- Registering the approver and setting `--via` each need one polkit
+  prompt; `--off` returns KEY to polkit.
+- The ntfy callback is plain HTTP by default, with a one-time token in the
+  URL carried in the ntfy message: anyone who can read the topic and reach
+  the callback can answer.
+
+### Canaries
+
+```bash
+kepr canary plant --for anthropic --in .env    # store a decoy and write it to the file
+kepr canary ls
+kepr canary listen --listen 0.0.0.0:8741       # receives provider webhooks
+kepr canary rm NAME
+```
+
+A canary is a decoy key in a provider's format (`anthropic`, `openai`
+(default), `xai`, `google`, `groq`, `openrouter`, `github`). Reading it
+(`kepr get` returns the decoy, then raises the alarm), sending it through a
+gate, a gate asking to release it, or a hit on the listener at
+`/kepr-canary/<trip id>` logs the audit event `canary-tripped`. Route it
+with a `kepr alerts` rule (`ops = ["canary-tripped"]`). `kepr import`,
+`kepr discover` and `kepr agent adopt` skip planted canaries.
+
+Decoys match kepr's own key-shape checks only: GitHub `ghp_` decoys are
+random, without GitHub's token checksum, and no decoy is registered with a
+provider. The listener must be reachable by whoever sends the webhook.
+
+### Audit forwarding, alerts and anomalies
+
+- `kepr audit forward --to jsonl:PATH|syslog:udp://HOST[:PORT]|otlp:URL`
+  pages audit-chain entries (op, name, uid, user, result, time, sequence,
+  hash; never values) and resumes after the last forwarded hash. Delivery
+  is at least once; syslog is UDP only; an OTLP URL may be `kepr:NAME`.
+  Non-root callers get only their own entries; root on the system daemon
+  gets everyone's.
+- `kepr alerts run` posts audit events matching `~/.config/kepr/alerts.toml`
+  rules to Slack, Teams, Discord or ntfy webhooks, throttled per rule;
+  held matches are counted in the next alert, and the first run starts at
+  the end of the log. `kepr alerts check` validates the file.
+
+  ```toml
+  [[rule]]
+  name = "policy denials"
+  ops = ["policy-deny", "get"]    # globs; absent = every op
+  names = ["PROD_*"]              # globs; absent = any
+  result = "fail"                 # ok | fail | any (default)
+  webhook = "kepr:SLACK_HOOK"     # https://… or kepr:NAME
+  throttle = "10m"                # default 10m; "0" = every match
+  ```
+
+- `kepr anomaly run` feeds the gate request journal (or `--journal
+  FILE|-` JSON lines) through `~/.config/kepr/rules.toml`: new path, volume
+  spike, off hours and error burst. Hits are printed, posted to the file's
+  webhook, and can run `kepr panic` (which stops every gate). New-path and
+  spike rules wait for `baseline_days` of data; off hours uses local time.
+- Alerts, anomalies and health notifications post from the CLI (the daemon
+  has no network). `alerts run` and `anomaly run` must be kept running.
+
+## Platform integrations
+
+### FUSE mount
+
+```bash
+kepr mount ~/run/app --file .env=DB_PASS,API_KEY --file db.json=PROD_DB --file token=API_KEY
+```
+
+`kepr mount` serves read-only files over FUSE: a `*.json` file is an
+object, a single key in a file not ending in `.env` is its bare value,
+anything else is dotenv lines. Values are fetched with a normal `get` when
+a file is opened, kept per file handle and zeroized on release.
+
+- Only your uid can open the files. `--exe PATH` (repeatable) limits the
+  reading programs by digest, and `--consent` asks polkit on every open
+  (60 s to decide). These checks run in your own `kepr mount` process, not
+  in the daemon; the daemon sees `kepr` as the reader.
+- It runs in the foreground; Ctrl-C or `fusermount3 -u DIR` unmounts.
+  Root mounts with mount(2), others through fusermount3; no `allow_other`.
+
+### Kernel keyring and systemd units
+
+- `kepr keyring add KEY --desc SUBTYPE:REST [--keyring @u|@s|@us|SERIAL]
+  [--decode hex|base64]` adds the value to a kernel keyring as a `logon`
+  key, which fscrypt, dm-crypt or cifs can use and userspace can't read
+  back. The default keyring is `@u`; `@t` and `@p` are refused (they die
+  with kepr). Linux only, at most 32767 bytes; fscrypt, ext4 and f2fs
+  descriptions need a 16-hex-digit descriptor.
+- `kepr systemd-cred KEY [--name CRED] [--tpm2]` prints a
+  `SetCredentialEncrypted=` line for a unit file. The value goes to the
+  credential backend on stdin and never reaches stdout; only output that
+  checks out as such a line is printed. `--tpm2` binds it to the TPM;
+  otherwise it decrypts only on hosts with this host's key. Needs systemd
+  250 or newer; `--name` is 1-255 printable characters without `/`, `:` or
+  spaces.
+- Both fetch the value like `kepr get`, so sealed, SSH and share keys are
+  refused.
+
+### Local PKI and SPIFFE
+
+```bash
+kepr pki init                              # P-256 CA, 3650 days; key sealed in the store
+kepr pki ca > kepr-ca.crt                  # add to trust stores
+kepr pki issue api.internal 10.0.0.5 --days 30 --out certs/
+kepr pki ls
+kepr pki svid spiffe://example.org/api --ttl 1h --out /run/svid/
+```
+
+- The CA key is the sealed credential `KEPR_PKI_CA`, never shown. Leaf keys
+  are made by the CLI, which sends only the public key. `pki issue` makes
+  one certificate for all the names given (DNS names or IPs, up to 32) and
+  writes `NAME.crt` (leaf and CA) and `NAME.key` (0600), named after the
+  first: default 30 days, at most 825. `pki ls` tracks the last 200 issued
+  certificates, and `kepr health` warns 14 days before one expires.
+- P-256 only; the CA has path length 0 and no name constraints; no CRL or
+  OCSP. `pki init --force` replaces the CA.
+- `pki svid` writes `svid.pem`, `svid_key.pem` (0600) and
+  `svid_bundle.pem` (the names spiffe-helper uses): one URI SAN, empty
+  subject, TTL 60 s to 24 h. Files only; there is no Workload API.
+- After `kepr pki tpm-enroll --ak-pub ak.pem --ak HANDLE`, every SVID first
+  needs a TPM2 quote over PCR 7 (Secure Boot state, via `tpm2_quote`)
+  against a single-use daemon nonce. Enrolment is trust on first use (the
+  attestation key isn't checked against an EK certificate); ECDSA P-256
+  attestation keys and the SHA-256 PCR bank only; replacing an enrolment
+  needs a new CA.
+
+### Integrations
+
+| Integration | Where | What it does |
+| --- | --- | --- |
+| Podman secrets | `integrations/podman/kepr-podman-driver` | Podman `shell` secret driver (list, lookup, store, delete); values stored as `PODMAN_<ID>`; secret data that is exactly `kepr://NAME` resolves NAME at each lookup. `delete` skips the trash; consent or FIDO2 keys prompt on every container start. |
+| Secrets Store CSI | `integrations/csi-provider` (`kepr-csi-provider`) | Mounts credentials from `kepr-eso-provider` into pods as files, all of a mount in one batch (at most 100); bearer token from the volume's `nodePublishSecretRef` or `-token-file`. No manifests or Helm chart are shipped. |
+| Terraform | `integrations/terraform-provider-kepr` | `kepr_secret` resource (value or `generate`; a generated value never enters state) and data source (value, fields, type, tags, expiry). Data-source values land in state. Local builds only. |
+| Ansible | `integrations/ansible` | `lookup('kepr', 'NAME')`, `kepr://NAME` or `kepr://NAME/field` (top-level string fields) on the controller; use `no_log: true`. |
+| GitHub Actions / GitLab CI | `integrations/github-action`, `integrations/gitlab` | Install kepr (cosign-verified), log in to AWS, GCP or Vault with the job's OIDC token, and pull `vault:`, `aws-sm:` or `gcp-sm:` secrets into a job-local daemon; GitHub masks them. |
+| VS Code | `integrations/vscode` | Hover a `kepr://NAME[/field]` reference for type, tags, expiry and flags; list credentials; lock state in the status bar. Never reads values. Linux; not on the Marketplace. |
+
+Release builds attach SLSA build provenance (`kepr-<version>.intoto.jsonl`)
+for the `.deb`, `.rpm` and tarball; `SECURITY.md` shows how to verify it.
+
+## Session features
+
+### Re-authentication before reveal
+
+`kepr set KEY … --reauth` (or `kepr reauth KEY --on`) makes revealing KEY
+(`get`, `copy`, `exec`, references, attachments, `share send`,
+`record show --reveal`) ask for the store passphrase again. One answer
+opens a 60 s window; `kepr reauth KEY` opens it ahead of time, for scripts.
+
+- Needs a passphrase-protected store; in system mode only root can use it.
+  Wrong answers count toward the unlock backoff below.
+- The window is per user and credential, so any process of that user can
+  read KEY during it. `kepr serve` never borrows a window.
+- Refused on sealed, SSH and share keys. Turning the flag off needs an open
+  window.
+
+### Locking and unlocking
+
+- **Idle lock:** `KEPR_IDLE_LOCK=15m` (`s`/`m`/`h`/`d`; a bare number is
+  seconds; `0` or `off` disables it) locks a passphrase-protected user-mode
+  store after that long without requests, like `kepr panic`. `status` and
+  `ping` polling don't count, and nothing locks while an agent gate runs.
+- **Fingerprint:** `kepr unlock --fingerprint` reopens a store the idle
+  timer or sleep watcher locked, after a polkit fingerprint prompt. A
+  fingerprint can't derive the key-wrapping key, so this needs the daemon
+  opt-in `KEPR_FINGERPRINT_UNLOCK=8h`, which keeps the master key in memory
+  for that long after such a lock. User-mode, passphrase-protected stores
+  only; after a daemon restart, `kepr panic` or the window, only the
+  passphrase unlocks. Every unlock prompts. Needs `pam_fprintd` in polkit's
+  PAM stack and enrolled fingers; `kepr doctor` checks both.
+- **Backoff and wipe:** wrong passphrases (unlock, recovery-kit creation,
+  re-auth) back off exponentially from 1 s to 5 minutes; attempts during a
+  wait are refused without counting. With `KEPR_WIPE_AFTER=N`, the wrapped
+  master key is destroyed after N consecutive failures (audited
+  `unlock-wipe`); a recovery kit still restores it. This is online
+  protection only: a copied envelope can still be attacked offline.
+
+### Profiles
+
+`kepr --profile NAME …` or `KEPR_PROFILE=NAME` uses a separate store, state
+directory, socket and user-mode daemon, nested under the default
+directories (so the agent sandbox hides every profile). Names are
+`[a-z0-9_-]`, 1-32 characters; empty or `default` means the default store.
+User mode only: with `KEPR_SYSTEM_MODE` set, a profile is an error.
+
+### Pull-on-demand file descriptors
+
+```bash
+kepr exec --pull DB_PASS,API_KEY -- ./server
+```
+
+`--pull` sets `KEPR_PULL` and CMD fetches each credential itself, when it
+needs it, as a sealed, read-only, close-on-exec memfd that nothing CMD
+starts inherits. Clients: `kepr_core::fdfetch` (Rust), `fetch_fd` (Python
+SDK), `FetchFD` (Go SDK); Node can't receive file descriptors.
+
+- `KEPR_PULL` is only a list for CMD; the daemon doesn't restrict fetches to
+  it. Any process of the same user that can reach the socket can fetch any
+  unsealed credential, as with `get`.
+- Fetches follow `get`'s rules (policy, consent, re-auth); sealed, SSH,
+  share-key and FIDO2-gated credentials are refused. `--mask` doesn't cover
+  pulled values.
+
+### Local REST API
+
+```bash
+KEPR_SERVE_TOKEN_FILE=~/.config/kepr/serve.token kepr serve --listen 127.0.0.1:8750 --allow list,get
+curl -H "Authorization: Bearer $(cat ~/.config/kepr/serve.token)" http://127.0.0.1:8750/v1/secrets/API_KEY
+```
+
+`GET /v1/secrets` and `GET /v1/secrets/NAME`, on loopback or a Unix socket
+only, over plain HTTP, behind a bearer token, an allowlist of operations
+and per-token rate limits.
+
+- The token file must have no group or other access and hold at least 16
+  characters. `--rate` is per token (default 60 per minute), plus a
+  failed-auth limit (429 with Retry-After). Requests are due within 5 s;
+  past 16 connections the answer is 503.
+- Read-only. Sealed, SSH and share keys are always refused; keys that need
+  consent, FIDO2, re-auth or quorum approval are refused rather than
+  prompting. The access policy applies.
+
+### Shell, batch and terminal UI
+
+- `kepr shell` runs kepr verbs without the `kepr` prefix, with `history`,
+  `!N` and `!!` recall. Each line runs as its own `kepr` process. History
+  holds 1000 lines in memory and is gone on exit.
+- `kepr batch FILE [--keep-going]` (`-` reads stdin) runs one command per
+  line (`#` comments, quotes), checks every line first, and stops at the
+  first failure unless `--keep-going`. Files are at most 1 MiB.
+- Both refuse lines that carry a value (`--value`, `-v`, `--stdin`, inline
+  `--field k=v`): use `--generate`, `kepr://` references, or (in the shell)
+  a masked `--field k=-` prompt.
+- `kepr ui` is a full-screen credential list: `j`/`k` or arrows, `g`/`G`,
+  `/` to search, Enter or `c` to copy, `d` then `y` to delete (to the
+  trash), `r` to refresh, `q` to quit. It never draws a value, needs a
+  terminal and doesn't run under `--json`.
+
+### Status
+
+`kepr status` prints the lock state plus mode, profile, store backend
+(files or image), what protects the master key (passphrase, file or host),
+your running agent gates, whether escrow is on, and the crypto module.
+
+## Client SDKs
+
+Thin clients over the same socket and wire format, so the daemon applies the
+same rules as for the CLI. None of them has dependencies:
+
+- **Python:** `sdk/python` (`kepr_client.Client`)
+- **Node.js:** `sdk/node` (`kepr-client`, `new Client().get(...)`)
+- **Go:** `sdk/go` (`kepr.New().Get(...)`)
+
+All three read and write (`get`, `list`, `set` with a value or a
+generated one, `delete`, `restore`), return typed metadata
+(`credentials()` / `info(name)`; Go `Credentials` / `Info`) and sign with
+daemon-held SSH keys. Python and Node also cover `history`, `usage`,
+`health` and `status`.
+
+- A generated value is never returned by `set`; read it with `get`.
+- `delete` moves the credential to the trash; no SDK call skips it.
+- Python (`fetch_fd(name)`) and Go (`FetchFD(name)`) can take a value as a
+  sealed memfd; Node can't receive file descriptors.
+
+### Python SDK
+
+`sdk/python/kepr_client` is a stdlib-only client over the same socket and
+wire format (`Client().get(...)`, `set`, `delete`, `list`, `credentials`,
+`info`, `fetch_fd`, `history`, `restore`, `usage`, `ssh_sign`, …). The
+daemon applies the same rules as for the CLI.
 
 ## Generators (`--gen-kind`)
 
@@ -24,9 +1509,42 @@ errors), `--color` / `--no-color` (opt-in ANSI), `--version`, `--help`.
 | `base62` | 48     | `[A-Za-z0-9]`, rejection-sampled (no modulo bias).      |
 | `pass`   | 32     | upper + lower + digit + symbol (retry until all four).  |
 | `uuid`   | 36     | RFC 4122 v4 (version + variant nibbles enforced).       |
+| `words`  | 6 words | EFF large wordlist (7776 words), `-`-joined, ~77.5 bits; rejection-sampled. |
 
 All entropy comes from `/dev/urandom`. The rejection-sampling helper
 discards bytes ≥ `(256 / |alphabet|) * |alphabet|` to stay uniform.
+
+### Generator profiles
+
+`kepr set KEY --profile P` generates from a profile in
+`~/.config/kepr/generate.toml` (`--profile` implies `--generate`):
+
+```toml
+[default]                      # when nothing else matches
+length = 24
+[profile.bank]
+length = 16
+classes = ["lower", "upper", "digit", "symbol"]
+symbols = "!#$%"
+[profile.memorable]
+words = 5                      # a passphrase of 5 EFF words
+separator = "."
+[host."example.com"]           # also for its subdomains
+symbols = ""
+[type.wifi]                    # a field of this record type
+words = 4
+```
+
+Lengths are 8-256 characters, passphrases 3-20 words, and each requested
+class appears at least once. P can name a profile, a host or a type in the
+file. `kepr record add KEY … --generate FIELD` picks the matching host
+(from the record's url or host) or type automatically.
+
+`kepr strength` estimates the bits of a value typed at a hidden prompt or
+piped on stdin, and never prints it. The estimate is the lower of the
+character-set entropy and the cheapest parse into EFF words, common
+passwords (a small built-in list, not a breach corpus), years, runs,
+sequences and keyboard rows.
 
 ## Audit log
 
@@ -57,6 +1575,10 @@ journalctl -t kepr-daemon KEPR_OP=get KEPR_RESULT=fail
   `user`, `result`.
 </Check>
 
+The same events go to the hash-chained audit log (`kepr audit-verify`),
+which `kepr usage`, `kepr report access`, `kepr audit forward` and
+`kepr alerts` read.
+
 ## Per-user isolation
 
 Credentials live in the shared `/etc/credstore.encrypted/` directory,
@@ -73,14 +1595,62 @@ own credentials.
 
 ## Environment variables
 
+### CLI
+
 | Variable           | Effect                                                |
 | ------------------ | ----------------------------------------------------- |
 | `NO_COLOR`         | Any value disables ANSI (overrides `--color`).        |
 | `CLICOLOR_FORCE=1` | Enables ANSI without `--color`.                       |
+| `KEPR_PROFILE=NAME` | Use profile NAME's store, state and daemon (same as `--profile`). |
+| `KEPR_AUTO_MANIFEST=1` | Look for `.kepr.toml` in and above the working directory. |
+| `KEPR_STAGE=S` | Default `--stage` for `exec` / `env` when a manifest is used. |
+| `KEPR_LANDLOCK` | `strict`: also fence hidden paths under `$HOME` in the agent sandbox; `0`: no Landlock rules. |
+| `KEPR_FIDO2_DEVICE` | Security key for `lock --fido2` / `unlock` (default: the first one listed). |
+| `KEPR_HOLD_TOKEN` | Token for `kepr checkin` when `--token` isn't given. |
+| `KEPR_SERVE_TOKEN_FILE` | Bearer-token file for `kepr serve` (required). |
+| `KEPR_S3_ENDPOINT` | Another S3-compatible endpoint for `s3:` sync remotes (`https://`, or `http://` on loopback). |
+| `VAULT_ADDR`, `VAULT_TOKEN` | HashiCorp Vault sync. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION` / `AWS_DEFAULT_REGION` | AWS Secrets Manager and S3 sync; region for `kepr aws`. |
+| `GCP_ACCESS_TOKEN` | Google Secret Manager sync. |
+| `AZURE_ACCESS_TOKEN` | Azure Key Vault sync. |
 
 Precedence: `NO_COLOR` > `--no-color` > `CLICOLOR_FORCE` > `--color` > off.
+
+### Daemon
+
+Set these in the daemon's environment (the service unit, or the shell that
+starts `kepr-daemon --user`).
+
+| Variable | Effect |
+| --- | --- |
+| `KEPR_STORE` | `image`: keep credentials in the vault image; unset or `file`: one file each. Anything else stops start-up. |
+| `KEPR_MASTER_KEY_SEAL` | What seals a new master key: `host`, `tpm2`, `host+tpm2`, `auto`, `aws-kms:ARN`, `gcp-kms:NAME`, `azure-kv:URL`, `pkcs11:MODULE:LABEL` or `keychain` (macOS). |
+| `KEPR_TPM2_PCRS` | PCRs to bind a TPM2 seal to, e.g. `7+11`. |
+| `KEPR_TPM2_PIN=1`, `KEPR_TPM2_PIN_FILE` | TPM2 seal that also needs the PIN in that file (absolute path). |
+| `KEPR_TPM2_NV_INDEX` | NV index of the anti-rollback counter (`0x01000000`-`0x01FFFFFF`; default `0x01800A11`). |
+| `KEPR_KMS_ENDPOINT` | Override the AWS KMS or Cloud KMS endpoint. |
+| `KEPR_PKCS11_PIN_FILE` | PIN file for the PKCS#11 sealer. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `GCP_ACCESS_TOKEN`, `AZURE_ACCESS_TOKEN` | Credentials for the key-service sealers, read once at start-up. |
+| `KEPR_POLICY_FILE` | Access-policy file instead of the default path. |
+| `KEPR_TRASH_DAYS` | Days a deleted credential stays in the trash (default 30; `0` = no trash). |
+| `KEPR_IDLE_LOCK` | Lock a passphrase-protected user-mode store after this long idle (`15m`; `0`/`off` = never). |
+| `KEPR_FINGERPRINT_UNLOCK` | How long after an idle or sleep lock `kepr unlock --fingerprint` may reopen the store (`8h`). |
+| `KEPR_WIPE_AFTER` | Destroy the wrapped master key after N wrong passphrases in a row (off by default). |
+| `KEPR_LOCK_ON_SLEEP=0` | Don't lock the user-mode store on suspend or screen lock. |
+
+### Set by kepr
+
+| Variable | Set for | Meaning |
+| --- | --- | --- |
+| `KEPR_FD_<KEY>` | `exec --memfd` | Number of the memfd holding KEY. |
+| `KEPR_PULL` | `exec --pull` | Credentials CMD may fetch as memfds. |
+| `KEPR_SESSION` | agent harness | Marks a `kepr agent run` session (never inherited from outside). |
+| `KEPR_AWS_<NAME>` | agent harness | Placeholder pair for each sigv4-bound AWS key. |
+| `KEPR_TUNNEL_<NAME>` | agent harness | Loopback port of each `--tunnel`. |
 
 ## Exit codes
 
 - `0` on success.
-- `1` on any error, including `check` with at least one failed credential.
+- `1` on any error, including `check` with at least one failed credential,
+  `doctor --verify` with a problem, and `scan` with a finding.
+- `kepr hook` exits `2` to block a harness tool call.

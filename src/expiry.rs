@@ -28,8 +28,6 @@
 // or the on-disk format.
 
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,35 +37,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// is how operators audit the store today.
 const META_SUFFIX: &str = ".meta";
 
-/// On-disk record. Every field is `Option<…>` with `#[serde(default)]`
-/// so meta files written by older daemons parse cleanly under newer
-/// ones. Empty `CredMeta` is equivalent to "no flags" (callers should
-/// skip writing the meta file in that case).
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct CredMeta {
-    /// Absolute unix timestamp (seconds since epoch) at which this
-    /// credential expires. The daemon refuses to decrypt past this
-    /// instant. Phase 2 α.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub expires_at_unix: Option<u64>,
-    /// True iff `kepr get` requires a polkit consent prompt before
-    /// the daemon decrypts. Phase 2 ε.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub requires_consent: Option<bool>,
-    /// True iff `kepr get` requires a FIDO2 hardware-key assertion
-    /// before the daemon decrypts. Phase 2 η.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub requires_fido2: Option<bool>,
-}
+pub use crate::cred_meta::{CredMeta, SshMeta};
 
 impl CredMeta {
     /// True iff the meta has no flags set. Callers use this to
     /// decide whether to bother writing the file at all — an empty
     /// meta is identical to no meta from the read path's perspective.
+    /// No flag set at all. Compared against `Default` so a new field
+    /// can't be forgotten here (a forgotten field means its meta is
+    /// never written).
     pub fn is_empty(&self) -> bool {
-        self.expires_at_unix.is_none()
-            && self.requires_consent.is_none()
-            && self.requires_fido2.is_none()
+        *self == Self::default()
     }
 
     /// Build a `CredMeta` from per-flag CLI inputs. Returns `Err`
@@ -94,6 +74,35 @@ impl CredMeta {
             meta.requires_fido2 = Some(true);
         }
         Ok(meta)
+    }
+
+    /// Apply the sealed flag and bindings after validating them.
+    /// Sealed requires at least one valid binding; bindings without
+    /// sealed are rejected so nobody believes a readable credential is
+    /// destination-restricted.
+    pub fn with_seal(
+        mut self,
+        sealed: Option<bool>,
+        bindings: Option<Vec<kepr_core::binding::Binding>>,
+    ) -> Result<Self, String> {
+        const MSG: &str = "sealed credentials need at least one valid binding";
+        match (sealed, bindings) {
+            (None | Some(false), None) => Ok(self),
+            (Some(true), _) if self.requires_fido2 == Some(true) => Err(
+                "sealed credentials can't require FIDO2 yet (the gate can't ask for a touch); \
+                 use --requires-consent"
+                    .to_string(),
+            ),
+            (Some(true), Some(bs)) if !bs.is_empty() => {
+                for b in &bs {
+                    kepr_core::binding::validate_binding(b).map_err(|e| format!("{MSG}: {e}"))?;
+                }
+                self.sealed = Some(true);
+                self.bindings = Some(bs);
+                Ok(self)
+            }
+            _ => Err(MSG.to_string()),
+        }
     }
 }
 
@@ -129,52 +138,57 @@ pub fn compute_expires_at(now_unix: u64, ttl_secs: u64) -> Option<u64> {
     now_unix.checked_add(ttl_secs)
 }
 
+/// Where `.meta` records live (T4.06): sidecar files (below), or the
+/// vault image when it is the active store. Callers keep addressing a
+/// meta by its sidecar path; `meta_store` picks the implementation.
+pub trait MetaStore: Send + Sync {
+    fn read_meta(&self, meta_path: &Path) -> Option<Result<CredMeta, String>>;
+    fn write_meta(&self, meta_path: &Path, meta: &CredMeta) -> Result<(), String>;
+    fn delete_meta(&self, meta_path: &Path);
+}
+
+struct FileMeta;
+
+impl MetaStore for FileMeta {
+    fn read_meta(&self, meta_path: &Path) -> Option<Result<CredMeta, String>> {
+        read_meta_file(meta_path)
+    }
+    fn write_meta(&self, meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
+        write_meta_file(meta_path, meta)
+    }
+    fn delete_meta(&self, meta_path: &Path) {
+        let _ = fs::remove_file(meta_path);
+    }
+}
+
+fn meta_store(meta_path: &Path) -> &'static dyn MetaStore {
+    crate::daemon_vault::meta_store_for(meta_path).unwrap_or(&FileMeta)
+}
+
+pub fn write_meta(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
+    meta_store(meta_path).write_meta(meta_path, meta)
+}
+
+pub fn read_meta(meta_path: &Path) -> Option<Result<CredMeta, String>> {
+    meta_store(meta_path).read_meta(meta_path)
+}
+
+pub fn delete_meta(meta_path: &Path) {
+    meta_store(meta_path).delete_meta(meta_path)
+}
+
 /// Atomically write a meta file at `meta_path` with the given
 /// expiry timestamp. The temp+rename dance mirrors the cred-write
 /// path in `crypto_inproc::write_atomic` so a crashed daemon
 /// doesn't leave half-written meta files; the per-(pid, thread-id)
 /// suffix keeps two concurrent writers from racing on the same temp.
-pub fn write_meta(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
+pub fn write_meta_file(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
     let parent = meta_path.parent().ok_or("invalid meta path (no parent)")?;
     if !parent.exists() {
         fs::create_dir_all(parent).map_err(|e| format!("create meta dir: {e}"))?;
     }
-    let tmp = meta_path.with_extension(format!(
-        "tmp.{}.{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
     let bytes = serde_json::to_vec(meta).map_err(|e| format!("serialise meta: {e}"))?;
-
-    let mut f = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Stale tempfile from a crashed run; retry once.
-            let _ = fs::remove_file(&tmp);
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&tmp)
-                .map_err(|e| format!("open meta temp (after stale-cleanup): {e}"))?
-        }
-        Err(e) => return Err(format!("open meta temp: {e}")),
-    };
-    if let Err(e) = f.write_all(&bytes) {
-        drop(f);
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("write meta: {e}"));
-    }
-    drop(f);
-    fs::rename(&tmp, meta_path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("install meta: {e}")
-    })
+    crate::atomic_file::write(meta_path, &bytes, 0o600).map_err(|e| format!("install meta: {e}"))
 }
 
 /// Read a meta file. `None` if the file is absent (the no-TTL case);
@@ -182,7 +196,7 @@ pub fn write_meta(meta_path: &Path, meta: &CredMeta) -> Result<(), String> {
 /// meta written by a newer daemon). Treat the malformed-but-present
 /// branch as fail-closed at the call site: refuse to decrypt rather
 /// than silently dropping the expiry constraint.
-pub fn read_meta(meta_path: &Path) -> Option<Result<CredMeta, String>> {
+pub fn read_meta_file(meta_path: &Path) -> Option<Result<CredMeta, String>> {
     let bytes = match fs::read(meta_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
@@ -190,16 +204,9 @@ pub fn read_meta(meta_path: &Path) -> Option<Result<CredMeta, String>> {
     };
     Some(serde_json::from_slice(&bytes).map_err(|e| format!("parse meta: {e}")))
 }
-
-/// Best-effort delete of a meta file. The cred-delete path calls
-/// this AFTER the cred file is removed, since (a) we want the
-/// AEAD-rooted state mutation to land first, and (b) a missing
-/// meta on a present cred is harmless (decrypt just no-ops the
-/// expiry check), while a present meta on a missing cred is also
-/// harmless (the cred is gone, no decrypt can succeed).
-pub fn delete_meta(meta_path: &Path) {
-    let _ = fs::remove_file(meta_path);
-}
+// `delete_meta` (above) is best-effort. The cred-delete path calls it
+// AFTER the cred is removed: a missing meta on a present cred is
+// harmless, and so is a present meta on a missing cred.
 
 /// Format a unix timestamp as `YYYY-MM-DD HH:MM` (UTC), matching
 /// the `modified` field's format in `CredInfo`. Used to render
@@ -232,6 +239,65 @@ pub fn format_expires_at(unix: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use kepr_core::binding::{Binding, Inject};
+
+    fn binding() -> Binding {
+        Binding {
+            host: "api.anthropic.com".into(),
+            port: 443,
+            inject: Inject::Header {
+                name: "x-api-key".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn any_single_field_makes_meta_non_empty() {
+        assert!(CredMeta::default().is_empty());
+        let m = CredMeta {
+            record_type: Some("login".into()),
+            ..Default::default()
+        };
+        assert!(!m.is_empty());
+    }
+
+    #[test]
+    fn old_meta_without_seal_fields_parses() {
+        let m: CredMeta = serde_json::from_str(r#"{"requires_consent":true}"#).unwrap();
+        assert_eq!(m.sealed, None);
+        assert_eq!(m.bindings, None);
+    }
+
+    #[test]
+    fn sealed_meta_round_trips_and_default_omits_fields() {
+        let m = CredMeta::default()
+            .with_seal(Some(true), Some(vec![binding()]))
+            .unwrap();
+        let json = serde_json::to_string(&m).unwrap();
+        let back: CredMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
+        assert!(!m.is_empty());
+        let empty = serde_json::to_string(&CredMeta::default()).unwrap();
+        assert!(!empty.contains("sealed") && !empty.contains("bindings"));
+    }
+
+    #[test]
+    fn with_seal_validation() {
+        let d = CredMeta::default;
+        assert!(d().with_seal(Some(true), None).is_err());
+        assert!(d().with_seal(Some(true), Some(vec![])).is_err());
+        assert!(d().with_seal(None, Some(vec![binding()])).is_err());
+        let mut bad = binding();
+        bad.host = "localhost".into();
+        assert!(d().with_seal(Some(true), Some(vec![bad])).is_err());
+        assert_eq!(d().with_seal(None, None).unwrap(), d());
+        let fido = CredMeta {
+            requires_fido2: Some(true),
+            ..Default::default()
+        };
+        assert!(fido.with_seal(Some(true), Some(vec![binding()])).is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -274,6 +340,10 @@ mod tests {
                 expires_at_unix: Some(1_777_500_000),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
+                ssh: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -319,6 +389,10 @@ mod tests {
                 expires_at_unix: Some(42),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
+                ssh: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -337,6 +411,10 @@ mod tests {
                 expires_at_unix: Some(1),
                 requires_consent: None,
                 requires_fido2: None,
+                sealed: None,
+                bindings: None,
+                ssh: None,
+                ..Default::default()
             },
         )
         .unwrap();

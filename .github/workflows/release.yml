@@ -21,7 +21,7 @@ jobs:
       tag:     ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Default fetch-depth:1 checks out only the target commit and
           # loses the distinction between an annotated tag object and a
@@ -69,10 +69,11 @@ jobs:
       attestations: write   # build provenance
     outputs:
       version: ${{ needs.tag-check.outputs.version }}
+      hashes:  ${{ steps.hash.outputs.hashes }}
     env:
       VERSION: ${{ needs.tag-check.outputs.version }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # workflow_dispatch may target an older tag — pin to the
           # resolved tag, not whatever main currently points at.
@@ -80,7 +81,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: cargo build --release
         run: cargo build --release --bins
@@ -113,7 +114,7 @@ jobs:
         run: ls -la dist/
 
       - name: Generate SBOM per artefact (SPDX-JSON)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: dist/
           format: spdx-json
@@ -147,12 +148,20 @@ jobs:
       # public, this step will start running again with no further changes.
       - name: Attest build provenance
         if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4 # v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
             dist/*.deb
             dist/*.rpm
             dist/*.tar.gz
+
+      # Subjects for the SLSA provenance job: `sha256sum` lines, base64.
+      - name: Hash release artefacts
+        id: hash
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          echo "hashes=$(sha256sum *.deb *.rpm *.tar.gz | base64 -w0)" >> "$GITHUB_OUTPUT"
 
       - name: Upload dist/ as workflow artefact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -161,7 +170,27 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # ─── 3. Generate changelog ────────────────────────────────────────────────
+  # ─── 3. SLSA provenance (generic generator) ───────────────────────────────
+  provenance:
+    name: SLSA provenance
+    needs: build
+    permissions:
+      actions:  read    # the generator reads the workflow path
+      id-token: write   # keyless signing of the provenance
+      contents: write   # requested by the generator's upload job (unused here)
+    # Called by tag, not commit SHA: the generator checks its own ref, and
+    # slsa-verifier matches the builder ID against that tag.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.hashes }}
+      provenance-name: kepr-${{ needs.build.outputs.version }}.intoto.jsonl
+      # The release job attaches it, so one job creates the release.
+      upload-assets: false
+      # Logs the repository name in the public Rekor log, which the cosign
+      # keyless signatures above already do.
+      private-repository: true
+
+  # ─── 4. Generate changelog ────────────────────────────────────────────────
   changelog:
     name: Generate changelog
     needs: tag-check
@@ -169,7 +198,7 @@ jobs:
     outputs:
       body: ${{ steps.cliff.outputs.content }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Same reason as the build job — re-runs may target an older tag.
           ref: ${{ needs.tag-check.outputs.tag }}
@@ -182,22 +211,48 @@ jobs:
           tool: git-cliff@2.12.0
 
       - id: cliff
+        env:
+          TAG:     ${{ needs.tag-check.outputs.tag }}
+          VERSION: ${{ needs.tag-check.outputs.version }}
+          REPO:    ${{ github.repository }}
         run: |
           # GITHUB_OUTPUT heredoc delimiter must not appear in the body
           # (per docs.github.com/actions/.../workflow-commands#multiline-strings).
           # uuidgen makes collision impossible.
           DELIM="$(uuidgen)"
           BODY="$(git-cliff --config cliff.toml --current --strip header)"
+          # How to verify, appended to every release's notes (SECURITY.md).
+          # No backticks: this heredoc expands variables.
+          BODY="${BODY}
+          $(cat <<EOF
+
+          ### Verify this release
+
+          SLSA provenance for the .deb, .rpm and tarball is in kepr-${VERSION}.intoto.jsonl:
+
+              slsa-verifier verify-artifact kepr-${VERSION}-x86_64-linux.tar.gz \\
+                --provenance-path kepr-${VERSION}.intoto.jsonl \\
+                --source-uri github.com/${REPO} --source-tag ${TAG}
+
+          Every file also carries a cosign bundle (FILE.bundle):
+
+              cosign verify-blob FILE --bundle FILE.bundle \\
+                --certificate-identity-regexp '^https://github.com/${REPO}/[.]github/workflows/release[.]yml@' \\
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+          Details: SECURITY.md, section "Verifying a release".
+          EOF
+          )"
           {
             printf 'content<<%s\n' "$DELIM"
             printf '%s\n'          "$BODY"
             printf '%s\n'          "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
-  # ─── 4. Create the GitHub Release and upload assets ───────────────────────
+  # ─── 5. Create the GitHub Release and upload assets ───────────────────────
   release:
     name: Publish release
-    needs: [build, changelog, tag-check]
+    needs: [build, provenance, changelog, tag-check]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -207,8 +262,14 @@ jobs:
           name: kepr-release
           path: dist/
 
+      - name: Download SLSA provenance
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: dist/
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ needs.tag-check.outputs.tag }}
           name:     kepr ${{ needs.tag-check.outputs.tag }}
@@ -223,3 +284,4 @@ jobs:
             dist/*.sig
             dist/*.pem
             dist/*.bundle
+            dist/*.intoto.jsonl

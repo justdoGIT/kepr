@@ -14,39 +14,32 @@
 // daemon's own uid (the owner check in `daemon::handle_client`), so the
 // gate is a no-op there.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::{self};
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::{crypto, key_unlock, user_mode};
 use kepr_core::protocol::Response;
 
-fn master_key_path() -> std::path::PathBuf {
-    crate::state_dir().join("master.key")
-}
-
-fn protected_master_key_path() -> std::path::PathBuf {
-    crate::state_dir().join("master.key.argon2id")
-}
+use crate::{master_key_path, protected_master_key_path};
 
 fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
-    let path = protected_master_key_path();
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|e| format!("cannot create protected master-key file: {e}"))?;
-    file.write_all(envelope)
-        .and_then(|_| file.sync_all())
+    crate::atomic_file::write(&protected_master_key_path(), envelope, 0o600)
         .map_err(|e| format!("cannot write protected master-key file: {e}"))?;
-    drop(file);
-    fs::rename(&tmp, &path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("cannot commit protected master-key file: {e}")
-    })
+    crate::daemon_session::unlock_guard::reset(); // T11.13: a new passphrase
+    Ok(())
+}
+
+/// Recovery restore: make `envelope` the master key (passphrase-wrapped)
+/// and drop any unwrapped key file it replaces.
+pub fn install_protected_key(envelope: &[u8]) -> Result<(), String> {
+    // Temp file + rename: the old envelope stays until the new one is on
+    // disk, so a failed write never leaves the store without a key.
+    write_protected_master_key(envelope)?;
+    match fs::remove_file(master_key_path()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot remove old master key: {e}")),
+    }
 }
 
 fn handle_lock(password: &[u8]) -> Response {
@@ -77,15 +70,12 @@ fn handle_lock(password: &[u8]) -> Response {
     Response::LockedOk
 }
 
-fn handle_unlock(password: &[u8]) -> Response {
+fn handle_unlock(uid: u32, username: &str, password: &[u8]) -> Response {
     if password.is_empty() {
         return Response::fail("password cannot be empty");
     }
-    let envelope = match fs::read(protected_master_key_path()) {
-        Ok(envelope) => envelope,
-        Err(_) => return Response::fail("credential store is not password protected"),
-    };
-    let key = match key_unlock::unwrap(&envelope, password) {
+    // T11.13: backoff, failure counter and the opt-in wipe.
+    let key = match crate::daemon_session::unlock_guard::unwrap_guarded(password, uid, username) {
         Ok(key) => key,
         Err(e) => return Response::fail(e),
     };
@@ -134,7 +124,7 @@ pub fn handle_unlock_gated(uid: u32, username: &str, password: &[u8]) -> Respons
     if let Some(denied) = require_root_in_system_mode(uid, "unlock", username) {
         return denied;
     }
-    let response = handle_unlock(password);
+    let response = handle_unlock(uid, username, password);
     audit::log(&AuditEvent {
         op: "unlock",
         name: None,
@@ -171,7 +161,7 @@ mod tests {
 
     #[test]
     fn handle_unlock_rejects_empty_password() {
-        match handle_unlock(b"") {
+        match handle_unlock(0, "root", b"") {
             Response::Err { error } => assert!(error.contains("empty")),
             other => panic!("expected Err, got {other:?}"),
         }

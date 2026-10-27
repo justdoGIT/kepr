@@ -1,61 +1,23 @@
-// daemon_dispatch.rs — authenticated request handling for daemon connections.
+// daemon_dispatch.rs — routes one parsed request to its handler. Split
+// out of daemon.rs (LOC ceiling) so daemon.rs keeps to setup and the
+// accept loop. Store-maintenance and reporting requests go on to
+// daemon_extra.rs; the P2–P11 ticket batches route from there.
 
-use std::os::unix::net::UnixStream;
+use kepr_core::protocol::{Request, Response};
 
-use kepr_core::framing::{read_frame, write_frame};
-use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES, TIMEOUT_SECS};
-
-use crate::audit::{self, username_for_uid, AuditEvent, AuditResult};
+use crate::audit::{self, AuditEvent, AuditResult};
 use crate::daemon_audit::handle_audit_verify;
-use crate::daemon_handlers::{handle_check, handle_delete, handle_list, handle_set};
-use crate::daemon_peer::get_peer_creds;
-use crate::daemon_socket::effective_uid;
-use crate::{crypto, daemon_handlers_get, daemon_lock, fido2};
+use crate::daemon_handlers::{handle_check, handle_set, SetFlags};
+use crate::daemon_handlers_list::handle_list;
+use crate::{
+    audit_chain_path, daemon_extra, daemon_gate_registry, daemon_handlers_get, daemon_lock,
+    daemon_ssh, fido2,
+};
 
-use super::{audit_chain_path, protected_master_key_path, rate_limiter, user_mode};
-
-pub(crate) fn handle_client(mut stream: UnixStream) {
-    let timeout = std::time::Duration::from_secs(TIMEOUT_SECS);
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-
-    let (peer_pid, peer_uid) = match get_peer_creds(&stream) {
-        Some(c) => (c.pid, c.uid),
-        None => {
-            send_error(&mut stream, "cannot verify caller identity");
-            return;
-        }
-    };
-    if user_mode() && peer_uid != effective_uid() {
-        send_error(&mut stream, "caller is not the daemon owner");
-        return;
+pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
+    if let Some(denied) = crate::daemon_policy::enforce(uid, peer_pid, username, &request) {
+        return denied; // T6.11 policy.toml
     }
-    if !rate_limiter().check(peer_uid) {
-        // Reply immediately and return the worker to the pool. Sleeping here
-        // would let a peer saturate every bounded worker with rejected calls.
-        send_error(&mut stream, "rate limited");
-        return;
-    }
-
-    let buf = match read_frame(&mut stream, MAX_MSG_BYTES) {
-        Ok(b) => b,
-        Err(_) => return,
-    };
-
-    let request: Request = match serde_json::from_slice(&buf) {
-        Ok(r) => r,
-        Err(e) => {
-            send_error(&mut stream, &format!("invalid request: {e}"));
-            return;
-        }
-    };
-
-    let username = username_for_uid(peer_uid);
-    let response = dispatch(peer_uid, peer_pid, &username, request);
-    send_response(&mut stream, &response);
-}
-
-fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
     match request {
         Request::Lock { password } => {
             daemon_lock::handle_lock_gated(uid, username, password.as_bytes())
@@ -63,10 +25,12 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
         Request::Unlock { password } => {
             daemon_lock::handle_unlock_gated(uid, username, password.as_bytes())
         }
-        Request::Status => Response::StatusOk {
-            locked: crypto::backend_is_locked(),
-            password_protected: protected_master_key_path().exists(),
-        },
+        Request::Panic => daemon_gate_registry::handle_panic(uid, username),
+        Request::SshGenerate { .. }
+        | Request::SshImport { .. }
+        | Request::SshList
+        | Request::SshSign { .. } => daemon_ssh::dispatch(uid, peer_pid, username, request),
+        Request::Status => crate::daemon_session::status::handle(uid), // T11.24
         Request::Ping => {
             audit::log(&AuditEvent {
                 op: "ping",
@@ -84,15 +48,22 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
             ttl_secs,
             requires_consent,
             requires_fido2,
+            sealed,
+            bindings,
         } => handle_set(
             uid,
             username,
             &name,
             value.as_deref(),
             generate.as_deref(),
-            ttl_secs,
-            requires_consent,
-            requires_fido2,
+            SetFlags {
+                ttl_secs,
+                requires_consent,
+                requires_fido2,
+                sealed,
+                bindings,
+                ..Default::default()
+            },
         ),
         Request::Get {
             name,
@@ -105,38 +76,19 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
             fido2_assertion.as_ref(),
         ),
         Request::List => handle_list(uid, username),
-        Request::Delete { name } => handle_delete(uid, username, &name),
+        Request::Delete { name } => crate::daemon_store::handle_rm(uid, username, &name),
         Request::Check => handle_check(uid, username),
-        Request::AuditVerify => {
-            let path = audit_chain_path();
-            handle_audit_verify(uid, username, path.to_str().unwrap_or_default())
-        }
+        Request::AuditVerify => handle_audit_verify(uid, username, &audit_chain_path()),
         Request::Fido2Register {
             label,
             credential_id,
             public_key_cose,
-        } => match fido2::register(uid, &label, &credential_id, &public_key_cose) {
-            Ok(()) => {
-                audit::log(&AuditEvent {
-                    op: "fido2-register",
-                    name: Some(&label),
-                    uid,
-                    username,
-                    result: AuditResult::Ok,
-                });
-                Response::Fido2RegisterOk { credential_id }
-            }
-            Err(e) => {
-                audit::log(&AuditEvent {
-                    op: "fido2-register",
-                    name: Some(&label),
-                    uid,
-                    username,
-                    result: AuditResult::Fail(e.clone()),
-                });
-                Response::fail(e)
-            }
-        },
+        } => fido2::handle_register(
+            (uid, peer_pid, username),
+            &label,
+            &credential_id,
+            &public_key_cose,
+        ),
         Request::Fido2List => {
             audit::log(&AuditEvent {
                 op: "fido2-list",
@@ -149,15 +101,8 @@ fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Respon
                 credentials: fido2::list_for_uid(uid),
             }
         }
+        // History, restore, usage, health, leak response, recovery kit:
+        // routed (and unknown variants refused) in daemon_extra.rs.
+        other => daemon_extra::dispatch(uid, peer_pid, username, other),
     }
-}
-
-fn send_response(stream: &mut UnixStream, response: &Response) {
-    if let Ok(json) = serde_json::to_vec(response).map(zeroize::Zeroizing::new) {
-        let _ = write_frame(stream, &json);
-    }
-}
-
-fn send_error(stream: &mut UnixStream, message: &str) {
-    send_response(stream, &Response::fail(message));
 }

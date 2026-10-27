@@ -9,6 +9,12 @@ StartLimitIntervalSec=30
 StartLimitBurst=5
 
 [Service]
+# Bind the master key to this machine's TPM2 (sealed via systemd-creds;
+# P4.3). Values: host (default), tpm2, host+tpm2, auto. PCR binding makes
+# a modified boot chain unable to unseal it. Applies to newly created
+# master keys; existing ones keep their sealing.
+#Environment=KEPR_MASTER_KEY_SEAL=host+tpm2
+#Environment=KEPR_TPM2_PCRS=7
 Type=simple
 User=root
 Group=root
@@ -27,6 +33,8 @@ StateDirectory=kepr
 StateDirectoryMode=0700
 
 ExecStart=/usr/local/bin/kepr-daemon
+# Re-read /etc/kepr/policy.toml (T6.11) without a restart.
+ExecReload=/bin/kill -HUP $MAINPID
 
 # Neutral identifier — never expose internal tool names in the
 # service description or the journal tag.

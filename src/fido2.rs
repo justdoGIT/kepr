@@ -9,33 +9,53 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use kepr_core::protocol::{Fido2Assertion, Fido2CredInfo};
 
 /// Root directory for the FIDO2 credential registry.
-const FIDO2_DIR: &str = "/var/lib/kepr/fido2";
+/// Registry root: `<state dir>/fido2` — /var/lib/kepr/fido2 in system
+/// mode, ~/.local/state/kepr/fido2 in user mode (a non-root user-mode
+/// daemon cannot write under /var/lib).
+fn fido2_dir() -> PathBuf {
+    crate::state_dir().join("fido2")
+}
+const MAX_LABEL: usize = 128;
+const MAX_HEX: usize = 2048;
 
 /// RP ID for SHA-256 hashing in authenticator data.
 pub const RP_ID: &str = "kepr";
 
 const CHALLENGE_TTL_SECS: u64 = 60;
-static CHALLENGES: std::sync::OnceLock<std::sync::Mutex<HashMap<String, std::time::Instant>>> =
-    std::sync::OnceLock::new();
-fn cs() -> &'static std::sync::Mutex<HashMap<String, std::time::Instant>> {
-    CHALLENGES.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+/// Outstanding challenges across all users; beyond this, new ones are
+/// refused until old ones expire (a client asking without answering
+/// can't grow the daemon's memory).
+const MAX_PENDING: usize = 1024;
+/// challenge hex → (issued, uid, credential name): a challenge answers
+/// only the request it was issued for.
+type Pending = HashMap<String, (std::time::Instant, u32, String)>;
+static CHALLENGES: std::sync::OnceLock<std::sync::Mutex<Pending>> = std::sync::OnceLock::new();
+fn cs() -> std::sync::MutexGuard<'static, Pending> {
+    let m = CHALLENGES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut g = m.lock().unwrap_or_else(|p| p.into_inner());
+    g.retain(|_, (t, _, _)| t.elapsed().as_secs() < CHALLENGE_TTL_SECS);
+    g
 }
 
-/// Fresh 32-byte challenge, hex-encoded, stored for later verification.
-pub fn generate_challenge() -> Result<String, String> {
+/// Fresh 32-byte challenge for `uid`'s `name`, hex-encoded.
+pub fn generate_challenge(uid: u32, name: &str) -> Result<String, String> {
     let mut buf = [0u8; 32];
     getrandom::fill(&mut buf).map_err(|e| format!("CSPRNG failure: {e}"))?;
     let h = hex::encode(buf);
-    cs().lock()
-        .unwrap()
-        .insert(h.clone(), std::time::Instant::now());
+    let mut store = cs();
+    if store.len() >= MAX_PENDING {
+        return Err("too many pending FIDO2 challenges; try again shortly".into());
+    }
+    store.insert(
+        h.clone(),
+        (std::time::Instant::now(), uid, name.to_string()),
+    );
     Ok(h)
 }
 
@@ -93,6 +113,9 @@ fn validate_hex(s: &str, field: &str) -> Result<(), String> {
     if s.is_empty() {
         return Err(format!("fido2: {field} must not be empty"));
     }
+    if s.len() > MAX_HEX {
+        return Err(format!("fido2: {field} is too long"));
+    }
     if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!(
             "fido2: {field} must be hex-encoded, got non-hex bytes"
@@ -102,6 +125,42 @@ fn validate_hex(s: &str, field: &str) -> Result<(), String> {
 }
 
 /// Register a new FIDO2 credential for the given uid.
+/// `Fido2Register`. A new key is accepted only after a polkit prompt:
+/// without it, any process running as the user (an agent) could
+/// register a software key it holds and then answer every FIDO2
+/// challenge itself, so `requires_fido2` would protect nothing.
+pub fn handle_register(
+    (uid, peer_pid, username): (u32, i32, &str),
+    label: &str,
+    credential_id: &str,
+    public_key_cose: &str,
+) -> kepr_core::protocol::Response {
+    use crate::audit::{self, AuditEvent, AuditResult};
+    let r = if crate::daemon_polkit::consent_granted(peer_pid) {
+        register(uid, label, credential_id, public_key_cose)
+    } else {
+        Err(
+            "registering a FIDO2 key needs approval (polkit prompt was refused or unavailable)"
+                .into(),
+        )
+    };
+    audit::log(&AuditEvent {
+        op: "fido2-register",
+        name: Some(label),
+        uid,
+        username,
+        result: r
+            .clone()
+            .map_or_else(AuditResult::Fail, |()| AuditResult::Ok),
+    });
+    match r {
+        Ok(()) => kepr_core::protocol::Response::Fido2RegisterOk {
+            credential_id: credential_id.to_string(),
+        },
+        Err(e) => kepr_core::protocol::Response::fail(e),
+    }
+}
+
 pub fn register(
     uid: u32,
     label: &str,
@@ -110,8 +169,15 @@ pub fn register(
 ) -> Result<(), String> {
     validate_hex(credential_id, "credential_id")?;
     validate_hex(public_key_cose_hex, "public_key_cose")?;
+    if label.is_empty() || label.chars().count() > MAX_LABEL || label.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "fido2: label must be 1-{MAX_LABEL} printable characters"
+        ));
+    }
     let dir = fido2_uid_dir(uid);
     fs::create_dir_all(&dir).map_err(|e| format!("create fido2 dir: {e}"))?;
+    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     let path = fido2_cred_path(uid, credential_id);
     let stored = StoredCredential {
         label: label.to_string(),
@@ -119,45 +185,12 @@ pub fn register(
         public_key_cose_hex: public_key_cose_hex.to_string(),
     };
     let json = serde_json::to_vec(&stored).map_err(|e| format!("serialise fido2: {e}"))?;
-    // Atomic write: temp + rename.
-    let tmp = path.with_extension(format!(
-        "tmp.{}.{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let mut f = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let _ = fs::remove_file(&tmp);
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&tmp)
-                .map_err(|e| format!("open fido2 temp (after stale-cleanup): {e}"))?
-        }
-        Err(e) => return Err(format!("open fido2 temp: {e}")),
-    };
-    if let Err(e) = f.write_all(&json) {
-        drop(f);
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("write fido2: {e}"));
-    }
-    drop(f);
-    fs::rename(&tmp, &path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("install fido2: {e}")
-    })
+    crate::atomic_file::write(&path, &json, 0o600).map_err(|e| format!("install fido2: {e}"))
 }
 
 /// Verify clientDataJSON contains a daemon-issued, unexpired challenge.
 /// Parses JSON, extracts base64url challenge, decodes, matches store.
-fn verify_challenge(client_data_json: &[u8]) -> Result<(), String> {
+fn verify_challenge(client_data_json: &[u8], uid: u32, name: &str) -> Result<(), String> {
     let v: serde_json::Value = serde_json::from_slice(client_data_json)
         .map_err(|e| format!("fido2: clientDataJSON parse: {e}"))?;
     let b64u = v
@@ -167,17 +200,14 @@ fn verify_challenge(client_data_json: &[u8]) -> Result<(), String> {
     let decoded = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, b64u)
         .map_err(|e| format!("fido2: challenge base64 decode: {e}"))?;
     let hex_challenge = hex::encode(&decoded);
-    let mut store = cs().lock().unwrap();
-    store.retain(|_, t| t.elapsed().as_secs() < CHALLENGE_TTL_SECS);
-    store
-        .remove(&hex_challenge)
-        .filter(|t| t.elapsed().as_secs() < CHALLENGE_TTL_SECS)
+    cs().remove(&hex_challenge)
+        .filter(|(_, u, n)| *u == uid && n == name)
         .map(|_| ())
-        .ok_or_else(|| "fido2: challenge not found or expired".to_string())
+        .ok_or_else(|| "fido2: challenge not found, expired, or for another request".to_string())
 }
 
 /// Verify a FIDO2 assertion against the stored credential.
-pub fn verify_assertion(uid: u32, assertion: &Fido2Assertion) -> Result<(), String> {
+pub fn verify_assertion(uid: u32, name: &str, assertion: &Fido2Assertion) -> Result<(), String> {
     use p256::ecdsa::{self, signature::Verifier};
     use sha2::Digest;
 
@@ -191,7 +221,7 @@ pub fn verify_assertion(uid: u32, assertion: &Fido2Assertion) -> Result<(), Stri
         hex::decode(&assertion.signature).map_err(|e| format!("fido2: signature hex: {e}"))?;
 
     // 0. Verify challenge freshness (one-time-use, 60s TTL).
-    verify_challenge(&client_data_json)?;
+    verify_challenge(&client_data_json, uid, name)?;
 
     // 1. Verify RP ID hash: first 32 bytes of authenticatorData.
     if auth_data.len() < 32 {
@@ -241,7 +271,7 @@ struct StoredCredential {
 }
 
 fn fido2_uid_dir(uid: u32) -> PathBuf {
-    PathBuf::from(format!("{FIDO2_DIR}/{uid}"))
+    fido2_dir().join(uid.to_string())
 }
 
 fn fido2_cred_path(uid: u32, credential_id: &str) -> PathBuf {
@@ -323,16 +353,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn challenge_answers_only_its_own_request() {
+        let c = generate_challenge(1, "A").unwrap();
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            hex::decode(&c).unwrap(),
+        );
+        let cdj = format!(r#"{{"challenge":"{b64}"}}"#);
+        assert!(verify_challenge(cdj.as_bytes(), 1, "B").is_err());
+        // The mismatched attempt used it up; a fresh one for A works.
+        let c = generate_challenge(1, "A").unwrap();
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            hex::decode(&c).unwrap(),
+        );
+        let cdj = format!(r#"{{"challenge":"{b64}"}}"#);
+        assert!(verify_challenge(cdj.as_bytes(), 2, "A").is_err());
+    }
+
+    #[test]
     fn generate_challenge_is_64_hex_chars() {
-        let c = generate_challenge().unwrap();
+        let c = generate_challenge(1, "X").unwrap();
         assert_eq!(c.len(), 64);
         hex::decode(&c).expect("valid hex");
     }
 
     #[test]
     fn generate_challenge_is_unique() {
-        let a = generate_challenge().unwrap();
-        let b = generate_challenge().unwrap();
+        let a = generate_challenge(1, "X").unwrap();
+        let b = generate_challenge(1, "X").unwrap();
         assert_ne!(a, b);
     }
 
@@ -378,7 +427,7 @@ mod tests {
 
     #[test]
     fn register_and_list_round_trip() {
-        // This test writes to the real FIDO2_DIR (/var/lib/kepr/fido2/)
+        // This test writes to the real registry dir (<state dir>/fido2/)
         // and is only runnable as root (or when the dir is user-writable).
         // Skip gracefully when we can't create the directory.
         let uid = 9999u32;
@@ -439,7 +488,7 @@ mod tests {
 
     #[test]
     fn verify_challenge_accepts_valid_client_data_json() {
-        let hex_challenge = generate_challenge().unwrap();
+        let hex_challenge = generate_challenge(1, "X").unwrap();
         // Build clientDataJSON as the CLI would: hex-decode → base64url → JSON → hex
         let challenge_bytes = hex::decode(&hex_challenge).unwrap();
         use base64::Engine;
@@ -451,12 +500,12 @@ mod tests {
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
         // First call succeeds — challenge is known and unexpired.
-        verify_challenge(&cdj_bytes).expect("valid challenge should pass");
+        verify_challenge(&cdj_bytes, 1, "X").expect("valid challenge should pass");
     }
 
     #[test]
     fn verify_challenge_is_one_time_use() {
-        let hex_challenge = generate_challenge().unwrap();
+        let hex_challenge = generate_challenge(1, "X").unwrap();
         let challenge_bytes = hex::decode(&hex_challenge).unwrap();
         use base64::Engine;
         let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge_bytes);
@@ -466,8 +515,8 @@ mod tests {
         );
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
-        verify_challenge(&cdj_bytes).expect("first use should pass");
-        let err = verify_challenge(&cdj_bytes).unwrap_err();
+        verify_challenge(&cdj_bytes, 1, "X").expect("first use should pass");
+        let err = verify_challenge(&cdj_bytes, 1, "X").unwrap_err();
         assert!(err.contains("not found"), "second use should fail: {err}");
     }
 
@@ -476,14 +525,14 @@ mod tests {
         let cdj = r#"{"type":"webauthn.get","origin":"kepr"}"#;
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
-        let err = verify_challenge(&cdj_bytes).unwrap_err();
+        let err = verify_challenge(&cdj_bytes, 1, "X").unwrap_err();
         assert!(err.contains("missing challenge"), "msg: {err}");
     }
 
     #[test]
     fn verify_challenge_rejects_garbage_json() {
         let cdj = b"not json";
-        let err = verify_challenge(cdj).unwrap_err();
+        let err = verify_challenge(cdj, 1, "X").unwrap_err();
         assert!(err.contains("clientDataJSON parse"), "msg: {err}");
     }
 
@@ -500,14 +549,14 @@ mod tests {
         );
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
-        let err = verify_challenge(&cdj_bytes).unwrap_err();
+        let err = verify_challenge(&cdj_bytes, 1, "X").unwrap_err();
         assert!(err.contains("not found"), "msg: {err}");
     }
 
     #[test]
     fn generate_challenge_stores_in_global_store() {
-        let c1 = generate_challenge().unwrap();
-        let c2 = generate_challenge().unwrap();
+        let c1 = generate_challenge(1, "X").unwrap();
+        let c2 = generate_challenge(1, "X").unwrap();
         // Both should be in the store (not the same)
         assert_ne!(c1, c2);
         // Verify c1 is usable
@@ -520,7 +569,7 @@ mod tests {
         );
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
-        verify_challenge(&cdj_bytes).expect("c1 should be in store");
+        verify_challenge(&cdj_bytes, 1, "X").expect("c1 should be in store");
         // c2 is still unused
         let challenge_bytes = hex::decode(&c2).unwrap();
         let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge_bytes);
@@ -530,6 +579,6 @@ mod tests {
         );
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
-        verify_challenge(&cdj_bytes).expect("c2 should be in store");
+        verify_challenge(&cdj_bytes, 1, "X").expect("c2 should be in store");
     }
 }

@@ -42,7 +42,6 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// 32-byte zero hash, hex-encoded, used as `prev_hash` for the
 /// first entry in any chain. Distinct from any real SHA-256 output
@@ -119,10 +118,9 @@ impl AuditChain {
     /// Open the chain at `path`. If the file exists, walks it to
     /// recover the in-memory head + next-seq state. If the file
     /// is absent, starts with the genesis state. A malformed or
-    /// tampered existing file is a hard error, except for a
-    /// non-newline-terminated final record: that is the signature
-    /// of a process dying during its append, and only that tail is
-    /// discarded after the valid prefix is re-verified.
+    /// tampered existing file is a hard error — the daemon
+    /// should refuse to start rather than silently begin a fresh
+    /// chain on top of corruption.
     ///
     /// NOTE: full-chain verification on every daemon start is O(N)
     /// in the number of audit entries. A chain with millions of
@@ -132,17 +130,9 @@ impl AuditChain {
     pub fn open(path: PathBuf) -> Result<Self, String> {
         let state = match fs::metadata(&path) {
             Ok(_) => {
-                let report = match Self::verify(&path) {
-                    Ok(report) => report,
-                    Err(original_error) => {
-                        if !crate::audit_chain_recovery::repair_incomplete_tail(&path)? {
-                            return Err(original_error);
-                        }
-                        eprintln!("[kepr-daemon] discarded an incomplete trailing audit record");
-                        Self::verify(&path)
-                            .map_err(|error| format!("audit chain recovery failed: {error}"))?
-                    }
-                };
+                // Existing file — verify and recover state from it.
+                drop_torn_tail(&path)?;
+                let report = Self::verify(&path)?;
                 ChainState {
                     last_hash: report.last_hash,
                     next_seq: report.entries as u64 + 1,
@@ -229,8 +219,15 @@ impl AuditChain {
             .mode(0o640)
             .open(&self.path)
             .map_err(|e| format!("open audit chain: {e}"))?;
-        f.write_all(line.as_bytes())
-            .map_err(|e| format!("write audit chain: {e}"))?;
+        let before = f.metadata().map(|m| m.len()).ok();
+        if let Err(e) = f.write_all(line.as_bytes()) {
+            // A partial line (disk full) would make the next append land
+            // after garbage and the chain unreadable: cut it off.
+            if let Some(len) = before {
+                let _ = f.set_len(len);
+            }
+            return Err(format!("write audit chain: {e}"));
+        }
         // Update in-memory state ONLY after the disk write
         // succeeds. If the write failed we'd want a retry to
         // re-emit the same seq + prev_hash; advancing in-memory
@@ -309,28 +306,34 @@ impl AuditChain {
 
 fn compute_hash(prev_hash_hex: &str, canonical_bytes: &[u8]) -> Result<String, String> {
     let prev_bytes = hex_decode(prev_hash_hex)?;
-    let mut hasher = Sha256::new();
-    hasher.update(&prev_bytes);
-    hasher.update(canonical_bytes);
-    Ok(hex_encode(&hasher.finalize()))
+    // SHA-256 through the crypto seam (aws-lc-rs under the `fips` feature).
+    let digest = crate::daemon_eco::cipher::sha256(&[&prev_bytes, canonical_bytes]);
+    Ok(hex_encode(&digest))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
+    hex::encode(bytes)
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
-        return Err(format!("odd-length hex string: {s:?}"));
+    hex::decode(s).map_err(|e| format!("bad hex: {e}"))
+}
+
+/// A crash mid-append leaves a last line with no newline. It never
+/// verified (the write didn't finish), so drop it instead of refusing
+/// to start; every complete line is still checked by `verify`.
+fn drop_torn_tail(path: &Path) -> Result<(), String> {
+    let data = fs::read(path).map_err(|e| format!("read audit chain: {e}"))?;
+    if data.last().is_none_or(|b| *b == b'\n') {
+        return Ok(());
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("bad hex byte: {e}")))
-        .collect()
+    let keep = data.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    eprintln!("[kepr-daemon] audit chain: dropping a torn last line (incomplete write)");
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|f| f.set_len(keep as u64))
+        .map_err(|e| format!("repair audit chain: {e}"))
 }
 
 #[cfg(test)]
@@ -342,6 +345,20 @@ mod tests {
         let path = dir.path().join("audit.log");
         let chain = AuditChain::open(path).unwrap();
         (chain, dir)
+    }
+
+    #[test]
+    fn a_torn_last_line_is_dropped_on_open() {
+        let (chain, dir) = fresh_chain();
+        chain.append("set", Some("A"), 1, "u", "ok").unwrap();
+        chain.append("set", Some("B"), 1, "u", "ok").unwrap();
+        let path = dir.path().join("audit.log");
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(b"{\"seq\":3,\"timest").unwrap();
+        drop(f);
+        let reopened = AuditChain::open(path.clone()).unwrap();
+        reopened.append("get", Some("A"), 1, "u", "ok").unwrap();
+        assert_eq!(AuditChain::verify(&path).unwrap().entries, 3);
     }
 
     #[test]
@@ -515,24 +532,6 @@ mod tests {
         }
         let report = AuditChain::verify(&path).unwrap();
         assert_eq!(report.entries, 3);
-    }
-
-    #[test]
-    fn open_repairs_incomplete_final_record() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("audit.log");
-        {
-            let chain = AuditChain::open(path.clone()).unwrap();
-            chain.append("set", None, 1000, "alice", "ok").unwrap();
-        }
-        let mut body = fs::read(&path).unwrap();
-        body.extend_from_slice(b"{\"seq\":2,\"op\":");
-        fs::write(&path, body).unwrap();
-
-        let chain = AuditChain::open(path.clone()).expect("partial tail is recoverable");
-        assert_eq!(chain.state.lock().unwrap().next_seq, 2);
-        chain.append("get", None, 1000, "alice", "ok").unwrap();
-        assert_eq!(AuditChain::verify(&path).unwrap().entries, 2);
     }
 
     #[test]

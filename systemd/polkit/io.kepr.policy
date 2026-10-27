@@ -4,8 +4,9 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <!--
   kepr polkit action — registers the consent-prompt action ID that
-  the daemon invokes via pkcheck for every credential set with
-  `--requires-consent`. Installed by `install.sh` to
+  the daemon invokes via pkcheck for every credential set to
+  require consent (`kepr set KEY` with the requires-consent flag).
+  Installed by `install.sh` to
   /usr/share/polkit-1/actions/io.kepr.policy.
 
   defaults:
@@ -19,6 +20,19 @@
   for `io.kepr.read-credential` regardless of user input, and
   every consent-flagged credential reads as "credential
   unavailable". That's the fail-closed default.
+
+  io.kepr.unlock (T10.03): `kepr unlock` with the fingerprint flag reopens a
+  store the idle timer or the sleep watcher locked (opt-in with
+  KEPR_FINGERPRINT_UNLOCK on the user-mode daemon). Same defaults.
+  (No double hyphens in this comment: XML forbids them, and polkit
+  would skip the whole file.)
+
+  Fingerprints: auth_self runs polkit's PAM stack (polkit-1), so
+  with pam_fprintd in it (Debian/Ubuntu: `pam-auth-update`, enable
+  fingerprint; Fedora: `authselect enable-feature with-fingerprint`)
+  both prompts accept an enrolled finger, with the password as the
+  fallback. Never use auth_self_keep here: every unlock and every
+  consent read must prompt.
 -->
 <policyconfig>
 
@@ -28,6 +42,16 @@
   <action id="io.kepr.read-credential">
     <description>Read a kepr credential that requires explicit consent</description>
     <message>Authentication is required to read this credential</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.kepr.unlock">
+    <description>Unlock the kepr credential store</description>
+    <message>Authentication is required to unlock your kepr credential store</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

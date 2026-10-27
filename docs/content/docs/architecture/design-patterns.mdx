@@ -73,10 +73,13 @@ that scales with all users on the host.
 
 ## Error sanitisation at the boundary
 
-`crypto::sanitize_error` strips internal tool names, the absolute path
-of the backend binary, and key-type flags from any stderr that escapes
-back to the user. The systemd unit uses a neutral `SyslogIdentifier`
-for the same reason.
+Credential operations run in-process (AES-256-GCM), so no backend
+stderr reaches users at all; the one subprocess, the master-key sealer at
+start-up, reports only "seal failed" / "unseal failed".
+`crypto::sanitize_lookup_error` collapses "not found" and "cannot
+decrypt" into one message so names can't be probed. The systemd unit uses
+a neutral `SyslogIdentifier` for the same reason. Treat any new error
+string as user-visible.
 
 <Warning>
   Treat any new error string as user-visible. Do not interpolate

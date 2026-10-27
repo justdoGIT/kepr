@@ -169,14 +169,7 @@ pub fn cmd_rotate(name: &str, kind: GenKind, hook_path: &Path) -> Response {
         hook_path: hook_path.to_path_buf(),
     };
     let setter: Setter = Box::new(|name: &str, value: ZeroString| {
-        match client::send_request(&Request::Set {
-            name: name.to_string(),
-            value: Some(value),
-            generate: None,
-            ttl_secs: None,
-            requires_consent: None,
-            requires_fido2: None,
-        }) {
+        match client::send_request(&commit_request(name, value)) {
             Ok(Response::SetOk {
                 cred_name,
                 password_protected,
@@ -197,11 +190,54 @@ pub fn cmd_rotate(name: &str, kind: GenKind, hook_path: &Path) -> Response {
     }
 }
 
+/// The `set` a rotation commits: the new value and nothing else. Every
+/// policy flag stays unsaid, so the daemon keeps the credential's own (a
+/// sealed key stays sealed to its hosts; consent and FIDO2 stay on). An
+/// explicit `false` here would be refused only after the hook already
+/// pushed the value upstream.
+fn commit_request(name: &str, value: ZeroString) -> Request {
+    Request::Set {
+        name: name.to_string(),
+        value: Some(value),
+        generate: None,
+        ttl_secs: None,
+        requires_consent: None,
+        requires_fido2: None,
+        sealed: None,
+        bindings: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn the_commit_leaves_the_credentials_policy_to_the_daemon() {
+        let Request::Set {
+            name,
+            value,
+            generate,
+            ttl_secs,
+            requires_consent,
+            requires_fido2,
+            sealed,
+            bindings,
+        } = commit_request("FOO", ZeroString::from("new-value"))
+        else {
+            panic!("rotate must commit through Request::Set");
+        };
+        assert_eq!(name, "FOO");
+        assert_eq!(value.as_ref().map(ZeroString::as_str), Some("new-value"));
+        assert_eq!((generate, ttl_secs), (None, None));
+        assert_eq!(
+            (requires_consent, requires_fido2, sealed),
+            (None, None, None)
+        );
+        assert!(bindings.is_none());
+    }
 
     /// In-memory hook runner. Captures the value it was given
     /// (for assertion) and returns a pre-configured outcome.

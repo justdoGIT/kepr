@@ -1,0 +1,48 @@
+[Unit]
+Description=kepr — agent gate service (session proxies for the system daemon)
+Documentation=man:kepr(1)
+After=network.target
+
+[Service]
+Type=simple
+# Its own throwaway unprivileged user: session gates never run as root
+# and can't read the credential store. Sealed values reach a session
+# gate only over the channel kepr-daemon hands it, one host at a time.
+DynamicUser=yes
+RuntimeDirectory=kepr-gate
+RuntimeDirectoryMode=0755
+# Only root (kepr-daemon) is served; the service checks SO_PEERCRED.
+ExecStart=/usr/local/bin/kepr-gate --serve /run/kepr-gate/gate.sock
+SyslogIdentifier=kepr-gate
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @debug
+# Upstream TLS to the providers, loopback for agents, the control socket.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+InaccessiblePaths=-/etc/credstore.encrypted -/var/lib/kepr
+LimitCORE=0
+UMask=0077
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

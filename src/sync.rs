@@ -41,6 +41,12 @@ pub trait Syncer {
     /// original bytes — pin via integration tests per backend.
     fn pull(&self) -> Result<String, String>;
 
+    /// T11.17: like `pull`, but `Ok(None)` when the remote secret
+    /// doesn't exist (`sync push --map --dry-run` reports "create").
+    fn fetch(&self) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+        self.pull().map(|v| Some(zeroize::Zeroizing::new(v)))
+    }
+
     /// Human-readable name of the backing store. Surfaces in
     /// audit messages and CLI output (e.g. "vault" / "aws-sm").
     fn backend(&self) -> &'static str;
@@ -57,9 +63,19 @@ pub fn pick_syncer(url: &str) -> Result<Box<dyn Syncer>, String> {
         Ok(Box::new(crate::sync_aws_sm::AwsSmSyncer::from_path(path)))
     } else if let Some(path) = url.strip_prefix("gcp-sm:") {
         Ok(Box::new(crate::sync_gcp_sm::GcpSmSyncer::from_path(path)))
+    } else if let Some(spec) = url.strip_prefix("json:") {
+        // T8.06 (batch: sync): one key of a local JSON file.
+        Ok(Box::new(
+            crate::cli_syncx::json_file::JsonFileSyncer::from_path(spec)?,
+        ))
+    } else if let Some(spec) = url.strip_prefix("azure-kv:") {
+        // T8.05 (batch: sync): Azure Key Vault, bearer token.
+        Ok(Box::new(
+            crate::cli_syncx::azure_kv::AzureKvSyncer::from_path(spec)?,
+        ))
     } else {
         Err(format!(
-            "unsupported sync scheme in {url:?} — supported: vault:, aws-sm:, gcp-sm:"
+            "unsupported sync scheme in {url:?} — supported: vault:, aws-sm:, gcp-sm:, azure-kv:, json:"
         ))
     }
 }
@@ -70,23 +86,16 @@ pub fn pick_syncer(url: &str) -> Result<Box<dyn Syncer>, String> {
 /// upstream cloud never sees the kepr master key. Both
 /// boundaries stay clean.
 pub fn cmd_sync_push(name: &str, url: &str) -> kepr_core::protocol::Response {
-    use kepr_core::protocol::{Request, Response};
+    use kepr_core::protocol::Response;
     let syncer = match pick_syncer(url) {
         Ok(s) => s,
         Err(e) => return Response::fail(e),
     };
     let upper = name.to_uppercase();
-    let resp = match crate::client::send_request(&Request::Get {
-        name: upper.clone(),
-        fido2_assertion: None,
-    }) {
-        Ok(r) => r,
-        Err(e) => return Response::fail(format!("daemon: {e}")),
-    };
-    let value = match resp {
-        Response::GetOk { value, .. } => value,
-        Response::Err { error } => return Response::fail(error),
-        other => return Response::fail(format!("unexpected response: {other:?}")),
+    use crate::cli_exec::CredFetcher;
+    let value = match crate::cli_exec::DaemonFetcher.fetch(&upper) {
+        Ok(v) => v,
+        Err(e) => return Response::fail(e),
     };
     if let Err(e) = syncer.push(value.as_str()) {
         return Response::fail(e);
@@ -124,6 +133,8 @@ pub fn cmd_sync_pull(name: &str, url: &str) -> kepr_core::protocol::Response {
         ttl_secs: None,
         requires_consent: None,
         requires_fido2: None,
+        sealed: None,
+        bindings: None,
     };
     match crate::client::send_request(&req) {
         Ok(r @ Response::SetOk { .. }) => r,
@@ -153,6 +164,21 @@ mod tests {
     fn pick_syncer_dispatches_gcp_sm_scheme() {
         let s = pick_syncer("gcp-sm:projects/myproj/secrets/db_pass").unwrap();
         assert_eq!(s.backend(), "gcp-sm");
+    }
+
+    #[test]
+    fn pick_syncer_dispatches_json_scheme() {
+        let s = pick_syncer("json:secrets.json#db.password").unwrap();
+        assert_eq!(s.backend(), "json");
+        // A malformed target is refused before anything runs.
+        assert!(pick_syncer("json:secrets.json").is_err());
+    }
+
+    #[test]
+    fn pick_syncer_dispatches_azure_kv_scheme() {
+        let s = pick_syncer("azure-kv:myvault/db-pass").unwrap();
+        assert_eq!(s.backend(), "azure-kv");
+        assert!(pick_syncer("azure-kv:evil.example/x").is_err());
     }
 
     #[test]

@@ -1,6 +1,0 @@
-# Cluster-wide release-build baseline: jobs ~= logical CPUs that actually run
-# rustc. sccache-dist currently registers 7 CPUs; raise toward 12-15 once asus
-# and gigabyte register. No -Z threads: a wide crate graph already saturates
-# the cores and each extra frontend thread multiplies per-rustc memory.
-[build]
-jobs = 7

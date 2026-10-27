@@ -154,6 +154,17 @@ pub fn sweep_once(dir: &Path, now: u64, versions: Option<&Arc<VersionState>>) ->
             }
         };
 
+        // Re-check under the credential's lock: a `set` between the
+        // read above and here may have replaced the value (and its TTL).
+        let _lock = crate::daemon_credlock::lock(uid, &name_upper);
+        let still_expired = matches!(
+            expiry::read_meta(&meta_path),
+            Some(Ok(m)) if m.expires_at_unix.is_some_and(|t| t <= now)
+        );
+        if !still_expired {
+            continue;
+        }
+
         // Mirror what InProcBackend::delete does, but via the same
         // primitives the test harness can drive: tombstone the
         // version counter FIRST (so a post-restore replay of the
@@ -196,6 +207,9 @@ pub fn sweep_once(dir: &Path, now: u64, versions: Option<&Arc<VersionState>>) ->
         // Drop the meta file. Best-effort — a present meta with no
         // cred would just be ignored by future sweeps, but tidiness.
         expiry::delete_meta(&meta_path);
+        crate::daemon_history::purge_in(dir, versions.map(|v| &**v), uid, &name_upper);
+        // Running gates must drop any cached copy of this value.
+        crate::daemon_gate::bump_generation();
 
         // Invalidate the per-uid scan cache so list/check pick up
         // the removal on their next call without waiting for the
@@ -258,7 +272,12 @@ fn spawn_sweeper_with_interval(versions: Arc<VersionState>, interval: Duration) 
             thread::sleep(interval);
             let now = expiry::now_unix();
             let dir = store::store_dir();
+            crate::daemon_store::sweep_trash(now); // T11.2: before the TTL pass
             let _ = sweep_once(&dir, now, Some(&versions));
+            crate::daemon_vault::sweep_expired(now); // T4.06: the image store
+            crate::daemon_sharing::sweep(now); // T6.05 self-destruct, T6.06 release
+            crate::daemon_aws::sweep(now); // T7.07 scheduled rotation
+            crate::daemon_syncx::quorum_sweep(now); // T7.12: closed approval windows
         })
         .expect("spawn kepr-expiry thread");
 }
@@ -284,8 +303,7 @@ mod tests {
             &mp,
             &expiry::CredMeta {
                 expires_at_unix: Some(expires_at_unix),
-                requires_consent: None,
-                requires_fido2: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -300,8 +318,7 @@ mod tests {
             &mp,
             &expiry::CredMeta {
                 expires_at_unix: Some(expires_at_unix),
-                requires_consent: None,
-                requires_fido2: None,
+                ..Default::default()
             },
         )
         .unwrap();

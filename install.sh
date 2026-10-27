@@ -24,6 +24,7 @@ INSTALL_USER="${SUDO_USER:-$USER}"
 
 echo -e "\n${CYN}━━━ Building kepr ━━━${RST}"
 cargo build --release
+cargo build --release -p kepr-gate
 ok "Build complete"
 
 SYSTEM_MODE=false
@@ -43,9 +44,13 @@ echo -e "\n${CYN}━━━ Installing binaries ━━━${RST}"
 sudo install -o root -g root -m 0755 target/release/kepr /usr/local/bin/kepr
 sudo install -o root -g root -m 0755 target/release/kepr-daemon /usr/local/bin/kepr-daemon
 sudo install -o root -g root -m 0755 target/release/docker-credential-kepr /usr/local/bin/docker-credential-kepr
+sudo install -o root -g root -m 0755 target/release/git-credential-kepr /usr/local/bin/git-credential-kepr
+sudo install -o root -g root -m 0755 target/release/kepr-gate /usr/local/bin/kepr-gate
 ok "kepr                    → /usr/local/bin/kepr"
 ok "kepr-daemon             → /usr/local/bin/kepr-daemon"
 ok "docker-credential-kepr  → /usr/local/bin/docker-credential-kepr"
+ok "git-credential-kepr     → /usr/local/bin/git-credential-kepr"
+ok "kepr-gate               → /usr/local/bin/kepr-gate"
 
 
 # Phase 2 ε: install the polkit action so creds set with
@@ -61,6 +66,18 @@ if [ -d /usr/share/polkit-1/actions ]; then
 else
     warn "polkit not installed — --requires-consent flag will deny all reads"
     warn "install policykit-1 (or your distro's equivalent) and re-run install.sh"
+fi
+
+# Agent sandbox: Ubuntu 24.04+ restricts unprivileged user namespaces
+# via AppArmor. The kepr profile grants `userns` to /usr/local/bin/kepr
+# only, so `kepr agent run` can build its sandbox.
+if [ -d /etc/apparmor.d ] && command -v apparmor_parser >/dev/null 2>&1; then
+    sudo install -o root -g root -m 0644 packaging/apparmor/kepr /etc/apparmor.d/kepr
+    if sudo apparmor_parser -r /etc/apparmor.d/kepr 2>/dev/null; then
+        ok "AppArmor profile (agent sandbox) → /etc/apparmor.d/kepr"
+    else
+        warn "AppArmor profile installed but not loaded; run: sudo apparmor_parser -r /etc/apparmor.d/kepr"
+    fi
 fi
 
 echo -e "\n${CYN}━━━ Installing shell completion ━━━${RST}"
@@ -84,12 +101,21 @@ fi
 if $SYSTEM_MODE; then
     echo -e "\n${CYN}━━━ Installing systemd service ━━━${RST}"
     sudo cp systemd/kepr.service /etc/systemd/system/kepr.service
+    # Agent sessions under the system daemon run in their own service
+    # (unprivileged dynamic user with network access, no store access).
+    sudo cp systemd/kepr-gate.service /etc/systemd/system/kepr-gate.service
     sudo systemctl daemon-reload
+    sudo systemctl enable --now kepr-gate.service || warn "kepr-gate.service did not start; agent sessions need it in system mode"
     sudo systemctl enable kepr.service
     sudo systemctl restart kepr.service
     sleep 1
     if sudo systemctl is-active --quiet kepr.service; then
         ok "kepr.service is running"
+        # Point every login shell's kepr (and the credential helpers) at
+        # the system daemon instead of auto-starting a per-user one.
+        echo 'export KEPR_SYSTEM_MODE=1' | sudo tee /etc/profile.d/kepr.sh >/dev/null
+        sudo chmod 0644 /etc/profile.d/kepr.sh
+        ok "KEPR_SYSTEM_MODE=1 for login shells → /etc/profile.d/kepr.sh"
     else
         echo "kepr.service failed to start:" >&2
         sudo journalctl -u kepr.service -n 20 --no-pager >&2
@@ -115,6 +141,9 @@ echo -e "
   View audit log:
     ${CYN}journalctl -t kepr-daemon -f${RST}
 
-  Fix .agentrc (remove sudo):
-    ${CYN}export OPENCLAW_GATEWAY_TOKEN=\"\$(kepr get OPENCLAW_GATEWAY_TOKEN --quiet)\"${RST}
+  Give a command a secret without exporting it into your shell:
+    ${CYN}kepr exec --env OPENCLAW_GATEWAY_TOKEN -- your-command${RST}
+
+  Run an AI agent with sealed keys it never sees:
+    ${CYN}kepr agent add ANTHROPIC_API_KEY && kepr agent run claude${RST}
 "

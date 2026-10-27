@@ -8,6 +8,7 @@
 use crate::cli_args::VERSION;
 
 pub fn print_help() {
+    let more = crate::cli_more::help();
     print!(
         r#"kepr {VERSION} — credential manager
 
@@ -15,21 +16,66 @@ USAGE:
   kepr [--json] [--color] COMMAND [args]
 
 COMMANDS:
-  set KEY [--stdin|--value V|--generate] [--gen-kind hex|base62|pass|uuid] [--ttl SECS] [--requires-consent] [--requires-fido2]
+  set KEY [--stdin|--value V|--generate] [--gen-kind hex|base62|pass|uuid|words] [--ttl SECS] [--requires-consent] [--requires-fido2]
   get KEY [--quiet] [--export]
   list                                 (alias: ls)
   delete KEY [--force]                 (alias: rm)
   lock | unlock | status               password-protect or inspect the store
-  exec [--env CSV|--memfd CSV|--manifest PATH] -- CMD ARGS  run CMD with creds in env/memfd
+  exec [--env CSV|--memfd CSV|--manifest PATH] [--mask] -- CMD ARGS  run CMD with creds in env/memfd
+                                       (--mask prints stored values in CMD's output as ****)
   doctor                               diagnose common setup issues
   env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval
-  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid]   atomic rotation
+  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid|words]   atomic rotation
   audit-verify                         verify the hash-chained audit log
   sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:|gcp-sm:)
   sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally
   fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions
   fido2-list                             list registered FIDO2 keys
-
+  agent add KEY [--for PROVIDER] [--requires-consent]  store a write-only key (paste once)
+  agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox]
+            [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
+            [--max-requests-day N] [--max-tokens-day N]  per key per day, across sessions
+                                       run claude|codex|grok-cli|aider|omp|grok sandboxed, with
+                                       placeholders; a local gate injects the real key on the wire
+  agent add-db KEY --url postgres|mysql|redis[s]://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
+                                       sealed database login; agents get DATABASE_URL / MYSQL_* / REDIS_URL to a local gate port
+  agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new
+  agent install omp|grok               point the harness's config file at the gate and install
+                                       kepr's plugin for it (once)
+  hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
+  agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
+  agent ls | agent revoke KEY          list / delete sealed keys
+  mcp                                  MCP server (stdio): list keys, call provider APIs, no values
+  panic                                stop all agent gates; lock the store if passphrase-protected
+  recovery-kit create [--threshold K] [--shares N] [--out-dir DIR]
+                                       split the master key into K-of-N shares (needs the passphrase)
+  recovery-kit restore                 rebuild a lost master key from K shares, under a new passphrase
+  leaked KEY [--yes] [--rotate]        key exposed: stop agent sessions, delete it + history, log an
+                                       incident, show where to revoke it at the provider; --rotate:
+                                       replace an AWS IAM key through the IAM API instead
+  totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
+  inject -i TEMPLATE [-o OUT]          fill kepr:// references (OUT 0600): NAME, NAME/field[i][sub],
+                                       NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape)
+  scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
+  copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
+  record add KEY --type T [--field k=v|k=-|k[]=v]... [--custom LABEL=v]...  typed record
+                                       (login, card, database, server, api, note, custom)
+  record show KEY [--reveal] | record get KEY FIELD | record types
+  share key | share send KEY --to PUBKEY [--ttl SECS] [-o FILE] | share receive [FILE] [--as KEY]
+                                       give one credential to another kepr user (encrypted, single-use)
+  history KEY                          previous values kept (last 5), no values shown
+  restore KEY --version N              make version N current again (undoable)
+  usage [--days N]                     uses / refusals / last use per key; flags never-used keys
+  health [--max-age DAYS] [--breach]   weak / reused / old keys; --breach checks breach lists (k-anonymity)
+  discover [--seal] [--overwrite] [--yes]  find plain-text creds in aws/git/netrc/npm/pypi/docker/gh/kube
+                                       configs and import them (source files are left alone)
+  import FILE [--format auto|csv|json|env] [--prefix P] [--seal] [--overwrite] [--yes]
+                                       from 1Password/Bitwarden/KeePassXC/LastPass/browser CSV,
+                                       Bitwarden/Keeper/Doppler/Infisical JSON or .env
+  ssh generate KEY [--comment C] | ssh import KEY FILE | ssh list
+                                       SSH keys that stay in the daemon (sign-only)
+  ssh-agent [--foreground] [--socket PATH]  ssh-agent for those keys: eval "$(kepr ssh-agent)"
+{MORE}
 GLOBAL FLAGS:
   --json       machine-readable output; no stderr on clean errors
   --color      enable ANSI colours (default is plain text)
@@ -58,6 +104,8 @@ EXAMPLES:
   kepr exec --memfd OPENAI_API_KEY -- python train.py # RAM-sealed memfd delivery
   kepr exec --env OPENAI_API_KEY -- python train.py  # provision creds in env
   kepr doctor                          # ✓/✗ list of setup checks
+  kepr agent add ANTHROPIC_API_KEY     # paste once; can never be read back
+  kepr agent run claude                # Claude Code sees only a placeholder
   kepr rotate STRIPE_KEY --hook ./bin/refresh-stripe.sh
                                        # generate, validate via hook, commit on hook exit 0
   kepr sync-push DB_PASS --url vault:secret/team/db_pass
@@ -75,9 +123,12 @@ MANIFEST:
     required = ["DB_PASS", "DB_USER", "OPENAI_API_KEY"]
   Then `kepr exec -- python train.py` and `kepr env` need no flags.
   --env CSV overrides the manifest; --manifest path pins a different file.
+  [env.map] VAR = "kepr://KEY/field" adds references; [env.STAGE] tables add per-stage sets,
+  picked with --stage STAGE or $KEPR_STAGE.
 
   View audit log: journalctl -t kepr-daemon
     journalctl -t kepr-daemon KEPR_OP=get
-"#
+"#,
+        MORE = more
     );
 }

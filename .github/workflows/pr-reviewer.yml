@@ -2,7 +2,7 @@ name: PR Reviewer Agent
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # Cancel superseded runs on repeated `synchronize` pushes during active PR
 # iteration — each run consumes OpenRouter's shared 50-requests/day free-tier
@@ -14,15 +14,20 @@ concurrency:
 
 jobs:
   agent-review:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 10
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Not for drafts (reviewed when marked ready) and not for Dependabot, which
+    # cannot read the OpenRouter secret, so its run could only fail.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.draft != true
+      && github.actor != 'dependabot[bot]'
     permissions:
       contents: read
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -60,7 +65,9 @@ jobs:
         if: steps.provider.outputs.enabled == 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "20"
+          # pi-coding-agent@0.86.1 declares engines.node >=22.19.0 (it imports node:module's enableCompileCache);
+          # Node 20 dies with a SyntaxError on import (seen on the hp runner, 2026-10-17).
+          node-version: "22"
 
       - name: Install Pi agent
         if: steps.provider.outputs.enabled == 'true'
@@ -103,10 +110,18 @@ jobs:
           REVIEW_FILE=$(mktemp)
           FILTERED_DIFF=$(mktemp)
           PROMPT_FILE=$(mktemp)
-          trap 'rm -f "$DIFF_FILE" "$REVIEW_FILE" "$PROMPT_FILE" "$FILTERED_DIFF"' EXIT
+          DIFF_ERR=$(mktemp)
+          trap 'rm -f "$DIFF_FILE" "$REVIEW_FILE" "$PROMPT_FILE" "$FILTERED_DIFF" "$DIFF_ERR"' EXIT
 
-          if ! gh pr diff "$PR" > "$DIFF_FILE" 2>/dev/null; then
+          if ! gh pr diff "$PR" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+            # GitHub refuses diffs over 20,000 lines or 300 files (HTTP 406);
+            # such a PR is beyond a single-prompt review, so skip it.
+            if grep -q "too_large\|exceeded the maximum" "$DIFF_ERR"; then
+              echo "::notice::PR diff is too large for the GitHub diff API; skipping the agent review."
+              exit 0
+            fi
             echo "ERROR: gh pr diff failed" >&2
+            cat "$DIFF_ERR" >&2
             exit 1
           fi
           if [[ ! -s "$DIFF_FILE" ]]; then

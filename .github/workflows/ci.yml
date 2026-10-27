@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -15,15 +16,86 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides which jobs a pull request needs. Pushes to main and manual runs
+  # always run everything. A draft PR runs nothing until it is ready for review.
+  changes:
+    name: Changed paths
+    # CI_RUNS_ON (repo variable, JSON) selects the runner for every job here, e.g. ["self-hosted","hp"];
+    # unset means GitHub-hosted. The same variable is used by security.yml and pr-reviewer.yml.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    if: github.event.pull_request.draft != true
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ github.event_name != 'pull_request' || steps.rust.outputs.rust == 'true' }}
+      python: ${{ github.event_name != 'pull_request' || steps.some.outputs.python == 'true' }}
+      node: ${{ github.event_name != 'pull_request' || steps.some.outputs.node == 'true' }}
+      go: ${{ github.event_name != 'pull_request' || steps.some.outputs.go == 'true' }}
+      templates: ${{ github.event_name != 'pull_request' || steps.some.outputs.templates == 'true' }}
+      csi: ${{ github.event_name != 'pull_request' || steps.some.outputs.csi == 'true' }}
+      terraform: ${{ github.event_name != 'pull_request' || steps.some.outputs.terraform == 'true' }}
+      docs: ${{ github.event_name != 'pull_request' || steps.some.outputs.docs == 'true' }}
+    steps:
+      # Everything except the directories that have their own jobs below.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        if: github.event_name == 'pull_request'
+        id: rust
+        with:
+          predicate-quantifier: every
+          filters: |
+            rust:
+              - '**'
+              - '!docs/**'
+              - '!sdk/**'
+              - '!integrations/**'
+              - '!plugins/**'
+              - '!**/*.md'
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        if: github.event_name == 'pull_request'
+        id: some
+        with:
+          filters: |
+            python:
+              - 'sdk/python/**'
+              - 'integrations/ansible/**'
+              - '.github/workflows/ci.yml'
+            node:
+              - 'sdk/node/**'
+              - 'integrations/vscode/**'
+              - '.github/workflows/ci.yml'
+            go:
+              - 'sdk/go/**'
+              - '.github/workflows/ci.yml'
+            templates:
+              - 'integrations/ci/**'
+              - 'integrations/podman/**'
+              - 'integrations/gitlab/**'
+              - 'integrations/github-action/**'
+              - '.github/workflows/**'
+            csi:
+              - 'integrations/csi-provider/**'
+              - '.github/workflows/ci.yml'
+            terraform:
+              - 'integrations/terraform-provider-kepr/**'
+              - '.github/workflows/ci.yml'
+            docs:
+              - 'docs/**'
+              - '.github/workflows/ci.yml'
+
   rust:
     name: Rust (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
-        toolchain: ["1.87.0", stable, beta]
+        # beta is an early-warning job: it runs on main and manual runs, not on every PR push.
+        toolchain: ${{ fromJSON(github.event_name == 'pull_request' && '["1.87.0","stable"]' || '["1.87.0","stable","beta"]') }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
         # Pinned to a specific commit (stable branch) to prevent supply-chain
         # drift. Dependabot keeps this current.
@@ -32,7 +104,7 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -46,14 +118,143 @@ jobs:
       - name: cargo build --release
         run: cargo build --release --bins
 
+  fips:
+    # T7.16: the `fips` feature with AWS-LC's FIPS 140-3 validated module
+    # (aws-lc-rs/fips, rustls/fips). Its build needs Go and CMake, both on
+    # ubuntu-latest. The `--all-features` lint above links AWS-LC's ordinary
+    # build only, which needs just a C compiler.
+    name: Rust (FIPS module)
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+
+      - name: Go and CMake
+        run: go version && cmake --version
+
+      - name: daemon tests, validated module
+        run: cargo test --features fips,aws-lc-rs/fips --bin kepr-daemon -- --include-ignored
+
+      - name: gate tests, validated module
+        run: cargo test -p kepr-gate --features fips,rustls/fips -- --include-ignored
+
+      - name: release build
+        run: |
+          cargo build --release --features fips,aws-lc-rs/fips --bin kepr-daemon
+          cargo build --release -p kepr-gate --features fips,rustls/fips
+
+  python-sdk:
+    name: Python SDK
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: unittest
+        run: python3 -m unittest discover -s sdk/python/tests -v
+      - name: Ansible lookup plugin
+        run: python3 -m unittest discover -s integrations/ansible/tests -v
+
+  node-sdk:
+    name: Node SDK
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.node == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: node --test
+        working-directory: sdk/node
+        run: node --test test/*.test.js
+      - name: VS Code extension
+        working-directory: integrations/vscode
+        run: node --test test/*.test.js
+
+  go-sdk:
+    name: Go SDK
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: go vet + test
+        working-directory: sdk/go
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
+  ci-templates:
+    name: GitHub Action + GitLab template
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.templates == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint (workflows, and the action's inputs via its example)
+        env:
+          SHELLCHECK_OPTS: --severity=warning
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint"
+      - name: shellcheck
+        run: shellcheck integrations/ci/*.sh
+      - name: kepr-ci.sh tests (masking, export, OIDC exchange, GitLab copy)
+        run: bash integrations/ci/test_kepr_ci.sh
+      - name: Podman secret driver (shellcheck + fake-kepr tests)
+        run: |
+          shellcheck integrations/podman/kepr-podman-driver integrations/podman/*.sh
+          bash integrations/podman/test_kepr_podman_driver.sh
+      - name: GitLab template parses
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
+          python3 -c "import yaml; yaml.safe_load(open('integrations/gitlab/kepr.gitlab-ci.yml'))"
+
+  # batch: platform
+  csi-provider:
+    name: Secrets Store CSI provider
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.csi == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: go vet + test
+        working-directory: integrations/csi-provider
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
+  terraform-provider:
+    name: Terraform provider
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: go vet + test
+        working-directory: integrations/terraform-provider-kepr
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
   docs:
     name: Docs (Fumadocs)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
     defaults:
       run:
         working-directory: docs
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "20"

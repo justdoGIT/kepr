@@ -44,18 +44,16 @@
 // v1 swap-in is rejected as a downgrade attack.
 
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::Aes256Gcm;
 use zeroize::Zeroizing;
 
 use kepr_core::generate::ZeroString;
 
 use crate::crypto::Backend;
+use crate::daemon_eco::cipher;
 use crate::store;
 use crate::version_state::VersionState;
 
@@ -145,22 +143,23 @@ impl InProcBackend {
         out
     }
 
-    fn cipher(&self) -> Result<Aes256Gcm, String> {
+    /// A wiped-on-drop copy of the master key; AEAD runs through the
+    /// `daemon_eco::cipher` seam (RustCrypto, or aws-lc-rs with `fips`).
+    fn key(&self) -> Result<Zeroizing<[u8; 32]>, String> {
         let key = self
             .master_key
             .read()
             .map_err(|_| "master-key lock poisoned".to_string())?;
-        let key = key
-            .as_ref()
-            .ok_or_else(|| "credential store is locked".to_string())?;
-        Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "invalid master key".to_string())
+        key.as_ref()
+            .map(|k| Zeroizing::new(**k))
+            .ok_or_else(|| "credential store is locked".to_string())
     }
 }
 
 impl Backend for InProcBackend {
     fn encrypt(&self, uid: u32, name: &str, value: &[u8]) -> Result<(), String> {
         let cred_name = store::to_cred_name(uid, name);
-        let cipher = self.cipher()?;
+        let key = self.key()?;
         let aad = Self::aad(uid, name);
         let cred_path = self.cred_path(uid, name);
 
@@ -180,18 +179,11 @@ impl Backend for InProcBackend {
                 // The counter is inside the AEAD plaintext so the GCM
                 // tag binds it: any tamper with the counter on disk
                 // fails the auth check.
-                let mut plaintext = Vec::with_capacity(COUNTER_LEN + value.len());
+                let mut plaintext = Zeroizing::new(Vec::with_capacity(COUNTER_LEN + value.len()));
                 plaintext.extend_from_slice(&counter.to_le_bytes());
                 plaintext.extend_from_slice(value);
 
-                let ciphertext = cipher
-                    .encrypt(
-                        &nonce_bytes.into(),
-                        Payload {
-                            msg: &plaintext,
-                            aad: &aad,
-                        },
-                    )
+                let ciphertext = cipher::seal(&key[..], &nonce_bytes, &aad, &plaintext)
                     .map_err(|_| "encryption failed".to_string())?;
 
                 let mut out = Vec::with_capacity(MAGIC_LEN + NONCE_LEN + ciphertext.len());
@@ -233,15 +225,9 @@ impl Backend for InProcBackend {
         let ciphertext = &blob[header_len..];
         let aad = Self::aad(uid, name);
 
-        let cipher = self.cipher()?;
-        let plaintext = cipher
-            .decrypt(
-                &nonce_bytes.into(),
-                Payload {
-                    msg: ciphertext,
-                    aad: &aad,
-                },
-            )
+        let key = self.key()?;
+        // Zeroizing: the decrypted secret must not linger in freed heap.
+        let plaintext = cipher::open(&key[..], &nonce_bytes, &aad, ciphertext)
             .map_err(|_| "decryption failed: authentication".to_string())?;
 
         // Split off the counter (v2) or treat as 0 (v1) BEFORE
@@ -305,17 +291,8 @@ impl Backend for InProcBackend {
     }
 }
 
-/// Atomic write of `bytes` to `path`: temp file in the same directory,
-/// created at mode `0o600` from the moment `open(2)` returns, then
-/// renamed over the target. `fs::rename` is atomic on the same fs and
-/// preserves the source mode, so the final file inherits `0o600` too.
-///
-/// Codex flagged the previous shape (write-then-chmod) as racy:
-/// `fs::write` creates the file with `0o666 & ~umask`, leaving a brief
-/// window where group/other could open the temp file before the
-/// subsequent `chmod`. `OpenOptions::mode(0o600)` closes the window —
-/// the inode never exists at any mode wider than what the bits below
-/// declare.
+/// Durable write of a credential file (see atomic_file.rs), creating the
+/// store directory on first use.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().ok_or("invalid credential path")?;
     if !parent.exists() {
@@ -323,62 +300,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         fs::set_permissions(parent, fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("cannot chmod credstore: {e}"))?;
     }
-
-    // Disambiguate the temp filename by (pid, thread_id) so two daemon
-    // workers writing the same credential never collide on the temp
-    // path. Codex flagged the (pid)-only variant as racy; the bounded
-    // worker pool means concurrent same-name writes are uncommon but
-    // not impossible. ThreadId is unique within a process and fmts to
-    // a stable string, which combined with the pid is unique across
-    // the host.
-    let tmp = path.with_extension(format!(
-        "tmp.{}.{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-
-    // Open with create_new(true) — `mode(0o600)` only applies to a
-    // NEW inode (Linux open(2) ignores the mode argument when O_EXCL
-    // is absent and the file already exists). With plain create(true),
-    // a stale `*.tmp.<pid>.<tid>` left by a crashed previous run
-    // would be reopened at its original (possibly broader) mode and
-    // then renamed into place, exposing credential contents. Codex
-    // flagged this on the re-review of #55.
-    //
-    // On EEXIST we make a single retry: the (pid, thread-id) suffix
-    // makes a collision with a LIVE thread impossible, so any
-    // pre-existing file at this path is stale. Remove it and try
-    // once more under the same security shape; a second failure is
-    // a real error.
-    let mut f = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let _ = fs::remove_file(&tmp);
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&tmp)
-                .map_err(|e| format!("open temp failed (after stale-cleanup): {e}"))?
-        }
-        Err(e) => return Err(format!("open temp failed: {e}")),
-    };
-    if let Err(e) = f.write_all(bytes) {
-        drop(f);
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("write failed: {e}"));
-    }
-    drop(f); // explicit flush before rename
-
-    fs::rename(&tmp, path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("cannot install credential: {e}")
-    })
+    crate::atomic_file::write(path, bytes, 0o600)
+        .map_err(|e| format!("cannot install credential: {e}"))
 }
 
 #[cfg(test)]
@@ -412,6 +335,35 @@ mod tests {
         let versions = Arc::new(VersionState::load(state_path).expect("load fresh state"));
         let backend = InProcBackend::with_store_dir([0xAB; 32], dir.path().to_owned(), versions);
         (backend, dir)
+    }
+
+    /// T7.16: the file format is the same whichever suite is active. A v2
+    /// file written by the default build's RustCrypto opens through the
+    /// backend (aws-lc-rs under `--features fips`), and the backend's own
+    /// files open with RustCrypto.
+    #[test]
+    fn files_cross_between_default_and_fips_builds() {
+        use crate::daemon_eco::cipher::{CipherSuite, RustCrypto};
+        let (b, dir) = fresh_backend();
+        let key = [0xAB; 32];
+        let aad = InProcBackend::aad(TEST_UID, "CROSS");
+        let nonce = [3u8; NONCE_LEN];
+        let mut plain = 1u64.to_le_bytes().to_vec();
+        plain.extend_from_slice(b"from-default-build");
+        let ct = RustCrypto::seal(&key, &nonce, &aad, &plain).unwrap();
+        let blob = [MAGIC_V2, &nonce, &ct].concat();
+        let path = dir.path().join(store::to_cred_name(TEST_UID, "CROSS"));
+        fs::write(&path, &blob).unwrap();
+        assert_eq!(
+            b.decrypt(TEST_UID, "CROSS").unwrap().as_str(),
+            "from-default-build"
+        );
+
+        b.encrypt(TEST_UID, "CROSS", b"from-active-suite").unwrap();
+        let blob = fs::read(&path).unwrap();
+        let nonce: [u8; NONCE_LEN] = blob[MAGIC_LEN..MAGIC_LEN + NONCE_LEN].try_into().unwrap();
+        let plain = RustCrypto::open(&key, &nonce, &aad, &blob[MAGIC_LEN + NONCE_LEN..]).unwrap();
+        assert_eq!(&plain[COUNTER_LEN..], b"from-active-suite");
     }
 
     #[test]
@@ -577,19 +529,11 @@ mod tests {
 
         // Manually craft a v1 file: kepr_v1 magic + nonce + AES-GCM
         // ciphertext over the plaintext bytes (no counter prefix).
-        let cipher = b.cipher().unwrap();
+        let key = b.key().unwrap();
         let mut nonce_bytes = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce_bytes).unwrap();
         let aad = InProcBackend::aad(TEST_UID, "LEGACY");
-        let ciphertext = cipher
-            .encrypt(
-                &nonce_bytes.into(),
-                Payload {
-                    msg: b"legacy-value",
-                    aad: &aad,
-                },
-            )
-            .unwrap();
+        let ciphertext = cipher::seal(&key[..], &nonce_bytes, &aad, b"legacy-value").unwrap();
         let mut blob = Vec::new();
         blob.extend_from_slice(MAGIC_V1);
         blob.extend_from_slice(&nonce_bytes);
@@ -615,19 +559,11 @@ mod tests {
         b.encrypt(TEST_UID, "DOWNGRADE", b"v2-secret").unwrap(); // state=1
 
         // Plant a syntactically-valid v1 file under the same cred-name.
-        let cipher = b.cipher().unwrap();
+        let key = b.key().unwrap();
         let mut nonce_bytes = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce_bytes).unwrap();
         let aad = InProcBackend::aad(TEST_UID, "DOWNGRADE");
-        let ciphertext = cipher
-            .encrypt(
-                &nonce_bytes.into(),
-                Payload {
-                    msg: b"old-secret",
-                    aad: &aad,
-                },
-            )
-            .unwrap();
+        let ciphertext = cipher::seal(&key[..], &nonce_bytes, &aad, b"old-secret").unwrap();
         let mut blob = Vec::new();
         blob.extend_from_slice(MAGIC_V1);
         blob.extend_from_slice(&nonce_bytes);
