@@ -175,7 +175,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | Passkeys | ⛔ out of scope | ⛔ until a browser/desktop client exists; FIDO2 *unlock* is ✅ (`kepr lock --fido2`) |
 | KeeperFill autofill, Verify Mode anti-phishing | ⛔ out of scope | ⛔ for now (browser extension) |
 | BreachWatch: breach-corpus checks, Resolve/Ignore, webhooks | ✅ `kepr health --breach` (HIBP k-anonymity), `kepr health --ignore KEY:KIND`, `--notify URL` (Slack, Teams, Discord, ntfy, JSON); `kepr scan` for keys in files | P6.4, P11.23 · T6.08, T11.23 |
-| Security audit score (strength, reuse, 2FA) | 🟡 `kepr health` flags weak, common, short, reused, old and policy findings per credential. Missing: one overall score and a 2FA check | P6.4, P11.11 · T11.11 |
+| Security audit score (strength, reuse, 2FA) | ✅ `kepr health` flags weak, common, short, reused, old and policy findings per credential, prints an overall security score (0-100), and with `require_totp = true` in a `--policy` file flags `login` records that hold no `totp` secret | P6.4, P11.11 · T11.11 |
 | Privacy Screen (hide password in UI) | ✅ *stronger*: sealed creds are write-only in the daemon (P1.1) | P1.1 |
 | One-Time Share: expiring link, device-locked, QR code | ✅ `kepr share send KEY --once [--relay URL] [--qr]`: expiring and single use (opened once, in place of a device lock), key only in the link's fragment; `kepr share open LINK`; self-hosted `kepr-relay` | P6.2 · T6.04 |
 | Self-destructing records | ✅ `kepr share send KEY --once --self-destruct` deletes the record once the link is opened or expires | P6.2 · T6.05 |
