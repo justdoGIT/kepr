@@ -33,6 +33,7 @@ jobs:
       python: ${{ github.event_name != 'pull_request' || steps.some.outputs.python == 'true' }}
       node: ${{ github.event_name != 'pull_request' || steps.some.outputs.node == 'true' }}
       go: ${{ github.event_name != 'pull_request' || steps.some.outputs.go == 'true' }}
+      ruby: ${{ github.event_name != 'pull_request' || steps.some.outputs.ruby == 'true' }}
       templates: ${{ github.event_name != 'pull_request' || steps.some.outputs.templates == 'true' }}
       csi: ${{ github.event_name != 'pull_request' || steps.some.outputs.csi == 'true' }}
       terraform: ${{ github.event_name != 'pull_request' || steps.some.outputs.terraform == 'true' }}
@@ -67,6 +68,9 @@ jobs:
               - '.github/workflows/ci.yml'
             go:
               - 'sdk/go/**'
+              - '.github/workflows/ci.yml'
+            ruby:
+              - 'sdk/ruby/**'
               - '.github/workflows/ci.yml'
             templates:
               - 'integrations/ci/**'
@@ -175,6 +179,17 @@ jobs:
       - name: VS Code extension
         working-directory: integrations/vscode
         run: node --test test/*.test.js
+
+  ruby-sdk:
+    name: Ruby SDK
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.ruby == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: minitest
+        working-directory: sdk/ruby
+        run: ruby test/test_kepr.rb
 
   go-sdk:
     name: Go SDK
