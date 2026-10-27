@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -28,14 +30,25 @@ public final class Kepr {
     static final int MAX_MSG_BYTES = 65536;
     public static final Set<String> GENERATE_KINDS = Set.of("hex", "base62", "pass", "uuid", "words");
 
+    /** Default for the whole request, like the other SDKs (a consent prompt can take a minute). */
+    public static final long DEFAULT_TIMEOUT_MS = 65_000;
+
     private final Path socket;
+    private final long timeoutMs;
 
     public Kepr() {
         this(socketPath(System.getenv()));
     }
 
     public Kepr(Path socket) {
+        this(socket, DEFAULT_TIMEOUT_MS);
+    }
+
+    /** {@code timeoutMs} bounds the wait for the reply; a silent daemon cannot hang the caller. */
+    public Kepr(Path socket, long timeoutMs) {
+        if (timeoutMs <= 0) throw new KeprException("timeout must be positive");
         this.socket = socket;
+        this.timeoutMs = timeoutMs;
     }
 
     /** Where the daemon listens, as the CLI resolves it. */
@@ -59,10 +72,12 @@ public final class Kepr {
             ByteBuffer out = ByteBuffer.allocate(4 + payload.length).putInt(payload.length).put(payload);
             out.flip();
             while (out.hasRemaining()) ch.write(out);
-            ByteBuffer head = readExact(ch, 4);
+            ch.configureBlocking(false);
+            long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+            ByteBuffer head = readExact(ch, 4, deadline);
             int n = head.getInt();
             if (n < 0 || n > MAX_MSG_BYTES) throw new KeprException("reply too large");
-            String body = new String(readExact(ch, n).array(), StandardCharsets.UTF_8);
+            String body = new String(readExact(ch, n, deadline).array(), StandardCharsets.UTF_8);
             Object parsed = Json.parse(body);
             if (!(parsed instanceof Map)) throw new KeprException("malformed reply");
             Map<String, Object> resp = (Map<String, Object>) parsed;
@@ -77,10 +92,20 @@ public final class Kepr {
         }
     }
 
-    private static ByteBuffer readExact(SocketChannel ch, int n) throws IOException {
+    /** Read exactly {@code n} bytes before {@code deadline} (System.nanoTime), else "timed out". */
+    private static ByteBuffer readExact(SocketChannel ch, int n, long deadline) throws IOException {
         ByteBuffer b = ByteBuffer.allocate(n);
-        while (b.hasRemaining()) {
-            if (ch.read(b) < 0) throw new KeprException("connection closed by the credential service");
+        try (Selector sel = Selector.open()) {
+            ch.register(sel, SelectionKey.OP_READ);
+            while (b.hasRemaining()) {
+                int r = ch.read(b);
+                if (r < 0) throw new KeprException("connection closed by the credential service");
+                if (r > 0) continue;
+                long left = (deadline - System.nanoTime()) / 1_000_000L;
+                if (left <= 0) throw new KeprException("timed out");
+                sel.select(left);
+                sel.selectedKeys().clear();
+            }
         }
         b.flip();
         return b;

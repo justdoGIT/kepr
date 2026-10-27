@@ -20,4 +20,4 @@ FIDO2 rules to every call. Java strings cannot be wiped from memory, so keep
 values in scope briefly and prefer `kepr exec` / `kepr agent run` for child
 processes.
 
-Test: `./test.sh` (compiles with `javac -Xlint:all` and runs the fake-daemon tests).
+Test: `./test.sh` (compiles with `javac -Xlint:all` and runs the fake-daemon tests). Requests time out after 65 s by default; pass `new Kepr(path, timeoutMs)` to change it.

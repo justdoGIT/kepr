@@ -87,6 +87,7 @@ public final class KeprTest {
         credentialsDropTheDiskName();
         errorsAndUnexpectedReplies();
         unreachableDaemonNamesTheSocket();
+        silentDaemonTimesOut();
         sshSignRoundTripsBase64();
         jsonRoundTrip();
         socketPathFollowsEnvironment();
@@ -150,6 +151,29 @@ public final class KeprTest {
 
     static void unreachableDaemonNamesTheSocket() {
         expectError(() -> new Kepr(Path.of("/nonexistent/kepr.sock")).ping(), "/nonexistent/kepr.sock");
+    }
+
+    static void silentDaemonTimesOut() throws Exception {
+        Path dir = tmp();
+        Path sock = dir.resolve("kepr.sock");
+        try (ServerSocketChannel server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
+            server.bind(UnixDomainSocketAddress.of(sock));
+            Thread t = new Thread(() -> {
+                try {
+                    SocketChannel c = server.accept();
+                    Thread.sleep(3000); // accepts, reads nothing, never answers
+                    c.close();
+                } catch (Exception ignored) {
+                }
+            });
+            t.setDaemon(true);
+            t.start();
+            long start = System.nanoTime();
+            expectError(() -> new Kepr(sock, 300).ping(), "timed out");
+            long ms = (System.nanoTime() - start) / 1_000_000L;
+            check(ms >= 250 && ms < 2500, "timed out after " + ms + " ms");
+        }
+        expectError(() -> new Kepr(sock, 0), "positive");
     }
 
     static void sshSignRoundTripsBase64() throws Exception {
