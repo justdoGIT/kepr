@@ -44,17 +44,17 @@ the exact commands that prove it's done.
 | P2.1 egress proxy (CONNECT, per-session name-constrained CA, `gh`/`curl` via GH_TOKEN placeholder) | shipped |
 | P4.1 / P4.2 vault image: plan and tickets in `architecture/vault-image-plan` | planned |
 | P1 (remaining): T1.23 Landlock rules in the agent sandbox | shipped |
-| P2: T2.01 SigV4 in kepr-core, T2.02 gate SigV4 re-sign, T2.03 `kepr aws credential-process`, T2.04 placeholder presets (stripe, npm, gcloud, docker) | shipped except a `git` over HTTPS preset |
+| P2: T2.01 SigV4 in kepr-core, T2.02 gate SigV4 re-sign, T2.03 `kepr aws credential-process`, T2.04 placeholder presets (stripe, npm, gcloud, docker) | shipped, with the `git` over HTTPS preset (T12.06, T12.07) |
 | P3 (remaining): T3.06 pull-on-demand fd delivery (`kepr exec --pull`) | shipped |
 | P4: T4.01–T4.07 vault image (`KEPR_STORE=image`, `kepr vault`), T4.08 TPM2 PIN and NV counter, T4.09 FIDO2 `hmac-secret` factor, T4.10 recovery words and QR, T4.11–T4.13 AWS KMS, GCP KMS, Azure Key Vault and PKCS#11 sealers, T4.14 every store feature on the image | shipped |
 | P5: T5.01–T5.06 tags and folders, stages in `.kepr.toml`, attachments, generator profiles and `kepr strength`, `kepr://` notation, references and `kepr resolve` | shipped |
 | P6: T6.01–T6.14 ML-KEM-768 hybrid shares, shared folders, devices, one-time links and `kepr-relay`, self-destructing records, emergency access, break-glass, health webhooks, encrypted bundles, multi-device sync, `policy.toml`, access reports, OIDC enrolment, escrow | shipped |
-| P7: T7.01–T7.18 Redis and MySQL proxies, TCP tunnels, MySQL and IAM rotators, STS client, scheduled rotation, GitHub App tokens, session recording, JIT grants, check-out / check-in, M-of-N approvals, anomaly rules, SIEM forwarders, alert rules, FIPS mode, SLSA provenance, Postgres JIT roles | shipped except T7.16 HMAC (stays on RustCrypto, not aws-lc-rs) |
-| P8: T8.01–T8.09 `kepr shell`, `kepr ui`, Terraform provider, Ansible lookup, Azure Key Vault and JSON sync targets, GitHub Action and GitLab template, VS Code extension, SDK writes | shipped except the `kepr ui` TAGS column (always empty) |
+| P7: T7.01–T7.18 Redis and MySQL proxies, TCP tunnels, MySQL and IAM rotators, STS client, scheduled rotation, GitHub App tokens, session recording, JIT grants, check-out / check-in, M-of-N approvals, anomaly rules, SIEM forwarders, alert rules, FIPS mode, SLSA provenance, Postgres JIT roles | shipped; with `fips`, HMAC, HKDF, randomness and SigV4 / SCRAM run in aws-lc-rs too (T12.39–T12.43) |
+| P8: T8.01–T8.09 `kepr shell`, `kepr ui`, Terraform provider, Ansible lookup, Azure Key Vault and JSON sync targets, GitHub Action and GitLab template, VS Code extension, SDK writes | shipped, including the `kepr ui` TAGS column (T12.49) |
 | P9 (remaining): T9.04–T9.09 approval notifications, MCP `db_query` / `ssh_run`, per-day caps, governance report, honeytokens (`kepr canary`), leaked-key rotation | shipped |
 | P10: T10.01–T10.12 `kepr mount`, KDBX 4 import, fingerprint unlock, Keychain sealer, `logon` keyring, unit-file credentials, Podman driver, CSI provider, binary-identity bindings, local PKI, SPIFFE SVIDs, native Keychain unseal | shipped |
 | P11: T11.1–T11.24 search, trash, history diff, duplicates, aliases, linked records, custom types, record templates, `delete --all`, `doctor --verify`, aging and policy reports, idle lock, unlock backoff, re-auth, share contacts, profiles, sync maps, `kepr batch`, `kepr serve`, discovery rules, `kepr ssh rotate`, `kepr agent logs`, health ignores, richer `kepr status` | shipped |
-| P12: T12.01–T12.53 plan gaps from the 2026-10-15 audit: response masking, gate syscall filter and Landlock, git and GCP presets, master key in secret memory, vault anti-rollback, recovery key for a sealed master key, the rest of the FIPS seam, clipboard hygiene | open |
+| P12: T12.01–T12.53 plan gaps from the 2026-10-15 audit: response masking, gate syscall filter and Landlock, git and GCP presets, master key in secret memory, vault anti-rollback, recovery key for a sealed master key, the rest of the FIPS seam, clipboard hygiene | shipped |
 
 **Where the code differs from the ticket text** (the code is authoritative):
 

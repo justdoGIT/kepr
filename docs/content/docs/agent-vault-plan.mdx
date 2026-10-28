@@ -273,9 +273,9 @@ nice to have.
 | A4 | **Spend and rate guard**: gate reads token usage from provider responses and enforces per-session budget caps | A runaway or hijacked agent can't burn the API budget | H | ✅ `kepr agent run --max-requests`, `--max-tokens`, `--rate`, `--max-requests-day`, `--max-tokens-day` | P9.5 · T9.06 |
 | A5 | **Honeytokens**: plant decoy keys in `.env`, shell rc files and repos; any use triggers an alert | Detects exfiltration by agents or malware | M | ✅ `kepr canary plant`, `kepr canary listen`; a trip is audited as `canary-tripped` | P9.7 · T9.08 |
 | A6 | **Leak response**: `kepr leaked NAME` rotates through the provider's API, kills sessions, invalidates placeholders, records an incident | Minutes, not hours, from leak to dead key | M | 🟡 `kepr leaked KEY` stops the user's gates (their placeholders die with them), deletes the key and its history and records an incident; `--rotate` replaces an AWS IAM user key through the IAM API, and STS and GitHub App tokens expire on their own. Missing: rotation through other providers' APIs, and of a sealed key, which `--rotate` can't read; for those kepr shows the provider's revocation page | P9.8 · T9.09 |
-| A7 | **Scoped short-lived child credentials** minted per session where the provider allows (GitHub App installation tokens, AWS STS, GCP impersonation) | Even a used key expires on its own | M | 🟡 GitHub App installation tokens (`kepr github-app add`), AWS STS (`kepr aws credential-process`). OpenAI keys aren't minted per session: that would need an organisation admin key inside the gate, which a compromised gate could use to create keys; bind a project-scoped key and cap it with `--max-tokens` and `--rate` instead. Missing: GCP tokens and impersonation (open: T12.08–T12.10) | P7.2 · T7.08, T2.03 |
+| A7 | **Scoped short-lived child credentials** minted per session where the provider allows (GitHub App installation tokens, AWS STS, GCP impersonation) | Even a used key expires on its own | M | 🟡 GitHub App installation tokens (`kepr github-app add`), AWS STS (`kepr aws credential-process`). OpenAI keys aren't minted per session: that would need an organisation admin key inside the gate, which a compromised gate could use to create keys; bind a project-scoped key and cap it with `--max-tokens` and `--rate` instead. GCP service-account and authorized_user tokens, with impersonation, are minted per session inside the gate (`kepr gcp add`, T12.08–T12.10); the gate refuses Google calls that would create a key, HMAC key, API key or signed token the agent could keep | P7.2 · T7.08, T2.03 |
 | A8 | **Binary identity**: bind a credential to an executable's digest (SHA-256 or fs-verity), not just a uid | "Only `/usr/bin/psql` with this hash may receive `DB_PASS`" | M | 🟡 `kepr set KEY --exe PATH`, `kepr exe KEY` (SHA-256 or fs-verity digest). IMA is not used: a `security.ima` hash only counts under an IMA appraisal policy, and fs-verity already gives a kernel-checked digest without one. Missing: bindings under the system daemon, which refuses new ones, since reading a caller's executable needs CAP_SYS_PTRACE, which the shipped unit lacks | P10.8 · T10.09 |
-| A9 | **Lock on suspend, lid close, screen lock, security-key removal; `kepr panic`** | Wipes keys from RAM before suspend-to-RAM, which defeats cold-boot capture of a sleeping laptop | H | 🟡 `kepr panic`; on suspend or screen lock the user-mode daemon stops every gate and locks a passphrase-protected store; idle lock (`KEPR_IDLE_LOCK`). Missing: lock on security-key removal (open: T12.25). By design, a store without a passphrase keeps its key in RAM (its key file is read back without user input), and so does a locked store while `KEPR_FINGERPRINT_UNLOCK` is set | P3.5, P11.12 · T3.05, T11.12 |
+| A9 | **Lock on suspend, lid close, screen lock, security-key removal; `kepr panic`** | Wipes keys from RAM before suspend-to-RAM, which defeats cold-boot capture of a sleeping laptop | H | 🟡 `kepr panic`; on suspend or screen lock the user-mode daemon stops every gate and locks a passphrase-protected store; idle lock (`KEPR_IDLE_LOCK`). A FIDO2 key removal also locks (T12.25), and so does a screen lock that only sets logind's `LockedHint` (T12.24). By design, a store without a passphrase keeps its key in RAM (its key file is read back without user input), and so does a locked store while `KEPR_FINGERPRINT_UNLOCK` is set | P3.5, P11.12 · T3.05, T11.12 |
 | A10 | **Clipboard hygiene**: `kepr copy NAME --clear 20s` with password-manager hints so clipboard managers skip it | The one time a human needs a value, it doesn't linger | M | 🟡 `kepr copy KEY [--clear SECS]` (default 20 s; cleared only if the clipboard still holds the value). Missing: the password-manager hint that tells clipboard managers to skip it | P10.9 |
 | A11 | **systemd credentials export**: emit `LoadCredentialEncrypted=` blobs for services | Services get secrets via `$CREDENTIALS_DIRECTORY` (a non-swappable ramfs), no env | M | ✅ `kepr systemd-cred KEY [--tpm2]` prints a `SetCredentialEncrypted=` line | P10.6 · T10.06 |
 | A12 | **Kernel `logon` keyring keys** for disk/network unlock (dm-crypt, fscrypt, CIFS/NFS) | Userspace can't read `logon` keys back, even as the same uid | L | ✅ `kepr keyring add KEY --desc SUBTYPE:REST` | P10.5 · T10.05 |
@@ -512,7 +512,7 @@ other harnesses read the environment `kepr agent run` sets.
 | Claude Code | none: `kepr agent run claude` sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` = placeholder | env only |
 | Codex CLI | none: `kepr agent run codex` sets `OPENAI_BASE_URL` and `OPENAI_API_KEY` = placeholder | env only |
 | Aider | none: `kepr agent run aider` sets `OPENAI_API_BASE` and `OPENAI_API_KEY` = placeholder | env only |
-| Gemini CLI, opencode | per-tool base-URL override + placeholder | open: T12.13 |
+| Gemini CLI, opencode | per-tool base-URL override + placeholder | env and config writers (T12.13) |
 
 Placeholders are per session, so a fixed value in `~/.claude/settings.json`
 `env`, an `apiKeyHelper` or `~/.codex/config.toml` would apply outside
@@ -534,8 +534,8 @@ gate after harness upgrades rewrite their config files.
   pre-fill `--for` bindings so the user normally types nothing but the paste.
 - `kepr agent adopt` scans `.env`, `.env.local`, `.envrc`, `~/.bashrc`,
   `~/.zshrc`, `~/.config/fish/config.fish` and the other shell startup files
-  for known key formats (harness config files and shell history: open,
-  T12.18, T12.19). It lists what it found (file:line, NAME, provider; never
+  for known key formats (harness config files and shell history too, T12.18,
+  T12.19). It lists what it found (file:line, NAME, provider; never
   values) and changes nothing without `--yes`, which imports each key
   sealed; `--remove` also deletes the adopted lines. No backup is kept: the
   keys are sealed now, and a backup of the old lines would be a second copy
@@ -583,9 +583,8 @@ hardware (section 5.3). Both together are worth having.
 ### 5.2 Format
 
 - **Fixed-size image.** `kepr vault init --size 64M` creates `vault.img` in
-  the store directory (1 to 4096 MiB), reserved with `fallocate`. The 64 MiB
-  default and the `64M` spelling are open (T12.26); today the default is
-  16 MiB and `--size` takes whole MiB. The image is filled with CSPRNG output, so
+  the store directory (1 to 4096 MiB), reserved with `fallocate`. The default
+  is 64 MiB and `--size` takes `64M`-style sizes (T12.26). The image is filled with CSPRNG output, so
   empty and used slots look the same. Size never changes, so it leaks
   nothing about the vault's contents. A raw partition or LVM volume is not
   supported: the system unit runs with `PrivateDevices=yes`, and a device
@@ -607,9 +606,10 @@ hardware (section 5.3). Both together are worth having.
   and record pages; free slots are noise), with the leaf count hashed into
   the root. The root and epoch are authenticated in the header. The daemon
   keeps the highest epoch it has seen in its rollback state
-  (`cred-versions.json`) and refuses an older image; binding the epoch to a
-  counter off the disk, such as a TPM NV index, is open (T12.27, T12.30;
-  anti-rollback, section 5.3).
+  (`cred-versions.json`) and refuses an older image; the header also
+  carries an anti-rollback anchor (T12.27) bound to an optional TPM2 NV
+  counter (T12.30; anti-rollback, section 5.3), and records and the index
+  are padded to power-of-two page counts (T12.28).
 - **I/O.** Slots are sealed in memory before they are written, so only
   ciphertext reaches the page cache or the disk. Writes are positioned
   `pwrite`s with an `fdatasync` after each phase of a two-phase commit
@@ -636,7 +636,7 @@ hardware (section 5.3). Both together are worth having.
 sealer, chosen with KEPR_MASTER_KEY_SEAL and KEPR_TPM2_* (section 9, P4):
   TPM2: optional PCR policy (KEPR_TPM2_PCRS), PIN (TPM dictionary-attack
         lockout), NV anti-rollback counter; salted, encrypted TPM sessions
-        against LPC/SPI bus sniffing are open (T12.29)
+        against LPC/SPI bus sniffing (T12.29)
   or the host key, a key service (AWS, GCP or Azure KMS, PKCS#11),
   the macOS keychain, an owner-only file (user mode),
   or, after kepr lock, an Argon2id passphrase [+ FIDO2 hmac-secret]
@@ -655,24 +655,26 @@ sealer, chosen with KEPR_MASTER_KEY_SEAL and KEPR_TPM2_* (section 9, P4):
 
 - **Anti-rollback.** A TPM NV monotonic counter stores the epoch. On open,
   an image with an older epoch than the counter is rejected. Restoring an
-  old disk image does not resurrect a revoked key. Open: T12.27, T12.30.
-  Today the TPM2 counter guards the sealed master key, and the image's
-  epoch high-water mark sits in `cred-versions.json` on the same disk, so an
-  old copy of the image alone is refused, but not one restored together
-  with that file.
+  old disk image does not resurrect a revoked key. The TPM2 counter guards
+  the sealed master key, and with `KEPR_TPM2_IMAGE_NV_INDEX` a second one
+  backs the anchor in the image header (T12.27, T12.30), so an old copy of
+  the image is refused even when restored together with
+  `cred-versions.json`. Without that variable the image's epoch high-water
+  mark sits in `cred-versions.json` on the same disk, and a copy restored
+  with that file is not caught.
 - **Evil maid.** A changed bootloader, kernel or cmdline changes PCRs, so the
   KEK will not unseal. The daemon fails closed and asks for the recovery
-  passphrase (Argon2id path, already shipped; for a sealed master key,
-  open: T12.32).
+  passphrase (Argon2id path); for a sealed master key the daemon starts
+  locked and `kepr recovery-key unlock` opens it (T12.32).
 - **Recovery.** At enrolment the master key is also wrapped under a
   high-entropy recovery key that is shown once, printable as words and a QR
   code, and optionally Shamir-split (P6.3). Today a passphrase-protected
   store can export its master key as words or Shamir shares
   (`kepr recovery-kit create [--words]`); a recovery key for a sealed master
-  key is open (T12.31, T12.32).
+  key is `kepr recovery-key enrol` (T12.31).
 - **Backends without a TPM** fall back to the shipped Argon2id envelope,
   clearly reported by `kepr status` and never silently (naming the sealer
-  in `kepr status`: open, T12.33).
+  in `kepr status`, T12.33).
 
 ---
 
@@ -760,7 +762,7 @@ receive descriptors.
 | Sniffs the TPM bus | salted, parameter-encrypted TPM sessions | firmware TPM (fTPM) avoids the bus entirely |
 | Cold-boot RAM dump | TME/SME memory encryption, memfd_secret, XOR splitting, relocation | without TME/SME, a skilled attacker with liquid-cooled DIMMs can still try; splitting raises the cost |
 | DMA via Thunderbolt / PCIe | IOMMU + kernel DMA protection | firmware with IOMMU disabled |
-| Rolls the disk image back to an older snapshot | TPM NV monotonic counter (for the vault image, open: T12.27, T12.30) | none |
+| Rolls the disk image back to an older snapshot | TPM NV monotonic counter (for the vault image, `KEPR_TPM2_IMAGE_NV_INDEX`, T12.27, T12.30) | none |
 | Edits ciphertext on disk | per-slot AEAD + Merkle root | denial of service (corrupt image); keep encrypted backups |
 | Prompt-injected agent | sealed creds, gate, namespaces, destination binding | can *use* bound keys toward bound hosts until revoked (section 4.9) |
 | Same-uid malware outside the sandbox | gate uid separation, non-dumpable processes, `ptrace_scope` | can drive the gate like the agent would: same residual as the row above |
@@ -831,10 +833,10 @@ retired: it refuses to run and points at `kepr agent add` and
   socket; its hiding mount covers it.
 - P1.4 `kepr agent add | install | run | ls | revoke`; adapters for omp, Grok
   Build, grok-cli, Claude Code, Codex, Gemini CLI, opencode, Aider (Gemini
-  CLI and opencode: open, T12.13). Ship a `SKILL.md` / `AGENTS.md` snippet
+  CLI and opencode, T12.13). Ship a `SKILL.md` / `AGENTS.md` snippet
   that tells agents secrets are already wired in and never to ask for or
   print them (Keeper's Agent Kit equivalent, minus the plaintext; for Claude
-  Code and Codex: open, T12.15).
+  Code and Codex, T12.15).
 - P1.5 `kepr adopt` scanner + rewriter; `--from-clipboard` with clipboard
   clear.
 - P1.6 `kepr mcp` (list + gated actions, never values).
@@ -854,9 +856,9 @@ and P1.6 is `kepr mcp`. P1.8 is T1.23: by default Landlock fences the
 hidden paths outside `$HOME`, while those under it (the user-mode store
 and state) rely on their hiding mounts alone; `KEPR_LANDLOCK=strict`
 fences those too. The P1.4 agent guidance ships as Grok Build's
-`SKILL.md` and the omp extension's session-start note. Not built: adapters
-for Gemini CLI and opencode (T12.13), and `--from-clipboard` capture
-(T12.12). The gate speaks HTTP/1.1 only, by design (decision 1).
+`SKILL.md` and the omp extension's session-start note. Adapters for
+Gemini CLI and opencode (T12.13) and `--from-clipboard` capture (T12.12)
+followed. The gate speaks HTTP/1.1 only, by design (decision 1).
 
 ### P2: egress mode and non-HTTP consumers (shipped)
 
@@ -897,10 +899,9 @@ built: a preset for `git` over HTTPS, and ECDSA keys in `kepr ssh-agent`
   key file is on the same disk and is read back without user input, so
   wiping the key would not protect a sleeping laptop (`kepr lock` sets a
   passphrase). `kepr panic` does the same on demand. The system daemon
-  doesn't watch for sleep. Open: screen locks that only set logind's
-  `LockedHint` (T12.24), FIDO2 key removal (T12.25), and every store lock
-  emptying all gate caches, with root's `kepr panic` stopping every user's
-  gates (T12.23).
+  doesn't watch for sleep. Screen locks that only set logind's `LockedHint` (T12.24) and FIDO2 key
+  removal (T12.25) lock too, and every store lock empties all gate caches,
+  with root's `kepr panic` stopping every user's gates (T12.23).
 
 **Status (2026-10-14): partly shipped.** P3.1 (T3.01–T3.03) and P3.4
 (T3.04) are built. P3.3 is `kepr exec --pull KEY` (T3.06): the command
@@ -910,15 +911,12 @@ the Go client), and nothing it starts inherits it. It sits beside
 `--memfd`, which still hands the command inherited descriptors. P3.5
 (T3.05): on suspend or screen lock the user-mode daemon stops every gate
 and locks a passphrase-protected store, and `kepr panic` does the same on
-demand. Not built: P3.2 (T12.21, T12.02). Only the gate's
-session key uses `secmem`; the daemon's master key and the gate's value
-cache sit in ordinary memory, zeroized on drop. The system daemon locks
+demand. P3.2 followed: the master key
+(T12.21) and the gate's value cache (T12.02) sit in `secmem`, and the
+master key is relocated every 60 s (T12.22). The system daemon locks
 all its pages with `mlockall`; a user-mode daemon under a small
 `RLIMIT_MEMLOCK` locks only the pages mapped at start, so later
-allocations, the master key's among them, are not guaranteed to be
-locked. Also not built: the relocation timer (`SplitKey::relocate`
-exists, but nothing calls it; T12.22) and locking when a security key is
-removed (T12.25). With `KEPR_FINGERPRINT_UNLOCK` set (P10.3), the sleep and idle
+allocations are not guaranteed to be locked. With `KEPR_FINGERPRINT_UNLOCK` set (P10.3), the sleep and idle
 locks keep a passphrase-protected store's master key in memory for that
 window too.
 
@@ -941,8 +939,8 @@ window too.
   can't open network sockets unless `kms.conf.example` is installed.
 
 **Status (2026-10-14): shipped** (T4.01–T4.14). The vault image is opt-in:
-run the daemon with `KEPR_STORE=image`, then `kepr vault init` (16 MiB by
-default, not the 64 MiB of decision 4; T12.26) and `kepr vault migrate`.
+run the daemon with `KEPR_STORE=image`, then `kepr vault init` (64 MiB by
+default, T12.26) and `kepr vault migrate`.
 The per-file store stays the default. Slots use AES-256-GCM with random
 nonces (section 5.2). P4.3's PIN
 and NV counter (T4.08) run tpm2-tools rather than a `tpm2` cargo feature
@@ -951,9 +949,9 @@ and NV counter (T4.08) run tpm2-tools rather than a `tpm2` cargo feature
 refuses an older copy of itself through an epoch high-water mark. P4.4 is
 `kepr lock --fido2`, P4.5 `kepr recovery-kit create --words`, P4.6
 `KEPR_MASTER_KEY_SEAL` set to `aws-kms:`, `gcp-kms:`, `azure-kv:` or
-`pkcs11:`. Not built: salted, encrypted TPM sessions on the tpm2-tools
-path (T12.29), an anti-rollback anchor for the image's epoch off the disk,
-such as a TPM NV index (T12.27, T12.30), resizing an image, and moving back
+`pkcs11:`. Salted, encrypted TPM sessions on the tpm2-tools path (T12.29) and an
+anti-rollback anchor for the image's epoch bound to a TPM NV index
+(T12.27, T12.30) followed. Not built: resizing an image, and moving back
 to per-file storage.
 
 ### P5: Keeper-parity data model (shipped)
@@ -964,7 +962,7 @@ to per-file storage.
 - P5.4 Attachments (capped, streamed, never through the agent path).
 - P5.5 TOTP.
 - P5.6 Passphrase generator and policy profiles.
-- P5.7 `kepr inject` templates (output to tmpfs/memfd only; open: T12.45)
+- P5.7 `kepr inject` templates (output to memory-backed file systems only, T12.45)
   and reference resolution in `exec`, `env`, manifests and `inject`, done in
   the CLI with one `get` per credential, so sealed credentials are never
   reference targets. The gate doesn't resolve `kepr://` text sent by an
@@ -978,8 +976,8 @@ folders are `kepr tag` and `kepr mv`, stages are `[env.<stage>]` tables in
 `.kepr.toml` (`--stage`), attachments are `kepr attach`, generator profiles
 live in `~/.config/kepr/generate.toml`. References resolve in the CLI
 through `get`, so they never reach a sealed credential; the gate doesn't
-resolve them, by design. `kepr inject` writes to stdout or a 0600 file and
-only warns when that file is not on tmpfs (T12.45).
+resolve them, by design. `kepr inject` writes to stdout or, with `-o`, a 0600 file on a
+memory-backed file system only (T12.45).
 
 ### P6: sharing, recovery, hygiene (shipped)
 
@@ -1094,8 +1092,8 @@ per use, through polkit or, with `kepr approvals serve`, a desktop or ntfy
 notification; `kepr grant` opens a time-boxed window per harness. P9.2
 scans each HTTP request the gate reads (not traffic it tunnels to unbound
 hosts) for the keys the session has resolved and for known key formats.
-P9.3 is `kepr exec --mask`. P9.8 is `kepr leaked KEY [--rotate]`. Not
-built: masking of stored values in gate responses (T12.01), and rotation of
+P9.3 is `kepr exec --mask`. P9.8 is `kepr leaked KEY [--rotate]`. Gate
+responses are masked for released values (T12.01). Not built: rotation of
 a sealed key or through other providers' APIs.
 
 ### P10: platform extras (shipped)
@@ -1104,7 +1102,7 @@ a sealed key or through other providers' APIs.
   that exposes records as files such as `.env` or `config.json`. Each `open`
   is checked against the caller's uid, an optional executable digest
   (`--exe`) and optional consent (`--consent`). The mount is hidden from,
-  and refuses, processes inside a `kepr agent run` sandbox (open: T12.20).
+  and refuses, processes inside a `kepr agent run` sandbox (T12.20).
   There is no cgroup check: under one uid the user can move their own
   processes between cgroups, so it would add nothing over `--exe`. There
   are no placeholders: they belong to a gate session and stand for sealed
@@ -1129,8 +1127,8 @@ a sealed key or through other providers' APIs.
 
 **Status (2026-10-14): shipped** (T10.01–T10.12). `kepr mount` checks the
 uid, an optional executable digest (`--exe`) and an optional consent prompt
-(`--consent`) on each open; a harness in an agent sandbox can still open
-its files (T12.20). P10.2 adds KeePass KDBX 4 to
+(`--consent`) on each open; the files are hidden from agent sandboxes and the mount
+refuses an opener inside one (T12.20). P10.2 adds KeePass KDBX 4 to
 `kepr import` (T10.02). P10.3 is a quick unlock only: with
 `KEPR_FINGERPRINT_UNLOCK` set, the idle and sleep locks keep the key in
 memory for that window, and `kepr unlock --fingerprint` reopens the store
@@ -1138,8 +1136,8 @@ within it. P10.4 reads the Keychain item through Security.framework
 (T10.12). P10.6 is `kepr systemd-cred`, `kepr-podman-driver` and
 `kepr-csi-provider`. Binary-identity bindings (`kepr set KEY --exe PATH`)
 match SHA-256 or fs-verity digests; under the system daemon they need
-CAP_SYS_PTRACE, which the shipped unit lacks. Not built: the
-password-manager hint in `kepr copy` (P10.9; T12.47, T12.48).
+CAP_SYS_PTRACE, which the shipped unit lacks. `kepr copy` owns the Wayland or X11 selection and sets the
+password-manager hint (P10.9; T12.47, T12.48).
 
 ### P11: Keeper re-check (2026-10-05, shipped)
 
@@ -1201,6 +1199,6 @@ in the CLI, one `get` per record, rather than in the daemon.
 3. **Unprivileged user namespaces: ship an AppArmor profile** for `kepr`
    (needed on Ubuntu 24.04+). No setuid helper. `kepr doctor` reports when the
    profile is missing or namespaces are disabled.
-4. **Vault image: 64 MiB default (open: T12.26); the per-file store stays
+4. **Vault image: 64 MiB default (T12.26); the per-file store stays
    the default** on hosts without a TPM until P4 has a release behind it.
 5. **Prompt DLP: block and tell the agent.** No silent redaction (P9.2).
