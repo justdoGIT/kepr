@@ -165,10 +165,33 @@ fn is_ours(path: &Path, mark: &str) -> bool {
     std::fs::read_to_string(path).is_ok_and(|t| t.contains(mark))
 }
 
+/// Write `text` to `path`, never through a symbolic link: a link planted at
+/// the path (even a dangling one, which `exists()` calls absent) would make
+/// this create or overwrite a file somewhere else. `O_NOFOLLOW` makes the
+/// open itself refuse, so there is no check-then-write gap.
 fn write_file(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
     let dir = path.parent().ok_or("no directory")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .map_err(|e| {
+            if e.raw_os_error() == Some(libc::ELOOP) {
+                format!(
+                    "{} is a symbolic link; remove it or write the file yourself",
+                    path.display()
+                )
+            } else {
+                format!("{}: {e}", path.display())
+            }
+        })
 }
 
 fn load_state(d: &Dirs) -> State {
@@ -365,6 +388,30 @@ mod tests {
         ] {
             assert!(service_text(Path::new(bad), false).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn nothing_is_written_through_a_symbolic_link() {
+        let d = dirs("symlink");
+        let sd = gnome();
+        let elsewhere = d.config.join("elsewhere/target.txt");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        // A dangling link where the bus file goes.
+        std::fs::create_dir_all(d.service().parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, d.service()).unwrap();
+        let e = install(&d, &sd, Path::new("/usr/bin/kepr")).unwrap_err();
+        assert!(e.contains("symbolic link"), "{e}");
+        assert!(!elsewhere.exists(), "the link's target was created");
+        // The same for the autostart entry it hides.
+        std::fs::remove_file(d.service()).unwrap();
+        std::fs::create_dir_all(d.autostart("x").parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, d.autostart("gnome-keyring-secrets.desktop"))
+            .unwrap();
+        // exists() is false for the dangling link, so it is treated as absent;
+        // the write must still refuse.
+        let e = install(&d, &sd, Path::new("/usr/bin/kepr")).unwrap_err();
+        assert!(e.contains("symbolic link"), "{e}");
+        assert!(!elsewhere.exists());
     }
 
     #[test]

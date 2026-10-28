@@ -1095,3 +1095,77 @@ fn a_dialog_nobody_answers_gives_up_instead_of_hanging_the_client() {
     assert_eq!(reply.error_name.as_deref(), Some(n::E_LOCKED));
     assert!(t.elapsed() < Duration::from_secs(3));
 }
+
+#[test]
+fn a_program_the_policy_refuses_everywhere_gets_no_session_and_no_unlock_dialog() {
+    let r = rig_with(Policy::deny_all(), true);
+    let c = who(":1.30");
+    assert_eq!(
+        r.err(
+            &c,
+            n::ROOT,
+            n::I_SERVICE,
+            "OpenSession",
+            vec![Value::str("plain"), Value::variant(Value::str(""))]
+        ),
+        n::E_DENIED
+    );
+    r.store.set_locked(true);
+    r.srv.view.stale();
+    assert_eq!(
+        r.err(
+            &c,
+            n::ROOT,
+            n::I_SERVICE,
+            "Unlock",
+            vec![Value::paths(vec![n::collection_path("login")])]
+        ),
+        n::E_DENIED
+    );
+    assert_eq!(*r.unlocker.asked.lock().unwrap(), 0, "no dialog was shown");
+    assert!(r
+        .srv
+        .audit
+        .lines()
+        .iter()
+        .any(|l| l.contains("OpenSession") && l.contains("denied")));
+    assert!(r
+        .srv
+        .audit
+        .lines()
+        .iter()
+        .any(|l| l.contains("Unlock") && l.contains("denied")));
+}
+
+#[test]
+fn a_refused_program_cannot_start_the_dialog_at_a_cold_start_either() {
+    let mut r = rig_with(Policy::deny_all(), true);
+    r.store.set_locked(true);
+    r.srv = Arc::clone(&r.srv).with_wait(Duration::from_secs(2));
+    let c = who(":1.31");
+    assert_eq!(
+        r.err(
+            &c,
+            n::ROOT,
+            n::I_SERVICE,
+            "ReadAlias",
+            vec![Value::str("default")]
+        ),
+        n::E_DENIED
+    );
+    assert_eq!(*r.unlocker.asked.lock().unwrap(), 0);
+    // A program that may do one thing may start the dialog.
+    let only_search =
+        Policy::parse("default = \"deny\"\n[[rule]]\nop = \"search\"\naction = \"allow\"\n")
+            .unwrap();
+    let r2 = cold_rig(true, Duration::from_secs(2));
+    r2.srv.set_policy(only_search);
+    r2.ok(
+        &c,
+        n::ROOT,
+        n::I_SERVICE,
+        "ReadAlias",
+        vec![Value::str("default")],
+    );
+    assert_eq!(*r2.unlocker.asked.lock().unwrap(), 1);
+}

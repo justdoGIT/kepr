@@ -206,6 +206,26 @@ impl Server {
         self.audit.record(who, call, target, label, &result);
     }
 
+    /// May this program use the Secret Service at all, i.e. does the policy
+    /// allow it at least one operation? Opening a session and asking kepr to
+    /// unlock are for programs that can do something afterwards: a program
+    /// the policy refuses everywhere gets neither a session nor a passphrase
+    /// dialog on the person's screen.
+    pub fn require_user(&self, who: &Caller, call: &str) -> DResult<()> {
+        let p = Arc::clone(&self.policy.lock().unwrap_or_else(|e| e.into_inner()));
+        let any = [Op::Search, Op::Read, Op::Write]
+            .into_iter()
+            .any(|op| p.check(who, op) == Action::Allow);
+        if any {
+            return Ok(());
+        }
+        self.audit.record(who, call, "-", None, "denied");
+        Err(DErr::new(
+            n::E_DENIED,
+            "this program may not use the Secret Service (see ~/.config/kepr/secret-service.toml)",
+        ))
+    }
+
     pub fn require_unlocked(&self) -> DResult<()> {
         if self.view.locked() {
             Err(super::store::StoreError::Locked.into())
@@ -242,6 +262,7 @@ impl Server {
         let obj = n::parse(path)
             .ok_or_else(|| DErr::new(n::E_UNKNOWN_OBJECT, format!("no object at {path}")))?;
         if needs_contents(&obj, member, iface == Some(n::I_PROPS)) && self.view.cold() {
+            self.require_user(who, "AutoUnlock")?;
             self.await_unlock(who)?;
         }
         if iface == Some(n::I_PROPS) {

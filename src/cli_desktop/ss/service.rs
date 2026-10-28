@@ -29,6 +29,7 @@ pub fn item_open(srv: &Server, collection: &str) -> bool {
 pub fn call(srv: &Arc<Server>, who: &Caller, member: &str, b: &[Value]) -> DResult<Vec<Value>> {
     match member {
         "OpenSession" => {
+            srv.require_user(who, "OpenSession")?;
             let (id, out) = srv.sessions.open(&who.name, str_at(b, 0)?, val_at(b, 1)?)?;
             Ok(vec![out, Value::path(n::session_path(&id))])
         }
@@ -44,6 +45,7 @@ pub fn call(srv: &Arc<Server>, who: &Caller, member: &str, b: &[Value]) -> DResu
             Ok(vec![Value::paths(open), Value::paths(locked)])
         }
         "Unlock" => {
+            srv.require_user(who, "Unlock")?;
             let objects = objects_at(b, 0)?;
             let paths = |v: &[Obj]| v.iter().map(path_of).collect::<Vec<_>>();
             if !srv.view.locked() {
