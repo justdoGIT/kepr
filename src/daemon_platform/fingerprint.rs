@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use kepr_core::protocol::Response;
-use zeroize::Zeroizing;
+use kepr_core::secmem::GuardedKey;
 
 use crate::crypto;
 
@@ -32,8 +32,10 @@ use crate::crypto;
 pub const ACTION_ID: &str = "io.kepr.unlock";
 
 /// The master key kept across a soft lock, and when it stops counting.
+/// Held like the backend's key: split shares in secret memory, moved
+/// every 60 s with it (T12.22).
 pub struct Kept {
-    key: Zeroizing<[u8; 32]>,
+    key: GuardedKey<32>,
     until: Instant,
 }
 
@@ -55,6 +57,18 @@ pub fn forget() {
     *slot() = None;
 }
 
+fn relocate_slot(slot: &Mutex<Option<Kept>>) {
+    let mut g = slot.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(Err(e)) = g.as_mut().map(|k| k.key.relocate()) {
+        eprintln!("[kepr-daemon] kept key relocation: {e}");
+    }
+}
+
+/// T12.22: move the kept key with the master key (the sweeper, every 60 s).
+pub fn relocate() {
+    relocate_slot(&KEPT);
+}
+
 /// The idle timer's and the sleep watcher's lock: `panic_now`, keeping the
 /// key for the fingerprint window when the feature is on and the store
 /// really locked. Same return value as `panic_now`.
@@ -65,7 +79,7 @@ pub fn soft_lock(uid: u32) -> (usize, bool) {
     match (locked, key, window) {
         (true, Some(key), Some(w)) => {
             *slot() = Some(Kept {
-                key,
+                key: crypto::guard_key(&key),
                 until: Instant::now() + w,
             })
         }
@@ -95,7 +109,7 @@ pub fn unlock_with(
     state: State,
     now: Instant,
     authorize: impl FnOnce() -> bool,
-    unlock: impl FnOnce([u8; 32]) -> Result<(), String>,
+    unlock: impl FnOnce(&[u8; 32]) -> Result<(), String>,
 ) -> Result<(), String> {
     let take = || kept.lock().unwrap_or_else(|p| p.into_inner()).take();
     if !state.user_mode {
@@ -116,7 +130,7 @@ pub fn unlock_with(
         }
         return Err("not authorized".into());
     }
-    unlock(*entry.key)
+    entry.key.with_key(unlock)
 }
 
 pub fn handle_unlock(uid: u32, peer_pid: i32, username: &str) -> Response {
@@ -148,6 +162,7 @@ pub fn handle_unlock(uid: u32, peer_pid: i32, username: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kepr_core::secmem::Backing;
     use std::cell::Cell;
 
     const LOCKED: State = State {
@@ -158,7 +173,7 @@ mod tests {
 
     fn kept(secs_left: u64, now: Instant) -> Mutex<Option<Kept>> {
         Mutex::new(Some(Kept {
-            key: Zeroizing::new([7u8; 32]),
+            key: GuardedKey::new(&[7u8; 32], Backing::Auto),
             until: now + Duration::from_secs(secs_left),
         }))
     }
@@ -181,11 +196,26 @@ mod tests {
                 grant
             },
             |k| {
-                got.set(Some(k));
+                got.set(Some(*k));
                 Ok(())
             },
         );
         (r, prompted.get(), got.get())
+    }
+
+    /// T12.22: the kept key moves with the master key every 60 s.
+    #[test]
+    fn kept_key_survives_relocation() {
+        let now = Instant::now();
+        let slot = kept(60, now);
+        let addrs = |s: &Mutex<Option<Kept>>| s.lock().unwrap().as_ref().unwrap().key.addrs();
+        let before = addrs(&slot);
+        assert!(before.is_some(), "kept key is held as split shares");
+        relocate_slot(&slot);
+        assert_ne!(addrs(&slot), before);
+        let (r, _, key) = go(&slot, LOCKED, now, true);
+        assert_eq!(r, Ok(()));
+        assert_eq!(key, Some([7u8; 32]));
     }
 
     #[test]

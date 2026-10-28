@@ -54,10 +54,10 @@ pub fn wrap(master_key: &[u8; KEY_LEN], password: &[u8]) -> Result<Vec<u8>, Stri
         return Err("password cannot be empty".to_string());
     }
     let mut salt = [0u8; SALT_LEN];
-    getrandom::fill(&mut salt).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(&mut salt).map_err(|_| "CSPRNG failure".to_string())?;
     let key = derive_key(password, &salt)?;
     let mut nonce = [0u8; NONCE_LEN];
-    getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(&mut nonce).map_err(|_| "CSPRNG failure".to_string())?;
     let ciphertext = cipher::seal(key.as_ref(), &nonce, b"", master_key.as_ref())
         .map_err(|_| "master-key wrapping failed".to_string())?;
 

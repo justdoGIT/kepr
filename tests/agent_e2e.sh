@@ -23,7 +23,21 @@ command -v curl >/dev/null || { echo "curl not in PATH"; exit 1; }
 
 WORK=$(mktemp -d)
 DAEMON_PID=""
+MOUNT_PID=""
+stop_mount() {
+    if [ -n "$MOUNT_PID" ]; then
+        kill -INT "$MOUNT_PID" 2>/dev/null || true
+        for _ in $(seq 1 30); do kill -0 "$MOUNT_PID" 2>/dev/null || break; sleep 0.1; done
+        kill -INT "$MOUNT_PID" 2>/dev/null || true # a second signal exits at once
+        wait "$MOUNT_PID" 2>/dev/null || true
+        MOUNT_PID=""
+    fi
+    if grep -qF " $WORK/mnt " /proc/self/mountinfo; then
+        umount -l "$WORK/mnt" 2>/dev/null || fusermount3 -uz "$WORK/mnt" 2>/dev/null || true
+    fi
+}
 cleanup() {
+    stop_mount
     [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null || true
     rm -rf "$WORK"
 }
@@ -33,6 +47,7 @@ export HOME="$WORK/home" XDG_RUNTIME_DIR="$WORK/run" KEPR_GATE_BIN="$BIN_DIR/kep
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 KEPR="$BIN_DIR/kepr"
+export KEPR # the probes call it too
 
 PASS=0
 FAIL=0
@@ -67,12 +82,24 @@ case "$ANTHROPIC_API_KEY" in kepr-ph-*) r ok "agent sees only a placeholder";; *
 if env | grep -qF "$(cat "$REAL_FILE")"; then r bad "real key in agent env"; else r ok "real key not in agent env"; fi
 if grep -lF "$(cat "$REAL_FILE")" /proc/[0-9]*/environ 2>/dev/null | grep -q .; then r bad "real key in some /proc/*/environ"; else r ok "no /proc/*/environ holds the real key"; fi
 if "$KEPR" get ANTHROPIC_API_KEY >/dev/null 2>&1; then r bad "kepr get works inside the session"; else r ok "kepr get refused inside the session"; fi
-GATE=$(pgrep -x kepr-gate | head -1)
-if [ "$(id -u)" != 0 ]; then
+GATE=$(pgrep -u "$(id -u)" -x kepr-gate | head -1)
+if [ "$(id -u)" = 0 ]; then
+    r skip "running as root: ptrace/proc protections are bypassed by design"
+elif [ -z "$GATE" ] && [ "$1" = sandbox ]; then
+    r ok "gate process invisible from the sandbox"
+elif [ -z "$GATE" ]; then
+    r bad "no kepr-gate process found"
+else
     if head -c1 "/proc/$GATE/mem" >/dev/null 2>&1; then r bad "gate memory readable"; else r ok "gate memory unreadable"; fi
     if cat "/proc/$GATE/environ" >/dev/null 2>&1; then r bad "gate environ readable"; else r ok "gate environ unreadable"; fi
-else
-    r skip "running as root: ptrace/proc protections are bypassed by design"
+    # T12.14: no fd of the gate (the daemon channel, its sockets) opens.
+    # A blocked read (timeout's 124) means the open worked.
+    open_fds=""
+    for f in "/proc/$GATE/fd/"*; do
+        timeout 2 head -c1 "$f" >/dev/null 2>&1; rc=$?
+        if [ "$rc" = 0 ] || [ "$rc" = 124 ]; then open_fds="$open_fds ${f##*/}"; fi
+    done
+    if [ -n "$open_fds" ]; then r bad "gate fds readable:$open_fds"; else r ok "gate fds unreadable"; fi
 fi
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: sk-ant-guess' "$ANTHROPIC_BASE_URL/v1/messages" -d '{}')
 [ "$code" = 401 ] && r ok "guessed key rejected (401)" || r bad "guessed key got $code"
@@ -85,21 +112,28 @@ printf '%s' "$REAL" >"$WORK/real"
 chmod 600 "$WORK/real"
 
 echo "── malicious agent probe"
-OUT=$(REAL_FILE="$WORK/real" KEPR="$KEPR" "$KEPR" agent run claude -- "$WORK/probe.sh" 2>&1) || true
-while read -r status msg; do
-    case "$status" in
-        ok) pass "$msg" ;;
-        bad) fail "$msg" ;;
-        skip) printf '  –  SKIP: %s\n' "$msg" ;;
-    esac
-done <<<"$OUT"
-
-sleep 2.5
-if pgrep -x kepr-gate >/dev/null; then fail "gate outlived the agent"; else pass "gate exited with the agent"; fi
+# T12.14: also with --no-sandbox, where the gate process is in view (its
+# memory, environ and fds are what the probe goes after there).
+for sb in sandbox --no-sandbox; do
+    flag=""
+    [ "$sb" = sandbox ] || flag="$sb"
+    OUT=$(REAL_FILE="$WORK/real" "$KEPR" agent run claude ${flag:+"$flag"} -- "$WORK/probe.sh" "$sb" 2>&1) || true
+    while read -r status msg; do
+        case "$status" in
+            ok) pass "$msg ($sb)" ;;
+            bad) fail "$msg ($sb)" ;;
+            skip) printf '  –  SKIP: %s (%s)\n' "$msg" "$sb" ;;
+        esac
+    done <<<"$OUT"
+    sleep 2.5
+    # This run's gates only: the daemon spawns each one itself.
+    if pgrep -P "$DAEMON_PID" -x kepr-gate >/dev/null; then fail "gate outlived the agent ($sb)"; else pass "gate exited with the agent ($sb)"; fi
+done
 
 echo "── request cap"
 # The first request passes the cap (and may fail upstream); the second must
 # be refused by the gate itself.
+# shellcheck disable=SC2016 # expanded by the inner sh
 codes=$("$KEPR" agent run claude --max-requests 1 -- sh -c '
     for _ in 1 2; do
         curl -s -o /dev/null -w "%{http_code} " -X POST -H "x-api-key: $ANTHROPIC_API_KEY" \
@@ -148,19 +182,105 @@ else:
     case "$ll" in denied) r ok "Landlock denies the store dir";; open) r bad "store dir listable under Landlock";; esac
 fi
 grep -q "CapEff:	0000000000000000" /proc/self/status && r ok "no capabilities" || r bad "capabilities present"
+if [ "${2:-}" = --isolate-net ]; then
+    # T12.14: nothing leaves the netns except through the gate; each of
+    # these must fail before it reaches the network.
+    if awk 'NR > 1 && $2 == "00000000" { found = 1 } END { exit !found }' /proc/net/route \
+        || timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then
+        r bad "a direct route out exists"
+    else
+        r ok "no direct route out"
+    fi
+    if [ -z "${HTTPS_PROXY:-}" ]; then
+        r skip "HTTPS_PROXY is unset: placeholder to an unbound host not tried"
+    else
+        c=$(curl -s -o /dev/null -w '%{http_connect}' -x "$HTTPS_PROXY" -H "x-api-key: $ANTHROPIC_API_KEY" https://example.com/)
+        if [ "$c" = 403 ]; then r ok "placeholder to an unbound host refused"; else r bad "CONNECT to an unbound host got $c"; fi
+    fi
+fi
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: wrong' "$ANTHROPIC_BASE_URL/v1/messages" -d '{}')
 [ "$code" = 401 ] && r ok "gate reachable from the sandbox" || r bad "gate unreachable ($code)"
 PROBE
 chmod +x "$WORK/sbprobe.sh"
 for run in "strict:" "strict:--isolate-net" "default:"; do
     ll="${run%%:*}" mode="${run#*:}"
-    if ! SB=$(KEPR_LANDLOCK=$ll "$KEPR" agent run claude --strict-sandbox $mode -- "$WORK/sbprobe.sh" "$ll" 2>&1); then
+    if ! SB=$(KEPR_LANDLOCK=$ll "$KEPR" agent run claude --strict-sandbox ${mode:+"$mode"} -- "$WORK/sbprobe.sh" "$ll" "$mode" 2>&1); then
         case "$SB" in *"sandbox unavailable"*) printf '  –  SKIP: sandbox unavailable here %s\n' "$mode"; continue;; esac
     fi
     while read -r status msg; do
-        case "$status" in ok) pass "$msg ${mode} ($ll)";; bad) fail "$msg ${mode} ($ll)";; esac
+        case "$status" in ok) pass "$msg ${mode} ($ll)";; bad) fail "$msg ${mode} ($ll)";; skip) printf '  –  SKIP: %s\n' "$msg";; esac
     done <<<"$SB"
 done
+
+echo "── inherited descriptors"
+# T12.52: nothing the caller left open above stderr reaches the harness.
+rc=0
+"$KEPR" agent run claude --strict-sandbox -- sh -c 'test -e /proc/self/fd/3' 3</dev/null >/dev/null 2>"$WORK/fds.err" || rc=$?
+if grep -q "sandbox unavailable" "$WORK/fds.err"; then
+    printf '  –  SKIP: sandbox unavailable here\n'
+elif [ "$rc" = 1 ]; then
+    pass "the caller's fd 3 is closed in the sandbox"
+else
+    fail "fd 3 in the sandbox: exit $rc $(cat "$WORK/fds.err")"
+fi
+if "$KEPR" agent run claude --no-sandbox -- sh -c 'test -e /proc/self/fd/3' 3</dev/null >/dev/null 2>&1; then
+    pass "--no-sandbox keeps the caller's fd 3"
+else
+    fail "--no-sandbox lost the caller's fd 3"
+fi
+# shellcheck disable=SC2016 # expanded by the inner sh
+FDS='for f in /proc/self/fd/*; do n=${f##*/}; if [ "$n" -gt 2 ] && [ -e "$f" ]; then echo "fd:$n"; fi; done'
+rc=0
+out=$("$KEPR" agent run claude --strict-sandbox --isolate-net -- sh -c "$FDS" 7</dev/null 2>"$WORK/fds.err") || rc=$?
+fds=$(printf '%s\n' "$out" | sed -n 's/^fd://p')
+if grep -q "sandbox unavailable" "$WORK/fds.err"; then
+    printf '  –  SKIP: sandbox unavailable here --isolate-net\n'
+elif [ "$rc" = 0 ] && [ -z "$fds" ]; then
+    pass "only stdio reaches the harness --isolate-net (the relay stays in pid 1)"
+else
+    fail "descriptors above 2 in the sandbox --isolate-net: ${fds:-none} (exit $rc)"
+fi
+
+echo "── kepr mount and the sandbox"
+# T12.20: a harness has our uid, but kepr mount's files stay out of reach:
+# the directory is covered like the store, and an fd to it the caller
+# passes is closed (T12.52). kepr mount also refuses an opener inside a
+# sandbox itself (OpenerGate::check_with unit tests).
+if [ -e /dev/fuse ] && { [ "$(id -u)" = 0 ] || command -v fusermount3 >/dev/null; }; then
+    MNT="$WORK/mnt"
+    mkdir -p "$MNT"
+    "$KEPR" set E2E_MNT --value "mount-secret-0123456789" -q >/dev/null 2>&1
+    "$KEPR" mount "$MNT" --file .env=E2E_MNT >"$WORK/mount.log" 2>&1 &
+    MOUNT_PID=$!
+    for _ in $(seq 1 50); do
+        grep -F " $MNT " /proc/self/mountinfo | grep -qF " - fuse.kepr " && break
+        sleep 0.1
+    done
+    if grep -qF "mount-secret-0123456789" "$MNT/.env" 2>/dev/null; then
+        pass "kepr mount serves its file outside a sandbox"
+        # shellcheck disable=SC2016 # expanded by the inner sh
+        SB=$("$KEPR" agent run claude --strict-sandbox -- sh -c '
+            if cat "$1/.env" >/dev/null 2>&1; then echo "bad sandboxed cat MOUNT/.env succeeded"; else echo "ok sandboxed cat MOUNT/.env fails"; fi
+            if [ -z "$(ls -A "$1" 2>/dev/null)" ]; then echo "ok kepr mount directory empty in the sandbox"; else echo "bad kepr mount directory visible in the sandbox"; fi
+            ' _ "$MNT" 2>&1) || true
+        case "$SB" in *"sandbox unavailable"*) printf '  –  SKIP: sandbox unavailable here\n' ;; esac
+        SB2=$(KEPR_LANDLOCK=0 "$KEPR" agent run claude --strict-sandbox -- sh -c '
+            if [ -e /proc/self/fd/3 ]; then echo "bad an fd 3 to the mount reached the sandbox"; else echo "ok an fd 3 to the mount is closed in the sandbox"; fi
+            if cat /proc/self/fd/3/.env >/dev/null 2>&1; then echo "bad open through an inherited fd succeeded"; else echo "ok open through an inherited fd fails"; fi
+            ' 3<"$MNT" 2>&1) || true
+        while read -r status msg; do
+            case "$status" in ok) pass "$msg" ;; bad) fail "$msg" ;; esac
+        done <<<"$SB
+$SB2"
+        case "$SB$SB2" in *mount-secret*) fail "a sandbox printed the mounted value" ;; esac
+    else
+        fail "kepr mount did not serve $MNT/.env: $(cat "$WORK/mount.log")"
+    fi
+    stop_mount
+    "$KEPR" delete E2E_MNT --force >/dev/null 2>&1 || true
+else
+    printf '  –  SKIP: kepr mount needs /dev/fuse and fusermount3 (or root)\n'
+fi
 
 echo "── public socket"
 if command -v python3 >/dev/null; then
@@ -179,6 +299,7 @@ fi
 
 echo "── output masking"
 "$KEPR" set E2E_MASK --value "mask-me-0123456789" -q >/dev/null 2>&1
+# shellcheck disable=SC2016 # expanded by the inner sh
 masked=$("$KEPR" exec --env E2E_MASK --mask -- sh -c 'echo "v=$E2E_MASK"')
 check "$([ "$masked" = "v=****" ] && echo ok)" "exec --mask hides the value"
 
@@ -198,6 +319,7 @@ done <<<"$OUT"
 "$KEPR" delete E2E_GH --force >/dev/null 2>&1 || true
 
 echo "── history and restore"
+sleep 3 # after the agent runs above, let the per-uid rate limit refill
 "$KEPR" set E2E_HIST --value one -q >/dev/null 2>&1
 "$KEPR" set E2E_HIST --value two -q >/dev/null 2>&1
 check "$("$KEPR" list | grep -q '~' || echo ok)" "history slots hidden from list"
@@ -218,8 +340,21 @@ uses=$("$KEPR" usage 2>/dev/null | awk '$1 == "E2E_MASK" { print $2 }')
 check "$([ "${uses:-0}" -ge 1 ] && echo ok)" "usage counts the masked exec read"
 
 echo "── health"
-"$KEPR" set E2E_WEAK --value password1 -q >/dev/null 2>&1
-check "$("$KEPR" health 2>/dev/null | grep -q '^E2E_WEAK: common password' && echo ok)" "health flags a common password"
+# Under load a request here can meet the per-uid rate limit: retry, and show
+# the report (names and flags only) if it still never flags the password.
+weak=""
+for _ in 1 2 3; do
+    "$KEPR" set E2E_WEAK --value password1 -q >/dev/null 2>&1 || { sleep 1; continue; }
+    weak=$("$KEPR" health 2>&1) || true
+    if printf '%s\n' "$weak" | grep -q '^E2E_WEAK: common password'; then break; fi
+    sleep 1
+done
+if printf '%s\n' "$weak" | grep -q '^E2E_WEAK: common password'; then
+    pass "health flags a common password"
+else
+    fail "health flags a common password"
+    printf '%s\n' "$weak" | head -20 | sed 's/^/      /'
+fi
 
 echo "── typed records"
 "$KEPR" record add E2E_REC --type login --field username=me --field password=pw-123 >/dev/null 2>&1

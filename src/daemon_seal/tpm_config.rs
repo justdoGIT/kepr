@@ -10,10 +10,15 @@
 //                            0x01800A11, used whenever either is set).
 // KEPR_TPM2_PCRS (e.g. `7+11`) also binds the key to those PCRs, as with
 // the default seal. KEPR_MASTER_KEY_SEAL must be unset or `tpm2`.
+//
+// KEPR_TPM2_IMAGE_NV_INDEX=0x… (T12.30, any master-key sealer) gives the
+// vault image an NV counter of its own (daemon_vault/rollback.rs); it
+// must not be the master key's.
 
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_NV_INDEX: u32 = 0x0180_0A11;
+const IMAGE_VAR: &str = "KEPR_TPM2_IMAGE_NV_INDEX";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpmConfig {
@@ -74,19 +79,54 @@ impl TpmConfig {
         };
         Ok(Some(Self {
             pin_file,
-            nv_index: index.map_or(Ok(DEFAULT_NV_INDEX), parse_index)?,
+            nv_index: index.map_or(Ok(DEFAULT_NV_INDEX), |v| {
+                parse_index("KEPR_TPM2_NV_INDEX", v)
+            })?,
             pcrs: pcrs.map(pcr_list).transpose()?,
         }))
     }
 }
 
-fn parse_index(v: &str) -> Result<u32, String> {
+/// The vault image's NV counter index, if KEPR_TPM2_IMAGE_NV_INDEX is set.
+pub fn image_index_from_env() -> Result<Option<u32>, String> {
+    image_index(
+        env(IMAGE_VAR).as_deref(),
+        env("KEPR_TPM2_PIN").as_deref(),
+        env("KEPR_TPM2_NV_INDEX").as_deref(),
+    )
+}
+
+/// KEPR_TPM2_IMAGE_NV_INDEX given KEPR_TPM2_PIN and KEPR_TPM2_NV_INDEX:
+/// never the index the master key's counter uses.
+pub fn image_index(
+    image: Option<&str>,
+    pin: Option<&str>,
+    master: Option<&str>,
+) -> Result<Option<u32>, String> {
+    let Some(image) = image else {
+        return Ok(None);
+    };
+    let index = parse_index(IMAGE_VAR, image)?;
+    // As in `TpmConfig::parse`; a bad master index is reported there.
+    let master = match master {
+        Some(m) => parse_index("KEPR_TPM2_NV_INDEX", m).ok(),
+        None => matches!(pin, Some("1" | "yes" | "true")).then_some(DEFAULT_NV_INDEX),
+    };
+    if master == Some(index) {
+        return Err(format!(
+            "{IMAGE_VAR} must differ from the master key's counter index"
+        ));
+    }
+    Ok(Some(index))
+}
+
+fn parse_index(var: &str, v: &str) -> Result<u32, String> {
     let n = match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
         Some(h) => u32::from_str_radix(h, 16).ok(),
         None => v.parse().ok(),
     };
     n.filter(|n| (0x0100_0000..=0x01FF_FFFF).contains(n))
-        .ok_or_else(|| format!("KEPR_TPM2_NV_INDEX={v}: an NV index 0x01000000-0x01FFFFFF"))
+        .ok_or_else(|| format!("{var}={v}: an NV index 0x01000000-0x01FFFFFF"))
 }
 
 /// `7+11` → `7,11`, PCRs 0-23 only.
@@ -148,5 +188,58 @@ mod tests {
         assert!(p(None, None, None, Some("0x81000001"), None).is_err());
         assert!(p(None, None, None, Some("zz"), None).is_err());
         assert!(p(None, None, None, Some("0x01800A11"), Some("7+24")).is_err());
+    }
+
+    #[test]
+    fn the_image_counter_is_off_unless_set() {
+        assert_eq!(image_index(None, None, None), Ok(None));
+        assert_eq!(image_index(None, Some("1"), Some("0x01800A11")), Ok(None));
+        assert_eq!(
+            image_index(Some("0x01800A12"), None, None),
+            Ok(Some(0x0180_0A12))
+        );
+        assert_eq!(
+            image_index(Some("25168402"), Some("1"), None),
+            Ok(Some(0x0180_0A12))
+        );
+    }
+
+    #[test]
+    fn the_image_counter_must_not_be_the_master_keys() {
+        let refused = |image, pin, master| {
+            let e = image_index(Some(image), pin, master).unwrap_err();
+            assert!(
+                e.contains("must differ from the master key's counter index"),
+                "{e}"
+            );
+        };
+        refused("0x01800B00", None, Some("0x01800b00"));
+        refused("0x01800A11", None, Some("0x01800A11"));
+        // The default index, while the PIN puts the master key on it.
+        refused("0x01800A11", Some("1"), None);
+        refused("0x01800a11", Some("yes"), None);
+        // The default is free while the master key has no counter, or
+        // has another one.
+        assert_eq!(
+            image_index(Some("0x01800A11"), None, None),
+            Ok(Some(DEFAULT_NV_INDEX))
+        );
+        assert_eq!(
+            image_index(Some("0x01800A11"), Some("0"), None),
+            Ok(Some(DEFAULT_NV_INDEX))
+        );
+        assert_eq!(
+            image_index(Some("0x01800A11"), Some("1"), Some("0x01800B00")),
+            Ok(Some(DEFAULT_NV_INDEX))
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_image_counter_is_refused() {
+        for bad in ["0x81000001", "0x00FFFFFF", "0x02000000", "zz", "-1"] {
+            let e = image_index(Some(bad), None, None).unwrap_err();
+            assert!(e.starts_with("KEPR_TPM2_IMAGE_NV_INDEX="), "{bad}: {e}");
+            assert!(e.contains("0x01000000-0x01FFFFFF"), "{bad}: {e}");
+        }
     }
 }

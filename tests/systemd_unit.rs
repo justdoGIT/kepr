@@ -141,6 +141,31 @@ fn gate_service_unit_keeps_its_isolation() {
     );
 }
 
+/// T12.02–T12.04: a session gate keeps values in secret memory and
+/// installs its own syscall filter and Landlock ruleset. None of those
+/// calls is in @system-service, and the unit kills on a filtered call.
+#[test]
+fn gate_service_unit_lets_sessions_confine_themselves() {
+    let unit = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("systemd/kepr-gate.service"),
+    )
+    .expect("read kepr-gate.service");
+    let allowed: Vec<&str> = unit
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("SystemCallFilter="))
+        .filter(|v| !v.starts_with('~'))
+        .flat_map(str::split_whitespace)
+        .collect();
+    for call in [
+        "memfd_secret",
+        "landlock_create_ruleset",
+        "landlock_add_rule",
+        "landlock_restrict_self",
+    ] {
+        assert!(allowed.contains(&call), "kepr-gate.service filters {call}");
+    }
+}
+
 /// The `seal` batch (T4.08, T4.11–T4.13): sealers that need a device or
 /// the network get it from opt-in drop-ins under `systemd/kepr.service.d/`;
 /// the base unit keeps no device, no network and only local sockets.
@@ -192,5 +217,32 @@ fn sealer_dropins_leave_the_base_unit_closed() {
             !l.contains("PrivateNetwork=no") && !l.contains("PrivateDevices=no"),
             "{l}"
         );
+    }
+}
+
+/// T12.50: the system daemon never runs user rotators, so a systemd user
+/// timer runs each user's due rotations with `kepr rotate --due`, talking
+/// to the system daemon; a missed hour runs at the next boot.
+#[test]
+fn rotate_user_timer_runs_due_rotations_against_the_system_daemon() {
+    let read = |p: &str| {
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(p))
+            .unwrap_or_else(|e| panic!("read {p}: {e}"))
+    };
+    let timer = read("systemd/user/kepr-rotate.timer");
+    for d in [
+        "OnCalendar=hourly",
+        "RandomizedDelaySec=5m",
+        "Persistent=true",
+    ] {
+        assert!(timer.contains(d), "kepr-rotate.timer lost `{d}`");
+    }
+    let service = read("systemd/user/kepr-rotate.service");
+    for d in [
+        "Type=oneshot",
+        "Environment=KEPR_SYSTEM_MODE=1",
+        "ExecStart=/usr/local/bin/kepr rotate --due",
+    ] {
+        assert!(service.contains(d), "kepr-rotate.service lost `{d}`");
     }
 }

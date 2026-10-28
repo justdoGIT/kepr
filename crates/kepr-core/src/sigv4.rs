@@ -33,10 +33,7 @@
 // derived signature, which is one-way.
 
 use crate::generate::ZeroString;
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
-type HmacSha256 = Hmac<Sha256>;
 
 /// Inputs to a single SigV4-signed request. The signer doesn't
 /// know about HTTP — it returns headers the caller pastes onto
@@ -189,15 +186,11 @@ pub fn sign(input: &SigV4Input<'_>) -> SigV4Headers {
 }
 
 pub fn hex_sha256(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    hex(&h.finalize())
+    hex(&crate::mac::sha256(&[bytes]))
 }
 
 pub(crate) fn hmac(key: &[u8], msg: &[u8]) -> Zeroizing<Vec<u8>> {
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(msg);
-    Zeroizing::new(mac.finalize().into_bytes().to_vec())
+    Zeroizing::new(crate::mac::hmac_sha256(key, &[msg]).to_vec())
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {

@@ -49,21 +49,60 @@ Values are never printed. A name found with different values in two
 places, or already stored in kepr, is skipped rather than overwritten.
 `--remove` keeps no plaintext backup, on purpose.
 
+Without FILE arguments, adopt also reads the config files where agent
+harnesses save keys, since the agent can read those inside its session and
+a harness may use a key there instead of the gate's placeholder:
+`~/.codex/auth.json` (`OPENAI_API_KEY`), `~/.grok/user-settings.json`
+(grok-cli's `apiKey`), `~/.aider.conf.yml` (`openai-api-key`,
+`anthropic-api-key`, `api-key` items) and `~/.omp/agent/models.yml`
+(`apiKey`). These JSON and YAML files are read by key and never rewritten:
+with `--remove`, kepr tells you to delete the key by hand. Variable names
+and references (`KEPR_PH_ANTHROPIC`, `${VAR}`, `{env:VAR}`) are not keys
+and are left alone.
+
+It also reads your shell history: `$HISTFILE` (or `~/.bash_history`),
+`~/.zsh_history` and `${XDG_DATA_HOME:-~/.local/share}/fish/fish_history`.
+A key typed as `export XAI_API_KEY=xai-…`, `set -gx OPENAI_API_KEY sk-…` or
+`OPENAI_API_KEY=sk-… python app.py` is found; one read from elsewhere
+(`$(pass show …)`, `$OTHER`) is not a key. With `--remove` the whole
+history entry is deleted and the other lines stay byte-identical. Open
+shells keep their history in memory and may write the line back when they
+exit, so run `history -c` in them or close them. A history file that is not
+valid UTF-8 (zsh stores non-ASCII bytes its own way) is read but never
+rewritten; kepr names the lines to delete by hand. Keys passed other ways,
+such as `curl -H "Authorization: Bearer …"`, are left to `kepr scan
+~/.bash_history`.
+
 ## Harnesses
 
 | Harness | Command | Key it uses |
 | --- | --- | --- |
-| Claude Code | `kepr agent run claude` | `ANTHROPIC_API_KEY` |
-| OpenAI Codex CLI | `kepr agent run codex` | `OPENAI_API_KEY` |
+| Claude Code | `kepr agent run claude` (optional once: `kepr agent install claude`) | `ANTHROPIC_API_KEY` |
+| OpenAI Codex CLI | `kepr agent run codex` (optional once: `kepr agent install codex`) | `OPENAI_API_KEY` |
 | grok-cli | `kepr agent run grok-cli` | `XAI_API_KEY` |
 | Aider (OpenAI path) | `kepr agent run aider` | `OPENAI_API_KEY` |
+| Gemini CLI | `kepr agent run gemini` | `GEMINI_API_KEY` |
 | oh-my-pi | `kepr agent install omp` once, then `kepr agent run omp` | `ANTHROPIC_API_KEY` |
 | Grok Build | `kepr agent install grok` once, then `kepr agent run grok` | `XAI_API_KEY` |
+| opencode (Anthropic) | `kepr agent install opencode` once, then `kepr agent run opencode` | `ANTHROPIC_API_KEY` |
 
 `kepr agent install` edits the harness's own config file
-(`~/.omp/agent/models.yml`, `~/.grok/config.toml`) to point at the gate on
-port 7878, after writing a timestamped backup. It also installs kepr's
-plugin for that harness (below). Running it twice changes nothing.
+(`~/.omp/agent/models.yml`, `~/.grok/config.toml`,
+`~/.config/opencode/opencode.json`) to point at the gate on port 7878,
+after writing a timestamped backup. It also installs kepr's plugin for
+omp and Grok Build (below). Running it twice changes nothing. The opencode
+config gets only a base URL and `{env:KEPR_PH_ANTHROPIC}`; a file with
+comments or another non-JSON shape is left alone, with a message.
+
+Claude Code and Codex need no config edit: `kepr agent run` points them at
+the gate through the environment. `kepr agent install claude` adds kepr's
+guidance for the model as a Claude Code skill
+(`~/.claude/skills/kepr/SKILL.md`, or under `$CLAUDE_CONFIG_DIR`), and
+`kepr agent install codex` adds it as a marked block in Codex's global
+`~/.codex/AGENTS.md` (or under `$CODEX_HOME`), leaving the rest of the file
+alone. It is the same text as Grok Build's skill: keys are placeholders,
+never put one in a file, command or commit, use `kepr mcp`'s `call_api`,
+and run `kepr leaked NAME` when a real key shows up.
 
 ### Plugins for omp and Grok Build
 
@@ -101,6 +140,23 @@ kepr agent run claude -- claude --model claude-sonnet-5-5
 
 Any real key already exported in your shell (for example
 `ANTHROPIC_API_KEY=sk-ant-…`) is removed from the agent's environment.
+
+### Typing the harness's own command: `kepr agent shim`
+
+```bash
+kepr agent shim claude            # writes ~/.local/share/kepr/shims/claude
+export PATH="$HOME/.local/share/kepr/shims:$PATH"   # in your shell profile
+claude                            # now runs: kepr agent run claude -- /path/to/claude
+```
+
+The shim is a four-line `sh` script holding only paths: the real binary
+(the first one on `PATH` outside the shim directory) and `kepr`. Inside a
+`kepr agent run` session it starts the real binary directly, so sessions
+never nest. The default directory is
+`${XDG_DATA_HOME:-~/.local/share}/kepr/shims`, never `~/.local/bin`, where
+Claude Code, for one, installs its real binary; `--dir DIR` picks another.
+kepr never replaces or removes a file that isn't one of its shims:
+`kepr agent shim claude --remove` (or deleting the file) undoes it.
 
 ## The sandbox
 
@@ -205,6 +261,29 @@ kepr agent run claude                # GH_TOKEN / GITHUB_TOKEN are placeholders 
 - **Other hosts:** they are tunnelled unchanged. With `--isolate-net` they
   are refused, so the agent reaches only the providers its keys are bound
   to.
+
+### Google Cloud: `kepr gcp add`
+
+A long-lived Google credential never reaches the session. Store a
+service-account key, or the `authorized_user` file that
+`gcloud auth application-default login` writes, sealed:
+
+```bash
+kepr gcp add GCP_DEPLOY --key-file sa.json
+kepr gcp add GCP_ME --key-file ~/.config/gcloud/application_default_credentials.json \
+  --impersonate deploy@my-proj.iam.gserviceaccount.com
+kepr agent run claude                # gcloud sees a CLOUDSDK_AUTH_ACCESS_TOKEN placeholder
+```
+
+- **Bindings:** `www.googleapis.com` and the common `*.googleapis.com`
+  services gcloud calls, with the scope `cloud-platform` unless you pass
+  `--scope URL` (up to 8).
+- **Tokens:** the gate mints a 1-hour access token per session, from a
+  signed service-account JWT or the refresh token, then for the
+  `--impersonate` service account if you named one. It renews the token 5
+  minutes before it expires. Tokens come only from
+  `oauth2.googleapis.com`; a `token_uri` in the file is ignored.
+- **Errors** carry the HTTP status only, never Google's reply.
 
 ## Databases
 

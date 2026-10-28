@@ -22,6 +22,8 @@
 //   migrate.rs move the per-file store into the image (T4.07)
 //   handlers.rs `kepr vault init|migrate|verify|status` (T4.07)
 //   listing.rs every record, for the store features (T4.14)
+//   rollback.rs the header's anchor to an off-disk counter (T12.27); a
+//              TPM2 NV counter with KEPR_TPM2_IMAGE_NV_INDEX (T12.30)
 
 pub mod admin;
 pub mod backend;
@@ -36,6 +38,7 @@ pub mod merkle;
 pub mod migrate;
 pub mod place;
 pub mod records;
+pub mod rollback;
 pub mod slot;
 pub mod sweep;
 #[cfg(test)]
@@ -45,6 +48,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use backend::ImageBackend;
+use rollback::EpochCounter;
 
 pub use handlers::dispatch;
 pub use sweep::sweep_expired;
@@ -53,6 +57,8 @@ static ACTIVE: OnceLock<ImageBackend> = OnceLock::new();
 /// The rollback state, kept in either mode so `kepr vault` commands run
 /// against the per-file store still record and check the image's epoch.
 static VERSIONS: OnceLock<Arc<crate::version_state::VersionState>> = OnceLock::new();
+/// The image's own anti-rollback counter (T12.30), also in either mode.
+static COUNTER: OnceLock<Arc<dyn EpochCounter>> = OnceLock::new();
 
 /// The image backend, when `KEPR_STORE=image` selected it at start-up.
 pub fn active() -> Option<&'static ImageBackend> {
@@ -67,14 +73,37 @@ pub fn image_path() -> PathBuf {
     crate::store::store_dir().join("vault.img")
 }
 
+/// A backend over the image at `path` with the rollback state and, when
+/// configured, the image's counter.
+fn backend_at(path: PathBuf) -> ImageBackend {
+    let b = ImageBackend::new(path, crate::crypto::snapshot_key, versions());
+    match COUNTER.get() {
+        Some(c) => b.with_counter(Arc::clone(c)),
+        None => b,
+    }
+}
+
+/// `kepr vault status`'s rollback guard: `tpm2` or `state-file`.
+fn rollback_guard() -> &'static str {
+    if COUNTER.get().is_some() {
+        "tpm2"
+    } else {
+        "state-file"
+    }
+}
+
 /// Called once at start-up (from `crypto::initialize_inproc_backend`):
 /// `KEPR_STORE` unset or `file` keeps the per-file store.
 pub fn install_from_env(versions: Arc<crate::version_state::VersionState>) -> Result<(), String> {
-    let _ = VERSIONS.set(Arc::clone(&versions));
+    let _ = VERSIONS.set(versions);
+    if let Some(c) = crate::daemon_seal::image_counter_from_env()? {
+        let _ = COUNTER.set(c);
+        eprintln!("[kepr-daemon] vault image rollback guard: TPM2 NV counter");
+    }
     match std::env::var("KEPR_STORE").as_deref() {
         Err(_) | Ok("") | Ok("file") => Ok(()),
         Ok("image") => {
-            let b = ImageBackend::new(image_path(), crate::crypto::snapshot_key, Some(versions));
+            let b = backend_at(image_path());
             ACTIVE
                 .set(b)
                 .map_err(|_| "image backend already installed".to_string())?;

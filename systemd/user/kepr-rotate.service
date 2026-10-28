@@ -1,0 +1,16 @@
+# kepr-rotate.service — run this user's due scheduled rotations (T12.50).
+#
+# The system daemon (root) never runs user hooks or network rotators, so
+# under it `kepr rotate NAME --every DUR` schedules are carried out here,
+# as the user, by kepr-rotate.timer. The user-mode daemon runs due
+# rotations itself, and `kepr rotate --due` then does nothing.
+#
+# Enable per user: systemctl --user enable --now kepr-rotate.timer
+
+[Unit]
+Description=kepr: run due scheduled credential rotations
+
+[Service]
+Type=oneshot
+Environment=KEPR_SYSTEM_MODE=1
+ExecStart=/usr/local/bin/kepr rotate --due

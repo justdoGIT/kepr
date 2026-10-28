@@ -114,6 +114,7 @@ fn cred_files(d: &Daemon) -> Vec<String> {
 #[test]
 fn set_list_get_delete_through_the_handlers_with_the_image() {
     let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["vault", "init", "--size", "4"]);
     ok(&d, &["set", "ALPHA", "--value", "alpha-value"]);
     ok(&d, &["set", "BETA", "--value", "beta-one", "--ttl", "3600"]);
     ok(&d, &["set", "BETA", "--value", "beta-two"]);
@@ -139,6 +140,17 @@ fn set_list_get_delete_through_the_handlers_with_the_image() {
     };
     let d = start(home, Some("image"));
     assert_eq!(ok(&d, &["get", "BETA", "--quiet"]).trim(), "beta-two");
+}
+
+/// T12.26: without `kepr vault init`, the first write makes a 64 MiB image.
+#[test]
+fn an_image_made_on_first_write_is_64_mib() {
+    let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    let path = store_dir(&d).join("vault.img");
+    assert!(!path.exists());
+    ok(&d, &["set", "FIRST", "--value", "v"]);
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 64 << 20);
+    assert_eq!(json(&d, &["vault", "status"])["size_mib"], 64);
 }
 
 #[test]
@@ -210,6 +222,7 @@ fn migrate_moves_the_file_store_into_the_image() {
     assert!(fails_with(&d, &["vault", "migrate"]).contains("KEPR_STORE=image"));
 
     let d = restart(d, Some("image"));
+    ok(&d, &["vault", "init", "--size", "4M"]);
     assert!(names(&d).is_empty(), "the image starts empty");
     let m = json(&d, &["vault", "migrate"]);
     assert_eq!(
@@ -256,7 +269,7 @@ fn migrate_moves_the_file_store_into_the_image() {
     );
     assert_eq!(
         (&st["legacy_files"], &st["size_mib"]),
-        (&0.into(), &16.into())
+        (&0.into(), &4.into())
     );
     assert!(st["used_slots"].as_u64().unwrap() >= 6, "{st}");
     let again = json(&d, &["vault", "migrate"]);
@@ -327,6 +340,7 @@ fn verify_names_each_damaged_slot_and_only_used_ones() {
 #[test]
 fn trash_aliases_verify_and_delete_all_work_on_the_image() {
     let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["vault", "init", "--size", "4"]);
     ok(&d, &["set", "KEEP", "--value", "one"]);
     ok(&d, &["set", "KEEP", "--value", "two"]);
     ok(&d, &["tag", "KEEP", "+prod"]);
@@ -422,6 +436,7 @@ fn trash_aliases_verify_and_delete_all_work_on_the_image() {
 #[test]
 fn attachments_follow_their_credential_on_the_image() {
     let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["vault", "init", "--size", "4"]);
     ok(&d, &["set", "DOC", "--value", "v"]);
     let src = d.home.path().join("notes.bin");
     let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
@@ -449,6 +464,61 @@ fn attachments_follow_their_credential_on_the_image() {
     ok(&d, &["delete", "--all", "--yes"]);
     assert_eq!(records(&d), 0);
     assert!(cred_files(&d).is_empty(), "{:?}", cred_files(&d));
+}
+
+/// `kepr recovery-key unlock`, the words on stdin.
+fn recovery_unlock(d: &Daemon, words: &str) -> Output {
+    use std::io::Write;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kepr"));
+    env(&mut cmd, d.home.path());
+    let mut child = cmd
+        .args(["recovery-key", "unlock"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{words}").unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// T12.31 / T12.32: a key file that no longer unseals leaves the daemon
+/// running locked, and the recovery key opens the image (the only thing
+/// it can prove itself against here) and seals the key again.
+#[test]
+fn a_recovery_key_opens_an_image_whose_key_file_broke() {
+    let d = start(tempfile::tempdir().unwrap(), Some("image"));
+    ok(&d, &["set", "KEPT", "--value", "kept-value"]);
+    assert_eq!(json(&d, &["status"])["recovery_key"], false);
+    let enrolled = json(&d, &["recovery-key", "enrol"]);
+    assert_eq!(enrolled["kind"], "recovery_key_words");
+    let words = enrolled["words"].as_str().unwrap().to_string();
+    assert_eq!(words.split_whitespace().count(), 24);
+    assert_eq!(json(&d, &["status"])["recovery_key"], true);
+    let key_file = d.home.path().join("state/kepr/master.key");
+    std::fs::write(&key_file, b"no longer unseals").unwrap();
+
+    let d = restart(d, Some("image"));
+    let status = json(&d, &["status"]);
+    assert_eq!(status["locked"], true, "{status}");
+    assert_eq!(status["key_sealer"], "unseal-failed", "{status}");
+    assert!(!kepr(&d, &["get", "KEPT"]).status.success());
+    let out = recovery_unlock(&d, &words);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(ok(&d, &["get", "KEPT", "--quiet"]).trim(), "kept-value");
+    assert_ne!(std::fs::read(&key_file).unwrap(), b"no longer unseals");
+
+    // Sealed again: the next start needs no recovery.
+    let d = restart(d, Some("image"));
+    let status = json(&d, &["status"]);
+    assert_eq!(status["locked"], false, "{status}");
+    assert_eq!(ok(&d, &["get", "KEPT", "--quiet"]).trim(), "kept-value");
+    let again = recovery_unlock(&d, &words);
+    assert!(String::from_utf8_lossy(&again.stderr).contains("nothing to recover"));
 }
 
 fn uid() -> String {

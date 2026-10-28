@@ -1,14 +1,16 @@
-// cli_inject.rs — `kepr inject -i TEMPLATE [-o OUT]` (agent vault P5.7).
+// cli_inject.rs — `kepr inject -i TEMPLATE [-o OUT [--allow-disk]]` (P5.7).
 // Replaces every `kepr://` reference in a template with what it stands
 // for (like Keeper's `ksm interpolate`): `kepr://NAME` the stored value,
 // `kepr://NAME/field[i][sub]`, `/custom_field/LABEL` and `/file/FILE`
 // parts of a record (T5.05, cli_recordsx/notation.rs). Output goes to
-// stdout or to a new 0600 file; a warning is printed when that file is
-// not on tmpfs, because rendered secrets on persistent disk outlive the
-// process. Sealed credentials cannot be injected (the daemon refuses them).
+// stdout or to a new 0600 file, which must be on a memory-backed file
+// system (tmpfs, ramfs; T12.45) unless `--allow-disk` is given, because
+// rendered secrets on persistent disk outlive the process. Sealed
+// credentials cannot be injected (the daemon refuses them).
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::Response;
@@ -67,28 +69,6 @@ pub fn render(
     Ok(out)
 }
 
-fn on_tmpfs(path: &std::path::Path) -> bool {
-    const TMPFS_MAGIC: i64 = 0x0102_1994;
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(std::path::Path::new("."));
-    let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes()) else {
-        return false;
-    };
-    // SAFETY: statfs writes into a zeroed, stack-local struct.
-    unsafe {
-        let mut s: libc::statfs = std::mem::zeroed();
-        if libc::statfs(c.as_ptr(), &mut s) != 0 {
-            return false;
-        }
-        // f_type is i64 on x86_64 but i32 / u32 on other targets.
-        #[allow(clippy::unnecessary_cast)]
-        let fs_type = s.f_type as i64;
-        fs_type == TMPFS_MAGIC
-    }
-}
-
 /// Resolve reference texts with one fetch per credential and attachment,
 /// so a consent- or FIDO2-gated record prompts once however many of its
 /// fields the template uses. `NAME/rest` on a value that is not a record
@@ -108,34 +88,70 @@ pub fn resolver(src: &dyn Source) -> impl Fn(&str) -> Result<ZeroString, String>
     }
 }
 
-pub fn cmd_inject(input: &str, output: Option<&str>) -> Response {
+pub fn cmd_inject(input: &str, output: Option<&str>, allow_disk: bool) -> Response {
     let tpl = match std::fs::read_to_string(input) {
         Ok(t) => t,
         Err(e) => return Response::fail(format!("{input}: {e}")),
     };
-    let rendered = match render(&tpl, &resolver(&resolve::Daemon)) {
-        Ok(r) => r,
-        Err(e) => return Response::fail(e),
-    };
+    let fill = || render(&tpl, &resolver(&resolve::Daemon));
     let result = match output {
-        None => std::io::stdout().write_all(rendered.as_bytes()),
-        Some(path) => {
-            if !on_tmpfs(std::path::Path::new(path)) {
-                crate::cli_ui::warn(&format!(
-                    "{path} is not on tmpfs: the rendered secrets persist on disk"
-                ));
-            }
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(path)
-                .and_then(|mut f| f.write_all(rendered.as_bytes()))
-        }
+        None => fill().and_then(|r| {
+            std::io::stdout()
+                .write_all(r.as_bytes())
+                .map_err(|e| format!("write: {e}"))
+        }),
+        Some(path) => write_out(Path::new(path), allow_disk, fill),
     };
     match result {
         Ok(()) => Response::Pong,
-        Err(e) => Response::fail(format!("write: {e}")),
+        Err(e) => Response::fail(e),
+    }
+}
+
+/// Create OUT (new, 0600), check that file's own file system, and only
+/// then render: a refused OUT costs no `get` and no consent, FIDO2 or
+/// re-auth prompt. A refused, failed or half-written OUT is removed.
+fn write_out(
+    out: &Path,
+    allow_disk: bool,
+    render: impl FnOnce() -> Result<Zeroizing<String>, String>,
+) -> Result<(), String> {
+    let shown = out.display();
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(out)
+        .map_err(|e| format!("{shown}: {e}"))?;
+    let discard = |f: std::fs::File| {
+        drop(f);
+        let _ = std::fs::remove_file(out);
+    };
+    if !crate::cli_memfs::on_memory_fs(&f) {
+        if !allow_disk {
+            discard(f);
+            return Err(format!(
+                "{shown} is on disk: rendered secrets would outlive the process; write under \
+                 $XDG_RUNTIME_DIR or /dev/shm, use stdout, or pass --allow-disk"
+            ));
+        }
+        crate::cli_ui::warn(&format!(
+            "{shown} is not on tmpfs: the rendered secrets persist on disk"
+        ));
+    }
+    let rendered = match render() {
+        Ok(r) => r,
+        Err(e) => {
+            discard(f);
+            return Err(e);
+        }
+    };
+    match f.write_all(rendered.as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            discard(f);
+            Err(format!("write: {e}"))
+        }
     }
 }
 
@@ -149,6 +165,75 @@ mod tests {
             "API" => Ok(ZeroString::from_string("k".into())),
             _ => Err("credential unavailable".into()),
         }
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("kepr-inject-{tag}-{}-{n}", std::process::id()))
+    }
+
+    fn ok(s: &str) -> Result<Zeroizing<String>, String> {
+        Ok(Zeroizing::new(s.to_string()))
+    }
+
+    #[test]
+    fn disk_out_refused_before_render() {
+        let out = scratch("disk");
+        let dir = out.parent().unwrap();
+        if crate::cli_memfs::path_on_memory_fs(dir) {
+            eprintln!("skip: target/ is on a memory file system here");
+            return;
+        }
+        let e = write_out(&out, false, || -> Result<Zeroizing<String>, String> {
+            panic!("rendered before the file system check")
+        })
+        .unwrap_err();
+        assert!(
+            e.contains("is on disk") && e.contains("--allow-disk"),
+            "{e}"
+        );
+        assert!(e.contains(&out.display().to_string()), "{e}");
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn allow_disk_writes_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let out = scratch("allow");
+        write_out(&out, true, || ok("v=1\n")).unwrap();
+        let mode = std::fs::metadata(&out).unwrap().permissions().mode();
+        let body = std::fs::read_to_string(&out).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(body, "v=1\n");
+    }
+
+    #[test]
+    fn render_error_leaves_no_file() {
+        let out = scratch("err");
+        let e = write_out(
+            &out,
+            true,
+            || Err("kepr://X: credential unavailable".into()),
+        );
+        assert_eq!(e.unwrap_err(), "kepr://X: credential unavailable");
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn existing_out_refused() {
+        let out = scratch("exists");
+        std::fs::write(&out, "keep me").unwrap();
+        let e = write_out(&out, true, || -> Result<Zeroizing<String>, String> {
+            panic!("rendered over an existing file")
+        });
+        let body = std::fs::read_to_string(&out).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        assert!(e.is_err());
+        assert_eq!(body, "keep me");
     }
 
     struct Counting(std::cell::Cell<u32>);

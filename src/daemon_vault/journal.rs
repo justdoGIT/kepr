@@ -24,7 +24,7 @@
 // hash instead keeps the journal to one slot and gives the same answer,
 // because new pages only ever go to free slots.
 
-use sha2::{Digest, Sha256};
+use crate::daemon_eco::cipher;
 
 use super::header::{Header, Reader, BODY_LEN};
 use super::image::{SlotIo, VaultImage, FIRST_DATA_SLOT, SLOT};
@@ -82,12 +82,14 @@ impl Journal {
 }
 
 fn batch_hash<'a>(slots: impl Iterator<Item = (u32, &'a [u8; SLOT])>) -> [u8; 32] {
-    let mut h = Sha256::new();
-    for (i, s) in slots {
-        h.update(i.to_le_bytes());
-        h.update(s);
+    let slots: Vec<_> = slots.collect();
+    let idx: Vec<[u8; 4]> = slots.iter().map(|(i, _)| i.to_le_bytes()).collect();
+    let mut parts: Vec<&[u8]> = Vec::with_capacity(slots.len() * 2);
+    for (n, (_, s)) in slots.iter().enumerate() {
+        parts.push(&idx[n]);
+        parts.push(&s[..]);
     }
-    h.finalize().into()
+    cipher::sha256(&parts)
 }
 
 /// One state change: the new header and the pages behind it.
@@ -337,5 +339,15 @@ mod tests {
 
     fn after_bytes(img: &VaultImage<MemIo>) -> Vec<u8> {
         img.io_ref().bytes()
+    }
+
+    #[test]
+    fn batch_hash_is_pinned() {
+        let (a, b) = ([0xaau8; SLOT], [0xbbu8; SLOT]);
+        let h = batch_hash([(3u32, &a), (9u32, &b)].into_iter());
+        assert_eq!(
+            hex::encode(h),
+            "8a53f14762d6cf496cd1ed49ad857b779a862cfe22091b63070e675bdcc5ed1b"
+        );
     }
 }

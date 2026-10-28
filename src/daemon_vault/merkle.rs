@@ -7,19 +7,14 @@
 // [a, b, c] and [a, b, c, c] can't share one. Domain bytes keep leaves,
 // nodes and the root apart.
 
-use sha2::{Digest, Sha256};
+use crate::daemon_eco::cipher;
 
 use super::image::{SlotIo, VaultImage, SLOT};
 
 pub type Hash = [u8; 32];
 
 pub fn leaf(idx: u32, slot: &[u8; SLOT]) -> Hash {
-    Sha256::new()
-        .chain_update([0u8])
-        .chain_update(idx.to_le_bytes())
-        .chain_update(slot)
-        .finalize()
-        .into()
+    cipher::sha256(&[&[0u8], &idx.to_le_bytes(), slot])
 }
 
 pub fn merkle_root(leaves: &[Hash]) -> Hash {
@@ -30,23 +25,11 @@ pub fn merkle_root(leaves: &[Hash]) -> Hash {
         }
         level = level
             .chunks(2)
-            .map(|p| {
-                Sha256::new()
-                    .chain_update([1u8])
-                    .chain_update(p[0])
-                    .chain_update(p[1])
-                    .finalize()
-                    .into()
-            })
+            .map(|p| cipher::sha256(&[&[1u8], &p[0], &p[1]]))
             .collect();
     }
     let top = level.first().copied().unwrap_or([0u8; 32]);
-    Sha256::new()
-        .chain_update([2u8])
-        .chain_update((leaves.len() as u64).to_le_bytes())
-        .chain_update(top)
-        .finalize()
-        .into()
+    cipher::sha256(&[&[2u8], &(leaves.len() as u64).to_le_bytes(), &top])
 }
 
 /// What `verify` found: slots whose bytes don't match what the index
@@ -169,5 +152,20 @@ mod tests {
         let mut t = s;
         t[100] ^= 1;
         assert_ne!(leaf(1, &s), leaf(1, &t));
+    }
+
+    #[test]
+    fn root_is_pinned() {
+        let a = leaf(5, &[0x11u8; SLOT]);
+        let b = leaf(9, &[0x22u8; SLOT]);
+        let c = leaf(12, &[0x33u8; SLOT]);
+        assert_eq!(
+            hex::encode(a),
+            "23290bf64cf9d723e4e539c9f65ca4e8b02bfd04730cccae0bb5a580cadf7589"
+        );
+        assert_eq!(
+            hex::encode(merkle_root(&[a, b, c])),
+            "c3fa285eb820d4e1471c3550b3bea5e7b217d64c361e6e6ae1f9f2727814dced"
+        );
     }
 }

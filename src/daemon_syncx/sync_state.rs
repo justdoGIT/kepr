@@ -13,14 +13,12 @@
 
 use std::collections::BTreeMap;
 
-use hkdf::Hkdf;
-use hmac::{Hmac, KeyInit, Mac};
 use kepr_core::generate::ZeroString;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use super::bundle::ItemMeta;
+use crate::daemon_eco::cipher;
 use crate::daemon_sharing::kem::ShareSecret;
 use crate::daemon_sharing::{load, save, state_path};
 use crate::store::{cred_exists, cred_path, validate_name};
@@ -75,22 +73,18 @@ pub fn save_state(uid: u32, st: &State) -> Result<(), String> {
 
 /// The fingerprint key: derived from the share key, never stored.
 pub fn fp_key(me: &ShareSecret) -> Zeroizing<[u8; 32]> {
-    let mut key = Zeroizing::new([0u8; 32]);
     let secret = Zeroizing::new(me.x.to_bytes());
-    Hkdf::<Sha256>::new(None, secret.as_ref())
-        .expand(b"kepr-sync-fingerprint-v1", key.as_mut())
-        .expect("32 bytes is a valid HKDF length");
-    key
+    cipher::hkdf_sha256(None, secret.as_ref(), &[b"kepr-sync-fingerprint-v1"])
 }
 
 pub fn fingerprint(key: &[u8; 32], name: &str, l: &Local) -> String {
-    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("any key length");
     let meta = serde_json::to_vec(&l.meta).unwrap_or_default();
+    let mut msg = Vec::new();
     for part in [name.as_bytes(), l.value.as_bytes(), &meta] {
-        m.update(&(part.len() as u64).to_be_bytes());
-        m.update(part);
+        msg.extend_from_slice(&(part.len() as u64).to_be_bytes());
+        msg.extend_from_slice(part);
     }
-    hex::encode(&m.finalize().into_bytes()[..16])
+    hex::encode(&cipher::hmac_sha256(key, &[&msg])[..16])
 }
 
 /// The value file's modification time (seconds), if it has one.
@@ -248,5 +242,30 @@ mod tests {
         assert_ne!(base, fingerprint(&k, "A", &l("v", Some(vec!["t".into()]))));
         assert_ne!(base, fingerprint(&[2u8; 32], "A", &l("v", None)));
         assert_eq!(base, fingerprint(&k, "A", &l("v", None)));
+    }
+
+    fn fixed(x: u8, seed: u8) -> ShareSecret {
+        ShareSecret {
+            x: x25519_dalek::StaticSecret::from([x; 32]),
+            mlkem_seed: Some(Zeroizing::new([seed; 64])),
+        }
+    }
+
+    // Computed by the code before it moved onto the cipher seam (T12.42).
+    #[test]
+    fn fingerprints_match_the_old_code() {
+        let k = fp_key(&fixed(5, 6));
+        assert_eq!(
+            hex::encode(*k),
+            "c953c6e2eeab7d1e111133a6ba4b237f0658da58ccc6e28b39e7e83b65d28032"
+        );
+        let l = Local {
+            value: ZeroString::from("v"),
+            meta: ItemMeta::default(),
+        };
+        assert_eq!(
+            fingerprint(&k, "NAME", &l),
+            "16e6eca716d1ed67628f55871923465d"
+        );
     }
 }

@@ -55,15 +55,12 @@ fn owner_only(uid: u32) -> Result<(), String> {
 }
 
 /// The active image backend, or (per-file store active) a backend over
-/// the image file, so init / verify / status work in both modes.
+/// the image file, so init / verify / status work in both modes, and an
+/// image made by `init` is anchored to the counter either way.
 fn with_backend<T>(f: impl FnOnce(&ImageBackend) -> T) -> T {
     match super::active() {
         Some(b) => f(b),
-        None => f(&ImageBackend::new(
-            super::image_path(),
-            crate::crypto::snapshot_key,
-            super::versions(),
-        )),
+        None => f(&super::backend_at(super::image_path())),
     }
 }
 
@@ -148,6 +145,7 @@ fn status(uid: u32) -> VaultResponse {
         used_slots: own.map(|u| u.used_slots),
         epoch: own.map(|u| u.epoch),
         legacy_files: legacy,
+        rollback_guard: Some(super::rollback_guard().into()),
     }
 }
 

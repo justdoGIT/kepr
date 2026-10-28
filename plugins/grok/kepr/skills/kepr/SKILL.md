@@ -6,7 +6,7 @@ description: How to work with API keys and other secrets when kepr manages them.
 # Working with secrets under kepr
 
 kepr keeps credentials in an encrypted store. In a session started with
-`kepr agent run grok`, you never hold a real key:
+`kepr agent run <harness>`, you never hold a real key:
 
 - API key variables (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `GH_TOKEN`, …)
   contain **placeholders** that start with `kepr-ph-`. Use them exactly as
@@ -15,7 +15,8 @@ kepr keeps credentials in an encrypted store. In a session started with
 - `DATABASE_URL` / `PG*` point at a local gate port. Connect normally; the
   gate logs in to the real database.
 - `KEPR_GATE_URL` is set. If it is missing, the session is not protected:
-  say so and suggest `kepr agent run grok`.
+  say so and suggest `kepr agent run <harness>` (for example
+  `kepr agent run claude`).
 
 Rules:
 

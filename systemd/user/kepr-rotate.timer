@@ -1,0 +1,14 @@
+# kepr-rotate.timer — hourly `kepr rotate --due` for the system daemon's
+# scheduled rotations (T12.50). Persistent: a run missed while the
+# machine was off happens at the next start.
+
+[Unit]
+Description=kepr: hourly check for due scheduled rotations
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

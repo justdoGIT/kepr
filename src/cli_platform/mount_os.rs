@@ -27,6 +27,7 @@ use zeroize::Zeroizing;
 
 use super::args;
 use super::mount::{parse_spec, Fs, Gate};
+use crate::cli_sandbox_sys as sys;
 
 const USAGE: &str =
     "usage: kepr mount DIR --file NAME=KEY1,KEY2 [--file ...] [--exe PATH]... [--consent]";
@@ -55,6 +56,26 @@ impl Gate for OpenerGate {
     fn check(&self, _uid: u32, pid: u32) -> Result<(), String> {
         if pid == 0 {
             return Err("the caller is outside this PID namespace".into());
+        }
+        let read = |p: u32, f: &str| std::fs::read_to_string(format!("/proc/{p}/{f}")).ok();
+        self.check_with(pid, read(pid, "mountinfo").as_deref(), &read)
+    }
+}
+
+impl OpenerGate {
+    /// T12.20: an agent sandbox's harness has our uid and a copy of this
+    /// mount, but must not read it (that would bypass the hidden daemon
+    /// socket): its mount table, or an ancestor's, gives it away. Then
+    /// --exe and --consent.
+    fn check_with(
+        &self,
+        pid: u32,
+        mountinfo: Option<&str>,
+        read: &dyn Fn(u32, &str) -> Option<String>,
+    ) -> Result<(), String> {
+        let mountinfo = mountinfo.ok_or("its mount table is unreadable")?;
+        if sys::in_kepr_sandbox(mountinfo) || sys::sandboxed_ancestor(pid, read)? {
+            return Err("the caller is inside a kepr agent sandbox".into());
         }
         if !self.exe.is_empty() {
             exe_allowed(pid, &self.exe)?;
@@ -307,4 +328,77 @@ fn run(argv: &[String]) -> Result<Response, String> {
         let _ = unmount(&dir, &how).join(); // after an error, or unmounted elsewhere
     }
     r.map(|_| Response::Pong)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PLAIN: &str = "22 1 0:20 / / rw,relatime shared:1 - ext4 /dev/vda rw\n\
+        40 22 0:35 / /home/u/mnt ro,nosuid shared:20 - fuse.kepr kepr ro\n";
+    const SANDBOX: &str = "1 0 0:20 / / rw - ext4 /dev/vda rw\n\
+        2 1 0:40 / /home/u/.local/share/kepr ro,nosuid,nodev,noexec - tmpfs kepr-hidden ro\n\
+        3 1 0:41 / /home/u/mnt ro,nosuid,nodev,noexec - tmpfs kepr-hidden ro\n";
+
+    const OPENER: u32 = 70;
+
+    /// The opener's parent is 60, whose table is `parent`; 60's is pid 1.
+    fn parent_is(parent: &'static str) -> impl Fn(u32, &str) -> Option<String> {
+        move |pid, file| match (pid, file) {
+            (OPENER, "stat") => Some("70 (sh) S 60 1 1".into()),
+            (60, "stat") => Some("60 (kepr) S 1 1 1".into()),
+            (60, "mountinfo") => Some(parent.into()),
+            _ => None,
+        }
+    }
+
+    const SANDBOXED: &str = "the caller is inside a kepr agent sandbox";
+
+    #[test]
+    fn sandboxed_or_unknown_openers_are_refused() {
+        let gate = OpenerGate {
+            exe: Vec::new(),
+            consent: false,
+        };
+        let plain = parent_is(PLAIN);
+        let e = |mi, read: &dyn Fn(u32, &str) -> Option<String>| {
+            gate.check_with(OPENER, mi, read).err()
+        };
+        assert_eq!(
+            e(None, &plain).as_deref(),
+            Some("its mount table is unreadable")
+        );
+        // An opener inside a sandbox, say through an fd it inherited
+        // (closed since T12.52, so unit-tested here only).
+        assert_eq!(e(Some(SANDBOX), &plain).as_deref(), Some(SANDBOXED));
+        assert_eq!(e(Some(PLAIN), &plain), None);
+        // A chrooted harness hides its own sandbox mounts, not its parent's.
+        let chrooted = "9 8 0:50 / / rw - tmpfs none rw\n";
+        assert_eq!(
+            e(Some(chrooted), &parent_is(SANDBOX)).as_deref(),
+            Some(SANDBOXED)
+        );
+        let orphan = |_: u32, _: &str| None;
+        assert!(e(Some(PLAIN), &orphan).is_some(), "unknown parent");
+        // The real check reads this process's own tables.
+        let pid = std::process::id();
+        let own = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+        assert_eq!(gate.check(0, pid).is_ok(), !sys::in_kepr_sandbox(&own));
+        assert!(gate.check(0, 0).is_err());
+    }
+
+    #[test]
+    fn the_sandbox_check_comes_before_exe() {
+        let gate = OpenerGate {
+            exe: vec!["sha256:00".into()],
+            consent: false,
+        };
+        let plain = parent_is(PLAIN);
+        let pid = std::process::id();
+        let r = gate.check_with(pid, Some(SANDBOX), &plain);
+        assert_eq!(r.unwrap_err(), SANDBOXED);
+        let read = |p: u32, f: &str| std::fs::read_to_string(format!("/proc/{p}/{f}")).ok();
+        let r = gate.check_with(pid, Some(PLAIN), &read);
+        assert!(r.is_err(), "--exe still applies");
+    }
 }

@@ -199,6 +199,30 @@ mod tests {
     }
 
     #[test]
+    fn a_github_com_binding_adds_a_git_route_after_the_harness_routes() {
+        let existing = vec![GateRoute {
+            provider: "anthropic".into(),
+            cred: "ANTHROPIC_API_KEY".into(),
+            slot: 0,
+            target: None,
+        }];
+        let creds = [
+            cred("ANTHROPIC_API_KEY", &["api.anthropic.com:443"]),
+            cred("GH", &["api.github.com:443", "github.com:443"]),
+        ];
+        let routes = extra_routes(&existing, &creds);
+        let r: Vec<(&str, &str, u16)> = routes
+            .iter()
+            .map(|r| (r.provider.as_str(), r.cred.as_str(), r.slot))
+            .collect();
+        assert_eq!(r, [("github", "GH", 1), ("git", "GH", 2)]);
+        let only_git = [cred("GH", &["github.com:443"])];
+        let r = extra_routes(&existing, &only_git);
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].provider.as_str(), r[0].slot), ("git", 1));
+    }
+
+    #[test]
     fn preset_providers_get_egress_routes() {
         let creds = [
             cred("NPM_TOKEN", &["registry.npmjs.org:443"]),

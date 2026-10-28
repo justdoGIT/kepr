@@ -21,6 +21,7 @@ pub mod gate_protocol;
 pub mod generate;
 pub mod keyring;
 pub mod leak;
+pub mod mac;
 pub mod memfd;
 pub mod protocol;
 pub mod protocol_response;
@@ -30,6 +31,7 @@ pub mod secmem;
 pub mod shamir;
 pub mod sigv4;
 pub mod ssh_wire;
+pub mod ssh_wire_ecdsa;
 
 // ── P2–P11 ticket batches (2026-10-05): `protocol_<batch>` and other
 // shared modules, declared under each batch's marker.
@@ -77,4 +79,9 @@ pub mod fdfetch;
 pub mod http_lite;
 pub mod profile;
 pub mod protocol_session;
+// batch: gate-sec (P12)
+pub mod landlock;
+pub mod seccomp;
+// batch: gate-providers (P12)
+pub mod gcp_token;
 // end of batches

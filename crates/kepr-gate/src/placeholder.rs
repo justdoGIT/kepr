@@ -4,24 +4,17 @@
 //! worthless outside this gate session: the MAC is keyed with a
 //! per-session random key that never leaves the daemon and the gate.
 
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
+use kepr_core::mac;
 
 pub const PREFIX: &str = "kepr-ph-";
 const MAC_HEX_LEN: usize = 16;
 
-type HmacSha256 = Hmac<Sha256>;
-
-fn mac_for(session_key: &[u8; 32], session_id: &str, slot: u16) -> HmacSha256 {
-    let mut m = HmacSha256::new_from_slice(session_key).expect("HMAC takes any key length");
-    m.update(format!("{session_id}:{slot}").as_bytes());
-    m
+fn mac_for(session_key: &[u8; 32], session_id: &str, slot: u16) -> zeroize::Zeroizing<[u8; 32]> {
+    mac::hmac_sha256(session_key, &[format!("{session_id}:{slot}").as_bytes()])
 }
 
 pub fn make(session_key: &[u8; 32], session_id: &str, slot: u16) -> String {
-    let tag = mac_for(session_key, session_id, slot)
-        .finalize()
-        .into_bytes();
+    let tag = mac_for(session_key, session_id, slot);
     let mac = hex::encode(&tag[..MAC_HEX_LEN / 2]);
     format!("{PREFIX}{session_id}-{slot:04x}-{mac}")
 }
@@ -64,9 +57,11 @@ pub fn verify(session_key: &[u8; 32], p: &Parsed) -> bool {
     let Ok(tag) = hex::decode(&p.mac) else {
         return false;
     };
-    mac_for(session_key, &p.session_id, p.slot)
-        .verify_truncated_left(&tag)
-        .is_ok()
+    mac::hmac_sha256_verify(
+        session_key,
+        &[format!("{}:{}", p.session_id, p.slot).as_bytes()],
+        &tag,
+    )
 }
 
 #[cfg(test)]

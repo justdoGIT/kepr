@@ -49,7 +49,7 @@ mod tests {
     #[test]
     fn records_lists_slots_trash_entries_and_meta_only_records() {
         let d = tempfile::tempdir().unwrap();
-        let b = ImageBackend::new(d.path().join("vault.img"), key, None);
+        let b = ImageBackend::new(d.path().join("vault.img"), key, None).with_create_mib(2);
         assert_eq!(b.records(), Ok(Vec::new()), "no image: nothing");
         b.encrypt(7, "A", b"a").unwrap();
         b.encrypt(7, "A~0", b"old").unwrap();

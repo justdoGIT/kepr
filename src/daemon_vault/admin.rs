@@ -4,7 +4,7 @@
 // interleave with a credential write.
 
 use super::backend::{ImageBackend, Open};
-use super::image::{VaultImage, FIRST_DATA_SLOT, SLOTS_PER_MIB};
+use super::image::{FIRST_DATA_SLOT, SLOTS_PER_MIB};
 
 /// How full the image is.
 #[derive(Debug, PartialEq, Eq)]
@@ -25,7 +25,7 @@ impl ImageBackend {
         if self.path().exists() {
             return Err("a vault image already exists".into());
         }
-        let img = VaultImage::create(self.path(), size_mib, &kek)?;
+        let img = self.create_image(size_mib, &kek)?;
         self.record_epoch(&img);
         *st = Some(Open { img, index: None });
         Ok(())
@@ -85,7 +85,8 @@ mod tests {
     fn fresh() -> (ImageBackend, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let vs = crate::version_state::VersionState::load(dir.path().join("v.json")).unwrap();
-        let b = ImageBackend::new(dir.path().join("vault.img"), key, Some(Arc::new(vs)));
+        let b = ImageBackend::new(dir.path().join("vault.img"), key, Some(Arc::new(vs)))
+            .with_create_mib(2);
         (b, dir)
     }
 
@@ -131,10 +132,20 @@ mod tests {
         b.encrypt(UID, "SMALL", b"v").unwrap();
         b.encrypt(UID, "BIG", &[b'x'; 9000]).unwrap();
         let u = b.usage().unwrap().unwrap();
-        // 1 + 3 record pages and one index page.
-        assert_eq!(u.used_slots, 5);
-        assert_eq!(u.size_mib, super::super::backend::DEFAULT_MIB);
+        // 1 + 3 record pages (padded to 4, T12.28) and one index page.
+        assert_eq!(u.used_slots, 6);
+        assert_eq!(u.size_mib, 2, "with_create_mib sized the first write");
         assert_eq!(u.epoch, 2);
+    }
+
+    #[test]
+    fn a_three_page_record_takes_four_slots() {
+        let (b, _d) = fresh();
+        b.encrypt(UID, "FIRST", b"v").unwrap();
+        let before = b.usage().unwrap().unwrap().used_slots;
+        // 9000 bytes of value: three pages of data.
+        b.encrypt(UID, "THREE", &[b'x'; 9000]).unwrap();
+        assert_eq!(b.usage().unwrap().unwrap().used_slots, before + 4);
     }
 
     #[test]

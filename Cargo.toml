@@ -138,7 +138,7 @@ security-framework = { version = "3", default-features = false }
 [features]
 default = []
 # T7.16: route the daemon's crypto through aws-lc-rs (src/daemon_eco/crypto_fips.rs).
-fips = ["dep:aws-lc-rs"]
+fips = ["dep:aws-lc-rs", "kepr-core/fips"]
 
 # Never built (`cfg(any())` matches no target): it only puts the FIPS
 # module's build dependencies into Cargo.lock, so CI's `aws-lc-rs/fips`
@@ -186,8 +186,13 @@ assets = [
     ["target/release/kepr",                    "/usr/local/bin/kepr",                   "0755"],
     ["target/release/kepr-daemon",             "/usr/local/bin/kepr-daemon",            "0755"],
     ["target/release/docker-credential-kepr",  "/usr/local/bin/docker-credential-kepr", "0755"],
+    ["target/release/git-credential-kepr",     "/usr/local/bin/git-credential-kepr",    "0755"],
+    ["target/release/kepr-gate",               "/usr/local/bin/kepr-gate",              "0755"],
     ["systemd/kepr.service",       "/lib/systemd/system/kepr.service","0644"],
+    ["systemd/kepr-gate.service",  "/lib/systemd/system/kepr-gate.service", "0644"],
+    ["systemd/polkit/io.kepr.policy", "/usr/share/polkit-1/actions/io.kepr.policy", "0644"],
     ["completions/kepr.bash",      "/usr/share/bash-completion/completions/kepr", "0644"],
+    ["packaging/apparmor/kepr",    "/etc/apparmor.d/kepr",            "0644"],
     ["README.md",                  "/usr/share/doc/kepr/README.md",   "0644"],
     ["SECURITY.md",                "/usr/share/doc/kepr/SECURITY.md", "0644"],
     ["LICENSE-MIT",                "/usr/share/doc/kepr/LICENSE-MIT", "0644"],
@@ -209,8 +214,13 @@ assets = [
     { source = "target/release/kepr",                   dest = "/usr/local/bin/kepr",                   mode = "0755" },
     { source = "target/release/kepr-daemon",            dest = "/usr/local/bin/kepr-daemon",            mode = "0755" },
     { source = "target/release/docker-credential-kepr", dest = "/usr/local/bin/docker-credential-kepr", mode = "0755" },
+    { source = "target/release/git-credential-kepr",    dest = "/usr/local/bin/git-credential-kepr",    mode = "0755" },
+    { source = "target/release/kepr-gate",              dest = "/usr/local/bin/kepr-gate",              mode = "0755" },
     { source = "systemd/kepr.service",       dest = "/lib/systemd/system/kepr.service",mode = "0644" },
+    { source = "systemd/kepr-gate.service",  dest = "/lib/systemd/system/kepr-gate.service", mode = "0644" },
+    { source = "systemd/polkit/io.kepr.policy", dest = "/usr/share/polkit-1/actions/io.kepr.policy", mode = "0644" },
     { source = "completions/kepr.bash",      dest = "/usr/share/bash-completion/completions/kepr", mode = "0644" },
+    { source = "packaging/apparmor/kepr",    dest = "/etc/apparmor.d/kepr",            mode = "0644", config = true },
     { source = "README.md",                  dest = "/usr/share/doc/kepr/README.md",   mode = "0644", doc = true },
     { source = "SECURITY.md",                dest = "/usr/share/doc/kepr/SECURITY.md", mode = "0644", doc = true },
     { source = "LICENSE-MIT",                dest = "/usr/share/doc/kepr/LICENSE-MIT", mode = "0644", doc = true },
@@ -220,16 +230,32 @@ post_install_script = """
 if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm= 2>/dev/null)" = systemd ]; then
   getent group kepr >/dev/null || groupadd --system kepr
   systemctl daemon-reload || true
-  systemctl enable --now kepr.service || true
+  if [ "${1:-1}" -ge 2 ] 2>/dev/null; then
+    # Upgrade: restart only the units that are running, so one the
+    # administrator disabled or stopped stays that way.
+    systemctl try-restart kepr-gate.service || true
+    systemctl try-restart kepr.service || true
+  else
+    # Agent sessions under the system daemon run in kepr-gate.service.
+    systemctl enable kepr-gate.service || true
+    systemctl restart kepr-gate.service || true
+    systemctl enable --now kepr.service || true
+  fi
+fi
+# Agent sandbox: let kepr make its user namespace where AppArmor
+# restricts them (Ubuntu 24.04+). Never fails the install.
+if command -v apparmor_parser >/dev/null 2>&1 && [ -d /sys/kernel/security/apparmor ]; then
+  apparmor_parser -r -W /etc/apparmor.d/kepr || true
 fi
 """
 pre_uninstall_script = """
-if [ $1 -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+if [ "$1" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
   systemctl disable --now kepr.service || true
+  systemctl disable --now kepr-gate.service || true
 fi
 """
 post_uninstall_script = """
-if [ $1 -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+if [ "$1" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
 fi
 """

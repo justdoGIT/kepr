@@ -36,11 +36,17 @@ time = "0.3"
 webpki-roots = "1"
 # T7.08: RS256 GitHub App JWTs (already in the tree through rustls).
 ring = "0.17"
+# T12.44: a fips gate signs those JWTs with aws-lc-rs (already in the tree
+# through rustls' aws-lc-rs feature).
+aws-lc-rs = { version = "1.18", optional = true }
+# T12.07: inflate gzip git upload-pack bodies for the DLP scan (pure-Rust
+# backend; already in the lock through the root crate).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [features]
 # T7.16 FIPS mode: rustls and the session CA (rcgen) on aws-lc-rs instead of
 # ring (src/tls_provider.rs). Add `rustls/fips` for the validated module.
-fips = ["rustls/aws-lc-rs", "rcgen/aws_lc_rs"]
+fips = ["rustls/aws-lc-rs", "rcgen/aws_lc_rs", "dep:aws-lc-rs", "kepr-core/fips"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros"] }

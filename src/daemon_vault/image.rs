@@ -144,6 +144,7 @@ impl<I: SlotIo> VaultImage<I> {
             root: super::merkle::merkle_root(&[]),
             index_len: 0,
             index_slots: Vec::new(),
+            anchor: None,
         };
         let mut img = Self { io, salt, header };
         let keys = img.keys(kek);
@@ -175,6 +176,7 @@ impl<I: SlotIo> VaultImage<I> {
             root: [0u8; 32],
             index_len: 0,
             index_slots: Vec::new(),
+            anchor: None,
         };
         let mut img = Self { io, salt, header };
         img.recover(&keys, current)?;

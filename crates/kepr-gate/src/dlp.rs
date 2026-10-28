@@ -14,7 +14,7 @@ pub enum Verdict {
 
 /// Values shorter than this are not scanned for, to avoid blocking on
 /// short common strings.
-const MIN_SECRET_LEN: usize = 8;
+pub(crate) const MIN_SECRET_LEN: usize = 8;
 
 /// Why a request must not leave, or `None`. Covers the body (raw and
 /// JSON-decoded), the path and query, and header values; a compressed

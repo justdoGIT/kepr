@@ -49,7 +49,7 @@ fn opens(key: &[u8; 32], uid: u32, name: &str, blob: &[u8]) -> bool {
 }
 
 /// (files the key opens, files checked) over the whole store.
-fn probe(key: &[u8; 32]) -> (usize, usize) {
+pub(crate) fn probe(key: &[u8; 32]) -> (usize, usize) {
     // T4.06: the vault image, if there is one, counts as one more file.
     let (mut ok, mut total) = crate::daemon_vault::probe_image(key);
     let Ok(dir) = std::fs::read_dir(store::store_dir()) else {
@@ -202,7 +202,7 @@ pub fn install_rebuilt_key(key: &[u8; 32], new_password: &[u8]) -> Result<usize,
     let envelope = key_unlock::wrap(key, new_password)?;
     crate::daemon_lock::install_protected_key(&envelope)?;
     let _ = crypto::lock_backend();
-    crypto::unlock_backend(*key)?;
+    crypto::unlock_backend(key)?;
     Ok(opened)
 }
 

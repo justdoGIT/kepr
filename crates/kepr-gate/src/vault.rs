@@ -26,6 +26,8 @@ use kepr_core::gate_record::GateRecord;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::MAX_MSG_BYTES;
 
+use crate::secret_cell::SecretCell;
+
 pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
 /// Long enough for a human to answer a polkit consent dialog.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -163,7 +165,8 @@ type Key = (String, String, u16);
 pub struct Cache {
     resolver: Box<dyn Resolve>,
     ttl: Duration,
-    entries: Mutex<HashMap<Key, (ZeroString, Inject, Instant)>>,
+    /// T12.02: values sit in secret memory between requests (secret_cell.rs).
+    entries: Mutex<HashMap<Key, (SecretCell, Inject, Instant)>>,
     /// (last generation seen, when it was checked).
     generation: Mutex<(u64, Option<Instant>)>,
     /// Serialises cache misses (single-flight).
@@ -171,11 +174,7 @@ pub struct Cache {
     /// T7.08: tokens minted from cached values (GitHub App installation
     /// tokens) by a hash of what minted them, with their expiry; dropped
     /// with the values, so a store change ends them too.
-    minted: Mutex<HashMap<[u8; 32], (ZeroString, u64)>>,
-}
-
-fn dup(z: &ZeroString) -> ZeroString {
-    ZeroString::from_string(z.as_str().to_string())
+    minted: Mutex<HashMap<[u8; 32], (SecretCell, u64)>>,
 }
 
 impl Cache {
@@ -193,7 +192,7 @@ impl Cache {
     fn cached(&self, key: &Key) -> Option<(ZeroString, Inject)> {
         let map = self.entries.lock().ok()?;
         let (v, i, at) = map.get(key)?;
-        (at.elapsed() < self.ttl).then(|| (dup(v), i.clone()))
+        (at.elapsed() < self.ttl).then(|| (v.reveal(), i.clone()))
     }
 
     /// Drop every cached value if the daemon's store changed. Asked at
@@ -225,7 +224,7 @@ impl Cache {
         }
         let (v, i) = self.resolver.resolve(name, host, port)?;
         if let Ok(mut map) = self.entries.lock() {
-            map.insert(key, (dup(&v), i.clone(), Instant::now()));
+            map.insert(key, (SecretCell::new(&v), i.clone(), Instant::now()));
         }
         Ok((v, i))
     }
@@ -236,10 +235,30 @@ impl Cache {
         match self.entries.lock() {
             Ok(map) => map
                 .iter()
-                .map(|((n, _, _), (v, _, _))| (n.clone(), dup(v)))
+                .map(|((n, _, _), (v, _, _))| (n.clone(), v.reveal()))
                 .collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// T12.01: what no response to the agent may contain: every cached
+    /// value (a JSON record's secret fields only) and minted token, with
+    /// their JSON-escaped forms (mask::forms). A poisoned lock still
+    /// yields its values: masking fails closed.
+    pub fn needles(&self) -> Vec<ZeroString> {
+        let mut out = Vec::new();
+        let map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        for (v, _, _) in map.values() {
+            out.extend(crate::mask::forms(&v.reveal()));
+        }
+        drop(map);
+        let map = self.minted.lock().unwrap_or_else(|e| e.into_inner());
+        for (t, _) in map.values() {
+            out.extend(crate::mask::forms(&t.reveal()));
+        }
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        out.dedup_by(|a, b| a.as_str() == b.as_str());
+        out
     }
 
     /// T7.09: pass recorded chunks to the daemon (not cached).
@@ -262,26 +281,24 @@ impl Cache {
         self.resolver.day_usage(name, requests, tokens)
     }
 
+    /// Drop every value and token; a cell zeroizes and unmaps its region
+    /// on drop. A poisoned lock is cleared all the same.
     pub fn clear(&self) {
-        if let Ok(mut map) = self.entries.lock() {
-            map.clear(); // ZeroString zeroizes on drop
-        }
-        if let Ok(mut map) = self.minted.lock() {
-            map.clear();
-        }
+        (self.entries.lock().unwrap_or_else(|e| e.into_inner())).clear();
+        (self.minted.lock().unwrap_or_else(|e| e.into_inner())).clear();
     }
 
     /// T7.08: a token minted under `key`, with its expiry.
     pub fn minted(&self, key: &[u8; 32]) -> Option<(ZeroString, u64)> {
         let map = self.minted.lock().ok()?;
-        map.get(key).map(|(t, exp)| (dup(t), *exp))
+        map.get(key).map(|(t, exp)| (t.reveal(), *exp))
     }
 
     /// T7.08: keep a token minted under `key` until `exp` (unix seconds).
     pub fn mint(&self, key: [u8; 32], token: &ZeroString, exp: u64, now: u64) {
         if let Ok(mut map) = self.minted.lock() {
             map.retain(|_, (_, e)| *e > now);
-            map.insert(key, (dup(token), exp));
+            map.insert(key, (SecretCell::new(token), exp));
         }
     }
 }
@@ -361,6 +378,79 @@ mod tests {
         assert_eq!(c.values().len(), 1);
         c.clear();
         assert!(c.values().is_empty());
+    }
+
+    #[test]
+    fn cached_values_and_tokens_live_in_secret_cells() {
+        let c = Cache::new(Box::new(Arc::new(Counting::default())), DEFAULT_TTL);
+        c.get("A", "h.example.com", 443).unwrap();
+        c.mint([1; 32], &ZeroString::from("ghs_minted-token-1"), 100, 0);
+        let secret = kepr_core::secmem::memfd_secret_available();
+        let e = c.entries.lock().unwrap();
+        assert!(e
+            .values()
+            .all(|(cell, _, _)| cell.is_secret_backed() == secret));
+        drop(e);
+        let m = c.minted.lock().unwrap();
+        assert!(m
+            .values()
+            .all(|(cell, _)| cell.is_secret_backed() == secret));
+        drop(m);
+        assert_eq!(c.values()[0].1.as_str(), "secret-value");
+        assert_eq!(c.minted(&[1; 32]).unwrap().0.as_str(), "ghs_minted-token-1");
+        let (v, _) = c.get("A", "h.example.com", 443).unwrap();
+        assert_eq!(v.as_str(), "secret-value", "a hit reveals the cell");
+    }
+
+    #[test]
+    fn a_generation_change_empties_values_and_tokens() {
+        let n = Arc::new(Counting::default());
+        let c = Cache::new(Box::new(n.clone()), DEFAULT_TTL);
+        c.get("A", "h.example.com", 443).unwrap();
+        c.mint([1; 32], &ZeroString::from("ghs_minted-token-1"), 100, 0);
+        c.check_generation().unwrap();
+        assert_eq!(c.values().len(), 1);
+        n.generation.store(7, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        c.check_generation().unwrap();
+        assert!(c.values().is_empty());
+        assert!(c.minted(&[1; 32]).is_none());
+    }
+
+    struct Record(&'static str);
+    impl Resolve for Record {
+        fn resolve(&self, _: &str, _: &str, _: u16) -> Result<(ZeroString, Inject), String> {
+            Ok((ZeroString::from(self.0), Inject::Postgres))
+        }
+        fn generation(&self) -> Result<u64, String> {
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn needles_of_a_database_record_are_its_password_not_user_or_database() {
+        let rec =
+            r#"{"user":"app-user-long","password":"s3cret-PW-only","database":"main-database"}"#;
+        let c = Cache::new(Box::new(Record(rec)), DEFAULT_TTL);
+        c.get("DB", "db.example.com", 5432).unwrap();
+        let got: Vec<String> = c.needles().iter().map(|z| z.to_owned_string()).collect();
+        // The password and its Base64 spellings; never the user or database.
+        assert!(got.contains(&"s3cret-PW-only".to_string()));
+        assert!(!got
+            .iter()
+            .any(|g| g.contains("app-user") || g.contains("main-")));
+        assert_eq!(got.len(), 3, "{got:?}");
+    }
+
+    #[test]
+    fn needles_cover_minted_tokens_and_skip_short_values() {
+        let c = Cache::new(Box::new(Record("short")), DEFAULT_TTL);
+        c.get("A", "h.example.com", 443).unwrap();
+        assert!(c.needles().is_empty(), "under MIN_SECRET_LEN");
+        c.mint([1; 32], &ZeroString::from("ghs_minted-token-1"), 100, 0);
+        let got: Vec<String> = c.needles().iter().map(|z| z.to_owned_string()).collect();
+        assert!(got.contains(&"ghs_minted-token-1".to_string()));
+        assert_eq!(got.len(), 2, "the token and its Base64 form: {got:?}");
     }
 
     #[test]

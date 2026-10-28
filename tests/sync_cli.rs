@@ -133,14 +133,14 @@ fn two_devices_sync_through_a_directory() {
     }
     assert!(!kepr(&a, &["sync", "remote", "add", &url]).status.success());
 
-    ok(&a, &["set", "SYNC_ONE", "--value", "one"]);
-    ok(&b, &["set", "SYNC_TWO", "--value", "two"]);
+    ok(&a, &["set", "SYNC_ONE", "--value", "sync-one-plaintext"]);
+    ok(&b, &["set", "SYNC_TWO", "--value", "sync-two-plaintext"]);
     ok(&a, &["sync", "now"]);
     ok(&b, &["sync", "now"]);
     ok(&a, &["sync", "now"]);
     for d in [&a, &b] {
-        assert_eq!(get(d, "SYNC_ONE").as_deref(), Some("one"));
-        assert_eq!(get(d, "SYNC_TWO").as_deref(), Some("two"));
+        assert_eq!(get(d, "SYNC_ONE").as_deref(), Some("sync-one-plaintext"));
+        assert_eq!(get(d, "SYNC_TWO").as_deref(), Some("sync-two-plaintext"));
     }
     // The remote holds two bundles of ciphertext, one per device.
     let files: Vec<_> = std::fs::read_dir(remote.path())
@@ -150,7 +150,9 @@ fn two_devices_sync_through_a_directory() {
     assert_eq!(files.len(), 2);
     for f in files {
         let text = String::from_utf8_lossy(&std::fs::read(f.path()).unwrap()).into_owned();
-        assert!(!text.contains("SYNC_ONE") && !text.contains("two"));
+        // Values long enough that random ciphertext can't contain them.
+        assert!(!text.contains("SYNC_ONE") && !text.contains("sync-two-plaintext"));
+        assert!(!text.contains("sync-one-plaintext"));
     }
 
     // A delete on b reaches a.
@@ -158,7 +160,7 @@ fn two_devices_sync_through_a_directory() {
     ok(&b, &["sync", "now"]);
     ok(&a, &["sync", "now"]);
     assert_eq!(get(&a, "SYNC_TWO"), None);
-    assert_eq!(get(&a, "SYNC_ONE").as_deref(), Some("one"));
+    assert_eq!(get(&a, "SYNC_ONE").as_deref(), Some("sync-one-plaintext"));
 
     // A device a never enrolled drops its bundle on the remote: ignored.
     let c = start();

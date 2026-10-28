@@ -260,19 +260,6 @@ fn main() {
         eprintln!("[kepr-daemon] cannot secure credential directory: {e}");
         std::process::exit(1);
     });
-    let password_protected = protected_master_key_path().exists();
-    let key = if password_protected {
-        None
-    } else {
-        Some(
-            master_key::sealer_from_env(user, &master_key_path())
-                .and_then(|s| master_key::load_or_generate(&master_key_path(), s.as_ref()))
-                .unwrap_or_else(|e| {
-                    eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
-                    std::process::exit(1);
-                }),
-        )
-    };
     let versions = std::sync::Arc::new(
         version_state::VersionState::load(version_state_path()).unwrap_or_else(|e| {
             eprintln!("[kepr-daemon] cannot load version state: {e}");
@@ -280,19 +267,8 @@ fn main() {
         }),
     );
     let versions_for_sweeper = std::sync::Arc::clone(&versions);
-    crypto::initialize_inproc_backend(key.as_ref().map(|key| **key).unwrap_or([0u8; 32]), versions)
-        .unwrap_or_else(|e| {
-            eprintln!("[kepr-daemon] cannot install backend: {e}");
-            std::process::exit(1);
-        });
-    if password_protected {
-        crypto::lock_backend().unwrap_or_else(|e| {
-            eprintln!("[kepr-daemon] cannot lock protected backend: {e}");
-            std::process::exit(1);
-        });
-        eprintln!("[kepr-daemon] credential store is locked; run `kepr unlock`");
-    }
-    drop(key);
+    // The master key (T12.32: or locked, for `kepr recovery-key unlock`).
+    daemon_seal::startup::start(user, versions);
 
     sweep_legacy_credstore();
     daemon_expiry::spawn_sweeper(versions_for_sweeper);

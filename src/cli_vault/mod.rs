@@ -4,16 +4,13 @@
 // and prints the reply.
 
 use kepr_core::protocol::{Request, Response};
-use kepr_core::protocol_vault::{VaultRequest, VaultResponse};
+use kepr_core::protocol_vault::{VaultRequest, VaultResponse, DEFAULT_IMAGE_MIB};
 
 use crate::{cli_mode, cli_ui, client};
 
 pub const VERBS: &[&str] = &["vault"];
 
-pub const HELP: &str = "  vault init [--size MIB]              create the vault image (fixed size, default 16 MiB)\n  vault migrate                        move per-file credentials into the image (KEPR_STORE=image)\n  vault verify                         check every used slot of the image and its Merkle root\n  vault status                         active store, image size and fill, files left to move\n";
-
-/// Size of `kepr vault init` without `--size` (the daemon's default).
-const DEFAULT_MIB: u32 = 16;
+pub const HELP: &str = "  vault init [--size MIB]              create the vault image (fixed size, default 64 MiB)\n  vault migrate                        move per-file credentials into the image (KEPR_STORE=image)\n  vault verify                         check every used slot of the image and its Merkle root\n  vault status                         active store, image size and fill, files left to move\n";
 
 pub fn dispatch(_verb: &str, args: &[String]) -> Response {
     let req = match parse(args) {
@@ -37,16 +34,39 @@ fn parse(args: &[String]) -> Result<VaultRequest, String> {
         .collect();
     match args.as_slice() {
         ["init"] => Ok(VaultRequest::VaultInit {
-            size_mib: DEFAULT_MIB,
+            size_mib: DEFAULT_IMAGE_MIB,
         }),
-        ["init", "--size", n] => n
-            .parse()
-            .map(|size_mib| VaultRequest::VaultInit { size_mib })
-            .map_err(|_| "--size takes a whole number of MiB".to_string()),
+        ["init", "--size", n] => parse_mib(n).map(|size_mib| VaultRequest::VaultInit { size_mib }),
         ["migrate"] => Ok(VaultRequest::VaultMigrate),
         ["verify"] => Ok(VaultRequest::VaultVerify),
         ["status"] => Ok(VaultRequest::VaultStatus),
         _ => Err("usage: kepr vault init [--size MIB] | migrate | verify | status".into()),
+    }
+}
+
+/// `--size`: whole MiB, optionally followed by `M` or `MiB` in any case.
+/// The daemon checks the 1..=4096 range.
+fn parse_mib(s: &str) -> Result<u32, String> {
+    let digits = s.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let unit = &s[digits.len()..];
+    let unit_ok =
+        unit.is_empty() || unit.eq_ignore_ascii_case("m") || unit.eq_ignore_ascii_case("mib");
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) || !unit_ok {
+        return Err(BAD_SIZE.into());
+    }
+    digits.parse().map_err(|_| BAD_SIZE.to_string())
+}
+
+const BAD_SIZE: &str = "--size: use MiB: 64, 64M or 64MiB";
+
+/// `vault status`'s line for the daemon's `rollback_guard` (T12.30).
+fn guard_line(guard: &str) -> Option<&'static str> {
+    match guard {
+        "tpm2" => Some("rollback guard: TPM2 counter"),
+        "state-file" => Some(
+            "rollback guard: state file only (a restored copy of the whole disk is not caught)",
+        ),
+        _ => None,
     }
 }
 
@@ -85,6 +105,7 @@ fn show_status(v: &VaultResponse) {
         used_slots,
         epoch,
         legacy_files,
+        rollback_guard,
     } = v
     else {
         return;
@@ -104,6 +125,10 @@ fn show_status(v: &VaultResponse) {
             let ep = epoch.map_or(String::new(), |e| format!(", {e} commit(s)"));
             cli_ui::info(&format!("vault image: {mib} MiB, {pct}% used{exact}{ep}"));
         }
+    }
+    let guard = rollback_guard.as_deref().and_then(guard_line);
+    if let (true, Some(line)) = (*image || backend == "image", guard) {
+        cli_ui::info(line);
     }
     if *legacy_files > 0 {
         cli_ui::info(&format!(
@@ -136,7 +161,7 @@ mod tests {
     fn parses_each_subcommand() {
         assert!(matches!(
             parse(&args(&["init"])),
-            Ok(VaultRequest::VaultInit { size_mib: 16 })
+            Ok(VaultRequest::VaultInit { size_mib: 64 })
         ));
         assert!(matches!(
             parse(&args(&["init", "--size", "64"])),
@@ -157,6 +182,43 @@ mod tests {
     }
 
     #[test]
+    fn init_defaults_to_64_mib_and_takes_mib_suffixes() {
+        for a in [&["init"][..], &["init", "--size", "64"]] {
+            assert!(
+                matches!(
+                    parse(&args(a)),
+                    Ok(VaultRequest::VaultInit { size_mib: 64 })
+                ),
+                "{a:?}"
+            );
+        }
+        for s in ["64M", "64MiB", "64m", "64mib", "64MIB"] {
+            assert!(
+                matches!(
+                    parse(&args(&["init", "--size", s])),
+                    Ok(VaultRequest::VaultInit { size_mib: 64 })
+                ),
+                "{s}"
+            );
+        }
+        assert_eq!(parse_mib("4"), Ok(4));
+        for bad in [
+            "64G",
+            "M",
+            "-1",
+            "0x40",
+            "",
+            "64 M",
+            "+64",
+            "64MB",
+            "99999999999",
+        ] {
+            let e = parse_mib(bad).unwrap_err();
+            assert!(e.contains("64, 64M or 64MiB"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
     fn rejects_bad_input() {
         for bad in [
             &["init", "--size"][..],
@@ -168,6 +230,18 @@ mod tests {
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn status_names_the_rollback_guard() {
+        assert_eq!(guard_line("tpm2"), Some("rollback guard: TPM2 counter"));
+        assert_eq!(
+            guard_line("state-file"),
+            Some(
+                "rollback guard: state file only (a restored copy of the whole disk is not caught)"
+            )
+        );
+        assert_eq!(guard_line("something-newer"), None);
     }
 
     #[test]

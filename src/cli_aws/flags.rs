@@ -7,12 +7,14 @@
 //   kepr rotate NAME --every DUR   scheduled rotation (T7.07), with
 //                                  --hook CMD, --aws-iam or --db; `off` stops
 //   kepr rotate NAME --scheduled   run the scheduled rotator now (T7.07)
+//   kepr rotate --due              run every due schedule (T12.50; the
+//                                  system daemon's kepr-rotate.timer)
 
 use kepr_core::protocol::Response;
 
 use crate::cli_args::Args;
 
-pub const FLAGS: &[&str] = &["--aws-iam", "--db", "--every", "--scheduled"];
+pub const FLAGS: &[&str] = &["--aws-iam", "--db", "--every", "--scheduled", "--due"];
 
 #[derive(Debug, Default)]
 pub struct AwsFlags {
@@ -24,6 +26,8 @@ pub struct AwsFlags {
     pub every: Option<String>,
     /// `rotate --scheduled`: what the daemon spawns (T7.07).
     pub scheduled: bool,
+    /// `rotate --due`: every due schedule of the caller (T12.50).
+    pub due: bool,
 }
 
 impl AwsFlags {
@@ -33,6 +37,7 @@ impl AwsFlags {
             "--aws-iam" => self.aws_iam = true,
             "--db" => self.db = true,
             "--scheduled" => self.scheduled = true,
+            "--due" => self.due = true,
             "--every" => {
                 let v = raw.get(i + 1).ok_or("--every needs a duration, e.g. 30d")?;
                 self.every = Some(v.clone());
@@ -45,8 +50,18 @@ impl AwsFlags {
 
     /// Does `kepr rotate` belong to this batch?
     pub fn any(&self) -> bool {
-        self.aws_iam || self.db || self.scheduled || self.every.is_some()
+        self.aws_iam || self.db || self.scheduled || self.due || self.every.is_some()
     }
+}
+
+/// `--due` runs every due schedule: it takes no NAME and no other
+/// rotate flag (`hook`: whether `--hook` was given).
+fn due_alone(name: Option<&str>, f: &AwsFlags, hook: bool) -> Result<(), &'static str> {
+    let other = hook || f.aws_iam || f.db || f.scheduled || f.every.is_some();
+    if name.is_some() || other {
+        return Err("--due takes no NAME or other flag");
+    }
+    Ok(())
 }
 
 /// `kepr rotate NAME` with one of this batch's flags.
@@ -57,10 +72,18 @@ pub fn cmd_rotate(a: &Args) -> Response {
         }
         Response::fail(m)
     };
+    let f = &a.aws;
+    if f.due {
+        // --gen-kind only means something with --hook.
+        let hook = a.hook_path.is_some() || a.gen_kind.as_str() != "hex";
+        return match due_alone(a.name.as_deref(), f, hook) {
+            Ok(()) => super::rotate_sched::shout(super::rotate_sched::run_due()),
+            Err(m) => fail(m),
+        };
+    }
     let Some(name) = a.name.as_deref() else {
         return fail("rotate requires NAME");
     };
-    let f = &a.aws;
     if let Some(every) = &f.every {
         if f.scheduled {
             return fail("--scheduled runs an existing schedule; it takes no --every");
@@ -87,6 +110,35 @@ pub fn cmd_rotate(a: &Args) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parsed(args: &[&str]) -> AwsFlags {
+        let raw: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let mut f = AwsFlags::default();
+        let mut i = 2;
+        while i < raw.len() {
+            i = if FLAGS.contains(&raw[i].as_str()) {
+                f.take(&raw, i).unwrap()
+            } else {
+                i + 1
+            };
+        }
+        f
+    }
+
+    #[test]
+    fn due_stands_alone() {
+        let f = parsed(&["kepr", "rotate", "--due"]);
+        assert!(f.due && f.any(), "--due routes to this batch");
+        assert_eq!(due_alone(None, &f, false), Ok(()));
+        let msg = Err("--due takes no NAME or other flag");
+        assert_eq!(due_alone(Some("K"), &f, false), msg);
+        let f = parsed(&["kepr", "rotate", "--due", "--every", "30d"]);
+        assert_eq!(due_alone(None, &f, false), msg);
+        let f = parsed(&["kepr", "rotate", "--due", "--scheduled"]);
+        assert_eq!(due_alone(None, &f, false), msg);
+        let f = parsed(&["kepr", "rotate", "--due"]);
+        assert_eq!(due_alone(None, &f, true), msg, "--hook");
+    }
 
     #[test]
     fn takes_only_its_own_flags() {

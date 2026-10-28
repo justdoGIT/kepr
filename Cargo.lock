@@ -1389,6 +1389,7 @@ dependencies = [
 name = "kepr-core"
 version = "0.4.0"
 dependencies = [
+ "aws-lc-rs",
  "base64 0.23.1",
  "codspeed-divan-compat",
  "getrandom 0.4.3",
@@ -1415,8 +1416,10 @@ dependencies = [
 name = "kepr-gate"
 version = "0.4.0"
 dependencies = [
+ "aws-lc-rs",
  "base64 0.23.1",
  "bytes",
+ "flate2",
  "getrandom 0.4.3",
  "hex",
  "hmac",

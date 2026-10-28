@@ -10,11 +10,16 @@
 //! the current password fails and the pending one logs in. The gate then
 //! reports success without another ALTER, and the CLI commits.
 
+use std::num::NonZeroU32;
+
 use tokio::io::AsyncWriteExt;
 
 use crate::pg::{error_response, login, message, read_msg, DbRoute, Login};
 use crate::pg_tls::Io;
 use kepr_core::generate::ZeroString;
+
+/// PostgreSQL's default SCRAM iteration count.
+const ITERATIONS: NonZeroU32 = NonZeroU32::new(4096).unwrap();
 
 /// Read server messages until ReadyForQuery; `Err` with the server's
 /// text if an ErrorResponse came first.
@@ -45,7 +50,7 @@ pub async fn rotate(up: &mut Box<dyn Io>, pending: &str) -> Result<(), String> {
     until_ready(up).await?;
     let mut salt = [0u8; 16];
     getrandom::fill(&mut salt).map_err(|e| format!("CSPRNG failure: {e}"))?;
-    let v = crate::scram::verifier(pending, &salt, 4096);
+    let v = crate::scram::verifier(pending, &salt, ITERATIONS);
     // The verifier is base64 and `$` / `:` only: safe inside quotes.
     let mut q = format!("ALTER ROLE CURRENT_USER PASSWORD '{v}'").into_bytes();
     q.push(0);

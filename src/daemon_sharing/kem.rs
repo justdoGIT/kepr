@@ -16,15 +16,13 @@
 // (96 bytes); a v1 record holds only the 32-byte X25519 key and is
 // upgraded in place (same X25519 key, new ML-KEM seed) by `kepr share key`.
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::Aes256Gcm;
 use base64::Engine;
-use hkdf::Hkdf;
 use ml_kem::ml_kem_768::{DecapsulationKey, EncapsulationKey};
 use ml_kem::{Decapsulate, Encapsulate, KeyExport, TryKeyInit};
-use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
+
+use crate::daemon_eco::cipher;
 
 pub const PUB1: &str = "kepr-pub1-";
 pub const PUB2: &str = "kepr-pk2-";
@@ -37,7 +35,7 @@ const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL
 
 fn rand<const N: usize>() -> Result<Zeroizing<[u8; N]>, String> {
     let mut b = Zeroizing::new([0u8; N]);
-    getrandom::fill(b.as_mut()).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(b.as_mut()).map_err(|_| "CSPRNG failure".to_string())?;
     Ok(b)
 }
 
@@ -153,11 +151,7 @@ impl ShareSecret {
 
 fn kdf1(shared: &[u8; 32], eph: &[u8; 32], to: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     let salt = [&eph[..], to].concat();
-    let mut key = Zeroizing::new([0u8; 32]);
-    Hkdf::<Sha256>::new(Some(&salt), shared)
-        .expand(b"kepr-share-v1", key.as_mut())
-        .expect("32 bytes is a valid HKDF length");
-    key
+    cipher::hkdf_sha256(Some(&salt), shared, &[b"kepr-share-v1"])
 }
 
 fn kdf2(
@@ -170,22 +164,14 @@ fn kdf2(
     let Recipient::V2 { x, ek } = to else {
         unreachable!("kdf2 is only used with v2 recipients")
     };
-    let salt = Sha256::new().chain_update(eph).chain_update(ct).finalize();
+    let salt = cipher::sha256(&[eph, ct]);
     let ikm = Zeroizing::new([&x_ss[..], k_ss].concat());
-    let info = [&b"kepr-share-v2"[..], x, ek].concat();
-    let mut key = Zeroizing::new([0u8; 32]);
-    Hkdf::<Sha256>::new(Some(&salt), &ikm)
-        .expand(&info, key.as_mut())
-        .expect("32 bytes is a valid HKDF length");
-    key
+    cipher::hkdf_sha256(Some(&salt), &ikm, &[b"kepr-share-v2", x, ek])
 }
 
 fn gcm_seal(key: &[u8; 32], aad: &[u8], msg: &[u8]) -> Result<Vec<u8>, String> {
     let nonce = *rand::<12>()?;
-    let ct = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| "bad key")?
-        .encrypt(&nonce.into(), Payload { msg, aad })
-        .map_err(|_| "encryption failed")?;
+    let ct = cipher::seal(key, &nonce, aad, msg).map_err(|_| "encryption failed")?;
     Ok([&nonce[..], &ct].concat())
 }
 
@@ -194,17 +180,7 @@ fn gcm_open(key: &[u8; 32], aad: &[u8], body: &[u8]) -> Result<Zeroizing<Vec<u8>
         .get(..12)
         .and_then(|n| n.try_into().ok())
         .ok_or(NOT_YOURS)?;
-    Aes256Gcm::new_from_slice(key)
-        .map_err(|_| "bad key")?
-        .decrypt(
-            &nonce.into(),
-            Payload {
-                msg: &body[12..],
-                aad,
-            },
-        )
-        .map(Zeroizing::new)
-        .map_err(|_| NOT_YOURS.into())
+    cipher::open(key, &nonce, aad, &body[12..]).map_err(|_| NOT_YOURS.into())
 }
 
 const NOT_YOURS: &str = "this share is not for you, or it was altered";
@@ -358,5 +334,23 @@ mod tests {
         assert!(Recipient::parse("kepr-pk2-AAAA").is_err());
         assert!(Recipient::parse("ssh-ed25519 AAAA").is_err());
         assert!(ShareSecret::decode("AAAA").is_err());
+    }
+
+    fn fixed_secret() -> ShareSecret {
+        ShareSecret {
+            x: StaticSecret::from([5u8; 32]),
+            mlkem_seed: Some(Zeroizing::new([6u8; SEED_LEN])),
+        }
+    }
+
+    // Written by the code before it moved onto the cipher seam (T12.41):
+    // either crypto build must still open them.
+    #[test]
+    fn envelopes_written_by_the_old_code_still_open() {
+        let me = fixed_secret();
+        let v1 = "kepr-share1-EKk9GVDOiF8r0afrBKWwAGCxa2y_t7hkuEaBRLqQvkLdSpSONnhIPuwPdDAsHLIuc3C1r6pJDjJT0lUZ7jt2j2zVqJO0";
+        let v2 = "kepr-share2-Rm52-uD4ap0dErGd_NuXUlM2u6fCraFL6Kek3-l9qxGLfDpOU60MCNo1RHwvVKk32I6AX7yT0eBQrAcx5dWEsQYzPvOrNSsf-5sZ6jwxSz5WdTPge6bn3UVwHEfEGenCp99ynJKrCflh9_QGFIosG3Ymz9q4KeoKjHiuVn26AIrnF0R2qrBYznZKwopLKtjh1_Xcjr0sftu28B2DFdM6LfmRIsvq7IUWgpo8cKg_LGYhSHiz1hi_Ueg-sbAsMYmmDHzKSE5gCw1CFV3xGoW7AlcPvhL5gYWjK3Maw99jPgWXNYmjkmpd-7mt31bSPa8EB-pvB1fCwyLrEy4eB0n__5cE9Dg8Z9IY7Zh9MG-AViHG7g3nOg1QChhkS50Sb7sB95Xkwgq1HYBtsb57vwdONqoUokpB6Z_WY6iaxpHEDLwMAfP5Do1XQHLe7WlePxh0PCmlUyU_DfbuZVbpsHS7suv7qtKoN7OQWi9cbkqF8FghG5buFQVaojjK45JailYuzPi3SYAqxDTZdUF7QO_Z0fTB6RTBC0Ar7ZYLLyxcCbEz90oJC3cZYhHJLnlqWWY4rVyKf9HBYSh-Z-S4a3dXYWEdG3mKmsJSXDS8WPzFDvgOUSn4w8VNueHzZuP7z7jYY4_HBZ5pCytXHCISaZnZ3N0BBclgNUmnBLaZz1IJDRYo5D1XpvEnWSC579XLTNfphveoE-VQgAL8MkzWckyBNQ9bjdG4uwL5bqOb0BTQnlxmdgIRj2iu_mi3ePr6kcSew8R5SmCvvNli8aPjWfg8KPg6VaxFQYd60oWc4ld4OPF1kIbtiP5rhMJzGyNu4xddnVAugcVI0GfZwHTnmnDkg-U-a1LkGvhyvRxhKfxiT93VHqgunwnlzC29J73GMgyASpNDGHZ5uGVDGYPIXt7mucyheChBeQJFOIsnjSSXbOvobF4rjT6csbBu5FOLKfBn7iKkeHc-hpMTVxMD6d9MJsG-2oj_jyrUU4C1R_sDr_K9EeFfTLzCJmf9AUcfNhBFL6d6HlQKVeV_KJ__QzYqNlR-RCDAtUOv_JVQkMrmEqcAftfst3BXrD7liM6v-VxmeRA1RXSzeufsNbtJFDpJRNfyiQ34yJoUJle7WA58iLiyBnL6bHJw5s6soYi3Z2rjZJ-OeJ9dRpkwho02IVb1WSlzkgMyPhSuAdiftasvypojFVBI4iH6cShNdSwoEDCCcZ82Wvukoy85rb9m0-ubxWwcSJI1id3YZEDtA8-m8njXJGfD2dHITsWpG_H1-5ahNiFOJWPqEAgio7WPhZ6zprSmMlc7o56O0NBhFZWNsfMQiKWqKhh5VLqFKeNakUBkBUprdDI45Y0Rw5HmN96bso_nY4e9H5jcgK8khGOWtQ78boW2OdNnkg9nE7RXgkXwfmLT-cpH6CQzU8jsz-JMifFQE-WMBQBb1DE4Vpr7SbS7iPIa01PAfdHrBtIn_YO0gCbGE8_TJPA-SI2DOWHX-ehhmVr2dQiaPqUhcYh11JHMoSa8OpdFkwOcJ5wJSUu3KcGug4Q";
+        assert_eq!(&**open(&me, v1).unwrap(), b"pinned v1");
+        assert_eq!(&**open(&me, v2).unwrap(), b"pinned v2");
     }
 }

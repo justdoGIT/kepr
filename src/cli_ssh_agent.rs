@@ -276,6 +276,43 @@ mod tests {
     }
 
     #[test]
+    fn an_ecdsa_identity_is_listed_and_signs() {
+        // T12.11: the agent passes blobs through, whatever their type.
+        struct Ecdsa;
+        let blob = kepr_core::ssh_wire_ecdsa::public_blob(&[4; 65]);
+        impl Keys for Ecdsa {
+            fn list(&self) -> Result<Vec<SshKeyInfo>, String> {
+                Ok(vec![SshKeyInfo {
+                    name: "E".into(),
+                    public_b64: ssh_wire::b64(&kepr_core::ssh_wire_ecdsa::public_blob(&[4; 65])),
+                    comment: "c".into(),
+                }])
+            }
+            fn sign(&self, name: &str, _: &[u8]) -> Result<Vec<u8>, String> {
+                assert_eq!(name, "E");
+                Ok(kepr_core::ssh_wire_ecdsa::signature_blob(
+                    &[1; 32], &[2; 32],
+                ))
+            }
+        }
+        let r = answer(&Ecdsa, &[REQUEST_IDENTITIES]);
+        let mut body: &[u8] = &r[5..];
+        assert_eq!(take_string(&mut body), Some(blob.as_slice()));
+        let mut req = vec![SIGN_REQUEST];
+        put_string(&mut req, &blob);
+        put_string(&mut req, b"tbs");
+        req.extend_from_slice(&0u32.to_be_bytes());
+        let r = answer(&Ecdsa, &req);
+        assert_eq!(r[0], SIGN_RESPONSE);
+        let mut body: &[u8] = &r[1..];
+        let sig = take_string(&mut body).unwrap();
+        assert_eq!(
+            kepr_core::ssh_wire_ecdsa::parse_signature_blob(sig),
+            Some(([1; 32], [2; 32]))
+        );
+    }
+
+    #[test]
     fn unknown_key_and_other_requests_fail() {
         let mut req = vec![SIGN_REQUEST];
         put_string(&mut req, &ssh_wire::ed25519_public_blob(&[4; 32]));

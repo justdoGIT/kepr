@@ -17,13 +17,10 @@ use http_body_util::BodyExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 
-use zeroize::Zeroizing;
-
 use crate::db::DbRoute;
 use crate::proxy::{Body, State};
 use crate::vault::Cache;
 use kepr_core::gate_record::{GateRecord, RecChunk, FROM_AGENT, MAX_PIECE, TO_AGENT};
-use kepr_core::generate::ZeroString;
 
 /// Unsent bytes kept at most; beyond it chunks are counted as dropped
 /// rather than slowing the agent down.
@@ -114,30 +111,18 @@ impl Recorder {
     }
 
     /// The response the agent receives: its status line, then the body
-    /// as it streams, with this session's resolved values masked out.
-    pub fn http_response(
-        self: &Arc<Self>,
-        conn: u64,
-        route: &str,
-        status: u16,
-        b: Body,
-        cache: &Cache,
-    ) -> Body {
+    /// as it streams. The frames arrive already masked (mask.rs, T12.01),
+    /// so an upstream echoing a resolved value never puts it here.
+    pub fn http_response(self: &Arc<Self>, conn: u64, route: &str, status: u16, b: Body) -> Body {
         if !self.on {
             return b;
         }
         let line = format!("HTTP {status}\n\n");
         self.push(conn, route, "http", TO_AGENT, line.as_bytes());
-        let mut masked = Masked {
-            rec: self.clone(),
-            conn,
-            route: route.to_string(),
-            secrets: cache.values().into_iter().map(|(_, v)| v).collect(),
-            carry: Zeroizing::default(),
-        };
+        let (rec, route) = (self.clone(), route.to_string());
         b.map_frame(move |f| {
             if let Some(d) = f.data_ref() {
-                masked.feed(d);
+                rec.push(conn, &route, "http", TO_AGENT, d);
             }
             f
         })
@@ -152,54 +137,6 @@ impl Recorder {
             rec: self,
             route,
             kind,
-        }
-    }
-}
-
-/// A response body on its way into the recording. The agent's side holds
-/// placeholders only, but an upstream may echo the key it was sent (an
-/// error message quoting it): every value this session resolved is
-/// overwritten with `*` before it is recorded. The last bytes wait for
-/// the next frame, so a value split across two frames is caught too.
-struct Masked {
-    rec: Arc<Recorder>,
-    conn: u64,
-    route: String,
-    secrets: Vec<ZeroString>,
-    carry: Zeroizing<Vec<u8>>,
-}
-
-impl Masked {
-    fn feed(&mut self, data: &[u8]) {
-        let longest = self.secrets.iter().map(|s| s.as_str().len()).max();
-        let keep = longest.unwrap_or(0).saturating_sub(1);
-        let mut buf = Zeroizing::new([&self.carry[..], data].concat());
-        mask(&mut buf, &self.secrets);
-        let cut = buf.len().saturating_sub(keep);
-        self.rec
-            .push(self.conn, &self.route, "http", TO_AGENT, &buf[..cut]);
-        self.carry = Zeroizing::new(buf[cut..].to_vec());
-    }
-}
-
-impl Drop for Masked {
-    fn drop(&mut self) {
-        let rest = std::mem::take(&mut self.carry);
-        self.rec
-            .push(self.conn, &self.route, "http", TO_AGENT, &rest);
-    }
-}
-
-fn mask(buf: &mut [u8], secrets: &[ZeroString]) {
-    for s in secrets.iter().map(|s| s.as_str().as_bytes()) {
-        let mut i = 0;
-        while !s.is_empty() && i + s.len() <= buf.len() {
-            if &buf[i..i + s.len()] == s {
-                buf[i..i + s.len()].fill(b'*');
-                i += s.len();
-            } else {
-                i += 1;
-            }
         }
     }
 }
@@ -337,29 +274,6 @@ mod tests {
         assert_eq!(text[1], b"{\"a\":1}");
         assert_eq!((text[2].len(), text[3].len()), (MAX_PIECE, 1), "split");
         assert!(chunks.iter().all(|ch| ch.conn == c));
-    }
-
-    #[test]
-    fn a_value_split_across_frames_is_masked() {
-        let rec = Arc::new(Recorder::new(true));
-        let mut m = Masked {
-            rec: rec.clone(),
-            conn: 1,
-            route: "anthropic".into(),
-            secrets: vec![ZeroString::from_string("sk-abcdefgh".into())],
-            carry: Zeroizing::default(),
-        };
-        for frame in ["key=sk-abc", "defgh ok", " and sk-abcdefgh"] {
-            m.feed(frame.as_bytes());
-        }
-        drop(m);
-        let text: Vec<u8> = rec
-            .take()
-            .into_iter()
-            .flat_map(|b| b.chunks)
-            .flat_map(|c| c.bytes())
-            .collect();
-        assert_eq!(text, b"key=*********** ok and ***********");
     }
 
     #[test]

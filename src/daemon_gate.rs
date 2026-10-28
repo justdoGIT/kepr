@@ -86,6 +86,10 @@ pub fn bump_generation() {
     GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
+pub(crate) fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Release a sealed value to a gate, or `Err(())` after auditing why.
 /// The gate only ever sees the generic "credential unavailable".
 pub fn resolve_for_gate(
@@ -189,8 +193,7 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
             },
             Ok(GateRequest::Generation { id }) => GateResponse::Generation {
                 id,
-                generation: GENERATION.load(std::sync::atomic::Ordering::SeqCst)
-                    + owner.deadlines.passed(expiry::now_unix()),
+                generation: generation() + owner.deadlines.passed(expiry::now_unix()),
             },
             Ok(GateRequest::Record { id, record }) => owner.rec.handle(id, record),
             Ok(GateRequest::Journal { id, entries }) => crate::daemon_gatex::logs::handle_journal(
