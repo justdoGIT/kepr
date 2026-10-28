@@ -25,6 +25,8 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, r: VaultRequest) -> Re
         VaultRequest::VaultMigrate => ("vault-migrate", migrate(uid)),
         VaultRequest::VaultVerify => ("vault-verify", verify(uid)),
         VaultRequest::VaultStatus => ("vault-status", Ok(status(uid))),
+        VaultRequest::VaultResize { size_mib } => ("vault-resize", resize(uid, size_mib)),
+        VaultRequest::VaultToFiles => ("vault-to-files", to_files(uid)),
     };
     audit::log(&AuditEvent {
         op,
@@ -100,6 +102,43 @@ fn migrate(uid: u32) -> Result<VaultResponse, String> {
     crate::daemon_gate::bump_generation();
     let (migrated, skipped) = r?;
     Ok(VaultResponse::VaultMigrateOk { migrated, skipped })
+}
+
+/// The owner's whole-store operations: no gate, one at a time.
+fn exclusive<T>(uid: u32, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    owner_only(uid)?;
+    if gates_running() {
+        return Err("stop running agent sessions first (kepr panic)".into());
+    }
+    let _one = match MIGRATING.try_lock() {
+        Ok(g) => g,
+        Err(TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(TryLockError::WouldBlock) => return Err("a vault operation is already running".into()),
+    };
+    f()
+}
+
+fn resize(uid: u32, size_mib: u32) -> Result<VaultResponse, String> {
+    exclusive(uid, || {
+        let r = with_backend(|b| b.resize(size_mib))?;
+        Ok(VaultResponse::VaultResizeOk {
+            old_mib: r.old_mib,
+            new_mib: r.new_mib,
+            records: r.records,
+        })
+    })
+}
+
+fn to_files(uid: u32) -> Result<VaultResponse, String> {
+    exclusive(uid, || {
+        let image = super::active()
+            .ok_or("the per-file store is active: nothing to move out of the image")?;
+        let files = crate::crypto::file_backend().ok_or("credential backend is not initialized")?;
+        let r = image.to_files(files, &crate::store::store_dir());
+        crate::daemon_gate::bump_generation();
+        let (moved, left) = r?;
+        Ok(VaultResponse::VaultToFilesOk { moved, left })
+    })
 }
 
 fn verify(uid: u32) -> Result<VaultResponse, String> {

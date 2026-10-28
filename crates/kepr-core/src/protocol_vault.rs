@@ -21,6 +21,14 @@ pub enum VaultRequest {
     /// Re-read the image and check the index, every page and the root.
     VaultVerify,
     VaultStatus,
+    /// T13.11: rebuild the image at another size (owner only; no gate
+    /// running). Shrinking needs the used slots to fit with 25 % spare.
+    VaultResize {
+        size_mib: u32,
+    },
+    /// T13.11: move every record back into per-file credentials (owner
+    /// only; no gate running; the image store must be active).
+    VaultToFiles,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,6 +48,18 @@ pub enum VaultResponse {
         records: Option<usize>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         slots: Option<usize>,
+    },
+    VaultResizeOk {
+        old_mib: u32,
+        new_mib: u32,
+        /// Owner only (it spans every user).
+        records: usize,
+    },
+    VaultToFilesOk {
+        moved: usize,
+        /// Left in the image: a per-file credential with another value
+        /// exists, or the record does not read.
+        left: usize,
     },
     VaultStatusOk {
         /// `file` or `image`: the store the daemon is using.

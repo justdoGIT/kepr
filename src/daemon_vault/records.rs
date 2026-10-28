@@ -110,9 +110,24 @@ impl<I: SlotIo> VaultImage<I> {
         value: Option<&[u8]>,
         meta: Option<&[u8]>,
     ) -> Result<(), String> {
+        self.put_record_at(keys, name, (value, meta), None)
+    }
+
+    /// [`put_record`](Self::put_record) keeping a given write time (a
+    /// record copied into another image keeps its age; T13.11).
+    pub fn put_record_at(
+        &mut self,
+        keys: &Keys,
+        name: &str,
+        (value, meta): (Option<&[u8]>, Option<&[u8]>),
+        updated: Option<u64>,
+    ) -> Result<(), String> {
         let old = self.load_index(keys)?;
         let mut alloc = self.allocator(&old);
-        let (entry, writes) = self.seal_record(keys, &old, &mut alloc, name, (value, meta))?;
+        let (mut entry, writes) = self.seal_record(keys, &old, &mut alloc, name, (value, meta))?;
+        if let Some(t) = updated {
+            entry.updated = t;
+        }
         let mut new = old.clone();
         new.entries.insert(name.to_string(), entry);
         self.commit_index(keys, &old, new, alloc, writes)

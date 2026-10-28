@@ -20,6 +20,7 @@
 //   sweep.rs   TTL expiry inside the image (T4.06)
 //   admin.rs   create / check / usage of the whole image (T4.07)
 //   migrate.rs move the per-file store into the image (T4.07)
+//   resize.rs  grow / shrink the image; move it back to files (T13.11)
 //   handlers.rs `kepr vault init|migrate|verify|status` (T4.07)
 //   listing.rs every record, for the store features (T4.14)
 //   rollback.rs the header's anchor to an off-disk counter (T12.27); a
@@ -38,6 +39,7 @@ pub mod merkle;
 pub mod migrate;
 pub mod place;
 pub mod records;
+pub mod resize;
 pub mod rollback;
 pub mod slot;
 pub mod sweep;
