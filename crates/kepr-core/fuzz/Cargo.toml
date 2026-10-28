@@ -46,6 +46,41 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ssh_wire_fuzz"
+path = "fuzz_targets/ssh_wire_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mysql_wire_fuzz"
+path = "fuzz_targets/mysql_wire_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recovery_words_fuzz"
+path = "fuzz_targets/recovery_words_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shamir_fuzz"
+path = "fuzz_targets/shamir_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_lite_fuzz"
+path = "fuzz_targets/http_lite_fuzz.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 # Empty workspace block: explicitly declares that this crate is its
 # own workspace root, so `cargo +nightly fuzz run ...` does not try to
