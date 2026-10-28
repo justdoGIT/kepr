@@ -20,7 +20,10 @@
 // a 1 s pause; the key must open at least one credential file (or the
 // vault image) before it is installed; then it is sealed again for the
 // current boot state and written over the key file. Audited as
-// `recovery-unlock`.
+// `recovery-unlock`. It is sealed again only by the same kind of sealer
+// that sealed the old key: a daemon started without its sealer settings
+// would otherwise swap a TPM2- or key-service-bound seal for the host key
+// or the owner-only file. Then the store stays unlocked for this run only.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -181,6 +184,43 @@ pub(crate) struct Unlock<'a> {
     pub pause: &'a dyn Fn(),
 }
 
+/// The sealer family a key blob belongs to, by its header. What
+/// systemd-creds wrote has none of ours.
+fn family(blob: &[u8]) -> &'static str {
+    const KNOWN: [(&[u8], &str); 4] = [
+        (b"kepr-tpm2-v1\n", "tpm2"),
+        (b"kepr-kek1\n", "key service"),
+        (b"kepr-keychain-v1\n", "keychain"),
+        (b"kepr-local-v1\n", "owner-only file"),
+    ];
+    KNOWN
+        .iter()
+        .find(|(magic, _)| blob.starts_with(magic))
+        .map_or("host key", |(_, name)| name)
+}
+
+/// Refuse to replace the key file with a seal of another family or other
+/// binding than the one it has (`master.key.seal` records `host`, `tpm2`
+/// or `host+tpm2`).
+fn not_weaker(key_file: &Path, sealer: &dyn Sealer, blob: &[u8]) -> Result<(), String> {
+    let differs = |what: &str| {
+        Err(format!(
+            "the sealer settings differ from the ones that sealed this key ({what}); \
+             start the daemon with its usual KEPR_MASTER_KEY_SEAL settings, then unlock again"
+        ))
+    };
+    if let Ok(old) = std::fs::read(key_file) {
+        if family(&old) != family(blob) {
+            return differs(family(&old));
+        }
+    }
+    let recorded = std::fs::read_to_string(crate::master_key::seal_record_path(key_file)).ok();
+    match (recorded.as_deref().map(str::trim), sealer.seal_kind()) {
+        (Some(was), now) if now.as_deref() != Some(was) => differs(was),
+        _ => Ok(()),
+    }
+}
+
 /// Ok(None): unlocked and sealed again. Ok(Some(e)): unlocked for this
 /// run only, sealing again failed with `e`.
 fn unlock_with(uid: u32, fence: Fence, words: &str, u: &Unlock) -> Result<Option<String>, String> {
@@ -208,6 +248,7 @@ fn unlock_with(uid: u32, fence: Fence, words: &str, u: &Unlock) -> Result<Option
     (u.install)(&key)?;
     let resealed = (u.sealer)().and_then(|s| {
         let blob = s.seal(&key)?;
+        not_weaker(u.key_file, s.as_ref(), &blob)?;
         crate::atomic_file::write(u.key_file, &blob, 0o600)
             .map_err(|e| format!("cannot write master key: {e}"))?;
         crate::master_key::record_seal_kind(u.key_file, s.as_ref()); // T12.33
@@ -383,6 +424,8 @@ mod tests {
         installed: std::sync::Mutex<Option<[u8; 32]>>,
         pauses: Cell<u32>,
         opens: usize,
+        /// What the new sealer says it binds a key to.
+        kind: Option<&'static str>,
     }
 
     impl Rig {
@@ -398,6 +441,7 @@ mod tests {
                 installed: Default::default(),
                 pauses: Cell::new(0),
                 opens: 2,
+                kind: None,
             }
         }
 
@@ -407,7 +451,7 @@ mod tests {
 
         fn run(&self, uid: u32, fence: Fence, w: &str) -> Result<Option<String>, String> {
             let (env, key) = (self.dir.path().join("rec"), self.key_file());
-            let sealer = self.sealer.clone();
+            let (sealer, kind) = (self.sealer.clone(), self.kind);
             let probe = |k: &[u8; 32]| (if *k == LIVE { self.opens } else { 0 }, 3);
             let install = |k: &[u8; 32]| {
                 *self.installed.lock().unwrap() = Some(*k);
@@ -419,7 +463,7 @@ mod tests {
                 key_file: &key,
                 probe: &probe,
                 install: &install,
-                sealer: &move || Ok(Box::new(Shared(sealer.clone())) as Box<dyn Sealer>),
+                sealer: &move || Ok(Box::new(Shared(sealer.clone(), kind)) as Box<dyn Sealer>),
                 pause: &|| self.pauses.set(self.pauses.get() + 1),
             };
             unlock_with(uid, fence, w, &u)
@@ -431,7 +475,7 @@ mod tests {
     }
 
     /// The rig's counting sealer behind a Box.
-    struct Shared(std::sync::Arc<Counting>);
+    struct Shared(std::sync::Arc<Counting>, Option<&'static str>);
 
     impl Sealer for Shared {
         fn seal(&self, key: &[u8; 32]) -> Result<Vec<u8>, String> {
@@ -440,16 +484,22 @@ mod tests {
         fn unseal(&self, blob: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
             self.0.unseal(blob)
         }
+        fn seal_kind(&self) -> Option<String> {
+            self.1.map(String::from)
+        }
     }
 
     #[test]
     fn right_words_unlock_and_reseal_once() {
         let rig = Rig::new();
-        // What sealed the old key no longer applies (T12.33).
+        // A sealer that can't say what it binds to drops the stale record
+        // (T12.33) when the old key had none.
         let record = crate::master_key::seal_record_path(&rig.key_file());
-        std::fs::write(&record, b"host+tpm2").unwrap();
+        std::fs::write(&record, b"host").unwrap();
+        let mut rig = rig;
+        rig.kind = Some("host");
         assert_eq!(rig.run(0, OPEN, words(1).as_str()), Ok(None));
-        assert!(!record.exists(), "a sealer that can't say drops the record");
+        assert_eq!(std::fs::read(&record).unwrap(), b"host");
         assert_eq!(rig.installed(), Some(LIVE));
         assert_eq!(rig.sealer.seals(), 1);
         let blob = std::fs::read(rig.key_file()).unwrap();
@@ -497,6 +547,34 @@ mod tests {
         assert_eq!(std::fs::read(rig.key_file()).unwrap(), b"sealed elsewhere");
         // The next start needs the recovery key again; so may a retry now.
         assert!(rig.flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_weaker_sealer_never_replaces_the_key_file() {
+        let words = words(1);
+        // Another family: the key service blob would become the host key.
+        let rig = Rig::new();
+        std::fs::write(rig.key_file(), b"kepr-kek1\nrest").unwrap();
+        let r = rig.run(0, OPEN, words.as_str()).unwrap();
+        assert!(r.unwrap().contains("sealer settings differ"));
+        assert_eq!(std::fs::read(rig.key_file()).unwrap(), b"kepr-kek1\nrest");
+        assert_eq!(rig.installed(), Some(LIVE), "unlocked for this run");
+        assert!(
+            rig.flag.load(Ordering::SeqCst),
+            "the next start needs it again"
+        );
+        // Same family, other binding: host+tpm2 must not become host.
+        let mut rig = Rig::new();
+        let record = crate::master_key::seal_record_path(&rig.key_file());
+        std::fs::write(&record, b"host+tpm2").unwrap();
+        rig.kind = Some("host");
+        assert!(rig.run(0, OPEN, words.as_str()).unwrap().is_some());
+        // ... and a sealer that can't say what it binds to is no match.
+        rig.kind = None;
+        assert!(rig.run(0, OPEN, words.as_str()).unwrap().is_some());
+        assert_eq!(std::fs::read(rig.key_file()).unwrap(), b"sealed elsewhere");
+        rig.kind = Some("host+tpm2");
+        assert_eq!(rig.run(0, OPEN, words.as_str()), Ok(None));
     }
 
     #[test]
