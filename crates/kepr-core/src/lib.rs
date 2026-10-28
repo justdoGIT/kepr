@@ -83,6 +83,8 @@ pub mod http_lite;
 pub mod login_unlock;
 pub mod profile;
 pub mod protocol_session;
+// batch: desktop
+pub mod protocol_desktop;
 // batch: gate-sec (P12)
 pub mod landlock;
 pub mod seccomp;

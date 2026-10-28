@@ -140,6 +140,7 @@ fn needs_key(r: &Request) -> bool {
             | Request::Set { .. }
             | Request::RecordSet { .. }
             | Request::Records(_)
+            | Request::Desktop(_)
             | Request::StartGate { .. }
             | Request::SshList
             | Request::SshSign { .. }

@@ -120,7 +120,7 @@ module against a real PAM stack as root (`pamtester`, libpam) and
 | AI agents, databases, cloud APIs | `kepr agent run`: sealed keys the agent never sees, swapped in by the gate | Per session |
 | Services and containers | `kepr systemd-cred`, the Podman driver, the CSI and External Secrets providers, `kepr keyring add` | At unit, pod or boot time |
 | Certificates and workload identity | `kepr pki`, SPIFFE SVIDs | On issue |
-| Programs that only speak Secret Service (browsers, GNOME and KDE apps) | **Not built.** Those still use GNOME Keyring or KWallet. | |
+| Programs that only speak Secret Service (browsers, GNOME and KDE apps) | `kepr secret-service`: kepr is the session's keyring (see [Replace GNOME Keyring](/docs/guides/replace-gnome-keyring)) | Per request, after unlock; a locked kepr shows a passphrase dialog |
 
 ## What stays outside kepr
 

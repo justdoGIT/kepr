@@ -126,7 +126,8 @@ if $SYSTEM_MODE; then
     # Scheduled rotations (T12.50): the system daemon never runs user
     # rotators, so each user's own timer runs `kepr rotate --due`.
     sudo install -d -m 0755 /usr/lib/systemd/user
-    sudo install -m 0644 systemd/user/kepr-rotate.service systemd/user/kepr-rotate.timer /usr/lib/systemd/user/
+    sudo install -m 0644 systemd/user/kepr-rotate.service systemd/user/kepr-rotate.timer \
+        systemd/user/kepr-secret-service.service /usr/lib/systemd/user/
     sudo systemctl enable kepr.service
     sudo systemctl restart kepr.service
     sleep 1
@@ -153,8 +154,9 @@ if $LOGIN; then
     # the session, so a login can hand the daemon the password.
     sudo install -d -m 0755 /usr/lib/systemd/user
     sudo install -m 0644 systemd/user/kepr-daemon.service systemd/user/kepr-ssh-agent.service \
+        systemd/user/kepr-secret-service.service \
         systemd/user/kepr-rotate.service systemd/user/kepr-rotate.timer /usr/lib/systemd/user/
-    ok "user units → /usr/lib/systemd/user (kepr-daemon, kepr-ssh-agent, kepr-rotate)"
+    ok "user units → /usr/lib/systemd/user (kepr-daemon, kepr-ssh-agent, kepr-secret-service, kepr-rotate)"
 
     # Where this system keeps PAM modules: next to pam_unix.so.
     PAM_UNIX="$(find /lib* /usr/lib* -name pam_unix.so 2>/dev/null | head -n 1 || true)"
@@ -209,6 +211,9 @@ echo -e "
 
   Run an AI agent with sealed keys it never sees:
     ${CYN}kepr agent add ANTHROPIC_API_KEY && kepr agent run claude${RST}
+"
+echo -e "  Use kepr as the desktop's Secret Service (instead of GNOME Keyring or KWallet):
+    ${CYN}kepr secret-service takeover${RST}       # imports the current keyring first; \`restore\` undoes it
 "
 if $LOGIN; then
 echo -e "  Finish unlock at login:

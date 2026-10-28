@@ -52,6 +52,7 @@ mod cli_more;
 mod cli_record;
 mod cli_recovery;
 mod cli_rotate;
+mod cli_sandbox_bus; // T13.28
 mod cli_sandbox_relay;
 mod cli_sandbox_seccomp;
 mod cli_sandbox_sys;
@@ -97,6 +98,8 @@ mod cli_platform;
 // batch: session
 mod cli_sandbox_landlock; // T1.23
 mod cli_session;
+// batch: desktop
+mod cli_desktop;
 // end of batches
 
 use cli_args::parse_args;

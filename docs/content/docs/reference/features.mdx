@@ -1012,10 +1012,63 @@ type your sudo password and which program gets which key, is the
 `tests/pam_e2e.sh` runs the module against a real PAM stack (root,
 `pamtester`, libpam via `tests/pam_harness.py`); `tests/login_cli.rs` runs
 the helpers and the daemon without PAM; `tests/login_assets.rs` pins the
-units, the profile and the installer. Not built: packaging `pam_kepr.so` in
-the .deb / .rpm / tarball, a Secret Service (D-Bus) front end for GNOME
-Keyring / KWallet clients, unlocking stores that also need a security key at
-login, and the Windows side (see the guide).
+units, the profile and the installer; `tests/desktop_packaging.rs` pins what
+the .deb, .rpm and tarball ship (the module, the profile, the user units).
+Not built: unlocking stores that also need a security key at login, and the
+Windows side (see the guide).
+
+### Secret Service (desktop keyring)
+
+`kepr secret-service run` serves `org.freedesktop.secrets` on the session
+bus from kepr's store, so libsecret programs, browsers, NetworkManager and
+git helpers keep their passwords in kepr instead of GNOME Keyring or
+KWallet. The guide is [Replace GNOME Keyring](/docs/guides/replace-gnome-keyring).
+
+| Command | Does |
+| --- | --- |
+| `secret-service run [--replace]` | The service (foreground; the `kepr-secret-service.service` user unit or the bus starts it). SIGHUP re-reads the policy. |
+| `secret-service takeover [--now] [--no-import]` | Imports the current provider's items, writes `~/.local/share/dbus-1/services/org.freedesktop.secrets.service`, masks GNOME Keyring's user units and its secrets autostart entry. `--now` also stops a running GNOME Keyring / KWallet and starts kepr. |
+| `secret-service restore` | Undoes exactly what `takeover` recorded in `~/.config/kepr/secret-service-takeover.json`. |
+| `secret-service import [--dry-run] [--overwrite]` | Copies the current provider's items (collections by id or label; its default collection into kepr's `login`). Existing items are kept unless `--overwrite`; a dry run reads no secret. |
+| `secret-service status` | Who owns the name, whether takeover is on, the policy file, and what could still start GNOME Keyring first (units, `pam_gnome_keyring.so`). |
+| `secret-service log [-n N]` | The call log (program, operation, item id and label, result). |
+| `secret-service policy [check EXE [read\|write\|search]]` | Shows the rule file (or an example) / the verdict for a program. |
+| `secret store\|lookup\|search\|clear\|ls` | `secret-tool` verbs against the same items, without libsecret. `store` reads the secret on stdin; `search` shows labels and attributes only (`--secrets` adds the values). |
+
+* **Protocol.** Secret Service 0.2 over a hand-written D-Bus implementation
+  (`src/cli_desktop/dbus/`: signatures, marshalling, messages, SASL
+  EXTERNAL, a threaded connection; no async runtime). Sessions: `plain` and
+  `dh-ietf1024-sha256-aes128-cbc-pkcs7`. Collections `login` (the `default`
+  alias) and any an application creates; the memory-only `session`
+  collection; `Unlock` prompts.
+* **Storage.** In the daemon (`daemon_desktop/`, `Request::Desktop`): each
+  item is one JSON document in one encrypted credential `SSI_<26 base32
+  characters>`, folder `secret-service`, `.meta` `desktop_item`. Attributes
+  are matched inside the daemon; a secret leaves only through
+  `SsItemSecret` (policy-checked as a `get`, audited `ss-secret`). `kepr
+  get` refuses them, `kepr ls` folds them (`--folder secret-service` lists
+  them), `kepr health` skips them; export, sync and the vault image carry
+  them. Limits: 32 KiB per secret, 10,000 items, 64 collections.
+* **Lock.** The service answers with the cached labels and attributes while
+  kepr is locked (never a secret), says `IsLocked` for a secret, and offers
+  a prompt that shows the passphrase dialog (`$KEPR_ASKPASS`, pinentry,
+  zenity, kdialog). The first call at a cold start waits up to 20 s for the
+  dialog; a refusal is not asked again for 10 s. Lock changes are announced
+  once a second (`PropertiesChanged` on every collection and item).
+* **Policy** (`~/.config/kepr/secret-service.toml`): `default`, then
+  `[[rule]]` with `exe` (glob), `op` (`search`, `read`, `write`, `all`),
+  `sandboxed`, `action`; first match wins; a broken file refuses everything.
+* **Log** (`$XDG_STATE_HOME/kepr/secret-service.log`, 0600, rotated at
+  1 MiB): the program (from `/proc` of the pid the bus names), operation,
+  item id, label, result; never an attribute value or a secret.
+* **Agents.** `kepr agent run` covers the session bus socket with
+  `/dev/null` and hides `$XDG_RUNTIME_DIR/keyring` and `/gcr`;
+  `KEPR_SANDBOX_DBUS=allow` keeps them (`src/cli_sandbox_bus.rs`).
+
+`tests/secret_service_e2e.sh` runs it against a real `dbus-daemon`;
+`tests/desktop_packaging.rs` pins the user unit. Not built: the legacy
+`org.gnome.keyring` / `org.kde.kwalletd` APIs, a certificate / PKCS#11 store,
+the Flatpak portal backend.
 
 ### Post-quantum TLS in the gate
 
@@ -1848,6 +1901,8 @@ own credentials.
 | `KEPR_AUTO_MANIFEST=1` | Look for `.kepr.toml` in and above the working directory. |
 | `KEPR_STAGE=S` | Default `--stage` for `exec` / `env` when a manifest is used. |
 | `KEPR_LANDLOCK` | `strict`: also fence hidden paths under `$HOME` in the agent sandbox; `0`: no Landlock rules. |
+| `KEPR_SANDBOX_DBUS` | `allow`: leave the session bus reachable inside the agent sandbox (it is covered with `/dev/null` otherwise). |
+| `KEPR_ASKPASS` | `kepr secret-service`: a program that prints the store passphrase, used for the unlock dialog before pinentry, zenity and kdialog. |
 | `KEPR_FIDO2_DEVICE` | Security key for `lock --fido2` / `unlock` (default: the first one listed). |
 | `KEPR_HOLD_TOKEN` | Token for `kepr checkin` when `--token` isn't given. |
 | `KEPR_SERVE_TOKEN_FILE` | Bearer-token file for `kepr serve` (required). |

@@ -32,6 +32,8 @@ pub struct Plan {
     pub argv: Vec<CString>,
     pub envp: Vec<CString>,
     pub hide: Vec<CString>,
+    /// Socket files covered with /dev/null: the session bus (T13.28).
+    pub hide_files: Vec<CString>,
     pub gate_port: u16,
     /// Database and tunnel ports (T7.03), relayed like the gate's port.
     pub extra_ports: Vec<u16>,
@@ -65,6 +67,7 @@ fn hide_dirs_with(mountinfo: &str) -> Vec<PathBuf> {
     v.push(kepr_core::protocol::runtime_root()); // T11.16: every profile's socket
     v.extend(["/etc/credstore.encrypted", "/var/lib/kepr", "/run/kepr"].map(PathBuf::from));
     v.extend(sys::fuse_kepr_mounts(mountinfo));
+    v.extend(crate::cli_sandbox_bus::hidden_dirs()); // T13.28: keyring sockets
     outermost(v.into_iter().filter(|p| p.is_dir()).collect())
 }
 
@@ -104,6 +107,7 @@ impl Plan {
             argv: cstrings(argv.iter().cloned())?,
             envp: cstrings(env.into_iter().map(|(k, v)| format!("{k}={v}")))?,
             hide,
+            hide_files: crate::cli_sandbox_bus::hidden_cstrings(),
             gate_port,
             extra_ports: Vec::new(),
             isolate_net,
@@ -183,6 +187,7 @@ pub fn probe(isolate_net: bool) -> Result<(), String> {
         .into_iter()
         .filter_map(|p| CString::new(p.as_os_str().as_encoded_bytes()).ok())
         .collect();
+    let files = crate::cli_sandbox_bus::hidden_cstrings();
     let (mut rd, wr) = UnixStream::pair().map_err(|e| e.to_string())?;
     let pid = fork();
     if pid < 0 {
@@ -202,7 +207,11 @@ pub fn probe(isolate_net: bool) -> Result<(), String> {
         let inner = fork();
         if inner == 0 {
             let keep = [wr.as_raw_fd()]; // T12.52: a failure makes the default warn
-            report(sys::setup_mounts(&hide).and_then(|()| sys::close_inherited(&keep)));
+            report(
+                sys::setup_mounts(&hide)
+                    .and_then(|()| sys::mask_files(&files))
+                    .and_then(|()| sys::close_inherited(&keep)),
+            );
         }
         wait_code(inner);
         // SAFETY: _exit after fork.
@@ -250,7 +259,7 @@ fn exec_harness(plan: &Plan) -> ! {
 
 /// pid 1 of the sandbox: set up mounts, start the acceptor, run and reap.
 fn init(plan: &Plan, relay: Option<UnixStream>) -> ! {
-    if let Err(e) = sys::setup_mounts(&plan.hide) {
+    if let Err(e) = sys::setup_mounts(&plan.hide).and_then(|()| sys::mask_files(&plan.hide_files)) {
         die(&e);
     }
     // T12.52: no fd the caller left open reaches pid 1, the acceptors or

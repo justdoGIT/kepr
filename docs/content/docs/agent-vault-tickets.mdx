@@ -5006,21 +5006,19 @@ Done when: the row is marked out of scope (⛔) with the reason and the counts i
 
 ### T13.27 Package pam_kepr.so (S) 🔒
 
-Goal: the .deb, .rpm and tarball ship `pam_kepr.so`, the `pam-auth-update` profile and the user units, so `apt install` is enough.
-Depends on: T13.25.
-Files: `Cargo.toml` (deb and rpm assets), `.github/workflows/release.yml`, `packaging/debian/postinst`, `tests/packaging_assets.rs`.
-Add: the PAM crate is its own workspace with its own lockfile, so the release job's offline, hash-checked build needs a second `cargo fetch --locked` and build step for it, its hash in `binaries.sha256`, the module installed into the distribution's security directory (`/usr/lib/x86_64-linux-gnu/security` for Debian, `/usr/lib64/security` for RPM), and a postinst that never enables the profile on its own (login stacks are the administrator's).
-Out of scope: enabling the profile automatically.
-Done when: `cargo deb` / `generate-rpm` assets include the module, and `tests/packaging_assets.rs` pins them.
+**Status: shipped** (2026-10-28). The .deb, .rpm and tarball ship `pam_kepr.so` and the user units (`kepr-daemon`, `kepr-ssh-agent`, `kepr-secret-service`, `kepr-rotate`); the .deb adds the `pam-auth-update` profile and registers it in `postinst` (off until someone enables it) and removes it in `postrm`. The PAM crate is its own workspace with its own lockfile, so `release.yml` fetches it with `cargo fetch --locked --manifest-path crates/kepr-pam/Cargo.toml`, builds it inside the same network-less step into `target/pam/` (the "nothing outside `target/` changed" check stays true) and puts the module in `binaries.sha256`. Install paths: `/usr/lib/x86_64-linux-gnu/security` (deb), `/usr/lib64/security` (rpm). Nothing enables login unlock on its own. `tests/desktop_packaging.rs` pins the asset lists, the workflow steps and the maintainer scripts; the release job itself has not run with these changes yet.
 
 ### T13.28 Secret Service front end (L) 🔒
 
-Goal: programs that speak the freedesktop Secret Service API (browsers, GNOME and KDE apps, `secret-tool`, `libsecret`) read and store their secrets in kepr, so nothing else needs GNOME Keyring or KWallet.
-Depends on: T13.25.
-Files: a new `integrations/secret-service/` (not in the daemon).
-Add: a D-Bus service for `org.freedesktop.secrets` over the Go or Python SDK, items stored as records with their attributes, collections as folders, the lock state following kepr's, session encryption (`dh-ietf1024-sha256-aes128-cbc-pkcs7` and `plain` refused unless asked), a prompt object that asks for `kepr unlock`, and never sealed, SSH or gated credentials.
-Out of scope: replacing the keyring daemon's PAM unlock (kepr's does that).
-Done when: `secret-tool store` / `lookup` round-trip, and a libsecret client test passes against a user-mode daemon.
+**Status: shipped** (2026-10-28), as the `desktop` batch rather than an SDK integration: a hand-written D-Bus client/server (`src/cli_desktop/dbus/`, no async runtime, checked against messages written by jeepney), the Secret Service 0.2 API (`src/cli_desktop/ss/`), an item store in the daemon (`src/daemon_desktop/`, `protocol_desktop.rs`: each item one encrypted credential `SSI_<id>`, folder `secret-service`) and the commands `kepr secret-service run|status|takeover|restore|import|log|policy` and `kepr secret store|lookup|search|clear|ls`. See [Replace GNOME Keyring](/docs/guides/replace-gnome-keyring).
+
+* Session algorithms `plain` and `dh-ietf1024-sha256-aes128-cbc-pkcs7` (a 1024-bit constant-time modexp, pinned against Python); prompts for `Unlock`; the lock state follows kepr's and changes are announced; a locked cold start shows the dialog (`$KEPR_ASKPASS`, pinentry, zenity, kdialog), with a cool-down after a refusal.
+* Per-program policy (`~/.config/kepr/secret-service.toml`: exe glob, search / read / write, `sandboxed`), a JSON log of every call, and the daemon's audit chain for each secret read. `kepr get` refuses an item; `kepr ls` folds them; they are not in `kepr health`. Export, sync and the vault image carry them like any credential.
+* `kepr agent run` hides the session bus socket and GNOME Keyring's / gcr's runtime sockets (`KEPR_SANDBOX_DBUS=allow` keeps them).
+* `takeover` imports the current provider first, writes the user's bus service file, masks GNOME Keyring's user units and hides its secrets autostart entry; `restore` undoes exactly that.
+* Tested against a real bus with `tests/secret_service_e2e.sh` (`secret-tool`, SecretStorage, locked and cold start, policy, takeover, import, sandbox).
+
+Not built (follow-ups): the legacy `org.gnome.keyring` and `org.kde.kwalletd` APIs, a PKCS#11 / certificate store in place of gnome-keyring's, `org.freedesktop.impl.portal.Secret` served directly for Flatpak apps, a native prompt dialog for GTK / Qt with a window handle, and items over 32 KiB.
 
 ### T13.29 Windows login (L) 🔒
 

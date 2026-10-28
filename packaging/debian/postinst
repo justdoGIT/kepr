@@ -38,4 +38,9 @@ fi
 if command -v apparmor_parser >/dev/null 2>&1 && [ -d /sys/kernel/security/apparmor ]; then
     apparmor_parser -r -W /etc/apparmor.d/kepr || true
 fi
+# Register the pam-auth-update profile (it stays off until someone enables
+# it: `pam-auth-update --enable kepr`, or `kepr login-unlock on` tells how).
+if command -v pam-auth-update >/dev/null 2>&1; then
+    pam-auth-update --package || true
+fi
 exit 0

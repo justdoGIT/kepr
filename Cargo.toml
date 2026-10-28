@@ -202,6 +202,17 @@ assets = [
     ["systemd/polkit/io.kepr.policy", "/usr/share/polkit-1/actions/io.kepr.policy", "0644"],
     ["completions/kepr.bash",      "/usr/share/bash-completion/completions/kepr", "0644"],
     ["packaging/apparmor/kepr",    "/etc/apparmor.d/kepr",            "0644"],
+    # Unlock at login and the desktop Secret Service (T13.27, T13.28). None
+    # of it is switched on by installing: `pam-auth-update` leaves the kepr
+    # profile off until asked, and the user units start only when enabled
+    # or when `kepr secret-service takeover` points the bus at them.
+    ["target/pam/release/libpam_kepr.so", "/usr/lib/x86_64-linux-gnu/security/pam_kepr.so", "0644"],
+    ["packaging/pam-configs/kepr",       "/usr/share/pam-configs/kepr",                   "0644"],
+    ["systemd/user/kepr-daemon.service",         "/usr/lib/systemd/user/kepr-daemon.service",         "0644"],
+    ["systemd/user/kepr-ssh-agent.service",      "/usr/lib/systemd/user/kepr-ssh-agent.service",      "0644"],
+    ["systemd/user/kepr-secret-service.service", "/usr/lib/systemd/user/kepr-secret-service.service", "0644"],
+    ["systemd/user/kepr-rotate.service",         "/usr/lib/systemd/user/kepr-rotate.service",         "0644"],
+    ["systemd/user/kepr-rotate.timer",           "/usr/lib/systemd/user/kepr-rotate.timer",           "0644"],
     ["README.md",                  "/usr/share/doc/kepr/README.md",   "0644"],
     ["SECURITY.md",                "/usr/share/doc/kepr/SECURITY.md", "0644"],
     ["LICENSE-MIT",                "/usr/share/doc/kepr/LICENSE-MIT", "0644"],
@@ -230,6 +241,15 @@ assets = [
     { source = "systemd/polkit/io.kepr.policy", dest = "/usr/share/polkit-1/actions/io.kepr.policy", mode = "0644" },
     { source = "completions/kepr.bash",      dest = "/usr/share/bash-completion/completions/kepr", mode = "0644" },
     { source = "packaging/apparmor/kepr",    dest = "/etc/apparmor.d/kepr",            mode = "0644", config = true },
+    # Unlock at login and the desktop Secret Service (T13.27, T13.28): files
+    # only; nothing is enabled by installing (see the deb list above). Add
+    # pam_kepr.so to a PAM stack by hand or with authselect.
+    { source = "target/pam/release/libpam_kepr.so", dest = "/usr/lib64/security/pam_kepr.so", mode = "0644" },
+    { source = "systemd/user/kepr-daemon.service",         dest = "/usr/lib/systemd/user/kepr-daemon.service",         mode = "0644" },
+    { source = "systemd/user/kepr-ssh-agent.service",      dest = "/usr/lib/systemd/user/kepr-ssh-agent.service",      mode = "0644" },
+    { source = "systemd/user/kepr-secret-service.service", dest = "/usr/lib/systemd/user/kepr-secret-service.service", mode = "0644" },
+    { source = "systemd/user/kepr-rotate.service",         dest = "/usr/lib/systemd/user/kepr-rotate.service",         mode = "0644" },
+    { source = "systemd/user/kepr-rotate.timer",           dest = "/usr/lib/systemd/user/kepr-rotate.timer",           mode = "0644" },
     { source = "README.md",                  dest = "/usr/share/doc/kepr/README.md",   mode = "0644", doc = true },
     { source = "SECURITY.md",                dest = "/usr/share/doc/kepr/SECURITY.md", mode = "0644", doc = true },
     { source = "LICENSE-MIT",                dest = "/usr/share/doc/kepr/LICENSE-MIT", mode = "0644", doc = true },

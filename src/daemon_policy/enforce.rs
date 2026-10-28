@@ -133,6 +133,12 @@ fn governed(
             }
             (get_op(), names, vec![], None)
         }
+        // T13.28: a Secret Service secret read is a read of that item's
+        // credential, so a policy that denies `get` of `SSI_*` covers it.
+        Request::Desktop(kepr_core::protocol_desktop::DesktopRequest::SsItemSecret { id }) => {
+            let name = format!("SSI_{}", id.to_uppercase());
+            (get_op(), vec![name], vec![], None)
+        }
         Request::Set {
             name,
             ttl_secs,

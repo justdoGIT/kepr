@@ -6,16 +6,27 @@ use kepr_core::protocol::{CredInfo, Response};
 use super::flags::StoreFlags;
 use crate::cli_args::Args;
 
-/// Keep only the entries `ls --tag/--folder` asked for.
+/// Keep only the entries `ls --tag/--folder` asked for. The Secret Service
+/// items programs keep through `kepr secret-service` (T13.28) are folded into
+/// one line unless `--folder` names their folder: a browser can hold hundreds.
 pub fn filter_list(a: &Args, resp: Response) -> Response {
-    let f = &a.store;
-    if f.tag.is_none() && f.folder.is_none() {
-        return resp;
-    }
+    filter(&a.store, resp)
+}
+
+fn filter(f: &StoreFlags, resp: Response) -> Response {
     match resp {
         Response::ListOk { credentials, .. } => {
-            let credentials: Vec<CredInfo> =
-                credentials.into_iter().filter(|c| wanted(f, c)).collect();
+            let asked = f.folder.is_some();
+            let (items, rest): (Vec<CredInfo>, Vec<CredInfo>) = credentials
+                .into_iter()
+                .partition(|c| !asked && is_secret_service(&c.name));
+            if !items.is_empty() && !crate::cli_mode::json_mode() {
+                let n = items.iter().filter(|c| c.name.starts_with("SSI_")).count();
+                crate::cli_ui::info(&format!(
+                    "{n} Secret Service item(s) are not listed here: kepr secret ls"
+                ));
+            }
+            let credentials: Vec<CredInfo> = rest.into_iter().filter(|c| wanted(f, c)).collect();
             Response::ListOk {
                 count: credentials.len(),
                 credentials,
@@ -23,6 +34,11 @@ pub fn filter_list(a: &Args, resp: Response) -> Response {
         }
         other => other,
     }
+}
+
+/// The credentials behind the Secret Service front end.
+fn is_secret_service(name: &str) -> bool {
+    name.starts_with("SSI_") || name == "SSCOLLECTIONS"
 }
 
 fn wanted(f: &StoreFlags, c: &CredInfo) -> bool {
@@ -85,6 +101,38 @@ mod tests {
         assert!(!in_folder(None, "a"));
         assert!(in_folder(None, "/"));
         assert!(!in_folder(Some("a"), "/"));
+    }
+
+    #[test]
+    fn secret_service_items_fold_away_unless_their_folder_is_asked_for() {
+        let creds = vec![
+            cred("A", &[], None),
+            cred(
+                "SSI_AAAAAAAAAAAAAAAAAAAAAAAAAA",
+                &[],
+                Some("secret-service"),
+            ),
+            cred("SSCOLLECTIONS", &[], Some("secret-service")),
+        ];
+        let list = |folder: Option<&str>| {
+            let f = StoreFlags {
+                folder: folder.map(String::from),
+                ..Default::default()
+            };
+            match filter(
+                &f,
+                Response::ListOk {
+                    count: 3,
+                    credentials: creds.clone(),
+                },
+            ) {
+                Response::ListOk { count, credentials } => (count, credentials.len()),
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!(list(None), (1, 1));
+        assert_eq!(list(Some("secret-service")), (2, 2));
+        assert!(is_secret_service("SSI_X") && !is_secret_service("SSH_KEY"));
     }
 
     #[test]

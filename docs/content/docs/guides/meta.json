@@ -9,6 +9,7 @@
     "operational-security",
     "kubernetes-eso",
     "saml-sign-in",
-    "login-unlock"
+    "login-unlock",
+    "replace-gnome-keyring"
   ]
 }

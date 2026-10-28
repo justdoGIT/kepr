@@ -78,6 +78,8 @@ mod daemon_eco;
 mod daemon_platform;
 // batch: session
 mod daemon_session;
+// batch: desktop
+mod daemon_desktop;
 // end of batches
 
 use std::fs;
