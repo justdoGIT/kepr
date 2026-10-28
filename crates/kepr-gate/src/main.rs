@@ -46,6 +46,11 @@ mod vault;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // T13.01: what this build offers first to upstream hosts (no session).
+    if std::env::args().nth(1).as_deref() == Some("--tls-info") {
+        println!("Gate TLS: {}", tls_provider::first_group());
+        return ExitCode::SUCCESS;
+    }
     if let Err(e) = session::harden() {
         eprintln!("kepr-gate: {e}");
         return ExitCode::from(70);
