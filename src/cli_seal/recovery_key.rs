@@ -111,11 +111,16 @@ fn enrol(replace: bool) -> Response {
     if cli_mode::json_mode() {
         return Response::Seal(SealResponse::RecoveryKeyWords { fingerprint, words });
     }
-    print!("{}", crate::cli_seal::words::grid(words.as_str()));
+    // The words as text, then as a QR code: wiped once printed.
+    let grid = Zeroizing::new(crate::cli_seal::words::grid(words.as_str()));
+    print!("{}", &*grid);
     // Upper case: QR alphanumeric mode, a smaller code. Unlock ignores case.
     let upper = ZeroString::from_string(words.as_str().to_uppercase());
     match crate::cli_seal::qr::render(upper.as_str()) {
-        Ok(q) => print!("\n{q}"),
+        Ok(q) => {
+            let q = Zeroizing::new(q);
+            print!("\n{}", &*q);
+        }
         Err(e) => cli_ui::warn(&e),
     }
     cli_ui::einfo(&format!(
