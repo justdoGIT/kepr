@@ -230,11 +230,17 @@ post_install_script = """
 if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm= 2>/dev/null)" = systemd ]; then
   getent group kepr >/dev/null || groupadd --system kepr
   systemctl daemon-reload || true
-  # Agent sessions under the system daemon run in kepr-gate.service;
-  # restart picks up a new gate binary on upgrade.
-  systemctl enable kepr-gate.service || true
-  systemctl restart kepr-gate.service || true
-  systemctl enable --now kepr.service || true
+  if [ "${1:-1}" -ge 2 ] 2>/dev/null; then
+    # Upgrade: restart only the units that are running, so one the
+    # administrator disabled or stopped stays that way.
+    systemctl try-restart kepr-gate.service || true
+    systemctl try-restart kepr.service || true
+  else
+    # Agent sessions under the system daemon run in kepr-gate.service.
+    systemctl enable kepr-gate.service || true
+    systemctl restart kepr-gate.service || true
+    systemctl enable --now kepr.service || true
+  fi
 fi
 # Agent sandbox: let kepr make its user namespace where AppArmor
 # restricts them (Ubuntu 24.04+). Never fails the install.

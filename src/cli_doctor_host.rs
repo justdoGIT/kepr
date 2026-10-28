@@ -51,7 +51,14 @@ pub fn check_swap(proc_swaps: Option<&str>, is_encrypted: impl Fn(&str) -> bool)
         })
         .unwrap_or_default();
     let active = proc_swaps.is_some_and(|s| s.lines().skip(1).any(|l| !l.trim().is_empty()));
-    if !active {
+    if proc_swaps.is_none() {
+        // /proc/swaps exists on every Linux: unreadable is not "no swap".
+        f(
+            "swap",
+            Level::Warn,
+            "can't read /proc/swaps: swap not checked",
+        )
+    } else if !active {
         f("swap", Level::Good, "no active swap")
     } else if plain.is_empty() {
         f("swap", Level::Good, "all active swap is dm-crypt or zram")
@@ -67,7 +74,8 @@ pub fn check_swap(proc_swaps: Option<&str>, is_encrypted: impl Fn(&str) -> bool)
     }
 }
 
-/// One `iommu_dma_protection` value per Thunderbolt domain.
+/// One `iommu_dma_protection` value per Thunderbolt domain; a domain whose
+/// value can't be read (older kernels have none) is `unknown`, never "1".
 pub fn check_thunderbolt_dma(values: &[String]) -> Finding {
     if values.is_empty() {
         f("Thunderbolt DMA", Level::Good, "no Thunderbolt controller")
@@ -135,7 +143,10 @@ fn thunderbolt_values(root: &Path) -> Vec<String> {
     };
     dir.flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("domain"))
-        .filter_map(|e| fs::read_to_string(e.path().join("iommu_dma_protection")).ok())
+        .map(|e| {
+            fs::read_to_string(e.path().join("iommu_dma_protection"))
+                .unwrap_or_else(|_| "unknown".into())
+        })
         .collect()
 }
 
@@ -228,7 +239,10 @@ mod tests {
         let header = "Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n";
         let crypt = |d: &str| d == "/dev/dm-1";
         assert_eq!(check_swap(Some(header), crypt).level, Level::Good);
-        assert_eq!(check_swap(None, crypt).level, Level::Good);
+        // Unreadable is not "no swap".
+        let unread = check_swap(None, crypt);
+        assert_eq!(unread.level, Level::Warn);
+        assert!(unread.detail.contains("swap not checked"));
         let ok = format!(
             "{header}/dev/dm-1  partition\t8388604\t0\t-2\n/dev/zram0  partition\t4194300\t0\t100\n"
         );
@@ -248,6 +262,11 @@ mod tests {
         assert_eq!(none.level, Level::Good);
         assert!(none.detail.contains("no Thunderbolt controller"));
         assert_eq!(check_thunderbolt_dma(&v(&["1"])).level, Level::Good);
+        // A domain that can't be read counts against the answer.
+        assert_eq!(
+            check_thunderbolt_dma(&v(&["1", "unknown"])).level,
+            Level::Warn
+        );
         let w = check_thunderbolt_dma(&v(&["1", "0"]));
         assert_eq!(w.level, Level::Warn);
         assert!(w.detail.contains("enable it in firmware"));

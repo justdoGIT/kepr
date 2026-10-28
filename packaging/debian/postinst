@@ -5,19 +5,31 @@ set -e
 # (0660 root:kepr) is reachable by authorised users.
 getent group kepr >/dev/null || addgroup --system kepr
 
-# Reload units and enable the service. `deb-systemd-helper` is installed
-# by dh-systemd; fall back to systemctl if absent.
-if command -v deb-systemd-helper >/dev/null 2>&1; then
-    deb-systemd-helper enable kepr.service >/dev/null || true
-    deb-systemd-helper enable kepr-gate.service >/dev/null || true
-fi
-if [ -d /run/systemd/system ]; then
-    systemctl --system daemon-reload >/dev/null || true
-    # Agent sessions under the system daemon run in kepr-gate.service
-    # (as install.sh sets up); restart picks up a new gate on upgrade.
-    systemctl --system enable kepr-gate.service >/dev/null 2>&1 || true
-    systemctl --system restart kepr-gate.service >/dev/null || true
-    systemctl restart kepr.service >/dev/null || true
+# `$2` is the previously configured version: set on an upgrade. A first
+# install enables and starts both units; an upgrade only reloads them and
+# restarts the ones that are running, so a unit the administrator disabled
+# or stopped stays that way.
+if [ "$1" = configure ] && [ -n "${2:-}" ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null || true
+        systemctl --system try-restart kepr-gate.service >/dev/null || true
+        systemctl --system try-restart kepr.service >/dev/null || true
+    fi
+else
+    # `deb-systemd-helper` is installed by dh-systemd; fall back to
+    # systemctl if absent.
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper enable kepr.service >/dev/null || true
+        deb-systemd-helper enable kepr-gate.service >/dev/null || true
+    fi
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null || true
+        # Agent sessions under the system daemon run in kepr-gate.service
+        # (as install.sh sets up).
+        systemctl --system enable kepr-gate.service >/dev/null 2>&1 || true
+        systemctl --system restart kepr-gate.service >/dev/null || true
+        systemctl restart kepr.service >/dev/null || true
+    fi
 fi
 
 # Agent sandbox: Ubuntu 24.04+ restricts unprivileged user namespaces

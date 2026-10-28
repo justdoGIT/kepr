@@ -305,7 +305,7 @@ fn build_job() -> String {
     let start = wf.find("\n  build:\n").expect("build job");
     let rest = &wf[start + 1..];
     let end = rest[1..]
-        .find("\n  # ─── 3.")
+        .find("\n  # ─── 2b.")
         .map(|i| i + 1)
         .unwrap_or(rest.len());
     rest[..end].to_string()
@@ -337,6 +337,34 @@ fn release_builds_and_ships_the_gate() {
                 .lines()
                 .any(|l| l.trim_start().starts_with("cp ") && l.contains(f)),
             "the tarball step must copy {f}"
+        );
+    }
+}
+
+/// An upgrade reloads the units and restarts only running ones: it never
+/// enables or starts what the administrator turned off.
+#[test]
+fn upgrades_restart_running_units_and_enable_nothing() {
+    let m = manifest();
+    for (what, s, args) in [
+        (
+            "postinst",
+            text("packaging/debian/postinst"),
+            vec!["configure", "0.3.0"],
+        ),
+        ("rpm post", rpm_script(&m, "post_install_script"), vec!["2"]),
+    ] {
+        let (ok, log) = run_script(&s, &args, true, false);
+        assert!(ok, "{what}: {log}");
+        for unit in ["kepr.service", "kepr-gate.service"] {
+            assert!(
+                log.contains(&format!("try-restart {unit}")),
+                "{what}: {log}"
+            );
+        }
+        assert!(
+            !log.contains("enable") && !log.contains(" restart "),
+            "{what} enables or force-restarts on upgrade: {log}"
         );
     }
 }
