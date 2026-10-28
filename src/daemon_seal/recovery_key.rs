@@ -191,9 +191,10 @@ pub(crate) struct Unlock<'a> {
     pub pause: &'a dyn Fn(),
 }
 
-/// The sealer family a key blob belongs to, by its header. What
-/// systemd-creds wrote has none of ours.
-fn family(blob: &[u8]) -> &'static str {
+/// The sealer family a key blob belongs to, by its header; `None` for
+/// what systemd-creds wrote or a file too damaged to tell (the reason the
+/// recovery key is being used).
+fn family(blob: &[u8]) -> Option<&'static str> {
     const KNOWN: [(&[u8], &str); 4] = [
         (b"kepr-tpm2-v1\n", "tpm2"),
         (b"kepr-kek1\n", "key service"),
@@ -203,7 +204,7 @@ fn family(blob: &[u8]) -> &'static str {
     KNOWN
         .iter()
         .find(|(magic, _)| blob.starts_with(magic))
-        .map_or("host key", |(_, name)| name)
+        .map(|(_, name)| *name)
 }
 
 /// Refuse to replace the key file with a seal of another family or other
@@ -216,9 +217,10 @@ fn not_weaker(key_file: &Path, sealer: &dyn Sealer, blob: &[u8]) -> Result<(), S
              start the daemon with its usual KEPR_MASTER_KEY_SEAL settings, then unlock again"
         ))
     };
-    if let Ok(old) = std::fs::read(key_file) {
-        if family(&old) != family(blob) {
-            return differs(family(&old));
+    // A header we recognise on the old file must be the new file's too.
+    if let Some(was) = std::fs::read(key_file).ok().as_deref().and_then(family) {
+        if family(blob) != Some(was) {
+            return differs(was);
         }
     }
     let recorded = std::fs::read_to_string(crate::master_key::seal_record_path(key_file)).ok();
