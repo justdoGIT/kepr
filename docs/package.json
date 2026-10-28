@@ -36,6 +36,7 @@
   "overrides": {
     "postcss": "^8.5.23",
     "uuid": "^14.0.0",
-    "image-size": "^2.0.4"
+    "image-size": "^2.0.4",
+    "katex": "^0.18.2"
   }
 }
