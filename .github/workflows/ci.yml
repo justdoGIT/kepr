@@ -139,6 +139,9 @@ jobs:
       - name: cargo test --release
         run: cargo test --release --all-targets
 
+      - name: pam_kepr (own workspace)
+        run: cargo test --manifest-path crates/kepr-pam/Cargo.toml
+
       - name: cargo build --release
         run: cargo build --release --bins
 

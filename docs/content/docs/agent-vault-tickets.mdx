@@ -4983,6 +4983,14 @@ Files: `docs/content/docs/agent-vault-plan.mdx`.
 Add: the plan's "Connections" row says why: telnet sends the credential in the clear, so a gate that logs in on the agent's behalf would add nothing; RDP, VNC and browser isolation need a hosted gateway.
 Done when: the row is marked out of scope (⛔) with the reason and the counts in section 2 are updated.
 
+### T13.24 Rotate everything at once (S)
+
+**Status: shipped** (2026-10-28): `kepr rotate --all [--dry-run]` (`cli_aws/rotate_all.rs`) runs every rotator already configured: a credential's schedule, a sealed AWS key, a sealed database login. Everything else is listed as manual and never touched. No provider rotator exists yet (T13.03): the public APIs of GitHub (fine-grained tokens), Stripe, Anthropic and OpenAI do not let a key mint its own replacement, so those stay manual until a provider offers a way.
+
+### T13.25 Unlock at login through PAM (M) 🔒
+
+**Status: shipped** (2026-10-28): `crates/kepr-pam` (`pam_kepr.so`) and `kepr pam-unlock`; see "Unlock at login (PAM)" in the features reference. Tested against a real PAM stack with `tests/pam_e2e.sh` (needs root and `pamtester`; not run in CI). Not built: a Secret Service (D-Bus) front end, and unlocking stores that also need a security key.
+
 ## Ticket template
 
 Copy this when splitting an L item. A ticket isn't ready for a small model

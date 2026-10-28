@@ -118,6 +118,7 @@ verbs print their usage line when called without arguments.
 | Verb | Args | What it does |
 | ---- | ---- | ------------ |
 | `rotate` | `KEY --hook PATH [--gen-kind K]` · `KEY --aws-iam` · `KEY --db` | Rotate now: through a hook, the AWS IAM API or the database. |
+| `rotate` | `--all [--dry-run]` | Rotate every key kepr can in one run (schedules, sealed AWS keys, sealed database logins); the rest are listed as manual. A failure leaves that key unchanged and the run continues; exit status is non-zero if any failed. |
 | `rotate` | `KEY --every DUR (--hook CMD\|--aws-iam\|--db)` · `KEY --every off` · `KEY --scheduled` | Rotate on a schedule; `--scheduled` runs a due rotation now. |
 | `grant` | `KEY [--to HARNESS --for DUR\|--revoke [--to HARNESS]\|--jit on\|off]` | Just-in-time windows for a sealed key; no flags shows the state. |
 | `checkout` | `KEY [--for DUR]` | Take a hold on KEY; a second checkout is refused. |
@@ -962,6 +963,35 @@ locked out of both commands.
   firmware update from a tampered boot: only run `kepr recovery-key unlock`
   on a machine you trust.
 </Warning>
+
+### Unlock at login (PAM)
+
+`pam_kepr.so` (`crates/kepr-pam`, built on its own:
+`cargo build --release --manifest-path crates/kepr-pam/Cargo.toml`) unlocks
+the store with the password you log in with. Put it after the module that
+checks the password, in the `auth` and `session` stacks of the login service
+(GDM, SDDM, `login`, `sshd`):
+
+```text
+auth     optional  pam_kepr.so
+session  optional  pam_kepr.so
+```
+
+`auth` only remembers the password in memory; `session` runs `kepr
+pam-unlock` as you, detached, with the password on stdin. That waits for
+your user daemon (up to 20 s; unlocking itself takes a few seconds), then
+sends the same unlock `kepr unlock` does. It never fails or delays a login.
+It works only when the store passphrase is your login password, does
+nothing for root, and runs only a `kepr` that root owns and group / others
+cannot write (`kepr=/path` selects it; default `/usr/bin/kepr`, then
+`/usr/local/bin/kepr`). The store locks again when the daemon exits, which
+the user manager does after your last session. Stores unlocked with a
+security key as well are not supported here. `tests/pam_e2e.sh` runs it
+against a real PAM stack with `pamtester` (as root).
+
+Other programs still get secrets through their own channels (kepr covers
+SSH, git and docker helpers, `kepr exec`, `kepr mount`); a Secret Service
+(D-Bus) front end for GNOME Keyring / KWallet clients is not built.
 
 ### Post-quantum TLS in the gate
 
