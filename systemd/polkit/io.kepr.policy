@@ -59,4 +59,14 @@
     </defaults>
   </action>
 
+  <action id="io.kepr.protect">
+    <description>Protect or re-key the kepr master key</description>
+    <message>Authentication is required to change how the kepr master key is protected</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
 </policyconfig>

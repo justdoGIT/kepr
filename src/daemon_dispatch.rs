@@ -20,7 +20,7 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
     }
     match request {
         Request::Lock { password } => {
-            daemon_lock::handle_lock_gated(uid, username, password.as_bytes())
+            daemon_lock::handle_lock_gated(uid, peer_pid, username, password.as_bytes())
         }
         Request::Unlock { password } => {
             daemon_lock::handle_unlock_gated(uid, username, password.as_bytes())

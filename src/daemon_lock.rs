@@ -42,7 +42,7 @@ pub fn install_protected_key(envelope: &[u8]) -> Result<(), String> {
     }
 }
 
-fn handle_lock(password: &[u8]) -> Response {
+fn handle_lock(peer_pid: i32, password: &[u8]) -> Response {
     if password.is_empty() {
         return Response::fail("password cannot be empty");
     }
@@ -50,7 +50,9 @@ fn handle_lock(password: &[u8]) -> Response {
         return Response::fail("credential store is already password protected");
     }
     // T12.53: on a keychain-sealed store the owner approves at the machine.
-    if let Err(e) = crate::daemon_seal::presence::require(crate::daemon_seal::presence::LOCK) {
+    if let Err(e) =
+        crate::daemon_seal::presence::require(crate::daemon_seal::presence::LOCK, peer_pid)
+    {
         return Response::fail(e);
     }
     let key = match crypto::snapshot_key() {
@@ -110,11 +112,11 @@ fn require_root_in_system_mode(uid: u32, op: &'static str, username: &str) -> Op
     None
 }
 
-pub fn handle_lock_gated(uid: u32, username: &str, password: &[u8]) -> Response {
+pub fn handle_lock_gated(uid: u32, peer_pid: i32, username: &str, password: &[u8]) -> Response {
     if let Some(denied) = require_root_in_system_mode(uid, "lock", username) {
         return denied;
     }
-    let response = handle_lock(password);
+    let response = handle_lock(peer_pid, password);
     audit::log(&AuditEvent {
         op: "lock",
         name: None,
@@ -161,7 +163,7 @@ mod tests {
 
     #[test]
     fn handle_lock_rejects_empty_password() {
-        match handle_lock(b"") {
+        match handle_lock(0, b"") {
             Response::Err { error } => assert!(error.contains("empty")),
             other => panic!("expected Err, got {other:?}"),
         }
