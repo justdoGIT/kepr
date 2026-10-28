@@ -128,5 +128,22 @@ else
 	fail "GitLab template is out of date; run: bash integrations/ci/sync-gitlab.sh"
 fi
 
+# ── the Bitbucket and Jenkins examples follow the same contract ──
+BB="$HERE/../bitbucket/bitbucket-pipelines.example.yml"
+JK="$HERE/../jenkins/Jenkinsfile.example"
+for f in "$BB" "$JK"; do
+	n="$(basename "$f")"
+	grep -q 'sha256sum -c' "$f" && ok "$n: checks the script's SHA-256" || fail "$n: no checksum"
+	grep -q 'KEPR_BIN_DIR=' "$f" && ok "$n: puts kepr on PATH before install" || fail "$n: no PATH export"
+	grep -q 'kepr-ci.sh" install\|kepr-ci.sh install' "$f" && grep -q 'kepr-ci.sh" run\|kepr-ci.sh run' "$f" &&
+		ok "$n: runs install then run" || fail "$n: missing install/run"
+done
+grep -q 'BITBUCKET_STEP_OIDC_TOKEN' "$BB" && grep -q 'oidc: true' "$BB" &&
+	ok "bitbucket: step OIDC token handed to KEPR_ID_TOKEN" || fail "bitbucket: OIDC wiring"
+if python3 -c 'import yaml' 2>/dev/null; then
+	python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$BB" && ok "bitbucket: valid YAML" ||
+		fail "bitbucket: invalid YAML"
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then echo "all kepr-ci tests passed"; else echo "$FAILS failure(s)"; exit 1; fi

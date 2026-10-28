@@ -8,6 +8,7 @@
 //                           min_length = 16
 //                           classes = ["lower", "upper", "digit", "symbol"]
 //                           max_age_days = 365
+//                           require_totp = true   # login records need a totp field
 //                           [tag.prod]          # stricter, for tag prod
 //                           min_length = 24
 //
@@ -175,6 +176,8 @@ mod tests {
         assert_eq!(p.all.min_length, Some(16));
         assert_eq!(p.all.classes, ["lower", "digit"]);
         assert_eq!(p.tags["prod"].max_age_days, Some(90));
+        let t = parse_policy("require_totp = true\n").unwrap();
+        assert!(t.all.require_totp);
         assert_eq!(parse_policy("").unwrap(), HealthPolicy::default());
         for (bad, what) in [
             ("min_len = 3\n", "min_len"),

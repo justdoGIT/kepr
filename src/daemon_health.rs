@@ -136,6 +136,11 @@ pub fn handle_health(
             Some(Ok(v)) => {
                 issues.extend(value_issues(v.as_str()));
                 issues.extend(rules.iter().flat_map(|r| r.value_violations(v.as_str())));
+                issues.extend(
+                    rules
+                        .iter()
+                        .filter_map(|r| r.totp_violation(meta.record_type.as_deref(), v.as_str())),
+                );
                 seen.entry(Sha256::digest(v.as_bytes()).into())
                     .or_default()
                     .push(name.clone());
@@ -307,6 +312,7 @@ mod tests {
                 min_length: Some(16),
                 classes: vec![],
                 max_age_days: Some(100),
+                require_totp: false,
             },
             tags: std::collections::BTreeMap::from([(
                 "prod".into(),
@@ -314,6 +320,7 @@ mod tests {
                     min_length: Some(32),
                     classes: vec!["upper".into()],
                     max_age_days: None,
+                    require_totp: false,
                 },
             )]),
         };

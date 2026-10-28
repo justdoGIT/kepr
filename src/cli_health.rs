@@ -164,6 +164,8 @@ pub fn cmd_health(o: Opts) -> Response {
         for i in items.iter().filter(|i| !i.ignored.is_empty()) {
             cli_ui::dim(&format!("{}: ignored: {}", i.name, i.ignored.join("; ")));
         }
+        let score = crate::cli_recordsx::health_score::overall(&items);
+        cli_ui::info(&format!("security score: {score}/100"));
         if bad.is_empty() {
             cli_ui::ok(&format!("{} credential(s), no issues found", items.len()));
         } else {
