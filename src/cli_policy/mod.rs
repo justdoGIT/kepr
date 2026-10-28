@@ -14,11 +14,13 @@ mod approve_notify;
 mod canary;
 mod canary_skip;
 mod compliance;
+mod compliance_html;
 mod forward;
 mod health;
 mod notify;
 mod policy;
 mod report;
+mod report_filters;
 mod siem;
 mod tail;
 mod usage_report;
@@ -40,9 +42,12 @@ pub const HELP: &str = "  policy test FILE                     run the [[test]] 
   policy status | policy reload        the policy the daemon enforces (~/.config/kepr/policy.toml or
                                        /etc/kepr/policy.toml); deny by default once the file exists
   report compliance --framework F      control-by-control evidence for sox, hipaa, pci, nist or gdpr
-                                       (pass / fail / manual), from status, audit chain, policy, health
-  report access KEY                    every path KEY can take: gate bindings, shares sent, agent
-                                       gates and reads (audit log), aliases, sync devices, policy
+                                       (pass / fail / manual), from status, audit chain, policy, health;
+                                       --html FILE writes it as one self-contained page
+  report access KEY [--kind K,..]      every path KEY can take: gate bindings, shares sent, agent
+                                       gates and reads (audit log), aliases, sync devices, policy;
+                                       --kind keeps those kinds, --save-filter NAME stores the list,
+                                       --filter NAME applies it, --filters lists the saved ones
   audit forward --to TARGET [--once]   stream audit events (op, name, uid, result, time; never values)
                                        to jsonl:PATH, syslog:udp://HOST[:PORT] or otlp:URL; resumes
                                        after a restart [--interval SECS] [--state FILE]

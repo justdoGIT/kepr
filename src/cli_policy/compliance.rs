@@ -228,17 +228,25 @@ fn gather() -> Evidence {
 
 /// `kepr report compliance --framework F`.
 pub fn cmd_compliance(args: &[&str]) -> Response {
-    let ["--framework", f] = args else {
-        return Response::fail(format!(
-            "usage: kepr report compliance --framework {}",
-            FRAMEWORKS.join("|")
-        ));
+    let (f, html) = match args {
+        ["--framework", f] => (f, None),
+        ["--framework", f, "--html", path] => (f, Some(*path)),
+        _ => {
+            return Response::fail(format!(
+                "usage: kepr report compliance --framework {} [--html FILE]",
+                FRAMEWORKS.join("|")
+            ))
+        }
     };
     let rows = match build(&f.to_lowercase(), &gather()) {
         Ok(r) => r,
         Err(e) => return Response::fail(e),
     };
-    if !cli_mode::json_mode() {
+    if let Some(path) = html {
+        if let Err(e) = super::compliance_html::write(path, &f.to_lowercase(), &rows) {
+            return Response::fail(e);
+        }
+    } else if !cli_mode::json_mode() {
         for r in &rows {
             println!("{:28}  {}", r.kind, r.detail);
         }

@@ -129,7 +129,7 @@ pub fn rebind(
         }
     }
     if !new.is_empty() && !can_verify() {
-        return Err("this daemon cannot read callers' executables (system mode needs CAP_SYS_PTRACE); binding refused".into());
+        return Err("this daemon cannot read callers' executables (system mode needs CAP_SYS_PTRACE: see systemd/kepr.service.d/ptrace.conf.example); binding refused".into());
     }
     let mut out = meta.clone();
     out.exe_digests = (!new.is_empty()).then_some(new);

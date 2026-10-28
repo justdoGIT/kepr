@@ -12,12 +12,35 @@ pub fn cmd_report(args: &[String]) -> Response {
     if let Some((&"compliance", rest)) = a.split_first() {
         return super::compliance::cmd_compliance(rest);
     }
-    let ["access", name] = a.as_slice() else {
-        return Response::fail("usage: kepr report access NAME | compliance --framework F");
+    let usage = "usage: kepr report access NAME [--kind K,..] [--filter F] [--save-filter F] | \
+                 report access --filters | report compliance --framework F";
+    let ["access", rest @ ..] = a.as_slice() else {
+        return Response::fail(usage);
     };
-    let r = super::send(PolicyRequest::ReportAccess {
-        name: name.to_string(),
-    });
+    let opts = match super::report_filters::Options::parse(rest) {
+        Ok(o) => o,
+        Err(e) => return Response::fail(format!("{e}\n{usage}")),
+    };
+    if opts.list {
+        return super::report_filters::print_saved();
+    }
+    let Some(name) = opts.name.clone() else {
+        return Response::fail(usage);
+    };
+    let kinds = match opts.resolve() {
+        Ok(k) => k,
+        Err(e) => return Response::fail(e),
+    };
+    let r = super::send(PolicyRequest::ReportAccess { name });
+    let r = match r {
+        Response::Policy(PolicyResponse::AccessReportOk { name, rows }) => {
+            Response::Policy(PolicyResponse::AccessReportOk {
+                name,
+                rows: super::report_filters::keep(rows, &kinds),
+            })
+        }
+        other => other,
+    };
     if cli_mode::json_mode() {
         return r;
     }

@@ -1,0 +1,181 @@
+---
+title: "System map"
+description: "How the processes, the gate, the master key, the crypto layer and the release pipeline fit together after phase P12."
+---
+
+This page draws the system as it is in the tree today (phase P12 shipped).
+The [overview](/docs/architecture/overview) covers the original two-process
+model; the [plan](/docs/agent-vault-plan) and the
+[tickets](/docs/agent-vault-tickets) say why each part exists.
+
+## Processes and trust boundaries
+
+```mermaid
+flowchart LR
+    subgraph User["user (uid N)"]
+        CLI["kepr CLI"]
+        H["agent harness<br/>(sandboxed: userns, mount, PID,<br/>seccomp, Landlock)"]
+        SDK["SDKs / integrations<br/>(Python, Node, Go, Ruby, Java)"]
+    end
+    subgraph Daemon["kepr-daemon (user mode, or root as a system service)"]
+        D["request dispatch<br/>policy.toml, rate limit, audit chain"]
+        MK[("master key<br/>memfd_secret, split,<br/>relocated every 60 s")]
+        ST[("store: per-file<br/>or vault.img")]
+    end
+    subgraph Gate["kepr-gate (one per agent session)"]
+        P["placeholder to key rewrite,<br/>DLP, masking, limits, journal"]
+        VC[("value cache<br/>secret memory")]
+    end
+    UP["upstream APIs, databases,<br/>cloud providers"]
+    CLI -- "framed JSON, Unix socket<br/>SO_PEERCRED uid" --> D
+    SDK -- "same socket" --> D
+    D --> MK
+    D --> ST
+    D -- "StartGate: socketpair on fd 3<br/>(sealed values only here)" --> Gate
+    H -- "HTTP / DB wire / CONNECT<br/>placeholders only" --> P
+    P --> VC
+    P -- "real credential, bound host only" --> UP
+```
+
+The daemon is the only process that reads the store and the master key. A
+sealed credential never leaves it except over the daemon-to-gate pair, and
+only for a host in its binding. The agent harness sees placeholders and a
+session CA; it has no route to the socket (a hiding mount covers it).
+
+## One agent session
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as kepr agent run
+    participant D as daemon
+    participant G as kepr-gate
+    participant A as harness (sandbox)
+    participant X as upstream
+    U->>D: StartGate (routes, limits, grants)
+    D->>G: spawn, session config, fd 3
+    G-->>U: ready line (port, placeholders, CA)
+    U->>A: start with placeholders in env and config
+    A->>G: request with placeholder
+    G->>D: Resolve(credential, host, port)
+    D-->>G: value, only if bound to that host
+    G->>G: canary check, DLP, limits, minting guard
+    G->>X: request with the real credential
+    X-->>G: response
+    G->>G: mask released values (plain, escaped, Base64, percent-encoded)
+    G-->>A: response
+    Note over G,D: a store change, lock or panic moves the<br/>generation and the gate drops its cache
+```
+
+## Inside the gate
+
+```mermaid
+flowchart TD
+    R["request from the agent"] --> K{"route?"}
+    K -- "HTTP provider" --> PH["placeholder check<br/>(HMAC, constant time)"]
+    K -- "CONNECT" --> E["egress: intercept bound hosts<br/>with the session CA"]
+    K -- "aws: SigV4" --> S["verify placeholder signature,<br/>refuse presigned and minting,<br/>re-sign with the real key"]
+    K -- "db: / tunnel" --> DB["Postgres, MySQL, Redis:<br/>the gate logs in upstream"]
+    K -- "git" --> GH["smart-HTTP paths only,<br/>pushed bodies inspected"]
+    PH --> C["canary and DLP screens"]
+    E --> C
+    S --> C
+    GH --> C
+    C --> M{"credential-minting<br/>request?"}
+    M -- "AWS STS / IAM,<br/>Google keys, signBlob, tokens" --> X1["403 kepr_blocked"]
+    M -- no --> L["per-session and per-day limits"]
+    L --> F["forward with the real credential"]
+    F --> MS["response masking"]
+    MS --> J["metadata-only journal,<br/>optional recording"]
+```
+
+## Master key at rest and at start-up
+
+```mermaid
+flowchart TD
+    B["daemon start"] --> PP{"passphrase<br/>envelope?"}
+    PP -- yes --> LK["start locked<br/>(kepr unlock)"]
+    PP -- no --> US["unseal with the configured sealer<br/>(host key, TPM2, KMS, PKCS#11,<br/>keychain, owner-only file)"]
+    US -- ok --> UN["unlocked"]
+    US -- fails --> RK{"recovery key<br/>enrolled?"}
+    RK -- no --> EX["exit (fail closed)"]
+    RK -- yes --> L2["start locked, flag set"]
+    L2 --> RU["kepr recovery-key unlock<br/>24 words, 1 s pause on a wrong one"]
+    RU --> PR["key must open a credential file<br/>or the vault image"]
+    PR --> NW{"same sealer family<br/>and binding as before?"}
+    NW -- yes --> RS["seal again for the<br/>current boot state"]
+    NW -- no --> ONE["unlocked for this run only,<br/>error says to restore the settings"]
+```
+
+On a macOS keychain store, `kepr lock` and `kepr recovery-key enrol` first
+need an Allow in a dialog (T12.53). The recovery kit, recovery words, break
+glass and escrow are the other documented ways key material leaves the
+daemon; each has its own fences (see the plan, section 5).
+
+## Crypto layer and the FIPS build
+
+```mermaid
+flowchart LR
+    subgraph Daemon["daemon_eco::cipher (CipherSuite)"]
+        AEAD["AES-256-GCM seal / open"]
+        H["SHA-256, HMAC-SHA256,<br/>HKDF-SHA256, CSPRNG"]
+    end
+    subgraph Core["kepr_core::mac"]
+        M["SHA-256, HMAC-SHA256,<br/>PBKDF2-HMAC-SHA256"]
+    end
+    Daemon -- default --> RC["RustCrypto"]
+    Daemon -- "--features fips" --> AL["aws-lc-rs<br/>(FIPS module with aws-lc-rs/fips)"]
+    Core -- default --> RC
+    Core -- "--features fips" --> AL
+    Daemon --> USE1["credential files, vault image,<br/>share envelopes, bundles,<br/>recordings, quorum, emergency"]
+    Core --> USE2["SigV4 signing, SCRAM login,<br/>placeholder MACs"]
+    OUT["outside the module:<br/>Argon2id, X25519, ML-KEM,<br/>Ed25519, P-256"]
+```
+
+Formats are byte-identical in both builds, and tests pin outputs of the
+earlier code, so a store written by one build opens in the other.
+`tests/crypto_seam.rs` fails if a file outside the seam names the crates
+directly.
+
+## Reading a credential
+
+```mermaid
+flowchart TD
+    G["Get(name)"] --> N["validate name, uid from SO_PEERCRED"]
+    N --> PO["policy.toml (deny by default)"]
+    PO --> AL["resolve alias, then:"]
+    AL --> S1{"sealed, ssh, share key,<br/>or attachment-only?"}
+    S1 -- yes --> RF["refuse (generic message)"]
+    S1 -- no --> CK["checks, in order:<br/>executable binding, quorum, check-out hold,<br/>expiry, re-auth window, consent,<br/>FIDO2 assertion"]
+    CK --> DE["decrypt under the per-credential lock"]
+    DE --> AU["audit: op, name, uid, result"]
+    AU --> V["value to the caller"]
+```
+
+## Vault image layout
+
+```mermaid
+flowchart LR
+    subgraph Img["vault.img (fixed size, 4 KiB slots, CSPRNG noise)"]
+        S0["slot 0<br/>header: magic, salt,<br/>sealed epoch, Merkle root,<br/>anti-rollback anchor"]
+        S1["slot 1<br/>journal (two-phase commit)"]
+        SD["data slots<br/>placed by HMAC with probing;<br/>records and index padded<br/>to power-of-two pages"]
+    end
+    KEK["master key"] --> HK["HKDF per use:<br/>header, journal, placement, vault key"]
+    HK --> Img
+    TPM[("TPM2 NV counter<br/>(optional)")] -. "epoch must match the anchor" .-> S0
+```
+
+## Release pipeline
+
+```mermaid
+flowchart LR
+    T["annotated v* tag"] --> TC["tag-check"]
+    TC --> B["build job: no id-token<br/>fetch locked sources, then cargo build<br/>in a network namespace as the runner user<br/>with groups, caps and sudo removed"]
+    B --> CK2["check: only target/ changed,<br/>no cargo config, hash the binaries"]
+    CK2 --> PK["cargo-deb, cargo-generate-rpm,<br/>tarball (hashes verified again)"]
+    PK --> SG["sign job: id-token, no compiler<br/>SBOM, cosign, attestation, hashes"]
+    SG --> PV["SLSA provenance"]
+    SG --> RL["publish release"]
+    PV --> RL
+```

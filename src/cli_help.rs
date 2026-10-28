@@ -52,6 +52,8 @@ COMMANDS:
                                        kepr's plugin for it (once; opencode: config only)
   agent install claude|codex           install kepr's guidance for the model (Claude Code skill,
                                        a block in Codex's AGENTS.md)
+  agent install cursor|copilot         the same as project files in the current directory
+                                       (.cursor/rules/kepr.mdc, .github/copilot-instructions.md)
   agent doctor [--port N] [--json]     check omp / Grok Build still route through the gate and
                                        kepr's plugin is current; non-zero exit on any problem
   agent shim HARNESS [--dir DIR] [--remove]

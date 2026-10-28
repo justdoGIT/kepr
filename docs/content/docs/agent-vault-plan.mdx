@@ -159,7 +159,7 @@ Count on 2026-10-28, one mark per row, taken from the **kepr today** column:
 | 2.4 Platform, admin and compliance | 4 | 5 | 0 | 0 | 9 |
 | **Keeper matrix, 2.1 to 2.4** | **45** | **17** | **0** | **5** | **67** |
 | 2.6 Beyond Keeper (A1 to A17) | 13 | 4 | 0 | 0 | 17 |
-| 2.7 Found on the 2026-10-05 re-check | 27 | 1 | 0 | 2 | 30 |
+| 2.7 Found on the 2026-10-05 re-check | 28 | 0 | 0 | 2 | 30 |
 
 No row is ❌ any more: every row in scope has at least part of the feature.
 
@@ -214,7 +214,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | VS Code, JetBrains, iTerm2, Raycast extensions | 🟡 VS Code extension (shows `kepr://` references, never values; packaged locally). Missing: JetBrains, iTerm2, Raycast | P8 · T8.08 |
 | Property File: vault record mounted as a virtual file; each process read is approved | ✅ `kepr mount DIR --file NAME=KEYS`: read-only FUSE files; each open checks the uid, an optional `--exe` digest and an optional `--consent` prompt | P10.1 · T10.01 |
 | Local MCP with per-agent approve/deny, revoke, admin limits, "AI Governance" report | ✅ `kepr mcp` (never returns values; `db_query`, `ssh_run`), consent prompts, `kepr grant` per harness, `kepr agent revoke`, request, token and daily caps, `kepr usage --report` | P1.6, P9 · T7.10, T9.04–T9.07 |
-| Agent Kit skills for Claude Code, Cursor, Codex, Copilot | 🟡 `kepr agent run` for Claude Code, Codex, Aider, grok-cli, oh-my-pi and Grok Build. `kepr agent install omp\|grok` adds a plugin that blocks tool calls and prompts that would reveal a key (`kepr hook`); Grok Build's carries a `SKILL.md` that never asks for values. A harness-neutral guidance file is installed for Claude Code and Codex (T12.15). Missing: Cursor and Copilot | P1.4 · T1.13–T1.15, T1.22, T12.15 |
+| Agent Kit skills for Claude Code, Cursor, Codex, Copilot | 🟡 `kepr agent run` for Claude Code, Codex, Aider, grok-cli, oh-my-pi and Grok Build. `kepr agent install omp\|grok` adds a plugin that blocks tool calls and prompts that would reveal a key (`kepr hook`); Grok Build's carries a `SKILL.md` that never asks for values. A harness-neutral guidance file is installed for Claude Code and Codex (T12.15), and as project files for Cursor and Copilot (`kepr agent install cursor|copilot`, T13.07). Neither can be routed through the gate: neither has a base-URL setting kepr can set | P1.4 · T1.13–T1.15, T1.22, T12.15 |
 | Commander CLI with interactive shell and REST service mode | ✅ `kepr shell`; `kepr serve` (read-only REST on loopback or a Unix socket, token, allowlist, rate limit) | P8, P11.19 · T8.01, T11.19 |
 | ServiceNow, Jira, Slack, Teams workflow apps | 🟡 approvals from desktop or ntfy notifications (`kepr approvals serve`); alerts to Slack, Teams, Discord and ntfy (`kepr alerts run`). Missing: approving from Slack or Teams, ServiceNow and Jira apps | P9.1, P7.6 · T9.04, T7.15 |
 
@@ -223,7 +223,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | Keeper feature | kepr today | Plan |
 | --- | --- | --- |
 | Gateway that injects credentials so users never see them | ✅ `kepr-gate`, started by `kepr agent run`: API mode, egress proxy, database proxies; local, no cloud gateway | P1, P2 |
-| Connections: SSH, RDP, VNC, Kubernetes, telnet, databases, browser isolation | 🟡 SSH through `kepr ssh-agent` (keys stay in the daemon) and the MCP `ssh_run` tool; PostgreSQL, MySQL and Redis through the gate. Missing: Kubernetes, telnet | P2.4, P7.1 · T7.01, T7.02, T9.05; RDP/VNC/RBI ⛔ |
+| Connections: SSH, RDP, VNC, Kubernetes, telnet, databases, browser isolation | 🟡 SSH through `kepr ssh-agent` (keys stay in the daemon) and the MCP `ssh_run` tool; PostgreSQL, MySQL and Redis through the gate. Missing: Kubernetes (T13.04). Telnet is out of scope: it sends the credential in the clear, so a gate that logs in for the agent would protect nothing | P2.4, P7.1 · T7.01, T7.02, T9.05; RDP/VNC/RBI ⛔ |
 | Tunnels: local port to target through the gateway | ✅ `kepr agent run --tunnel NAME=HOST:PORT` (a loopback port the gate pipes to the host, also under `--isolate-net`) | P7.1 · T7.03 |
 | KeeperDB proxy: protocol listener, credential injected gateway-side | ✅ PostgreSQL, MySQL and Redis proxies in the gate (`kepr agent add-db`), logging in with the sealed record | P7.1 · T7.01, T7.02 |
 | Session recording + playback, encrypted searchable summaries | ✅ `kepr agent run --record` (bodies encrypted), `kepr agent replay`, `kepr agent logs` (request journal) | P7.3 · T7.09, T11.22; summaries ⛔ (need an LLM) |
@@ -241,7 +241,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | Keeper feature | kepr today | Plan |
 | --- | --- | --- |
 | Hash-chained / exported audit, ARAM alerts, SIEM (Splunk, Sentinel, QRadar, Datadog, Elastic, syslog…) | ✅ journald + hash-chained log; `kepr audit forward --to jsonl:\|syslog:\|otlp:…`; `kepr alerts run` | P7.6 · T7.14, T7.15 |
-| Compliance reports (SOX, HIPAA, PCI, NIST, GDPR), risk dashboard | 🟡 `kepr report access KEY`, `kepr usage --report`, `kepr health --period` aging report, `kepr report compliance --framework sox\|hipaa\|pci\|nist\|gdpr` (pass / fail / manual per control, from status, audit chain, policy and health). Missing: a dashboard | P6.6, P9.6 · T6.12, T9.07 |
+| Compliance reports (SOX, HIPAA, PCI, NIST, GDPR), risk dashboard | 🟡 `kepr report access KEY`, `kepr usage --report`, `kepr health --period` aging report, `kepr report compliance --framework sox\|hipaa\|pci\|nist\|gdpr` (pass / fail / manual per control, from status, audit chain, policy and health); `--html FILE` writes it as one self-contained page (T13.10). Missing: a live dashboard | P6.6, P9.6 · T6.12, T9.07, T13.10 |
 | Roles, enforcement policies, delegated admin, nodes | 🟡 deny-by-default `policy.toml` with `kepr policy test` (rules on names, caller, harness, TTL, seal hosts). Missing: roles, delegated admin, nodes (team mode) | P6.6 · T6.11 |
 | SAML SSO, SCIM, device approvals | 🟡 device enrolment with single-use tokens and an OIDC login (`kepr device add --oidc`). Missing: SAML | P6.6 · T6.03, T6.13; SCIM ⛔ until hosted |
 | Account transfer policy (admin can recover a departed user's vault) | ✅ `kepr escrow enable ADMIN_KEY`; `kepr escrow open` gives the admin a 2-of-2 recovery kit | P6.6 · T6.14 |
@@ -323,7 +323,7 @@ local-first, single-user vault.
 | BreachWatch ignore status | ✅ `kepr health --ignore KEY:KIND` and `--unignore`; a new value clears the ignore | P11.23 · T11.23 |
 | Text session recordings replayable with `scriptreplay`; KeeperAI summaries | ✅ `kepr agent run --record`, `kepr agent replay SESSION --typescript FILE --timing FILE` (PostgreSQL sessions) | P7.3 · T7.09; summaries ⛔ (needs an LLM) |
 | JIT privilege elevation (add to a group or role for the session) | ✅ `kepr agent run --grant NAME=ROLE:ADMIN`: PostgreSQL `GRANT` before the first login, `REVOKE` when the agent exits | P7.4 · T7.18 |
-| ARAM alert throttling, saved report filters | 🟡 `kepr alerts run` rules in `alerts.toml`, throttled per rule. Missing: saved filters for reports | P7.6 · T7.15 |
+| ARAM alert throttling, saved report filters | ✅ `kepr alerts run` rules in `alerts.toml`, throttled per rule; `kepr report access KEY --kind K,.. --save-filter NAME`, `--filter NAME` | P7.6 · T7.15, T13.09 |
 | Email delivery of shares, SCIM, MSP, `credential-provision`, `user-report` | ⛔ out of scope | ⛔ enterprise tenancy or a mail service |
 
 ---

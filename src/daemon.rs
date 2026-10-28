@@ -202,10 +202,15 @@ fn sweep_legacy_credstore() {
             Ok(()) => !INPROC_MAGICS
                 .iter()
                 .any(|m| m.len() == HEAD_LEN && head == **m),
-            // Treat unreadable / too-short files as legacy too — they
-            // cannot decrypt under either backend, so removal is the
-            // honest answer.
-            Err(_) => true,
+            // Too short to hold a magic: cannot decrypt under either
+            // backend, so removal is the honest answer. Any other error
+            // (EMFILE, EIO, EACCES) is transient or not about the format:
+            // leave the file alone rather than delete a credential.
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => true,
+            Err(e) => {
+                eprintln!("[kepr-daemon] cannot read {name_str} to check its format: {e}");
+                false
+            }
         };
         if is_legacy {
             match fs::remove_file(&path) {

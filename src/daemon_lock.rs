@@ -84,7 +84,11 @@ fn handle_unlock(uid: u32, username: &str, password: &[u8]) -> Response {
         Err(e) => return Response::fail(e),
     };
     match crypto::unlock_backend(&key) {
-        Ok(()) => Response::UnlockedOk,
+        Ok(()) => {
+            // T13.20: an old envelope gets its cost written into it.
+            crate::key_unlock::upgrade_at(&protected_master_key_path(), password, &key);
+            Response::UnlockedOk
+        }
         Err(e) => Response::fail(e),
     }
 }

@@ -236,6 +236,21 @@ pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
             (p, r)
         }
         "claude" | "codex" => return guidance(harness, &home),
+        // T13.07: project files; neither tool can be pointed at the gate by
+        // an environment variable, and the message says so.
+        "cursor" | "copilot" => {
+            let Ok(project) = std::env::current_dir() else {
+                return Response::fail("cannot read the current directory");
+            };
+            let r = guidance(harness, &project);
+            if matches!(r, Response::Pong) {
+                cli_ui::info(&format!(
+                    "{harness} has no setting kepr can set for it: its model traffic does not go \
+                     through the gate, so keep provider keys out of its files and settings"
+                ));
+            }
+            return r;
+        }
         "grok-cli" | "aider" | "gemini" => {
             return Response::fail(format!(
                 "{harness} needs no install step: run `kepr agent run {harness}`"
@@ -243,7 +258,7 @@ pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
         }
         other => {
             return Response::fail(format!(
-                "no installer for '{other}' (supported: omp, grok, opencode, claude, codex)"
+                "no installer for '{other}' (supported: omp, grok, opencode, claude, codex, cursor, copilot)"
             ))
         }
     };

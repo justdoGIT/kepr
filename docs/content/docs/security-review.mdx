@@ -1,0 +1,82 @@
+---
+title: "Code review and security analysis"
+description: "Findings of the 2026-10-28 review of the tree after phase P12: what was checked, what was fixed, and what is left."
+---
+
+**Scope and honesty.** The tree is about 118,000 lines of Rust plus SDKs and
+CI. This review was a targeted manual pass over the paths where a mistake
+costs the most, on top of the automated reviews that ran on the P12 pull
+request (Strix, the agent reviewer, `cargo audit`, `cargo deny`, clippy with
+`-D warnings` on stable and 1.87.0, and the full test suite). It is not a
+formal audit and does not replace one. Every claim below says whether it was
+read in the code, tested, or only reasoned about.
+
+## What was reviewed
+
+| Area | How |
+| --- | --- |
+| Request path: socket, peer identity, worker pool, rate limit, framing | read, with tests added |
+| `Get` pre-decrypt gate (`daemon_handlers_get.rs`) and the paths that must never return a sealed value | read |
+| Gate forwarding, placeholder checks, host selection, credential-minting refusals, response masking | read, with tests |
+| Release workflow, packaging scripts, network isolation | read, with a local run of the isolation command |
+| Master key at start-up, recovery key, re-seal | read, with tests |
+| Crypto layer and FIPS seam | read; outputs of the old code pinned in tests |
+| File writes with user-supplied paths (attachments, `inject -o`) | read |
+| Process spawning, `unsafe`, `unwrap` in daemon request code | counted and sampled |
+| Dependencies | `cargo audit` and `cargo deny` in CI |
+
+## Findings fixed in this review
+
+| # | Severity | Finding | Fix |
+| --- | --- | --- | --- |
+| 1 | Medium | A panic inside one request handler killed its worker thread for good. The pool has 16 workers, so 16 panics (a poisoned lock, an unexpected input) left a daemon that accepted connections and answered none. | `daemon_pool.rs` catches the panic, logs one line and keeps the worker. A test panics every other request on a one-worker pool; it fails without the fix. |
+| 2 | Low | The CLI never checked who was on the other end of the daemon socket. The daemon checks the client's uid, but not the other way round. Where the socket path sits in a directory another user controls (`/tmp` when neither `XDG_RUNTIME_DIR` nor `HOME` is set), that user could stand in for the daemon and receive a `set` value. | `client.rs` reads `SO_PEERCRED` after connecting and sends nothing unless the peer is the caller's own uid (user mode) or root (system mode). |
+| 3 | Low | The start-up sweep that removes credential files in the old format also removed a file whenever opening or reading it failed for any reason, including `EMFILE` or `EIO`. | Only a file too short to hold a format header is removed; any other error leaves the file and logs it. |
+| 4 | High | (P12 review, Strix) The Google credential-minting guard missed `signBlob` and key-string reads. | `gcp_guard.rs` refuses `signBlob` and `keyString`. |
+| 5 | Medium | (P12 review) The isolated release build could leave a cargo config or edit the checked-out tree for the un-isolated steps. | The build job checks that only `target/` changed, that no cargo config exists, and verifies the binaries' hashes again before packaging. |
+| 6 | Low | (P12 review) Recovery unlock could re-seal the master key with a weaker sealer. | The sealer family is recorded at enrolment and compared before the key file is replaced. |
+| 7 | Low | (P12 review) The gate's masking missed percent-encoded and Base64 spellings; `kepr doctor` passed on unreadable inputs; the TPM2 counter read failed open. | Fixed, with tests. |
+
+| 8 | Medium | The passphrase envelope stored no Argon2id parameters (64 MiB, 3 passes, 1 lane were constants), so the cost could not be raised for existing stores. | New `kepr_pw3` envelope with the cost in an authenticated header; stored costs outside 8 MiB to 1 GiB, 1 to 10 passes and 1 to 8 lanes are refused before any hashing; old envelopes open and are rewritten on the next unlock (T13.20). |
+| 9 | Info | The refusal of an executable binding under the system daemon did not say how to enable it. | `systemd/kepr.service.d/ptrace.conf.example` adds only `CAP_SYS_PTRACE`; a test pins that the base unit lacks it and the refusal names the drop-in (T13.19). |
+
+Items 4 to 7 were also fixed in the P12 pull request itself.
+
+## Controls that held up
+
+- **No path returns a sealed value.** `meta_gate` refuses sealed, SSH and
+  share-key credentials before any other check, and a metadata file that
+  fails to parse denies instead of allowing. The documented exceptions
+  (recovery kit, recovery words, break-glass, escrow, recovery key) each sit
+  behind the same fences: owner or root, no agent gate running, audited.
+- **The gate cannot be pointed at another host.** The upstream URL is the
+  route's host plus a path that always starts with `/`, so a path such as
+  `@evil.example/x` cannot change the authority. Credentials are released
+  only for a host in the credential's binding.
+- **File names that become paths are validated** in the daemon
+  (`validate_name`, `validate_file_name`: no `/`, no `..`, no control
+  characters), and `attach get` writes with `create_new` and mode 0600.
+- **Panics are rare in daemon code.** Outside tests and start-up, the daemon
+  has a handful of `unwrap` and `expect` calls, none on request data.
+- **Secrets are wiped:** the raw request frame, the response, the recovery
+  words' printed text and QR code, and value buffers use `Zeroizing` or
+  `ZeroString`.
+- **Failure is closed:** an unreadable policy file, a broken metadata file, a
+  failed polkit check, a missing macOS approval and an unreadable TPM2
+  counter all deny.
+
+## Open items
+
+| Severity | Item | Why it matters | Ticket |
+| --- | --- | --- | --- |
+| Medium | A store without a passphrase keeps its key in RAM by design, and a same-uid process can send `lock` or (off macOS) `recovery-key enrol`. | Fenced by "no gate running" and owner checks, but any process of the user can ask. The presence check exists only for the macOS keychain sealer. | T13.21 |
+| Low | The audit chain is tamper-evident, not tamper-proof: someone who can rewrite the whole file can replace it. | Forwarding (`kepr audit forward`) mitigates; anchoring is not built. | T13.22 |
+| Info | 190 `unsafe` blocks, almost all libc calls and `memfd_secret` / Landlock / seccomp syscalls. | Not individually audited here. | T13.23 |
+
+## What this review did not cover
+
+The SDKs, the CI integration scripts, the FUSE mount, KDBX parsing, the
+local PKI and SPIFFE code, the relay, and the TPM2 and KMS sealers were
+not read in depth. Fuzzing (`frame_fuzz`, `protocol_fuzz`) exists only for
+the framing and request parser. A formal external audit before a 1.0
+release is still the right next step.

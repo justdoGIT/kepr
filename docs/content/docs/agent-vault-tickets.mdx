@@ -55,6 +55,7 @@ the exact commands that prove it's done.
 | P10: T10.01–T10.12 `kepr mount`, KDBX 4 import, fingerprint unlock, Keychain sealer, `logon` keyring, unit-file credentials, Podman driver, CSI provider, binary-identity bindings, local PKI, SPIFFE SVIDs, native Keychain unseal | shipped |
 | P11: T11.1–T11.24 search, trash, history diff, duplicates, aliases, linked records, custom types, record templates, `delete --all`, `doctor --verify`, aging and policy reports, idle lock, unlock backoff, re-auth, share contacts, profiles, sync maps, `kepr batch`, `kepr serve`, discovery rules, `kepr ssh rotate`, `kepr agent logs`, health ignores, richer `kepr status` | shipped |
 | P12: T12.01–T12.53 plan gaps from the 2026-10-15 audit: response masking, gate syscall filter and Landlock, git and GCP presets, master key in secret memory, vault anti-rollback, recovery key for a sealed master key, the rest of the FIPS seam, clipboard hygiene | shipped |
+| P13: T13.01–T13.23 remaining plan gaps and review follow-ups, in four priority groups | partly shipped: T13.07, T13.09, T13.10, T13.15, T13.19, T13.20; the rest open |
 
 **Where the code differs from the ticket text** (the code is authoritative):
 
@@ -4715,6 +4716,244 @@ Tests:
 Out of scope: Touch ID or LocalAuthentication (needs a signed helper); prompting for `unlock` or `recovery-key unlock`, which already need a secret; a bypass variable.
 Security: the dialog text is fixed; no value, name or word reaches `osascript`. An agent that can drive the dialog through accessibility permissions can still approve it; that permission is the user's to withhold and `kepr doctor` is not yet able to see it.
 Done when: the standard commands pass; the macOS e2e run shows a refusal with no answer.
+
+## P13: remaining plan gaps and review follow-ups (2026-10-28)
+
+Everything in P1 to P12 is built. These tickets cover what the plan still
+marks missing (🟡 rows in section 2) and the open items of the
+[security review](/docs/security-review). They are ordered by priority:
+**A** security hardening first, **B** features that close a security
+promise, **C** reach (more clients and targets), **D** team and enterprise
+scope. Within a group, the first ticket is the one to do first. "Standard
+commands" are the four in the build section of `AGENTS.md`, plus
+`cargo +1.87.0 clippy --all-targets --all-features -- -D warnings`.
+
+### Priority A: security hardening
+
+### T13.20 Argon2id parameters stored in the envelope (S) 🔒
+
+**Status: shipped** (2026-10-28).
+
+Goal: a passphrase envelope names its own Argon2id cost, so the cost can be raised later without breaking stores written today.
+Depends on: nothing.
+Files: `src/key_unlock.rs`, `src/daemon_seal/fido2_kek.rs` (uses `derive_key`), `src/daemon_lock.rs`, `tests/vault_image.rs` (only if it pins the magic).
+Add:
+- A new envelope magic `kepr_pw3\n` followed by `m_kib: u32 BE | t: u32 BE | p: u8 | salt | nonce | ct`. `wrap` writes `kepr_pw3` with the current cost (64 MiB, 3, 1). `unwrap` reads `kepr_pw1` (fixed cost) and `kepr_pw3`, and refuses a `kepr_pw3` cost above 1 GiB, 10 passes or 8 lanes or below 8 MiB, 1 pass, 1 lane (a tampered envelope must not make the daemon allocate gigabytes).
+- `kepr unlock` rewrites a `kepr_pw1` envelope as `kepr_pw3` after a successful unlock (atomic write, same passphrase).
+Steps:
+1. Write the tests below; they fail.
+2. Add the format and the bounds. 3. Add the rewrite on unlock.
+Tests: a `kepr_pw1` envelope from the old code still opens (pin one); `wrap` output starts with `kepr_pw3\n` and opens; a cost field of 4 GiB, 0 passes and 255 lanes are each refused with the one generic unlock error; unlock of a `pw1` envelope leaves a `pw3` one that opens with the same passphrase.
+Out of scope: raising the default cost; the FIDO2 `kepr_pw2` envelope (same change, a later ticket).
+Security: the error never says which field was out of range; derivation time is bounded by the caps above.
+Done when: the standard commands pass.
+
+### T13.21 Presence check for lock and recovery-key enrol on Linux (S) 🔒
+
+Goal: on a store sealed without a passphrase, `kepr lock` and `kepr recovery-key enrol` ask the person at the machine through polkit, as T12.53 does through a macOS dialog, so a process of the same user (an agent) cannot add a way into the store silently.
+Depends on: T12.53.
+Files: `src/daemon_seal/presence.rs`, `systemd/polkit/io.kepr.policy`, `install.sh`, `docs/content/docs/reference/features.mdx`.
+Add:
+- `PolkitPresence` implementing `Presence`: `pkcheck --action-id io.kepr.protect --process PID,START --allow-user-interaction` for the caller's pid (the same subject form as `daemon_polkit.rs`), 60 s deadline, any error is a refusal. A new polkit action `io.kepr.protect` (`auth_self_keep` is not allowed: `auth_self`, every time).
+- `required()` is true when the store has no passphrase and the sealer is not the owner-only file in an environment with no polkit agent (`KEPR_PRESENCE=off` is not offered; headless hosts set `KEPR_MASTER_KEY_SEAL` or use a passphrase store).
+Steps: tests, implementation, policy XML and `install.sh`, docs.
+Tests: a fake presence refuses and `lock` / `enrol` change nothing; an approval proceeds; the polkit action ID is in the shipped policy file (`tests/systemd_unit.rs` style text check).
+Out of scope: the system daemon's root-only paths; Touch ID.
+Done when: the standard commands pass.
+
+### T13.22 Audit chain anchoring (M) 🔒
+
+Goal: replacing the whole audit log is detectable: the chain head is periodically published somewhere the log's writer cannot rewrite.
+Depends on: nothing.
+Files: `src/audit_chain.rs`, `src/cli_policy/forward.rs`, `src/cli_policy/tail.rs`, create `src/cli_policy/anchor.rs`.
+Add: `kepr audit anchor --to jsonl:PATH | syslog:udp://HOST:PORT | s3:...` writes `{seq, hash, at}` of the chain head with a resume cursor; `kepr audit verify --anchor FILE` fails when the log's entry at `seq` has another hash or the log is shorter than the last anchor.
+Steps: tests (a truncated log and a rewritten log both fail verification against an old anchor), then the command.
+Out of scope: Rekor or a public log; signing the anchor.
+Done when: the standard commands pass.
+
+### T13.23 Fuzz the parsers and audit `unsafe` (M) 🔒
+
+Goal: every parser of untrusted bytes has a fuzz target, and every `unsafe` block has a one-line `SAFETY:` comment that a test lints for.
+Depends on: nothing.
+Files: `crates/kepr-core/fuzz/fuzz_targets/`, `tests/unsafe_comments.rs` (create), the files it names.
+Add: fuzz targets for `http_lite`, `gate_protocol` frames, `ssh_wire`, `mysql_wire`, `recovery_words::decode`, `shamir` share text, the bundle header and the KDBX reader; `tests/unsafe_comments.rs` fails on any `unsafe {` without a `SAFETY:` comment on the previous or same line (an allowlist for existing violations that only shrinks).
+Steps: the lint test first (it fails with the current count), then the comments, then the fuzz targets and a 60 s CI smoke run per target.
+Out of scope: rewriting unsafe code.
+Done when: the standard commands pass, plus `cargo +nightly fuzz run <each> -- -max_total_time=60`.
+
+### T13.19 Executable bindings under the system daemon (S) 🔒
+
+**Status: shipped** (2026-10-28).
+
+Goal: `kepr set KEY --exe PATH` works when the daemon runs as the system service.
+Depends on: nothing.
+Files: `systemd/kepr.service`, `systemd/kepr.service.d/ptrace.conf.example`, `src/daemon_platform/exe.rs`, `tests/systemd_unit.rs`.
+Add: a drop-in that adds `CAP_SYS_PTRACE` to the bounding set (documented as opt-in because it widens the daemon); `exe.rs` reads `/proc/PID/exe` with it; the refusal message names the drop-in.
+Tests: the unit test pins that the base unit lacks the capability and the example adds it; a text check on the refusal message.
+Out of scope: changing the shipped unit.
+Done when: the standard commands pass.
+
+### Priority B: security promises still half kept
+
+### T13.01 Post-quantum key exchange in the gate's TLS (M) 🔒
+
+Goal: the gate's TLS to upstream hosts offers the hybrid `X25519MLKEM768` group where the provider supports it.
+Depends on: T12.43.
+Files: `crates/kepr-gate/Cargo.toml`, `crates/kepr-gate/src/tls_provider.rs`, `crates/kepr-gate/src/egress.rs`.
+Add: with `fips` the aws-lc-rs provider already carries the hybrid group; make it the first offered group. For the default (ring) build, add an opt-in `pq` feature that selects aws-lc-rs for the gate's client config only. `kepr status` shows `Gate TLS: X25519MLKEM768` when on.
+Steps: tests against a local rustls server that only accepts the hybrid group (connects with `pq`, fails without); then the feature.
+Out of scope: the session CA's own keys (agent-facing, local); ML-DSA certificates.
+Done when: the standard commands pass, plus `cargo test -p kepr-gate --features pq`.
+
+### T13.02 Dynamic database users (M) 🔒
+
+Goal: `kepr agent run --db-user NAME` creates a short-lived PostgreSQL or MySQL login for the session and drops it at the end, so no long-lived database password is released at all.
+Depends on: T7.18 (JIT roles).
+Files: `crates/kepr-gate/src/pg_jit.rs`, `crates/kepr-gate/src/mysql_rotate.rs`, `crates/kepr-core/src/gate_protocol.rs`, `src/cli_gatex/grant.rs`.
+Add: `DbTarget` gains `ephemeral: Option<Ephemeral { role_template, ttl_secs }>`; the gate, using the sealed admin record, runs `CREATE ROLE kepr_<random> LOGIN PASSWORD '<random>' VALID UNTIL ...` plus the template's grants, logs the agent in as it, and `DROP ROLE` at session end and on a crash sweep at the next start.
+Steps: tests with the existing fake servers (create, grant, drop on exit, drop after a gate kill); then the code.
+Out of scope: other engines; connection pooling.
+Done when: the standard commands pass, plus `./tests/agent_e2e.sh`.
+
+### T13.03 Rotation of sealed keys through provider APIs (L)
+
+Goal: `kepr leaked KEY --rotate` and `kepr rotate KEY --provider NAME` replace a sealed key through the provider's own API (GitHub fine-grained tokens, Stripe restricted keys, Anthropic and OpenAI admin keys) without the value ever reaching the CLI.
+Depends on: nothing.
+Files: create `crates/kepr-gate/src/rotate_provider.rs`; `crates/kepr-core/src/gate_protocol.rs`; `src/cli_aws/leaked.rs`.
+Add: a gate-side rotator trait `Rotate { fn rotate(&self, old: &Secret) -> Result<Secret, RotateError> }` with one implementation per provider, run inside the gate (the only process that may hold a sealed value), which asks the daemon to store the new value and delete the old one in one `Generation` step.
+Steps: split by provider into follow-up tickets first (one provider per ticket); this ticket adds the trait, the daemon commit message and the fake-server harness.
+Out of scope: providers without a rotation API.
+Done when: the standard commands pass.
+
+### Priority C: reach
+
+### T13.04 Kubernetes through the gate (M)
+
+Goal: `kubectl` run inside `kepr agent run` talks to the cluster with a bearer token or client certificate the agent never sees.
+Depends on: nothing.
+Files: `crates/kepr-core/src/binding.rs`, `crates/kepr-gate/src/egress.rs`, `src/cli_agent_run.rs`, create `src/cli_agent_kube.rs`.
+Add: `Inject::KubeToken` (bearer) bound to the API server host and port; `kepr agent add-kube NAME --server URL --token-from KEY`; the CLI writes a session `KUBECONFIG` pointing at the gate with the placeholder as the token and the session CA as `certificate-authority-data`.
+Tests: a fake API server; `kubectl`-shaped requests through the gate carry the real token; the placeholder never leaves the session; a request to another host is refused.
+Out of scope: exec credential plugins; client-certificate auth (a follow-up).
+Done when: the standard commands pass.
+
+### T13.05 .NET and PowerShell SDKs (M)
+
+Goal: get / set / generate / delete / list from .NET and PowerShell, like the Python, Node, Go, Ruby and Java clients.
+Depends on: nothing.
+Files: create `sdk/dotnet/`, `sdk/powershell/`, `.github/workflows/ci.yml` (jobs `dotnet-sdk`, `powershell-sdk`).
+Add: a client for the framed JSON protocol (length-prefixed `u32`, 10 s deadline for the whole reply, as `sdk/java` does) with the same method set; PowerShell wraps the .NET assembly (`Get-KeprSecret`).
+Tests: each SDK's suite against a fake daemon socket (copy the Java SDK's cases, including the reply deadline).
+Out of scope: Windows named pipes (the daemon is Unix-socket only).
+Done when: the new CI jobs pass.
+
+### T13.06 Chef and Puppet lookups (S)
+
+Goal: `kepr_secret` in Chef and `kepr::secret()` in Puppet.
+Depends on: T13.05 is not needed; uses the CLI.
+Files: create `integrations/chef/`, `integrations/puppet/`, CI jobs.
+Add: a Chef helper and a Puppet function that run `kepr get NAME --quiet` as the agent's user and return a sensitive value (`Sensitive[String]` in Puppet, `sensitive true` in Chef); neither logs the value.
+Tests: Ruby/Puppet unit tests with a stub `kepr`.
+Out of scope: fact collection.
+Done when: the new CI jobs pass.
+
+### T13.07 Cursor and Copilot guidance (S)
+
+**Status: shipped** (2026-10-28).
+
+Goal: Cursor and Copilot users get the harness-neutral guidance file and base-URL instructions.
+Depends on: T12.15.
+Files: `src/cli_agent_install.rs`, `plugins/`, `docs/content/docs/guides/`.
+Add: `kepr agent install cursor|copilot` writes `.cursor/rules/kepr.mdc` / `.github/copilot-instructions.md` with the same text as the Claude Code file. Neither tool takes a base-URL environment variable, so the command prints the setting to change by hand and says plainly that the gate cannot be forced on them.
+Tests: files written with the expected text; running twice changes nothing.
+Out of scope: automating IDE settings.
+Done when: the standard commands pass.
+
+### T13.08 Approve from Slack and Teams (M) 🔒
+
+Goal: an approval request can be answered from a Slack or Teams message button.
+Depends on: T9.04.
+Files: create `src/cli_policy/approve_chat.rs`, `docs/content/docs/guides/`.
+Add: `kepr approvals serve --slack-signing-secret FILE` runs a small HTTPS-behind-proxy endpoint that verifies Slack's request signature (HMAC-SHA256 through `kepr_core::mac`, five-minute timestamp window) and maps a button click to the daemon's approval decision; Teams through an incoming webhook with a signed link.
+Tests: a valid signature approves; a replayed timestamp, a wrong signature and an unknown request id are refused.
+Out of scope: ServiceNow and Jira.
+Done when: the standard commands pass.
+
+### T13.09 Saved report filters (S)
+
+**Status: shipped** (2026-10-28).
+
+Goal: `kepr report access NAME --kind shares,reads` and named filters in a file.
+Depends on: T6.12.
+Files: `src/cli_policy/report.rs`, create `src/cli_policy/report_filters.rs`.
+Add: `--kind K1,K2` keeps rows whose `kind` is listed; `--save-filter NAME` stores the current `--kind` list in `~/.config/kepr/report-filters.toml` (`[filters.NAME] kinds = [...]`, written 0600 with the atomic writer); `--filter NAME` applies it; `--filters` lists them. Unknown kind names are an error that lists the valid ones.
+Tests: parsing, filtering, save and load round trip, an unknown kind and an unknown filter.
+Out of scope: date ranges.
+Done when: the standard commands pass.
+
+### T13.10 Compliance report as a web page (S)
+
+**Status: shipped** (2026-10-28).
+
+Goal: `kepr report compliance --framework F --html FILE` writes one self-contained page with pass / fail / manual per control.
+Depends on: the compliance report.
+Files: `src/cli_policy/compliance.rs`, create `src/cli_policy/compliance_html.rs`.
+Add: an HTML renderer with all text escaped, no scripts, no external requests, written 0600.
+Tests: a control name containing `<script>` is escaped; the file has no `http` URL.
+Out of scope: charts over time.
+Done when: the standard commands pass.
+
+### T13.11 Resize a vault image and migrate back (M) 🔒
+
+Goal: `kepr vault resize SIZE` grows an image; `kepr vault migrate --to-files` returns to the per-file store.
+Depends on: T4.07.
+Files: `src/daemon_vault/admin.rs`, `src/daemon_vault/migrate.rs`, `src/cli_vault/`.
+Add: growth writes a new, larger image beside the old one through the normal commit path (every record re-placed, fresh noise in new slots), verifies it, then renames; shrinking is refused unless the used slots fit with 25 % spare. `--to-files` is `migrate` run backwards, resumable, refusing while any gate runs.
+Tests: grow with records present and compare every value; a crash between steps leaves the old image usable; a refused shrink.
+Out of scope: online resize.
+Done when: the standard commands pass, plus `tests/vault_image.rs`.
+
+### T13.12 JetBrains, iTerm2 and Raycast integrations (M)
+
+Goal: the VS Code extension's features (hover on `kepr://` references, list and lock state; never values) in the other three tools.
+Depends on: nothing.
+Files: create `integrations/jetbrains/`, `integrations/iterm2/`, `integrations/raycast/`.
+Add: each talks to the CLI (`kepr ls --json`, `kepr status --json`), not the socket; Raycast adds a "copy" command through `kepr copy`.
+Tests: the metadata parsing for each, with a stub `kepr`.
+Out of scope: publishing to marketplaces.
+Done when: the new CI jobs pass.
+
+### Priority D: team and enterprise scope
+
+### T13.13 Roles and delegated admin (L) 🔒
+
+Goal: `policy.toml` rules can name roles, and a delegated admin can manage a team's credentials without reading them.
+Depends on: T6.11.
+Files: `crates/kepr-core/src/policy.rs`, `src/daemon_policy/enforce.rs`, create `src/daemon_policy/roles.rs`.
+Add: split into three tickets before starting: the role model (`[roles.NAME] members = [uid or group]`), delegated admin verbs (rotate, revoke, move; never get), and the report. This ticket only adds the role model: `match.role = "ops"` in rules, evaluated against the peer's groups.
+Tests: first-match evaluation with roles; a user in two roles; no role means no match.
+Out of scope: nodes and a hosted control plane.
+Done when: the standard commands pass.
+
+### T13.14 SAML sign-in for device enrolment (L) 🔒
+
+Goal: `kepr device enroll --saml` accepts a SAML 2.0 assertion from the identity provider, as `--oidc` does for OIDC.
+Depends on: T6.13.
+Files: create `src/cli_sharing/saml.rs`.
+Add: split first: XML signature verification with exclusive canonicalisation is the risky part and needs its own review and a vetted crate decision; this ticket records the decision (`samael`, or an OIDC bridge in front of the SAML IdP, which is the recommended route).
+Tests: none until the decision is made.
+Out of scope: SCIM.
+Done when: the decision is written in this ticket and the follow-ups exist.
+
+### T13.15 Telnet and the remaining connection types (S)
+
+**Status: shipped** (2026-10-28).
+
+Goal: decide, and write down, that telnet, RDP, VNC and browser isolation stay out of scope.
+Depends on: nothing.
+Files: `docs/content/docs/agent-vault-plan.mdx`.
+Add: the plan's "Connections" row says why: telnet sends the credential in the clear, so a gate that logs in on the agent's behalf would add nothing; RDP, VNC and browser isolation need a hosted gateway.
+Done when: the row is marked out of scope (⛔) with the reason and the counts in section 2 are updated.
 
 ## Ticket template
 

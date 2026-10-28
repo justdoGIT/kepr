@@ -57,6 +57,10 @@ pub fn guidance_path(
     match harness {
         "claude" => Some(base("CLAUDE_CONFIG_DIR", ".claude").join("skills/kepr/SKILL.md")),
         "codex" => Some(base("CODEX_HOME", ".codex").join("AGENTS.md")),
+        // T13.07: both tools read project files, so for these two `home` is
+        // the project directory (the current one).
+        "cursor" => Some(home.join(".cursor/rules/kepr.mdc")),
+        "copilot" => Some(home.join(".github/copilot-instructions.md")),
         _ => None,
     }
 }
@@ -100,6 +104,14 @@ fn skill_body() -> &'static str {
         .map_or(SKILL, |(_, body)| body.trim_start())
 }
 
+/// Cursor's project rule: always applied, kepr's guidance as the body.
+fn cursor_rule() -> String {
+    format!(
+        "---\ndescription: Secrets are already wired in by kepr; never ask for or print them\nalwaysApply: true\n---\n{}",
+        skill_body()
+    )
+}
+
 /// Write the guidance for `harness` through `cli_agent_install::apply`
 /// (timestamped 0600 backup, idempotent). None: no guidance for it.
 pub fn install_guidance(
@@ -111,7 +123,10 @@ pub fn install_guidance(
         return Ok(None);
     };
     let changed = match harness {
-        "codex" => crate::cli_agent_install::apply(&path, |t| upsert_block(t, skill_body())),
+        "codex" | "copilot" => {
+            crate::cli_agent_install::apply(&path, |t| upsert_block(t, skill_body()))
+        }
+        "cursor" => crate::cli_agent_install::apply(&path, |_| cursor_rule()),
         _ => crate::cli_agent_install::apply(&path, |_| SKILL.to_string()),
     }?;
     Ok(Some((path, changed)))
@@ -361,5 +376,49 @@ mod tests {
         assert!(!write_plugin(&dir, GROK).unwrap());
         assert!(dir.join(".grok-plugin/plugin.json").is_file());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cursor_and_copilot_guidance_goes_in_the_project() {
+        let none = |_: &str| None;
+        let proj = Path::new("/p");
+        assert_eq!(
+            guidance_path("cursor", proj, &none).unwrap(),
+            Path::new("/p/.cursor/rules/kepr.mdc")
+        );
+        assert_eq!(
+            guidance_path("copilot", proj, &none).unwrap(),
+            Path::new("/p/.github/copilot-instructions.md")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let (path, changed) = install_guidance("cursor", dir.path(), &none)
+            .unwrap()
+            .unwrap();
+        assert!(changed);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("---\ndescription:") && text.contains("alwaysApply: true\n---\n"));
+        assert!(text.contains(skill_body().lines().next().unwrap()));
+        // Again: nothing changes.
+        assert!(
+            !install_guidance("cursor", dir.path(), &none)
+                .unwrap()
+                .unwrap()
+                .1
+        );
+        // Copilot: the user's own instructions are kept around kepr's block.
+        let c = dir.path().join(".github/copilot-instructions.md");
+        std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+        std::fs::write(&c, "Use tabs.\n").unwrap();
+        install_guidance("copilot", dir.path(), &none)
+            .unwrap()
+            .unwrap();
+        let t = std::fs::read_to_string(&c).unwrap();
+        assert!(t.starts_with("Use tabs.\n") && t.contains(BEGIN) && t.contains(END));
+        assert!(
+            !install_guidance("copilot", dir.path(), &none)
+                .unwrap()
+                .unwrap()
+                .1
+        );
     }
 }
