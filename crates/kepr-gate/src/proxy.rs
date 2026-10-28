@@ -202,6 +202,14 @@ pub async fn proxy_request_to(
         }
     };
 
+    if crate::gcp_guard::mints_credentials(&method, &host, rest) {
+        let r = kepr_error(
+            StatusCode::FORBIDDEN,
+            "kepr_blocked",
+            "kepr does not forward requests that create credentials the session could keep",
+        );
+        return Ok(log.reply(r, bytes.len(), Some("credential-minting")));
+    }
     let body = crate::canary::screen(&state.cache, &parts.headers, None, Some(&bytes));
     if let Some((r, why)) = body.await {
         return Ok(log.reply(r, bytes.len(), Some(why)));

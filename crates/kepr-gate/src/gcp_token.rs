@@ -467,4 +467,32 @@ mod tests {
         assert_eq!(g.rx.recv().await.unwrap().0, "POST /token");
         assert!(g.rx.try_recv().is_err(), "the API was not called");
     }
+
+    #[tokio::test]
+    async fn creating_a_service_account_key_is_refused_and_never_forwarded() {
+        let mut g = fake_google().await;
+        let st = Arc::new(state(&g.base, sa_json(), None));
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gate = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(crate::proxy::serve(l, st));
+        let ph = crate::placeholder::make(&KEY, SID, 0);
+        let client: hyper_util::client::legacy::Client<_, Full<Bytes>> =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build_http();
+        let req = Request::post(format!(
+            "{gate}/gcloud/v1/projects/p/serviceAccounts/{SA}/keys"
+        ))
+        .header("authorization", format!("Bearer {ph}"))
+        .body(Full::new(Bytes::from_static(b"{}")))
+        .unwrap();
+        // The route host here is the provider's own (www.googleapis.com).
+        let r = client.request(req).await.unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let body = r.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("kepr_blocked"));
+        // The route's own token request may have happened; the call did not.
+        while let Ok((line, ..)) = g.rx.try_recv() {
+            assert_eq!(line, "POST /token", "the API was called");
+        }
+    }
 }

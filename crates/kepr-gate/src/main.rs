@@ -13,6 +13,7 @@ mod db;
 mod dlp;
 mod egress;
 mod forward;
+mod gcp_guard;
 mod gcp_token;
 mod git_http;
 mod github_app;
