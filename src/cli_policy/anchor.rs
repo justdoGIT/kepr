@@ -22,7 +22,7 @@ use super::tail;
 use crate::cli_extra::flag;
 use crate::{cli_mode, cli_ui};
 
-const USAGE: &str = "usage: kepr audit anchor --to jsonl:PATH|syslog:udp://HOST[:PORT] [--once] [--interval SECS] [--state FILE]\n       kepr audit verify --anchor FILE";
+const USAGE: &str = "usage: kepr audit anchor --to jsonl:PATH|syslog:udp://HOST[:PORT]|s3:BUCKET[/PREFIX] [--once] [--interval SECS] [--state FILE]\n       kepr audit verify --anchor FILE";
 
 /// Anchors one `verify` run sends (the daemon accepts 500); the newest.
 const MAX_SENT: usize = 500;
@@ -101,7 +101,30 @@ impl Sink for Syslog {
     }
 }
 
+/// `s3:BUCKET[/PREFIX]`: one object per anchor, `anchor-<seq>.json`, so
+/// a bucket with versioning or object lock keeps every head (T13.22).
+struct S3Sink(crate::cli_syncx::s3::S3);
+
+impl Sink for S3Sink {
+    fn send(&mut self, line: &str) -> Result<(), String> {
+        use crate::cli_syncx::transport::Remote;
+        let seq = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| v["seq"].as_u64())
+            .ok_or("anchor without a seq")?;
+        self.0.put(
+            &format!("anchor-{seq:020}.json"),
+            format!("{line}\n").as_bytes(),
+        )
+    }
+}
+
 fn open(spec: &str) -> Result<Box<dyn Sink>, String> {
+    if let Some(bucket) = spec.strip_prefix("s3:") {
+        return Ok(Box::new(S3Sink(crate::cli_syncx::s3::S3::from_env(
+            bucket,
+        )?)));
+    }
     match Target::parse(spec)? {
         Target::Jsonl(p) => Ok(Box::new(Jsonl(p))),
         Target::Syslog(to) => Ok(Box::new(Syslog {
@@ -266,6 +289,43 @@ mod tests {
         assert_eq!(m.0.len(), 2);
         assert!(m.0[1].contains("\"seq\":7"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_s3_anchor_is_one_signed_object_named_by_its_seq() {
+        use crate::cli_syncx::testserver::serve;
+        use kepr_core::sigv4_req::AwsKey;
+        let key = AwsKey {
+            access_key_id: "AKIDEXAMPLEEXAMPLE".into(),
+            secret_access_key: kepr_core::generate::ZeroString::from("secret-key-for-the-test"),
+            session_token: None,
+        };
+        let (base, seen) = serve(vec![(200, String::new())]);
+        let s3 =
+            crate::cli_syncx::s3::S3::new("bkt/anchors", key, "eu-west-1", Some(&base)).unwrap();
+        let mut sink = S3Sink(s3);
+        sink.send(&line(7, "abcd", 99)).unwrap();
+        let seen = seen.join().unwrap();
+        assert!(
+            seen[0].starts_with("PUT /bkt/anchors/anchor-00000000000000000007.json HTTP/1.1"),
+            "{}",
+            seen[0]
+        );
+        assert!(seen[0].contains("\"seq\":7") && seen[0].contains("\"hash\":\"abcd\""));
+        assert!(seen[0]
+            .to_ascii_lowercase()
+            .contains("authorization: aws4-hmac-sha256"));
+        assert!(sink.send("{\"no\":1}").is_err(), "an anchor needs a seq");
+    }
+
+    #[test]
+    fn an_s3_target_needs_credentials_and_a_bucket() {
+        // No AWS credentials in the test environment: a clear error, no panic.
+        for var in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] {
+            std::env::remove_var(var);
+        }
+        let e = open("s3:my-bucket/anchors").err().unwrap();
+        assert!(e.contains("AWS_ACCESS_KEY_ID"), "{e}");
     }
 
     #[test]

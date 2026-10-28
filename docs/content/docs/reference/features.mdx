@@ -106,7 +106,7 @@ verbs print their usage line when called without arguments.
 | `canary` | `plant [--for PROVIDER] [--name NAME] [--in FILE\|DIR]` · `ls` · `rm NAME` · `listen --listen ADDR:PORT` | Decoy keys that raise an alarm when used. |
 | `exe` | `KEY [--allow PATH]... [--clear]` | Show, replace or drop the programs allowed to read KEY. |
 | `audit forward` | `--to jsonl:PATH\|syslog:udp://HOST[:PORT]\|otlp:URL [--once] [--interval SECS] [--state FILE]` | Stream audit events (never values) to a SIEM. |
-| `audit anchor` / `audit verify` | `anchor --to jsonl:PATH\|syslog:udp://HOST[:PORT] [--once] [--interval SECS]` · `verify --anchor FILE` | Publish the audit chain head elsewhere; check the log against published heads. |
+| `audit anchor` / `audit verify` | `anchor --to jsonl:PATH\|syslog:udp://HOST[:PORT]\|s3:BUCKET[/PREFIX] [--once] [--interval SECS]` · `verify --anchor FILE` | Publish the audit chain head elsewhere; check the log against published heads. |
 | `alerts` | `check [--file F]` · `run [--once] [--file F] [--interval SECS] [--state FILE]` | Post matching audit events to webhooks. |
 | `anomaly` | `check [--rules F]` · `run [--journal daemon\|FILE\|-] [--rules F] [--once] [--interval SECS] [--state F]` | Watch the gate journal for unusual traffic. |
 | `usage` | `[--days N]` · `--report [--days N] [--unused-days N] [--prices FILE]` | Uses per key; `--report`: agent traffic, cost and unused bindings. |
@@ -1428,8 +1428,8 @@ provider. The listener must be reachable by whoever sends the webhook.
   is at least once; syslog is UDP only; an OTLP URL may be `kepr:NAME`.
   Non-root callers get only their own entries; root on the system daemon
   gets everyone's.
-- `kepr audit anchor --to jsonl:PATH|syslog:udp://HOST[:PORT]` publishes
-  the chain head (`seq`, `hash`, time) whenever it moved; put the target
+- `kepr audit anchor --to jsonl:PATH|syslog:udp://HOST[:PORT]|s3:BUCKET[/PREFIX]`
+  publishes the chain head (`seq`, `hash`, time) whenever it moved; put the target
   where the daemon's account cannot rewrite it. `kepr audit verify
   --anchor FILE` has the daemon check the log: it must verify, be at least
   as long as the newest anchor, and hold the same hash at every anchored

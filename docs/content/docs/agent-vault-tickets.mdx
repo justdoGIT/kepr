@@ -55,7 +55,7 @@ the exact commands that prove it's done.
 | P10: T10.01–T10.12 `kepr mount`, KDBX 4 import, fingerprint unlock, Keychain sealer, `logon` keyring, unit-file credentials, Podman driver, CSI provider, binary-identity bindings, local PKI, SPIFFE SVIDs, native Keychain unseal | shipped |
 | P11: T11.1–T11.24 search, trash, history diff, duplicates, aliases, linked records, custom types, record templates, `delete --all`, `doctor --verify`, aging and policy reports, idle lock, unlock backoff, re-auth, share contacts, profiles, sync maps, `kepr batch`, `kepr serve`, discovery rules, `kepr ssh rotate`, `kepr agent logs`, health ignores, richer `kepr status` | shipped |
 | P12: T12.01–T12.53 plan gaps from the 2026-10-15 audit: response masking, gate syscall filter and Landlock, git and GCP presets, master key in secret memory, vault anti-rollback, recovery key for a sealed master key, the rest of the FIPS seam, clipboard hygiene | shipped |
-| P13: T13.01–T13.23 remaining plan gaps and review follow-ups, in four priority groups | shipped except the follow-ups each ticket names: T13.02 MySQL, T13.03 per-provider rotators and verb, T13.04 client-certificate auth, T13.13 delegated admin, T13.22 `s3:` anchors, T13.23 bundle-header and KDBX fuzz targets; T13.05 and T13.12 glue were not built here |
+| P13: T13.01–T13.23 remaining plan gaps and review follow-ups, in four priority groups | shipped except the follow-ups each ticket names: T13.02 MySQL, T13.03 per-provider rotators and verb, T13.04 client-certificate auth, T13.13 delegated admin, T13.23 bundle-header and KDBX fuzz targets; T13.05 and T13.12 glue were not built here |
 
 **Where the code differs from the ticket text** (the code is authoritative):
 
@@ -4765,7 +4765,7 @@ Done when: the standard commands pass.
 
 ### T13.22 Audit chain anchoring (M) 🔒
 
-**Status: shipped** (2026-10-28): `kepr audit anchor --to jsonl:PATH|syslog:udp://HOST[:PORT]` publishes the chain head when it moved; `kepr audit verify --anchor FILE` has the daemon check the log against the anchors (truncated, replaced and rewritten logs each fail). `s3:` targets are not done.
+**Status: shipped** (2026-10-28): `kepr audit anchor --to jsonl:PATH|syslog:udp://HOST[:PORT]` publishes the chain head when it moved; `kepr audit verify --anchor FILE` has the daemon check the log against the anchors (truncated, replaced and rewritten logs each fail). `s3:BUCKET[/PREFIX]` targets write one signed object per anchor (`anchor-<seq>.json`; versioning or object lock on the bucket is what keeps them); verifying against a bucket means downloading its objects into one file first.
 
 Goal: replacing the whole audit log is detectable: the chain head is periodically published somewhere the log's writer cannot rewrite.
 Depends on: nothing.
