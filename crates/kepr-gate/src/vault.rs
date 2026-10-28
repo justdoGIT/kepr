@@ -52,6 +52,11 @@ pub trait Resolve: Send + Sync {
     fn canary(&self, _fingerprints: Vec<String>) -> Result<bool, String> {
         Ok(false)
     }
+    /// T13.03: store `value` as the new value of the credential this
+    /// `rotate:` session rotates (the daemon refuses any other session).
+    fn rotate_commit(&self, _name: &str, _value: &ZeroString) -> Result<(), String> {
+        Err("rotation is not available".into())
+    }
 }
 
 pub struct FdResolver {
@@ -146,6 +151,19 @@ impl Resolve for FdResolver {
             GateResponse::UsageToday {
                 requests, tokens, ..
             } => Ok((requests, tokens)),
+            GateResponse::Err { error, .. } => Err(error),
+            _ => Err("daemon channel: unexpected reply".into()),
+        }
+    }
+
+    fn rotate_commit(&self, name: &str, value: &ZeroString) -> Result<(), String> {
+        let req = |id| GateRequest::RotateCommit {
+            id,
+            name: name.to_string(),
+            value: ZeroString::from(value.as_str()),
+        };
+        match self.call(req)? {
+            GateResponse::Rotated { .. } => Ok(()),
             GateResponse::Err { error, .. } => Err(error),
             _ => Err("daemon channel: unexpected reply".into()),
         }

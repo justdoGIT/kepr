@@ -48,6 +48,14 @@ pub enum GateRequest {
     /// T9.08: canary fingerprints of key-shaped strings in a request;
     /// answered with `CanaryChecked` (the daemon raises the alarm).
     Canary { id: u64, fingerprints: Vec<String> },
+    /// T13.03: a rotator inside a `rotate:` session stores the new value of
+    /// the credential it rotated (the daemon keeps the seal and bindings),
+    /// answered with `Rotated`. Refused for any other session.
+    RotateCommit {
+        id: u64,
+        name: String,
+        value: ZeroString,
+    },
 }
 
 /// Daemon → gate.
@@ -64,6 +72,10 @@ pub enum GateResponse {
         generation: u64,
     },
     Recorded {
+        id: u64,
+    },
+    /// T13.03: the new value is stored; gates re-fetch.
+    Rotated {
         id: u64,
     },
     /// T9.06: the credential's totals today, this report included.
@@ -89,6 +101,7 @@ impl GateResponse {
             Self::ResolveOk { id, .. }
             | Self::Generation { id, .. }
             | Self::Recorded { id }
+            | Self::Rotated { id }
             | Self::UsageToday { id, .. }
             | Self::CanaryChecked { id, .. }
             | Self::Err { id, .. } => *id,
@@ -221,12 +234,28 @@ pub fn aws_route_key(cred: &str) -> String {
     format!("aws:{cred}")
 }
 
+/// Route key for a provider-side rotation of `cred` (T13.03): the session
+/// exists to rotate that sealed key, and only such a session may send
+/// `RotateCommit`. An agent's own session never has one.
+pub fn rotate_route_key(cred: &str) -> String {
+    format!("rotate:{cred}")
+}
+
 impl GateRoute {
     pub fn is_tunnel(&self) -> bool {
         self.target
             .as_ref()
             .is_some_and(|t| t.kind == TargetKind::Tcp)
     }
+}
+
+/// The credentials a session may rotate (T13.03): its `rotate:` routes.
+pub fn rotatable_creds(routes: &[GateRoute]) -> std::collections::HashSet<String> {
+    routes
+        .iter()
+        .filter(|r| r.provider == rotate_route_key(&r.cred))
+        .map(|r| r.cred.to_uppercase())
+        .collect()
 }
 
 /// The credential NAMEs a session's gate may ask the daemon for: every
@@ -309,8 +338,10 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
             r.provider == key && t.port != 0 && crate::binding::validate_host(&t.host).is_ok()
         });
         let aws_ok = r.target.is_none() && r.provider == aws_route_key(&r.cred);
+        let rotate_ok = r.target.is_none() && r.provider == rotate_route_key(&r.cred);
         if !db_ok
             && !aws_ok
+            && !rotate_ok
             && (r.target.is_some() || crate::providers::lookup(&r.provider).is_none())
         {
             return Err(format!("unknown provider {}", r.provider));
@@ -338,6 +369,33 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotation_messages_and_routes() {
+        let r = GateRequest::RotateCommit {
+            id: 4,
+            name: "GH".into(),
+            value: ZeroString::from("new"),
+        };
+        let wire = serde_json::to_string(&r).unwrap();
+        assert!(wire.contains("rotate_commit"));
+        assert!(matches!(
+            serde_json::from_str::<GateRequest>(&wire).unwrap(),
+            GateRequest::RotateCommit { id: 4, .. }
+        ));
+        let ok = serde_json::to_string(&GateResponse::Rotated { id: 4 }).unwrap();
+        assert_eq!(serde_json::from_str::<GateResponse>(&ok).unwrap().id(), 4);
+        let route = |provider: &str| GateRoute {
+            provider: provider.into(),
+            cred: "GH".into(),
+            slot: 0,
+            target: None,
+        };
+        assert!(validate_routes(&[route("rotate:GH")]).is_ok());
+        assert!(validate_routes(&[route("rotate:OTHER")]).is_err());
+        assert_eq!(rotatable_creds(&[route("rotate:GH")]).len(), 1);
+        assert!(rotatable_creds(&[route("anthropic")]).is_empty());
+    }
 
     #[test]
     fn gate_messages_round_trip() {

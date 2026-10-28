@@ -33,6 +33,7 @@ mod recording;
 mod redis;
 mod reply;
 mod rewrite;
+mod rotate_provider;
 mod routes;
 mod scram;
 mod secret_cell;
