@@ -21,6 +21,8 @@ pub struct DbRoute {
     pub target: DbTarget,
     /// T7.18: the role this session granted on the route, if any.
     pub jit: crate::pg_jit::Held,
+    /// T13.02: the session's ephemeral login role, if any.
+    pub eph: crate::pg_ephemeral::Held,
 }
 
 impl DbRoute {
@@ -31,6 +33,7 @@ impl DbRoute {
             slot,
             target,
             jit: Default::default(),
+            eph: Default::default(),
         }
     }
 }

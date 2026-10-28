@@ -247,6 +247,15 @@ async fn session(state: &Arc<State>, route: &DbRoute, client: &mut TcpStream) ->
             .await;
         return Err((502, None));
     };
+    // T13.02: an ephemeral route logs the agent in as the session's own role.
+    let login_rec = match crate::pg_ephemeral::login_for(state, route, login_rec).await {
+        Ok(rec) => rec,
+        Err(e) => {
+            let msg = format!("kepr: could not create the session login: {e}");
+            let _ = client.write_all(&error_response("42501", &msg)).await;
+            return Err((502, Some("ephemeral")));
+        }
+    };
     let mut up =
         match crate::pg_tls::upstream(&route.target, &login_rec.sslmode, &login_rec.ca_pem).await {
             Ok(u) => u,

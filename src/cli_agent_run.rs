@@ -150,6 +150,7 @@ pub fn cmd_run(
         let tunnels = crate::cli_gatex::tunnel::routes(&routes, &session.tunnels)?;
         routes.extend(tunnels);
         crate::cli_gatex::grant::apply(&mut routes, &session.grants)?;
+        crate::cli_gatex::dbuser::apply(&mut routes, &session.db_users)?; // T13.02
         Ok(routes)
     });
     let routes = match routes {

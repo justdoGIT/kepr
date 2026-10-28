@@ -329,6 +329,8 @@ pub fn run() -> Result<(), String> {
             }
             // T7.18: take back the roles this session granted.
             crate::pg_jit::revoke_all(&st, &jit_routes).await;
+            // T13.02: and drop the logins it made.
+            crate::pg_ephemeral::drop_all(&st, &jit_routes).await;
             // Connections the agent closed as it exited are still winding
             // down: let them journal (and record) their last lines.
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;

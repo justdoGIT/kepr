@@ -140,6 +140,46 @@ pub struct DbTarget {
     /// session, by the gate, with another sealed record's admin login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<RoleGrant>,
+    /// T13.02 (PostgreSQL): the route's sealed record is an admin login the
+    /// agent never uses; the gate makes a short-lived login role for the
+    /// session instead and drops it at the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral: Option<Ephemeral>,
+}
+
+/// `kepr agent run --db-user NAME=ROLE[:TTL]` (T13.02).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ephemeral {
+    /// The existing role whose privileges the new login inherits
+    /// (membership); case kept.
+    pub role: String,
+    /// The login's `VALID UNTIL`, from creation: a gate killed before it
+    /// can drop the role leaves one that no longer logs in.
+    pub ttl_secs: u64,
+}
+
+/// Longest and shortest life of an ephemeral login.
+pub const EPHEMERAL_TTL: std::ops::RangeInclusive<u64> = 60..=86_400;
+/// Default when `--db-user` gives no TTL.
+pub const EPHEMERAL_DEFAULT_TTL: u64 = 3_600;
+
+impl Ephemeral {
+    fn validate(&self, kind: TargetKind, t: &DbTarget) -> Result<(), String> {
+        let role_ok = (1..=63).contains(&self.role.len()) && !self.role.contains(['\0', '\\']);
+        match kind {
+            TargetKind::Postgres if !role_ok => Err("--db-user: invalid role name".into()),
+            TargetKind::Postgres if !EPHEMERAL_TTL.contains(&self.ttl_secs) => Err(format!(
+                "--db-user: the TTL is {} to {} seconds",
+                EPHEMERAL_TTL.start(),
+                EPHEMERAL_TTL.end()
+            )),
+            TargetKind::Postgres if t.rotate || t.grant.is_some() => {
+                Err("--db-user can't be combined with --grant or password rotation".into())
+            }
+            TargetKind::Postgres => Ok(()),
+            _ => Err("--db-user is for PostgreSQL logins only".into()),
+        }
+    }
 }
 
 /// `kepr agent run --grant NAME=ROLE:ADMIN` (T7.18).
@@ -345,6 +385,13 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
             && (r.target.is_some() || crate::providers::lookup(&r.provider).is_none())
         {
             return Err(format!("unknown provider {}", r.provider));
+        }
+        if let Some((t, e)) = r
+            .target
+            .as_ref()
+            .and_then(|t| Some((t, t.ephemeral.as_ref()?)))
+        {
+            e.validate(t.kind, t)?;
         }
         if let Some((t, g)) = r.target.as_ref().and_then(|t| Some((t, t.grant.as_ref()?))) {
             g.validate(&r.cred, t.kind)?;

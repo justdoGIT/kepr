@@ -24,6 +24,7 @@ mod mysql;
 mod mysql_auth;
 mod mysql_rotate;
 mod pg;
+mod pg_ephemeral;
 mod pg_jit;
 mod pg_rotate;
 mod pg_tls;
