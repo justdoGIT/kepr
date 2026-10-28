@@ -22,3 +22,5 @@ pub mod logic;
 
 #[cfg(not(test))]
 mod ffi;
+#[cfg(not(test))]
+mod spawn;

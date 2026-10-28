@@ -966,32 +966,56 @@ locked out of both commands.
 
 ### Unlock at login (PAM)
 
-`pam_kepr.so` (`crates/kepr-pam`, built on its own:
-`cargo build --release --manifest-path crates/kepr-pam/Cargo.toml`) unlocks
-the store with the password you log in with. Put it after the module that
-checks the password, in the `auth` and `session` stacks of the login service
-(GDM, SDDM, `login`, `sshd`):
+Logging in with your password can unlock the store, when the store
+passphrase is that password. The full picture, including why kepr does not
+type your sudo password and which program gets which key, is the
+[Unlock at login](/docs/guides/login-unlock) guide. The pieces:
 
-```text
-auth     optional  pam_kepr.so
-session  optional  pam_kepr.so
-```
+* `pam_kepr.so` (`crates/kepr-pam`, its own workspace:
+  `cargo build --release --manifest-path crates/kepr-pam/Cargo.toml`;
+  `./install.sh --login` builds and installs it with the Debian
+  `pam-auth-update` profile `packaging/pam-configs/kepr`). Always
+  `optional`, always `PAM_IGNORE`: it never decides or delays a login, does
+  nothing for root, and runs only a `kepr` that root owns and group / others
+  cannot write (`kepr=/path`; default `/usr/bin/kepr`, then
+  `/usr/local/bin/kepr`). It remembers the authentication token together
+  with the user it was checked for and hands it over only to that user's
+  session, so `sudo -u` and `su` never pass one user's password to
+  another's kepr.
+* `kepr login-unlock on [--ssh-agent] | off | status`: the per-user opt-in
+  (`~/.config/kepr/login-unlock`; nothing is handed to kepr without it),
+  enabling the `kepr-daemon.service` user unit (and with `--ssh-agent`
+  `kepr-ssh-agent.service` plus `SSH_AUTH_SOCK` in
+  `~/.config/environment.d/`), and reporting what is still missing.
+* `kepr pam-unlock` / `kepr pam-passwd` / `kepr passwd`: the helpers the
+  module runs as you, and the manual change. Passwords come on stdin only.
+  The daemon's `LoginUnlock` has its own failure budget (the same back-off,
+  never the wipe, closed after five failures in a row until a passphrase
+  check succeeds; `kepr status` shows it), does not undo `kepr panic`, and
+  works in user mode only. `ChangePassphrase` re-wraps the master key under
+  a new passphrase after checking the old one (same guard as `kepr unlock`;
+  refused for stores that also need a security key). In the `password`
+  stack the module keeps the store passphrase equal to a changed login
+  password, including an expired password changed at login.
+* While an unlock is running, and for a few seconds after a daemon started
+  by the user unit (`kepr-daemon --user --login`, login unlock on), requests
+  that need the key (`get`, `set`, ssh sign / list, `exec`, `StartGate`)
+  wait instead of failing as locked; `status`, `unlock` and the rest answer
+  at once.
+* Module options: `unlock` (also at `pam_setcred`, which a screen locker
+  calls after a good password), `unlock=auth` (for lockers that call
+  nothing else; only where a wrong password never reaches the module),
+  `hint`, `debug`, `kepr=/path`.
+* A locked store makes `kepr ssh-agent` refuse signatures; it now says so in
+  its journal and with a desktop notice (once a minute).
 
-`auth` only remembers the password in memory; `session` runs `kepr
-pam-unlock` as you, detached, with the password on stdin. That waits for
-your user daemon (up to 20 s; unlocking itself takes a few seconds), then
-sends the same unlock `kepr unlock` does. It never fails or delays a login.
-It works only when the store passphrase is your login password, does
-nothing for root, and runs only a `kepr` that root owns and group / others
-cannot write (`kepr=/path` selects it; default `/usr/bin/kepr`, then
-`/usr/local/bin/kepr`). The store locks again when the daemon exits, which
-the user manager does after your last session. Stores unlocked with a
-security key as well are not supported here. `tests/pam_e2e.sh` runs it
-against a real PAM stack with `pamtester` (as root).
-
-Other programs still get secrets through their own channels (kepr covers
-SSH, git and docker helpers, `kepr exec`, `kepr mount`); a Secret Service
-(D-Bus) front end for GNOME Keyring / KWallet clients is not built.
+`tests/pam_e2e.sh` runs the module against a real PAM stack (root,
+`pamtester`, libpam via `tests/pam_harness.py`); `tests/login_cli.rs` runs
+the helpers and the daemon without PAM; `tests/login_assets.rs` pins the
+units, the profile and the installer. Not built: packaging `pam_kepr.so` in
+the .deb / .rpm / tarball, a Secret Service (D-Bus) front end for GNOME
+Keyring / KWallet clients, unlocking stores that also need a security key at
+login, and the Windows side (see the guide).
 
 ### Post-quantum TLS in the gate
 

@@ -22,7 +22,7 @@ use kepr_core::protocol::Response;
 
 use crate::{master_key_path, protected_master_key_path};
 
-fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
+pub(crate) fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
     crate::atomic_file::write(&protected_master_key_path(), envelope, 0o600)
         .map_err(|e| format!("cannot write protected master-key file: {e}"))?;
     crate::daemon_session::unlock_guard::reset(); // T11.13: a new passphrase
@@ -80,6 +80,8 @@ fn handle_unlock(uid: u32, username: &str, password: &[u8]) -> Response {
     if password.is_empty() {
         return Response::fail("password cannot be empty");
     }
+    // T13.25: requests arriving meanwhile wait for this unlock.
+    let _busy = crate::daemon_session::unlock_wait::Unlocking::begin();
     // T11.13: backoff, failure counter and the opt-in wipe.
     let key = match crate::daemon_session::unlock_guard::unwrap_guarded(password, uid, username) {
         Ok(key) => key,
@@ -89,6 +91,7 @@ fn handle_unlock(uid: u32, username: &str, password: &[u8]) -> Response {
         Ok(()) => {
             // T13.20: an old envelope gets its cost written into it.
             crate::key_unlock::upgrade_at(&protected_master_key_path(), password, &key);
+            crate::daemon_session::login::unlocked(); // T13.25: undoes a panic
             Response::UnlockedOk
         }
         Err(e) => Response::fail(e),

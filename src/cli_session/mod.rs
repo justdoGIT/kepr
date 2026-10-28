@@ -3,11 +3,15 @@
 // thing in main.rs), `kepr batch` (T11.18), `kepr discover` rules
 // (T11.20, called from cli_discover.rs), `kepr ssh rotate` (T11.21, from
 // cli_ssh.rs), `kepr serve` (T11.19), `kepr exec --pull` (T3.06, from
-// cli_activity.rs). Registered in cli_more.rs;
+// cli_activity.rs), `kepr passwd`, `kepr login-unlock` and the PAM helpers
+// `pam-unlock` / `pam-passwd` (T13.25). Registered in cli_more.rs;
 // flags on core verbs are parsed by cli_args.rs (`FLAGS` / `SessionFlags`).
 
 pub mod batch;
 pub mod discover_rules;
+pub mod login_unlock;
+pub mod pam_helper;
+pub mod passwd;
 pub mod profile;
 pub mod pull;
 pub mod reauth;
@@ -19,7 +23,15 @@ use kepr_core::protocol::Response;
 
 pub use reauth::{SessionFlags, FLAGS};
 
-pub const VERBS: &[&str] = &["reauth", "batch", "serve"];
+pub const VERBS: &[&str] = &[
+    "reauth",
+    "batch",
+    "serve",
+    "passwd",
+    "login-unlock",
+    "pam-unlock",
+    "pam-passwd",
+];
 
 pub const HELP: &str = "\
   set KEY --reauth                     revealing KEY (get, copy, exec, record show --reveal) asks
@@ -41,6 +53,13 @@ pub const HELP: &str = "\
                                        children never inherit
   --profile NAME COMMAND               run COMMAND on profile NAME: its own store, state and
                                        daemon (same as KEPR_PROFILE=NAME)
+  passwd                               change the store passphrase (asks for the current one)
+  login-unlock on [--ssh-agent]|off|status
+                                       logging in with your password unlocks kepr (pam_kepr.so;
+                                       the passphrase must be the login password); --ssh-agent
+                                       also runs kepr ssh-agent with the session
+  pam-unlock [--hint] | pam-passwd     (run by pam_kepr.so) the login password on stdin unlocks
+                                       kepr, or `passwd`'s change is applied to its passphrase
 ";
 
 pub fn dispatch(verb: &str, args: &[String]) -> Response {
@@ -49,6 +68,10 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "reauth" => reauth::cmd_reauth(&args),
         "batch" => batch::cmd_batch(&args),
         "serve" => serve::cmd_serve(&args),
+        "passwd" => passwd::cmd_passwd(&args),
+        "login-unlock" => login_unlock::cmd_login_unlock(&args),
+        "pam-unlock" => pam_helper::cmd_pam_unlock(&args),
+        "pam-passwd" => pam_helper::cmd_pam_passwd(&args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

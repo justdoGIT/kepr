@@ -8,6 +8,7 @@
     "cloud-sync",
     "operational-security",
     "kubernetes-eso",
-    "saml-sign-in"
+    "saml-sign-in",
+    "login-unlock"
   ]
 }

@@ -4989,7 +4989,47 @@ Done when: the row is marked out of scope (⛔) with the reason and the counts i
 
 ### T13.25 Unlock at login through PAM (M) 🔒
 
-**Status: shipped** (2026-10-28): `crates/kepr-pam` (`pam_kepr.so`) and `kepr pam-unlock`; see "Unlock at login (PAM)" in the features reference. Tested against a real PAM stack with `tests/pam_e2e.sh` (needs root and `pamtester`; not run in CI). Not built: a Secret Service (D-Bus) front end, and unlocking stores that also need a security key.
+**Status: shipped** (2026-10-28), reworked the same day after a design review (T13.26): `crates/kepr-pam` (`pam_kepr.so`), `kepr pam-unlock`, `kepr pam-passwd`, `kepr passwd`, `kepr login-unlock`; see "Unlock at login (PAM)" in the features reference and the [Unlock at login](/docs/guides/login-unlock) guide. Tested against a real PAM stack with `tests/pam_e2e.sh` (needs root, `pamtester`, python3 and a C compiler; not run in CI).
+
+### T13.26 Login unlock that cannot go wrong (M) 🔒
+
+**Status: shipped** (2026-10-28). The first PAM module handed any stashed token to whoever's session opened next, counted every mismatch against the unlock back-off and the opt-in wipe, left the store out of step after a password change, and gave `ssh` no sign that kepr was locked. Fixed:
+
+* the token is stored with the user it was checked for and used only for that user's session (`sudo -u`, `su`);
+* `SessionRequest::LoginUnlock` has its own budget (`login-guard.json`: back-off, no wipe, closed after five failures in a row), is user-mode only, leaves an unlocked store alone and does not undo `kepr panic`;
+* `SessionRequest::ChangePassphrase` and `kepr passwd`, and `pam_sm_chauthtok` for `passwd` and for an expired password at login;
+* `kepr login-unlock on|off|status` is the opt-in the module obeys; `systemd/user/kepr-daemon.service` (`--login`) and `kepr-ssh-agent.service`; requests wait for a running unlock and for the start-up window (`daemon_session/unlock_wait.rs`);
+* `pam_setcred` / `unlock=auth` for screen lockers, `hint` for logins without a password, a locked-store notice from `kepr ssh-agent`;
+* the helper is fed through a socket pair with `MSG_NOSIGNAL`, so a helper that exits early cannot raise SIGPIPE in the login process.
+
+`StatusInfo.login_failures` is a `u8` on purpose: `Response` must stay under 128 bytes (a test pins it) or clippy's `result_large_err` fires on every `Result<_, Response>` in the CLI.
+
+### T13.27 Package pam_kepr.so (S) 🔒
+
+Goal: the .deb, .rpm and tarball ship `pam_kepr.so`, the `pam-auth-update` profile and the user units, so `apt install` is enough.
+Depends on: T13.25.
+Files: `Cargo.toml` (deb and rpm assets), `.github/workflows/release.yml`, `packaging/debian/postinst`, `tests/packaging_assets.rs`.
+Add: the PAM crate is its own workspace with its own lockfile, so the release job's offline, hash-checked build needs a second `cargo fetch --locked` and build step for it, its hash in `binaries.sha256`, the module installed into the distribution's security directory (`/usr/lib/x86_64-linux-gnu/security` for Debian, `/usr/lib64/security` for RPM), and a postinst that never enables the profile on its own (login stacks are the administrator's).
+Out of scope: enabling the profile automatically.
+Done when: `cargo deb` / `generate-rpm` assets include the module, and `tests/packaging_assets.rs` pins them.
+
+### T13.28 Secret Service front end (L) 🔒
+
+Goal: programs that speak the freedesktop Secret Service API (browsers, GNOME and KDE apps, `secret-tool`, `libsecret`) read and store their secrets in kepr, so nothing else needs GNOME Keyring or KWallet.
+Depends on: T13.25.
+Files: a new `integrations/secret-service/` (not in the daemon).
+Add: a D-Bus service for `org.freedesktop.secrets` over the Go or Python SDK, items stored as records with their attributes, collections as folders, the lock state following kepr's, session encryption (`dh-ietf1024-sha256-aes128-cbc-pkcs7` and `plain` refused unless asked), a prompt object that asks for `kepr unlock`, and never sealed, SSH or gated credentials.
+Out of scope: replacing the keyring daemon's PAM unlock (kepr's does that).
+Done when: `secret-tool store` / `lookup` round-trip, and a libsecret client test passes against a user-mode daemon.
+
+### T13.29 Windows login (L) 🔒
+
+Goal: the same login experience on Windows: sign in once and kepr is open.
+Depends on: nothing.
+Files: `src/daemon_seal/` (a DPAPI sealer), the daemon's transport, the ssh-agent.
+Add: master key sealed with DPAPI (opened by the Windows sign-in), a named pipe in place of the Unix socket with the peer SID check in `kepr_core::auth`, the ssh-agent on its own pipe (the OpenSSH agent service owns the standard one), Windows Hello for confirmation prompts.
+Out of scope: a credential provider that replaces the sign-in screen.
+Done when: a Windows CI job runs the daemon and the SDK tests.
 
 ## Ticket template
 

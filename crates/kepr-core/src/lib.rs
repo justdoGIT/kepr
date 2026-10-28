@@ -80,6 +80,7 @@ pub mod x509_build;
 // batch: session
 pub mod fdfetch;
 pub mod http_lite;
+pub mod login_unlock;
 pub mod profile;
 pub mod protocol_session;
 // batch: gate-sec (P12)

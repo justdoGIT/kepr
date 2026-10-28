@@ -283,6 +283,7 @@ fn main() {
     if user {
         daemon_sleepwatch::spawn(effective_uid());
         daemon_session::idle::spawn(effective_uid());
+        daemon_session::unlock_wait::start(); // T13.25: a login unlock is coming
     }
 
     let chain = audit_chain::AuditChain::open(audit_chain_path()).unwrap_or_else(|e| {

@@ -100,6 +100,10 @@ pub fn handle(uid: u32) -> Response {
                 password_protected,
                 crate::daemon_seal::recovery_key::path().exists(),
             ),
+            login_failures: Some(
+                super::unlock_guard::login_failures().min(u32::from(u8::MAX)) as u8,
+            )
+            .filter(|&n| user && password_protected && n > 0),
         },
     }
 }

@@ -161,6 +161,15 @@ tempfile = "3"
 # T6.04: link round trips through a real relay on 127.0.0.1.
 kepr-relay = { path = "crates/kepr-relay", version = "0.4.0" }
 
+# Argon2id at the production cost (64 MiB, 3 passes) takes seconds per
+# derivation unoptimised; tests that lock, unlock or re-key a store spent
+# most of their time there.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.release]
 opt-level = "z"
 lto = true

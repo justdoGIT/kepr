@@ -36,13 +36,13 @@ fn connect_checked(socket: &std::path::Path) -> Option<UnixStream> {
     .then_some(stream)
 }
 
-fn connect_socket() -> Result<UnixStream, String> {
+fn connect_socket(start: bool) -> Result<UnixStream, String> {
     let socket = socket_path();
     if let Some(stream) = connect_checked(&socket) {
         return Ok(stream);
     }
 
-    if std::env::var_os("KEPR_SYSTEM_MODE").is_none() {
+    if start && std::env::var_os("KEPR_SYSTEM_MODE").is_none() {
         let _ = Command::new("kepr-daemon")
             .arg("--user")
             .stdin(Stdio::null())
@@ -65,8 +65,18 @@ fn connect_socket() -> Result<UnixStream, String> {
 }
 
 pub fn send_request(req: &Request) -> Result<Response, String> {
-    let mut stream = connect_socket()?;
+    send_over(connect_socket(true)?, req)
+}
 
+/// `send_request` to a daemon that is already running; never starts one
+/// (T13.25: the PAM helpers run with a login's bare environment, and a
+/// daemon started from it would miss the user's settings).
+#[allow(dead_code)] // the credential helpers include this file too
+pub fn send_existing(req: &Request) -> Result<Response, String> {
+    send_over(connect_socket(false)?, req)
+}
+
+fn send_over(mut stream: UnixStream, req: &Request) -> Result<Response, String> {
     let timeout = Duration::from_secs(TIMEOUT_SECS);
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
         eprintln!("kepr: warning: failed to set read timeout: {e}");

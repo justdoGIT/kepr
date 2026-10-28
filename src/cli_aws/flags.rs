@@ -20,7 +20,8 @@ pub const FLAGS: &[&str] = &[
     "--every",
     "--scheduled",
     "--due",
-    "--all",
+    // `--all` is the store batch's flag (`delete --all`); `rotate --all`
+    // reads it from there.
     "--dry-run",
 ];
 

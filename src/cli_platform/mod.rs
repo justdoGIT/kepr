@@ -21,7 +21,6 @@ mod kdbx_xml;
 mod keyring;
 mod mount;
 mod mount_os;
-mod pam_unlock;
 mod pki;
 mod svid;
 mod systemd_cred;
@@ -30,14 +29,7 @@ use kepr_core::protocol::Response;
 
 pub use fingerprint::{PlatformFlags, FLAGS};
 
-pub const VERBS: &[&str] = &[
-    "systemd-cred",
-    "keyring",
-    "exe",
-    "pki",
-    "mount",
-    "pam-unlock",
-];
+pub const VERBS: &[&str] = &["systemd-cred", "keyring", "exe", "pki", "mount"];
 
 pub const HELP: &str = "  systemd-cred KEY [--name CRED] [--tpm2]
                                        print a SetCredentialEncrypted= line for a unit file (value
@@ -64,8 +56,6 @@ pub const HELP: &str = "  systemd-cred KEY [--name CRED] [--tpm2]
   import vault.kdbx [--prefix P] [--seal] [--overwrite] [--yes]
                                        KeePass KDBX 4 (asks for its password; Argon2 KDF, AES-256 or
                                        ChaCha20; key files not supported)
-  pam-unlock                           (run by pam_kepr.so after login) read the login password from stdin and
-                                       unlock the store in the background; only if it is the store passphrase
   mount DIR --file NAME=KEY1,KEY2 [--file ...] [--exe PATH]... [--consent]
                                        read-only FUSE files (*.json object, .env lines, or one bare
                                        value), fetched per open for your processes only; --exe limits
@@ -79,7 +69,6 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         "exe" => exe::cmd_exe(args),
         "pki" => pki::cmd_pki(args),
         "mount" => mount_os::cmd_mount(args),
-        "pam-unlock" => pam_unlock::cmd_pam_unlock(args),
         other => Response::fail(format!("unknown command: {other}")),
     }
 }

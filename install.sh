@@ -3,7 +3,8 @@
 #
 # Usage:
 #   chmod +x install.sh
-#   ./install.sh
+#   ./install.sh            # system service where systemd runs, else user mode
+#   ./install.sh --login    # user mode with unlock-at-login (see below)
 #
 # What this does:
 #   1. Build release binaries
@@ -15,6 +16,14 @@
 
 set -euo pipefail
 
+LOGIN=false
+for arg in "$@"; do
+    case "$arg" in
+        --login) LOGIN=true ;;
+        *) echo "usage: $0 [--login]" >&2; exit 2 ;;
+    esac
+done
+
 GRN='\033[0;32m'; YLW='\033[1;33m'; CYN='\033[0;36m'; RST='\033[0m'
 ok()   { echo -e "${GRN}  ✓  $*${RST}"; }
 info() { echo -e "${CYN}  ·  $*${RST}"; }
@@ -25,10 +34,18 @@ INSTALL_USER="${SUDO_USER:-$USER}"
 echo -e "\n${CYN}━━━ Building kepr ━━━${RST}"
 cargo build --release
 cargo build --release -p kepr-gate
+if $LOGIN; then
+    # pam_kepr.so is its own workspace (it links nothing from kepr).
+    cargo build --release --manifest-path crates/kepr-pam/Cargo.toml
+fi
 ok "Build complete"
 
 SYSTEM_MODE=false
-if [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ] && command -v systemctl >/dev/null 2>&1; then
+if $LOGIN; then
+    # Unlock at login is for the per-user daemon; the system service is
+    # root's and is unlocked by root.
+    info "--login: user mode with the per-user daemon unit (no system service)"
+elif [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ] && command -v systemctl >/dev/null 2>&1; then
     SYSTEM_MODE=true
     echo -e "\n${CYN}━━━ Configuring optional system service ━━━${RST}"
     if ! getent group kepr > /dev/null 2>&1; then
@@ -130,6 +147,47 @@ else
     info "User mode is ready; the CLI auto-starts kepr-daemon on first use"
 fi
 
+if $LOGIN; then
+    echo -e "\n${CYN}━━━ Unlock at login ━━━${RST}"
+    # The user manager runs the daemon (and optionally the ssh-agent) with
+    # the session, so a login can hand the daemon the password.
+    sudo install -d -m 0755 /usr/lib/systemd/user
+    sudo install -m 0644 systemd/user/kepr-daemon.service systemd/user/kepr-ssh-agent.service \
+        systemd/user/kepr-rotate.service systemd/user/kepr-rotate.timer /usr/lib/systemd/user/
+    ok "user units → /usr/lib/systemd/user (kepr-daemon, kepr-ssh-agent, kepr-rotate)"
+
+    # Where this system keeps PAM modules: next to pam_unix.so.
+    PAM_UNIX="$(find /lib* /usr/lib* -name pam_unix.so 2>/dev/null | head -n 1 || true)"
+    if [ -n "$PAM_UNIX" ]; then
+        PAM_DIR="$(dirname "$PAM_UNIX")"
+        sudo install -o root -g root -m 0644 crates/kepr-pam/target/release/libpam_kepr.so "$PAM_DIR/pam_kepr.so"
+        ok "pam_kepr.so → $PAM_DIR/pam_kepr.so"
+        if [ -d /usr/share/pam-configs ] && command -v pam-auth-update >/dev/null 2>&1; then
+            sudo install -o root -g root -m 0644 packaging/pam-configs/kepr /usr/share/pam-configs/kepr
+            if sudo pam-auth-update --package --enable kepr; then
+                ok "pam-auth-update profile kepr enabled (auth, password, interactive sessions)"
+            else
+                warn "could not enable the profile; run: sudo pam-auth-update --enable kepr"
+            fi
+        else
+            warn "no pam-auth-update here: add pam_kepr.so to your PAM services by hand"
+            warn "(optional, after the module that checks the password; see the login-unlock guide)"
+        fi
+    else
+        warn "no pam_unix.so found, so the PAM module location is unknown: not installing pam_kepr.so"
+    fi
+
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/null; then
+        if systemctl --user enable kepr-daemon.service >/dev/null 2>&1; then
+            ok "kepr-daemon.service enabled for $INSTALL_USER"
+        else
+            warn "could not enable kepr-daemon.service; run: systemctl --user enable kepr-daemon.service"
+        fi
+    else
+        warn "no systemd user manager here: the daemon starts on first use instead"
+    fi
+fi
+
 echo -e "\n${CYN}━━━ Setup complete ━━━${RST}"
 echo -e "
   ${GRN}kepr is ready.${RST}
@@ -152,3 +210,10 @@ echo -e "
   Run an AI agent with sealed keys it never sees:
     ${CYN}kepr agent add ANTHROPIC_API_KEY && kepr agent run claude${RST}
 "
+if $LOGIN; then
+echo -e "  Finish unlock at login:
+    ${CYN}kepr lock${RST}                         # passphrase = your login password
+    ${CYN}kepr login-unlock on --ssh-agent${RST}  # then log out and in once
+    ${CYN}kepr login-unlock status${RST}          # shows what is still missing
+"
+fi

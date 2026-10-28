@@ -2,16 +2,19 @@
 // auto-lock (T11.12), unlock backoff and opt-in wipe (T11.13),
 // re-authentication before reveal (T11.14), `kepr status` (T11.24),
 // profiles (T11.16), `kepr ssh rotate` commit (T11.21), `GetQuiet` for
-// `kepr serve` (T11.19), `FetchFd` (T3.06). Requests arrive
+// `kepr serve` (T11.19), `FetchFd` (T3.06), unlock at login, waiting for
+// an unlock and passphrase change (T13.25). Requests arrive
 // as `Request::Session` via daemon_extra.rs.
 
 pub mod fetchfd;
 pub mod idle;
+pub mod login;
 pub mod quiet;
 pub mod reauth;
 pub mod ssh_rotate;
 pub mod status;
 pub mod unlock_guard;
+pub mod unlock_wait;
 
 use kepr_core::protocol::Response;
 use kepr_core::protocol_session::SessionRequest;
@@ -31,6 +34,12 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: SessionRequest) -> R
             quiet::handle_get_quiet(uid, peer_pid, username, &name)
         }
         SessionRequest::FetchFd { name } => fetchfd::handle(uid, peer_pid, username, &name),
+        SessionRequest::LoginUnlock { password } => {
+            login::handle_login_unlock(uid, username, password.as_bytes())
+        }
+        SessionRequest::ChangePassphrase { old, new, login } => {
+            login::handle_change(uid, username, (old.as_bytes(), new.as_bytes()), login)
+        }
     }
 }
 
