@@ -9,8 +9,6 @@
 //! in canonical form (`canonical_uri`, `canonical_query` help with that),
 //! so the same code verifies a signature and makes a new one.
 
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::generate::ZeroString;
@@ -154,7 +152,7 @@ impl Canonical<'_> {
 }
 
 fn string_to_sign(amz_date: &str, scope: &Scope, canonical_request: &str) -> String {
-    let hash = hex(&Sha256::digest(canonical_request.as_bytes()));
+    let hash = hex(&crate::mac::sha256(&[canonical_request.as_bytes()]));
     format!("{ALGORITHM}\n{amz_date}\n{}\n{hash}", scope.text())
 }
 
@@ -186,10 +184,9 @@ pub fn signature_matches(
         return false;
     };
     let sts = string_to_sign(amz_date, scope, canonical_request);
-    let mut mac = Hmac::<Sha256>::new_from_slice(&signing_key(secret, scope))
-        .expect("HMAC accepts any key length");
-    mac.update(sts.as_bytes());
-    mac.verify_slice(&want).is_ok()
+    // `hmac_sha256_verify` takes truncated tags; a signature is all 32 bytes.
+    want.len() == 32
+        && crate::mac::hmac_sha256_verify(&signing_key(secret, scope), &[sts.as_bytes()], &want)
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
@@ -276,7 +273,7 @@ impl std::fmt::Debug for AwsKey {
 /// compute it.
 pub fn placeholder_access_key_id(placeholder: &str) -> String {
     const B32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let d = Sha256::digest(format!("kepr-sigv4-akid\0{placeholder}").as_bytes());
+    let d = crate::mac::sha256(&[b"kepr-sigv4-akid\0", placeholder.as_bytes()]);
     let mut bits: u128 = 0;
     for b in &d[..9] {
         bits = (bits << 8) | u128::from(*b);
@@ -318,7 +315,7 @@ mod tests {
 
     fn sign(method: &str, query: &str, h: &[(&str, &str)], body: &[u8]) -> (String, String) {
         let headers = hdrs(h);
-        let hash = hex(&Sha256::digest(body));
+        let hash = hex(&crate::mac::sha256(&[body]));
         let c = Canonical {
             method,
             uri: "/",

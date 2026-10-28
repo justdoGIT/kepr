@@ -138,7 +138,7 @@ security-framework = { version = "3", default-features = false }
 [features]
 default = []
 # T7.16: route the daemon's crypto through aws-lc-rs (src/daemon_eco/crypto_fips.rs).
-fips = ["dep:aws-lc-rs"]
+fips = ["dep:aws-lc-rs", "kepr-core/fips"]
 
 # Never built (`cfg(any())` matches no target): it only puts the FIPS
 # module's build dependencies into Cargo.lock, so CI's `aws-lc-rs/fips`

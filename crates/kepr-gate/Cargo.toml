@@ -46,7 +46,7 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 [features]
 # T7.16 FIPS mode: rustls and the session CA (rcgen) on aws-lc-rs instead of
 # ring (src/tls_provider.rs). Add `rustls/fips` for the validated module.
-fips = ["rustls/aws-lc-rs", "rcgen/aws_lc_rs", "dep:aws-lc-rs"]
+fips = ["rustls/aws-lc-rs", "rcgen/aws_lc_rs", "dep:aws-lc-rs", "kepr-core/fips"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros"] }

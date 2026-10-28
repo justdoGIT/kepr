@@ -21,6 +21,7 @@ pub mod gate_protocol;
 pub mod generate;
 pub mod keyring;
 pub mod leak;
+pub mod mac;
 pub mod memfd;
 pub mod protocol;
 pub mod protocol_response;

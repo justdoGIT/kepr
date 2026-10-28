@@ -152,6 +152,9 @@ jobs:
       - name: daemon tests, validated module
         run: cargo test --features fips,aws-lc-rs/fips --bin kepr-daemon -- --include-ignored
 
+      - name: core tests, validated module (T12.43)
+        run: cargo test -p kepr-core --features fips,aws-lc-rs/fips -- --include-ignored
+
       - name: gate tests, validated module
         run: cargo test -p kepr-gate --features fips,rustls/fips -- --include-ignored
 

@@ -26,6 +26,12 @@ sha1 = "0.11"
 # fdfetch.rs speaks the daemon's JSON protocol. Already in the workspace.
 serde_json = "1.0"
 
+# T12.43: with `fips`, mac.rs runs SHA-256, HMAC and PBKDF2 in aws-lc-rs.
+aws-lc-rs = { version = "1.18", optional = true }
+
+[features]
+fips = ["dep:aws-lc-rs"]
+
 [dev-dependencies]
 divan = { version = "5.0.3", package = "codspeed-divan-compat" }
 
