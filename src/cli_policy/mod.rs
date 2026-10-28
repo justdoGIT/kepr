@@ -11,6 +11,7 @@ mod anchor;
 mod anomaly;
 mod anomaly_cmd;
 mod approvals_cmd;
+mod approve_chat;
 mod approve_notify;
 mod canary;
 mod canary_skip;
