@@ -5,22 +5,24 @@ description: "Feature gap analysis against Keeper Security, plus the design for 
 
 # Keeper Parity & Zero-Touch Agent Vault Plan
 
-Status: **shipped, with gaps** (2026-10-14). Every ticket from T1.01 to
-T11.24 has shipped, and so have the items built before the tickets
-existed (P0, P2.4, P4.3, P5.1, P5.3 and others). Three tickets are
-partial: T2.04 placeholder presets (no `git` over HTTPS preset, although
-its goal names `git`), T7.16 FIPS mode (HMAC, Argon2id, X25519, ML-KEM and
-several AES-256-GCM uses, the vault image's among them, stay outside the
-FIPS module) and T8.02 `kepr ui` (its TAGS column is always empty). A few
-plan items never became tickets and are not built. The largest is P3.2:
-the daemon's master key and the gate's value cache still sit in ordinary
-memory, zeroized on drop; only the gate's session key lives in
-`memfd_secret` pages (where the kernel offers them). Each phase in
-section 9 ends with a status line that names its gaps. Several features
-are opt-in rather than the default: the vault image (`KEPR_STORE=image`),
-the TPM2 PIN and counter, the KMS and PKCS#11 sealers, FIDO2 unlock and
-the `fips` build. Of the 67 Keeper rows in section 2, 43 are ✅, 19 are 🟡
-and 5 are out of scope. Each 🟡 cell says what is still missing.
+Status: **shipped** (2026-10-28). Every ticket from T1.01 to T12.53 has
+shipped, and so have the items built before the tickets existed (P0, P2.4,
+P4.3, P5.1, P5.3 and others). The three tickets that were partial when the
+tickets were first written are finished: T2.04 has its `git` over HTTPS
+preset (T12.06, T12.07), T7.16's FIPS mode now covers HMAC, HKDF, key
+randomness, the vault image, share envelopes, one-time links, recordings,
+SigV4 and SCRAM (T12.39–T12.43; Argon2id, X25519, ML-KEM, Ed25519 and P-256
+stay outside the FIPS module, as `kepr status` says), and `kepr ui` fills its
+TAGS column (T12.49). P3.2 is built: the master key and the gate's value
+cache sit in `memfd_secret` pages (T12.21, T12.02). Each phase in section 9
+ends with a status line that names what it leaves out. Several features are
+opt-in rather than the default: the vault image (`KEPR_STORE=image`), the
+TPM2 PIN and counter, the KMS and PKCS#11 sealers, FIDO2 unlock and the
+`fips` build. Of the 67 Keeper rows in section 2, 45 are ✅, 17 are 🟡 and 5
+are out of scope. Each 🟡 cell says what is still missing. What remains
+missing is outside the ticket list: team mode, other clients (.NET,
+PowerShell, JetBrains, Cursor, Copilot), Chef and Puppet, Kubernetes and
+telnet connections, SAML, and a post-quantum key exchange in the gate's TLS.
 Ticket status: [Agent Vault: Implementation Tickets](/docs/agent-vault-tickets).
 
 The plan has two halves:
@@ -147,16 +149,16 @@ vendor or platform kepr does not cover ("No …"); a 🟡 cell names a part of
 the feature itself that is not built. The **Plan** column points at the
 work item in section 9 and the tickets that built it.
 
-Count on 2026-10-15, one mark per row, taken from the **kepr today** column:
+Count on 2026-10-28, one mark per row, taken from the **kepr today** column:
 
 | Section | ✅ | 🟡 | ❌ | ⛔ | Rows |
 | --- | --- | --- | --- | --- | --- |
-| 2.1 Vault / password manager | 17 | 3 | 0 | 3 | 23 |
+| 2.1 Vault / password manager | 18 | 2 | 0 | 3 | 23 |
 | 2.2 Secrets Manager | 15 | 7 | 0 | 0 | 22 |
-| 2.3 PAM | 7 | 4 | 0 | 2 | 13 |
+| 2.3 PAM | 8 | 3 | 0 | 2 | 13 |
 | 2.4 Platform, admin and compliance | 4 | 5 | 0 | 0 | 9 |
-| **Keeper matrix, 2.1 to 2.4** | **43** | **19** | **0** | **5** | **67** |
-| 2.6 Beyond Keeper (A1 to A17) | 11 | 6 | 0 | 0 | 17 |
+| **Keeper matrix, 2.1 to 2.4** | **45** | **17** | **0** | **5** | **67** |
+| 2.6 Beyond Keeper (A1 to A17) | 13 | 4 | 0 | 0 | 17 |
 | 2.7 Found on the 2026-10-05 re-check | 27 | 1 | 0 | 2 | 30 |
 
 No row is ❌ any more: every row in scope has at least part of the feature.
@@ -184,7 +186,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | Offline access | ✅ local-first by design | — |
 | Import from 30+ managers (1Password, Bitwarden, LastPass, KeePass, Chrome…), vault export | ✅ `kepr import`: password-manager CSV (1Password, Bitwarden, KeePassXC, LastPass, Chrome, Edge, Firefox), Bitwarden and Keeper JSON, Doppler, Infisical, `.env`, KeePass KDBX 4; `kepr export --encrypted` | P10.2 · T10.02, T6.09 |
 | Login: master password, biometrics, passkey, Keeper DNA (smartwatch) | ✅ Argon2id passphrase (`kepr lock`), FIDO2 `hmac-secret` second factor (`kepr lock --fido2`), TPM2 PIN, fingerprint quick unlock (`kepr unlock --fingerprint`), polkit. No smartwatch | P4.3, P4.4, P10.3 · T4.08, T4.09, T10.03 |
-| Forcefield memory protection (Windows) | 🟡 the Linux equivalent: non-dumpable daemon and gate, no core dumps, `mlockall` in the daemon, zeroized buffers; the gate's session key sits split in two in `memfd_secret` pages (locked memory where the kernel lacks them) between guard pages. Missing: the master key and the gate's value cache in `memfd_secret`, and periodic relocation | P3 · T3.01–T3.03 |
+| Forcefield memory protection (Windows) | ✅ the Linux equivalent: non-dumpable daemon and gate, no core dumps, `mlockall` in the daemon, zeroized buffers; the master key, the gate's session key and its value cache sit split in two in `memfd_secret` pages (locked memory where the kernel lacks them) between guard pages, and the master key is relocated every 60 s | P3 · T3.01–T3.03, T12.02, T12.21, T12.22 |
 | Multi-device sync | ✅ `kepr sync remote add dir:\|git:\|s3:…` and `kepr sync now`: end-to-end encrypted, last writer wins, run by hand | P6.5 · T6.10 |
 | Desktop, mobile, watch apps | 🟡 `kepr ui` terminal UI, `kepr shell`, VS Code extension; approvals from desktop or ntfy phone notifications. Missing: GUI, mobile and watch apps | P8 · T8.01, T8.02, T8.08, T9.04 |
 | KeeperChat | ⛔ out of scope | ⛔ unrelated product |
@@ -212,7 +214,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | VS Code, JetBrains, iTerm2, Raycast extensions | 🟡 VS Code extension (shows `kepr://` references, never values; packaged locally). Missing: JetBrains, iTerm2, Raycast | P8 · T8.08 |
 | Property File: vault record mounted as a virtual file; each process read is approved | ✅ `kepr mount DIR --file NAME=KEYS`: read-only FUSE files; each open checks the uid, an optional `--exe` digest and an optional `--consent` prompt | P10.1 · T10.01 |
 | Local MCP with per-agent approve/deny, revoke, admin limits, "AI Governance" report | ✅ `kepr mcp` (never returns values; `db_query`, `ssh_run`), consent prompts, `kepr grant` per harness, `kepr agent revoke`, request, token and daily caps, `kepr usage --report` | P1.6, P9 · T7.10, T9.04–T9.07 |
-| Agent Kit skills for Claude Code, Cursor, Codex, Copilot | 🟡 `kepr agent run` for Claude Code, Codex, Aider, grok-cli, oh-my-pi and Grok Build. `kepr agent install omp\|grok` adds a plugin that blocks tool calls and prompts that would reveal a key (`kepr hook`); Grok Build's carries a `SKILL.md` that never asks for values. Missing: Cursor, Copilot, and a skill file for Claude Code and Codex | P1.4 · T1.13–T1.15, T1.22 |
+| Agent Kit skills for Claude Code, Cursor, Codex, Copilot | 🟡 `kepr agent run` for Claude Code, Codex, Aider, grok-cli, oh-my-pi and Grok Build. `kepr agent install omp\|grok` adds a plugin that blocks tool calls and prompts that would reveal a key (`kepr hook`); Grok Build's carries a `SKILL.md` that never asks for values. A harness-neutral guidance file is installed for Claude Code and Codex (T12.15). Missing: Cursor and Copilot | P1.4 · T1.13–T1.15, T1.22, T12.15 |
 | Commander CLI with interactive shell and REST service mode | ✅ `kepr shell`; `kepr serve` (read-only REST on loopback or a Unix socket, token, allowlist, rate limit) | P8, P11.19 · T8.01, T11.19 |
 | ServiceNow, Jira, Slack, Teams workflow apps | 🟡 approvals from desktop or ntfy notifications (`kepr approvals serve`); alerts to Slack, Teams, Discord and ntfy (`kepr alerts run`). Missing: approving from Slack or Teams, ServiceNow and Jira apps | P9.1, P7.6 · T9.04, T7.15 |
 
@@ -228,7 +230,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | Co-browsing of a live session | ⛔ out of scope | ⛔ no shared visual sessions |
 | Ephemeral one-time accounts | 🟡 GitHub App installation tokens minted in the gate (`kepr github-app add`), STS temporary credentials (`kepr aws credential-process`), a PostgreSQL role granted for one session (`kepr agent run --grant`). Missing: dynamic database users | P7.2, P7.4 · T7.08, T2.03, T7.18 |
 | Discovery of privileged/service accounts | ✅ `kepr discover` (local configs, cloud CLI profiles, kube contexts, Docker) with `discover.toml` rules; this machine only | P10.7, P11.20 · T11.20 |
-| Rotation: scheduled, on-demand, after access expires, post-rotation actions, plugins | 🟡 `kepr rotate KEY --every 30d` with `--hook CMD`, `--aws-iam` or `--db` (PostgreSQL, MySQL); `kepr ssh rotate`; `kepr checkin --rotate`. Missing: rotation when a check-out runs out; the system daemon shows schedules but doesn't run them | P7.2 · T7.04, T7.05, T7.07, T7.11, T11.21 |
+| Rotation: scheduled, on-demand, after access expires, post-rotation actions, plugins | ✅ `kepr rotate KEY --every 30d` with `--hook CMD`, `--aws-iam` or `--db` (PostgreSQL, MySQL); `kepr ssh rotate`; `kepr checkin --rotate`. a credential whose check-out ran out is rotated (T12.51); under the system daemon a user timer runs `kepr rotate --due` (T12.50) | P7.2 · T7.04, T7.05, T7.07, T7.11, T11.21, T12.50, T12.51 |
 | JIT Workflow: multi-level approval, single-user check-in/check-out, MFA, time limits | ✅ `kepr grant KEY --to HARNESS --for 2h`, `kepr checkout` and `kepr checkin`, `kepr quorum` (M-of-N; the approvers are the owner and their enrolled devices), FIDO2 touch, `kepr reauth` | P7.4 · T7.10, T7.11, T7.12, T11.14 |
 | KeeperAI: risk levels Critical→Low, explanations, auto-terminate, regex indicators, customer-chosen LLM | 🟡 `kepr anomaly run`: new path, volume spike, off hours and error burst rules, a webhook, optional `kepr panic`, risk levels low to critical per rule (`[risk]` in `rules.toml`; `revoke_at = "high"` panics only at that level). Missing: an LLM classifier | P7.5 · T7.13 |
 | AI agent access to PAM machines/databases with "AI context" | ✅ `kepr mcp` tools `db_query` (PostgreSQL, optional read-only) and `ssh_run`, with `--context TARGET=NOTE` | P9.4 · T9.05 |
@@ -244,7 +246,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | SAML SSO, SCIM, device approvals | 🟡 device enrolment with single-use tokens and an OIDC login (`kepr device add --oidc`). Missing: SAML | P6.6 · T6.03, T6.13; SCIM ⛔ until hosted |
 | Account transfer policy (admin can recover a departed user's vault) | ✅ `kepr escrow enable ADMIN_KEY`; `kepr escrow open` gives the admin a 2-of-2 recovery kit | P6.6 · T6.14 |
 | Post-quantum: Kyber hybrid KEM in auth and tunnels | 🟡 shares, shared folders, sync, emergency release and escrow use X25519 + ML-KEM-768 (`kepr-pk2-` keys). Missing: a post-quantum key exchange in the gate's TLS, which uses ring by default | P6.1 · T6.01 |
-| FIPS 140-3 (cert #4743), FedRAMP High, GovRAMP, SOC 2, ISO 27001/17/18 | 🟡 opt-in `fips` build: AES-256-GCM and SHA-256 for the credential files, the passphrase-wrapped master key, bundles and the audit chain, and the gate's TLS, on aws-lc-rs; a Crypto line in `kepr status`; SLSA provenance on releases. Missing: HMAC, Argon2id, X25519 and ML-KEM in the FIPS module, and the AES-256-GCM of the vault image, share envelopes, one-time links and session recordings | P7.7 · T7.16, T7.17; certifications ⛔ |
+| FIPS 140-3 (cert #4743), FedRAMP High, GovRAMP, SOC 2, ISO 27001/17/18 | 🟡 opt-in `fips` build: AES-256-GCM and SHA-256 for the credential files, the passphrase-wrapped master key, bundles and the audit chain, and the gate's TLS, HMAC, HKDF, randomness, SigV4 and SCRAM, the vault image, share envelopes, one-time links and session recordings also run on aws-lc-rs; a Crypto line in `kepr status`; SLSA provenance on releases. Missing: Argon2id, X25519, ML-KEM, Ed25519 and P-256 in the FIPS module | P7.7 · T7.16, T7.17, T12.39–T12.43; certifications ⛔ |
 | Air-gapped deployment | ✅ local-first | — |
 | Webhooks (Slack, Teams, Discord) | ✅ `kepr alerts run`, `kepr health --notify`, `kepr anomaly run` (Slack, Teams, Discord, ntfy, JSON) | P7.6 · T7.15, T6.08 |
 
@@ -268,7 +270,7 @@ nice to have.
 | # | Feature | Why it matters | Pri | kepr today | Plan |
 | --- | --- | --- | --- | --- | --- |
 | A1 | **Prompt DLP in the gate**: scan every outbound LLM request for the secret values the session holds (and known key formats) and block the request, telling the agent why | Stops an agent pasting a secret it found in a file or log into a provider's prompt and logs | H | ✅ the gate in `kepr agent run` blocks a request that carries a key the session has resolved, or anything shaped like a known key format, and tells the agent why. It deliberately doesn't match other stored values: answering "does this text contain a stored value?" for text an agent writes would let a hijacked agent guess weak passwords, one blocked request at a time. `kepr scan` checks files | P9.2 · T9.02 |
-| A2 | **Output masking**: `kepr exec --mask` / gate rewrites any secret value in a child's stdout/stderr to `****` | If a real secret ever reaches a tool, it can't echo back into the agent's context (GitHub Actions does this) | H | 🟡 `kepr exec --mask` prints the values it provided as `****` in the command's stdout and stderr. Missing: masking in gate responses (a key the upstream echoes back reaches the agent) | P9.3 · T9.03 |
+| A2 | **Output masking**: `kepr exec --mask` / gate rewrites any secret value in a child's stdout/stderr to `****` | If a real secret ever reaches a tool, it can't echo back into the agent's context (GitHub Actions does this) | H | ✅ `kepr exec --mask` prints the values it provided as `****` in the command's stdout and stderr. The gate also masks released values (and their percent-encoded and Base64 spellings) in upstream responses (T12.01) | P9.3 · T9.03, T12.01 |
 | A3 | **Per-agent approvals**: an agent's use of a consent-gated secret asks the user via polkit, a desktop notification or the phone; standing approval is time-boxed | Keeper has this for its MCP; kepr needs it for gate sessions | H | ✅ consent per use through polkit, or a desktop or ntfy notification (`kepr approvals serve`); time-boxed grants per harness (`kepr grant KEY --to HARNESS --for 2h`, at most 7 days). There is no stored "always": the harness name is whatever starts the session claims, so a permanent yes per agent would turn consent off, and the credential's bindings already fix the host | P9.1 · T9.04, T7.10 |
 | A4 | **Spend and rate guard**: gate reads token usage from provider responses and enforces per-session budget caps | A runaway or hijacked agent can't burn the API budget | H | ✅ `kepr agent run --max-requests`, `--max-tokens`, `--rate`, `--max-requests-day`, `--max-tokens-day` | P9.5 · T9.06 |
 | A5 | **Honeytokens**: plant decoy keys in `.env`, shell rc files and repos; any use triggers an alert | Detects exfiltration by agents or malware | M | ✅ `kepr canary plant`, `kepr canary listen`; a trip is audited as `canary-tripped` | P9.7 · T9.08 |
@@ -276,7 +278,7 @@ nice to have.
 | A7 | **Scoped short-lived child credentials** minted per session where the provider allows (GitHub App installation tokens, AWS STS, GCP impersonation) | Even a used key expires on its own | M | 🟡 GitHub App installation tokens (`kepr github-app add`), AWS STS (`kepr aws credential-process`). OpenAI keys aren't minted per session: that would need an organisation admin key inside the gate, which a compromised gate could use to create keys; bind a project-scoped key and cap it with `--max-tokens` and `--rate` instead. GCP service-account and authorized_user tokens, with impersonation, are minted per session inside the gate (`kepr gcp add`, T12.08–T12.10); the gate refuses Google calls that would create a key, HMAC key, API key or signed token the agent could keep | P7.2 · T7.08, T2.03 |
 | A8 | **Binary identity**: bind a credential to an executable's digest (SHA-256 or fs-verity), not just a uid | "Only `/usr/bin/psql` with this hash may receive `DB_PASS`" | M | 🟡 `kepr set KEY --exe PATH`, `kepr exe KEY` (SHA-256 or fs-verity digest). IMA is not used: a `security.ima` hash only counts under an IMA appraisal policy, and fs-verity already gives a kernel-checked digest without one. Missing: bindings under the system daemon, which refuses new ones, since reading a caller's executable needs CAP_SYS_PTRACE, which the shipped unit lacks | P10.8 · T10.09 |
 | A9 | **Lock on suspend, lid close, screen lock, security-key removal; `kepr panic`** | Wipes keys from RAM before suspend-to-RAM, which defeats cold-boot capture of a sleeping laptop | H | 🟡 `kepr panic`; on suspend or screen lock the user-mode daemon stops every gate and locks a passphrase-protected store; idle lock (`KEPR_IDLE_LOCK`). A FIDO2 key removal also locks (T12.25), and so does a screen lock that only sets logind's `LockedHint` (T12.24). By design, a store without a passphrase keeps its key in RAM (its key file is read back without user input), and so does a locked store while `KEPR_FINGERPRINT_UNLOCK` is set | P3.5, P11.12 · T3.05, T11.12 |
-| A10 | **Clipboard hygiene**: `kepr copy NAME --clear 20s` with password-manager hints so clipboard managers skip it | The one time a human needs a value, it doesn't linger | M | 🟡 `kepr copy KEY [--clear SECS]` (default 20 s; cleared only if the clipboard still holds the value). Missing: the password-manager hint that tells clipboard managers to skip it | P10.9 |
+| A10 | **Clipboard hygiene**: `kepr copy NAME --clear 20s` with password-manager hints so clipboard managers skip it | The one time a human needs a value, it doesn't linger | M | ✅ `kepr copy KEY [--clear SECS]` (default 20 s; cleared only if the clipboard still holds the value). `kepr copy` owns the Wayland or X11 selection itself and sets the password-manager hint, so managers that honour it skip the value (T12.46–T12.48) | P10.9 · T12.46–T12.48 |
 | A11 | **systemd credentials export**: emit `LoadCredentialEncrypted=` blobs for services | Services get secrets via `$CREDENTIALS_DIRECTORY` (a non-swappable ramfs), no env | M | ✅ `kepr systemd-cred KEY [--tpm2]` prints a `SetCredentialEncrypted=` line | P10.6 · T10.06 |
 | A12 | **Kernel `logon` keyring keys** for disk/network unlock (dm-crypt, fscrypt, CIFS/NFS) | Userspace can't read `logon` keys back, even as the same uid | L | ✅ `kepr keyring add KEY --desc SUBTYPE:REST` | P10.5 · T10.05 |
 | A13 | **Policy as code with tests** (`kepr policy test`) | Reviewable, CI-checked rules instead of ad-hoc flags | M | ✅ `policy.toml`, `kepr policy test`, `status`, `reload` | P6.6 · T6.11 |
