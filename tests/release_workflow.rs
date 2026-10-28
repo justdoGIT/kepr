@@ -14,11 +14,15 @@ fn workflow() -> String {
     fs::read_to_string(p).expect("read release.yml")
 }
 
-/// The `build` job: from `  build:` to the next job key at the same indent.
-fn build_job() -> Vec<String> {
+/// A job: from `  NAME:` to the next job key at the same indent.
+fn job(name: &str) -> Vec<String> {
     let wf = workflow();
-    let mut lines = wf.lines().skip_while(|l| *l != "  build:");
-    let first = lines.next().expect("build job").to_string();
+    let key = format!("  {name}:");
+    let mut lines = wf.lines().skip_while(|l| *l != key);
+    let first = lines
+        .next()
+        .unwrap_or_else(|| panic!("{name} job"))
+        .to_string();
     let rest = lines.take_while(|l| {
         let top = l.starts_with("  ") && !l.starts_with("   ");
         !(top && l.trim_end().ends_with(':') && !l.trim_start().starts_with('#'))
@@ -26,6 +30,11 @@ fn build_job() -> Vec<String> {
     std::iter::once(first)
         .chain(rest.map(str::to_string))
         .collect()
+}
+
+/// The `build` job.
+fn build_job() -> Vec<String> {
+    job("build")
 }
 
 /// Shell lines of the job with `\` continuations joined, step names and
@@ -144,20 +153,75 @@ fn e_installs_are_locked_and_pinned() {
     }
 }
 
-/// The ticket's rules: actions stay pinned by commit SHA, and the job keeps
-/// the `id-token: write` that keyless signing needs.
+/// The ticket's rules: actions stay pinned by commit SHA in the jobs that
+/// build and sign, and only the signing job holds `id-token: write`.
 #[test]
-fn actions_stay_pinned_and_signing_keeps_its_token() {
-    let job = build_job();
-    for l in job.iter().filter(|l| l.trim_start().starts_with("- uses:")) {
-        let rev = l.split('@').nth(1).unwrap_or("").split_whitespace().next();
-        let rev = rev.unwrap_or("");
-        assert!(
-            rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()),
-            "action not pinned by SHA: {l}"
-        );
+fn actions_stay_pinned_and_only_the_signing_job_has_the_token() {
+    for name in ["build", "sign"] {
+        for l in job(name)
+            .iter()
+            .filter(|l| l.trim_start().starts_with("- uses:"))
+        {
+            let rev = l.split('@').nth(1).unwrap_or("").split_whitespace().next();
+            let rev = rev.unwrap_or("");
+            assert!(
+                rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()),
+                "action not pinned by SHA: {l}"
+            );
+        }
     }
-    assert!(job
-        .iter()
-        .any(|l| l.trim().starts_with("id-token:") && l.contains("write")));
+    let has = |j: &[String], key: &str| {
+        j.iter()
+            .any(|l| l.trim().starts_with(key) && l.contains("write"))
+    };
+    let sign = job("sign");
+    assert!(has(&sign, "id-token:") && has(&sign, "attestations:"));
+    assert!(!has(&build_job(), "id-token:"), "build compiles code");
+    assert!(!has(&build_job(), "attestations:"), "build compiles code");
+}
+
+/// Nothing that compiles third-party code runs where the OIDC token is.
+#[test]
+fn the_signing_job_runs_no_compiler() {
+    for l in job("sign") {
+        let t = l.trim();
+        if t.starts_with('#') {
+            continue;
+        }
+        for banned in ["cargo ", "rustc", "rust-toolchain", "make ", "npm ", "pip "] {
+            assert!(!t.contains(banned), "sign job runs `{banned}`: {t}");
+        }
+    }
+}
+
+/// Build scripts run as the runner user, who has sudo and docker: the
+/// isolated step must drop groups and capabilities and forbid new
+/// privileges, and must not step back into sudo.
+#[test]
+fn e2_the_isolated_build_cannot_climb_back_out() {
+    let builds: Vec<String> = commands()
+        .into_iter()
+        .filter(|c| c.contains("cargo build"))
+        .collect();
+    for c in &builds {
+        for need in [
+            "setpriv",
+            "--clear-groups",
+            "--no-new-privs",
+            "--bounding-set=-all",
+        ] {
+            assert!(c.contains(need), "isolated build lacks {need}: {c}");
+        }
+        assert!(
+            !c.contains("sudo -u") && !c.contains("su "),
+            "the build must not switch users through sudo: {c}"
+        );
+        // `sudo` may appear only as the namespace's entry and as the check
+        // that it no longer works.
+        assert!(
+            c.contains("! sudo -n true"),
+            "no check that sudo is dead: {c}"
+        );
+        assert_eq!(c.matches("sudo").count(), 2, "{c}");
+    }
 }

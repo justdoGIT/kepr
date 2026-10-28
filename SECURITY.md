@@ -81,8 +81,14 @@ How that build runs: the `build` job pins the compiler (Rust 1.87.0) and
 uses no build cache. It fetches the sources `Cargo.lock` names
 (`cargo fetch --locked`), then compiles inside a network namespace with no
 interfaces (`unshare --net`, `cargo build --frozen`); the step first checks
-that it can't reach crates.io and stops if it can. The packaging tools are
-pinned to exact versions. The build is not bit-for-bit reproducible yet:
+that it can't reach crates.io and stops if it can. Build scripts run with
+the runner user's groups, capabilities and sudo rights removed
+(`setpriv --clear-groups --no-new-privs`), so they can reach neither the
+host network through sudo nor the Docker socket. The packaging tools are
+pinned to exact versions and compiled in that same `build` job, which has no
+signing identity; a separate `sign` job, which runs no compiler, downloads
+the packages and holds the OIDC token for the cosign signatures and
+attestation. The build is not bit-for-bit reproducible yet:
 rebuilding a tag gives the same sources and compiler, not identical bytes.
 
 Cosign keyless signature (every artefact, including the SBOM):

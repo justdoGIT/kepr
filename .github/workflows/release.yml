@@ -58,18 +58,16 @@ jobs:
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-  # ─── 2. Build binaries, package deb/rpm/tar, sign, attest ──────────────────
+  # ─── 2. Build binaries and package deb/rpm/tar (no signing identity) ───────
+  # Everything that compiles third-party code runs here, in a job without
+  # `id-token`: a build script or the cargo-deb / cargo-generate-rpm sources
+  # cannot ask GitHub for an OIDC token. Signing is the next job.
   build:
     name: Build + package (x86_64)
     needs: tag-check
     runs-on: ubuntu-latest
     permissions:
-      contents:     read
-      id-token:     write   # cosign keyless
-      attestations: write   # build provenance
-    outputs:
-      version: ${{ needs.tag-check.outputs.version }}
-      hashes:  ${{ steps.hash.outputs.hashes }}
+      contents: read
     env:
       VERSION: ${{ needs.tag-check.outputs.version }}
     steps:
@@ -78,6 +76,7 @@ jobs:
           # workflow_dispatch may target an older tag — pin to the
           # resolved tag, not whatever main currently points at.
           ref: ${{ needs.tag-check.outputs.tag }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -93,11 +92,15 @@ jobs:
 
       # The build runs in a network namespace with no interfaces. The probe
       # must fail, which proves there is no network; --frozen keeps cargo on
-      # Cargo.lock and the fetched sources.
+      # Cargo.lock and the fetched sources. Build scripts and proc macros run
+      # as the runner user, who has sudo and docker access: setpriv drops the
+      # supplementary groups (docker.sock is a path, reachable from any
+      # network namespace) and capabilities and sets no_new_privs, so sudo
+      # cannot raise the privileges of anything it starts.
       - name: cargo build --release (no network)
         run: |
           set -euo pipefail
-          sudo unshare --net -- sudo -u "$USER" env PATH="$PATH" HOME="$HOME" CARGO_NET_OFFLINE=true sh -c '! curl -fsS --max-time 5 https://index.crates.io/config.json && cargo build --release --frozen --bins && cargo build --release --frozen -p kepr-gate'
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all env PATH="$PATH" HOME="$HOME" CARGO_NET_OFFLINE=true sh -c '! curl -fsS --max-time 5 https://index.crates.io/config.json && ! sudo -n true && cargo build --release --frozen --bins && cargo build --release --frozen -p kepr-gate'
 
       # Exact versions, the newest that build on the pinned toolchain
       # (cargo-deb 3.7+ and cargo-generate-rpm 0.21 need Rust 1.88).
@@ -135,6 +138,33 @@ jobs:
 
       - name: List artefacts
         run: ls -la dist/
+
+      - name: Upload unsigned dist/
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: kepr-unsigned
+          path: dist/
+          if-no-files-found: error
+
+  # ─── 2b. SBOM, signatures, attestation (no compiler runs here) ─────────────
+  sign:
+    name: Sign + attest
+    needs: [tag-check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents:     read
+      id-token:     write   # cosign keyless
+      attestations: write   # build provenance
+    outputs:
+      version: ${{ needs.tag-check.outputs.version }}
+      hashes:  ${{ steps.hash.outputs.hashes }}
+    env:
+      VERSION: ${{ needs.tag-check.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kepr-unsigned
+          path: dist/
 
       - name: Generate SBOM per artefact (SPDX-JSON)
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
@@ -196,7 +226,7 @@ jobs:
   # ─── 3. SLSA provenance (generic generator) ───────────────────────────────
   provenance:
     name: SLSA provenance
-    needs: build
+    needs: sign
     permissions:
       actions:  read    # the generator reads the workflow path
       id-token: write   # keyless signing of the provenance
@@ -205,8 +235,8 @@ jobs:
     # slsa-verifier matches the builder ID against that tag.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
-      base64-subjects: ${{ needs.build.outputs.hashes }}
-      provenance-name: kepr-${{ needs.build.outputs.version }}.intoto.jsonl
+      base64-subjects: ${{ needs.sign.outputs.hashes }}
+      provenance-name: kepr-${{ needs.sign.outputs.version }}.intoto.jsonl
       # The release job attaches it, so one job creates the release.
       upload-assets: false
       # Logs the repository name in the public Rekor log, which the cosign
@@ -275,7 +305,7 @@ jobs:
   # ─── 5. Create the GitHub Release and upload assets ───────────────────────
   release:
     name: Publish release
-    needs: [build, provenance, changelog, tag-check]
+    needs: [sign, provenance, changelog, tag-check]
     runs-on: ubuntu-latest
     permissions:
       contents: write
