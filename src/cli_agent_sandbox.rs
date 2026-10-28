@@ -97,6 +97,7 @@ impl Plan {
         gate_port: u16,
         isolate_net: bool,
     ) -> Result<Self, String> {
+        crate::cli_sandbox_bus::warn_if_abstract(isolate_net);
         let hide = hide_dirs()
             .into_iter()
             .map(|p| {

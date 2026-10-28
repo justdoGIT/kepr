@@ -122,14 +122,14 @@ impl ImageBackend {
         if let Some(v) = &rec.value {
             // A file already there with another value is not ours to replace.
             if let Ok(have) = files.decrypt(uid, name) {
-                if have.as_bytes() != v.as_slice() {
+                if !reads_as(have.as_bytes(), v) {
                     return Ok(false);
                 }
             } else {
                 files.encrypt(uid, name, v)?;
             }
             let back = files.decrypt(uid, name)?;
-            if back.as_bytes() != v.as_slice() {
+            if !reads_as(back.as_bytes(), v) {
                 return Err("vault to-files: a credential did not read back".into());
             }
         }
@@ -143,6 +143,15 @@ impl ImageBackend {
         self.with_write(|img, keys| img.remove_record(keys, key))?;
         Ok(true)
     }
+}
+
+/// Does `read` (what `decrypt` returned) match the stored bytes `raw`?
+/// `decrypt` strips trailing newlines in both backends, so a value that ends
+/// in one reads back shorter than it was stored; comparing it raw reported
+/// a mismatch and stopped the whole migration.
+fn reads_as(read: &[u8], raw: &[u8]) -> bool {
+    let end = raw.iter().rposition(|b| *b != b'\n').map_or(0, |i| i + 1);
+    read == &raw[..end]
 }
 
 /// Create `copy` at `new_mib` and put every record of `src` into it, then
@@ -368,5 +377,46 @@ mod tests {
             "image-value"
         );
         assert_eq!(f.files.decrypt(UID, "ONLY").unwrap().as_str(), "only");
+    }
+
+    #[test]
+    fn to_files_moves_values_that_end_in_a_newline() {
+        let f = fx();
+        f.image.encrypt(UID, "NL", b"line\n").unwrap();
+        f.image.encrypt(UID, "NLS", b"two\n\n").unwrap();
+        f.image.encrypt(UID, "SPACE", b"  padded  ").unwrap();
+        f.image.encrypt(UID, "EMPTYISH", b"\n").unwrap();
+        let dir = f.dir.path().join("store");
+        assert_eq!(f.image.to_files(&f.files, &dir), Ok((4, 0)));
+        // Both backends read a value without its trailing newlines.
+        for (name, want) in [
+            ("NL", &b"line"[..]),
+            ("NLS", b"two"),
+            ("SPACE", b"  padded  "),
+            ("EMPTYISH", b""),
+        ] {
+            assert_eq!(
+                f.files.decrypt(UID, name).unwrap().as_bytes(),
+                want,
+                "{name}"
+            );
+        }
+        assert!(f.image.records().unwrap().is_empty());
+        // Running it again finds the files holding the same values.
+        f.image.encrypt(UID, "NL", b"line\n").unwrap();
+        assert_eq!(f.image.to_files(&f.files, &dir), Ok((1, 0)));
+    }
+
+    #[test]
+    fn a_read_matches_its_stored_bytes_up_to_trailing_newlines() {
+        assert!(reads_as(b"x", b"x"));
+        assert!(reads_as(b"x", b"x\n\n"));
+        assert!(reads_as(b"", b"\n"));
+        assert!(!reads_as(b"x", b"y\n"));
+        assert!(
+            !reads_as(b"x\n", b"x"),
+            "decrypt never returns a trailing newline"
+        );
+        assert!(!reads_as(b"xy", b"x"));
     }
 }
