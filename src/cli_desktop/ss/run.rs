@@ -163,11 +163,13 @@ fn spawn_call(ctx: &Arc<Ctx>, conn: &Arc<Conn>, m: Message) {
         let ctx = Arc::clone(&ctx);
         move || {
             let who = identify(&ctx, &conn, m.sender.as_deref().unwrap_or(""));
-            let reply = match who.uid {
-                Some(u) if u != ctx.uid => {
-                    m.error_to(n::E_DENIED, "this service is for the user who started it")
-                }
-                _ => ctx.server.handle(&who, &m),
+            let reply = if admitted(who.uid, ctx.uid) {
+                ctx.server.handle(&who, &m)
+            } else {
+                m.error_to(
+                    n::E_DENIED,
+                    "this service is for the user who started it, and the caller's user is unknown or different",
+                )
             };
             if m.wants_reply() {
                 let _ = conn.send(&reply);
@@ -178,6 +180,13 @@ fn spawn_call(ctx: &Arc<Ctx>, conn: &Arc<Conn>, m: Message) {
     if spawned.is_err() {
         ctx.busy.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// Only the user who started the service is served. A caller whose user the
+/// bus could not name (it left, or the bus did not answer) is refused too:
+/// not knowing is not a reason to allow.
+pub fn admitted(caller_uid: Option<u32>, mine: u32) -> bool {
+    caller_uid == Some(mine)
 }
 
 fn identify(ctx: &Ctx, conn: &Conn, name: &str) -> Caller {
@@ -276,4 +285,17 @@ pub fn run(opts: &Options) -> Result<(), String> {
     );
     conn.close();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_owner_is_served_and_an_unknown_caller_is_not() {
+        assert!(admitted(Some(1000), 1000));
+        assert!(!admitted(Some(0), 1000), "root is another user here");
+        assert!(!admitted(Some(1001), 1000));
+        assert!(!admitted(None, 1000), "credentials missing: fail closed");
+    }
 }
