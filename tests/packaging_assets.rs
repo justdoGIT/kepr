@@ -275,7 +275,9 @@ fn packages_ship_what_install_sh_installs() {
 }
 
 /// T12.37: every asset source exists, or is a release binary this
-/// workspace builds (a root `[[bin]]`, or kepr-gate).
+/// workspace builds (a root `[[bin]]`, or kepr-gate), or is the PAM
+/// module the release job builds from `crates/kepr-pam` into `target/pam`
+/// (T13.27; `tests/desktop_packaging.rs` pins that build step).
 #[test]
 fn every_asset_source_exists_or_is_built() {
     let m = manifest();
@@ -292,6 +294,10 @@ fn every_asset_source_exists_or_is_built() {
             .map(|a| a["source"].as_str().expect("source").to_string()),
     );
     for src in sources {
+        if let Some(lib) = src.strip_prefix("target/pam/release/") {
+            assert_eq!(lib, "libpam_kepr.so", "{src} is not built by the PAM crate");
+            continue;
+        }
         match src.strip_prefix("target/release/") {
             Some(bin) => assert!(bins.iter().any(|b| b == bin), "{src} is not built here"),
             None => assert!(repo(&src).is_file(), "{src} is missing"),
