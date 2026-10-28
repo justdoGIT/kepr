@@ -70,6 +70,29 @@ pub fn db_binding(fields: &str) -> Result<kepr_core::binding::Binding, String> {
     Ok(b)
 }
 
+/// T13.04: the binding a sealed `kube` record gets: its API server's
+/// DNS name and port, where the gate sends the token as a bearer.
+pub fn kube_binding(fields: &str) -> Result<kepr_core::binding::Binding, String> {
+    let obj: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(fields).map_err(|_| "record fields must be a JSON object")?;
+    let get = |k: &str| obj.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    if get("token").is_empty() {
+        return Err("a sealed kube record needs a token field".into());
+    }
+    let ca = get("ca_pem");
+    if !ca.is_empty() && !ca.contains("-----BEGIN CERTIFICATE-----") {
+        return Err("ca_pem must be PEM certificates".into());
+    }
+    let (host, port) = kepr_core::binding::kube_server(get("server"))?;
+    let b = kepr_core::binding::Binding {
+        host,
+        port,
+        inject: kepr_core::binding::Inject::KubeToken,
+    };
+    kepr_core::binding::validate_binding(&b)?;
+    Ok(b)
+}
+
 pub fn handle_record_set(
     uid: u32,
     username: &str,
@@ -88,7 +111,11 @@ pub fn handle_record_set(
             Ok(b) => Some(vec![b]),
             Err(e) => return Response::fail(e),
         },
-        (true, _) => return Response::fail("only database records can be sealed"),
+        (true, "kube") => match kube_binding(fields.as_str()) {
+            Ok(b) => Some(vec![b]),
+            Err(e) => return Response::fail(e),
+        },
+        (true, _) => return Response::fail("only database and kube records can be sealed"),
     };
     let flags = SetFlags {
         requires_consent,
@@ -177,6 +204,33 @@ pub fn handle_db_rotate(uid: u32, username: &str, name: &str, phase: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kube_record_binds_its_api_server() {
+        let rec = |server: &str| format!(r#"{{"server":"{server}","token":"t"}}"#);
+        let b = kube_binding(&rec("https://API.cluster.example.com:6443/")).unwrap();
+        assert_eq!((b.host.as_str(), b.port), ("api.cluster.example.com", 6443));
+        assert_eq!(b.inject, kepr_core::binding::Inject::KubeToken);
+        assert_eq!(
+            kube_binding(&rec("https://k8s.example.com")).unwrap().port,
+            443
+        );
+        for bad in [
+            "http://k8s.example.com",
+            "https://10.0.0.1:6443",
+            "https://user@k8s.example.com",
+            "https://",
+            "https://k8s.example.com:notaport",
+        ] {
+            assert!(kube_binding(&rec(bad)).is_err(), "{bad}");
+        }
+        assert!(
+            kube_binding(r#"{"server":"https://k8s.example.com"}"#).is_err(),
+            "no token"
+        );
+        let bad_ca = r#"{"server":"https://k8s.example.com","token":"t","ca_pem":"nope"}"#;
+        assert!(kube_binding(bad_ca).is_err());
+    }
 
     #[test]
     fn database_binding_comes_from_the_record() {

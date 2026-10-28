@@ -26,6 +26,18 @@ pub(crate) async fn admit(
     headers: &HeaderMap,
     query: Option<&str>,
 ) -> Result<(ZeroString, Inject), Response<Body>> {
+    admit_at(log, route, headers, query, (log.host, 443)).await
+}
+
+/// [`admit`] for a credential bound to `(host, port)` (T13.04: a Kubernetes
+/// API server is not on 443).
+pub(crate) async fn admit_at(
+    log: &Log<'_>,
+    route: &Route,
+    headers: &HeaderMap,
+    query: Option<&str>,
+    (host, port): (&str, u16),
+) -> Result<(ZeroString, Inject), Response<Body>> {
     let state = log.state;
     if let Some((r, why)) = crate::canary::screen(&state.cache, headers, query, None).await {
         return Err(log.reply(r, 0, Some(why))); // T9.08
@@ -42,13 +54,9 @@ pub(crate) async fn admit(
     if let Err(refusal) = today.await {
         return Err(log.reply(limit_response(refusal), 0, Some("limit"))); // T9.06
     }
-    let (cache, cred, h) = (
-        state.cache.clone(),
-        route.cred.clone(),
-        log.host.to_string(),
-    );
+    let (cache, cred, h) = (state.cache.clone(), route.cred.clone(), host.to_string());
     let Ok(Ok((value, inject))) =
-        tokio::task::spawn_blocking(move || cache.get(&cred, &h, 443)).await
+        tokio::task::spawn_blocking(move || cache.get(&cred, &h, port)).await
     else {
         let msg = "kepr could not obtain the credential";
         return Err(log.reply(kepr_error(StatusCode::BAD_GATEWAY, "kepr", msg), 0, None));

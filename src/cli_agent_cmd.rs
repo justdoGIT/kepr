@@ -303,6 +303,7 @@ fn cmd_revoke(a: &AgentArgs) -> Response {
 pub fn main(raw: &[String]) -> Response {
     match raw.first().map(String::as_str) {
         Some("add-db") => return crate::cli_agent_db::cmd_add_db(&raw[1..]),
+        Some("add-kube") => return crate::cli_agent_kube::cmd_add_kube(&raw[1..]), // T13.04
         Some("rotate-db") => return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]),
         Some("doctor") => return crate::cli_agent_doctor::cmd_doctor(&raw[1..]),
         Some("shim") => return crate::cli_agent_shim::cmd_shim(&raw[1..]),

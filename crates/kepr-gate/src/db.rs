@@ -63,6 +63,8 @@ pub async fn serve_conn(state: Arc<State>, route: Arc<DbRoute>, client: TcpStrea
         TargetKind::Redis => crate::redis::serve_conn(state, route, client).await,
         TargetKind::Mysql => crate::mysql::serve_conn(state, route, client).await,
         TargetKind::Tcp => crate::tunnel::serve_conn(state, route, client).await,
+        // Served by the egress proxy (kube.rs), never on a listener.
+        TargetKind::Kube => {}
     }
 }
 

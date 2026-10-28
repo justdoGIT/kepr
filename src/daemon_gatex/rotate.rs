@@ -164,7 +164,7 @@ mod tests {
         ));
         // handle_set saved the old value to slot 0 before replacing it.
         assert!(
-            crate::store::cred_exists(uid, "HIST~0") == false,
+            !crate::store::cred_exists(uid, "HIST~0"),
             "history slot kept"
         );
         assert!(crate::daemon_history::version_value(uid, "HIST", 1).is_err());

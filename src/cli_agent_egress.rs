@@ -110,6 +110,7 @@ pub fn env(
     port: u16,
     ca_pem: &str,
     placeholders: &HashMap<String, String>,
+    kube: &[crate::cli_agent_kube::Entry],
 ) -> Result<Vec<(String, String)>, String> {
     let (ca, bundle_path) = write_ca(ca_pem)?;
     let proxy = format!("http://127.0.0.1:{port}");
@@ -141,6 +142,8 @@ pub fn env(
         &bundle_path,
         placeholders,
     )?);
+    // T13.04: a KUBECONFIG for the session's Kubernetes clusters.
+    env.extend(crate::cli_agent_kube::write(dir, &ca, port, kube)?);
     Ok(env)
 }
 

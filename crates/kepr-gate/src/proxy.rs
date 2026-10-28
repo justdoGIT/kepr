@@ -43,6 +43,9 @@ pub struct State {
     pub tunnel: bool,
     /// T7.03: host:port of the session's raw tunnels (tunnel.rs).
     pub tunnels: Vec<(String, u16)>,
+    /// T13.04: the session's Kubernetes API servers (kube.rs).
+    pub kube: Vec<crate::kube::KubeTarget>,
+    pub(crate) kube_clients: crate::kube::Clients,
     /// T7.09: what the agent sends and receives (`--record`).
     pub recorder: Arc<crate::recording::Recorder>,
     /// T11.22: request journal entries on their way to the daemon.
@@ -90,6 +93,8 @@ impl State {
             ca: None,
             tunnel: false,
             tunnels: Vec::new(),
+            kube: Vec::new(),
+            kube_clients: Default::default(),
             recorder: Arc::new(crate::recording::Recorder::new(false)),
             journal: Arc::default(),
         }

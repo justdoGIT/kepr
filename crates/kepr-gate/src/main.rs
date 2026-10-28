@@ -18,6 +18,7 @@ mod gcp_token;
 mod git_http;
 mod github_app;
 mod journal;
+mod kube;
 mod limits;
 mod mask;
 mod mysql;

@@ -147,6 +147,8 @@ pub fn cmd_run(
         routes.extend(crate::cli_aws::session::routes(&routes, &creds)); // T2.02
         let db = crate::cli_agent_db::routes(&routes, &creds);
         routes.extend(db);
+        let kube = crate::cli_agent_kube::routes(&routes, &creds); // T13.04
+        routes.extend(kube);
         let tunnels = crate::cli_gatex::tunnel::routes(&routes, &session.tunnels)?;
         routes.extend(tunnels);
         crate::cli_gatex::grant::apply(&mut routes, &session.grants)?;
@@ -213,7 +215,8 @@ pub fn cmd_run(
     // T6.11: policy.toml `agent` / `harness` rules match on this.
     env.push(("KEPR_AGENT_HARNESS".into(), harness.to_string()));
     if let Some(pem) = ca_pem {
-        match crate::cli_agent_egress::env(gate_port, &pem, &placeholders) {
+        let kube = crate::cli_agent_kube::entries(&all_routes, &placeholders);
+        match crate::cli_agent_egress::env(gate_port, &pem, &placeholders, &kube) {
             Ok(e) => env.extend(e),
             Err(e) => return Response::fail(e),
         }

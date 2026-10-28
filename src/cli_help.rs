@@ -45,6 +45,7 @@ COMMANDS:
                                        run claude|codex|grok-cli|aider|gemini|omp|grok|opencode
                                        sandboxed, with placeholders; a local gate injects the real
                                        key on the wire
+  agent add-kube KEY --server https://HOST[:PORT] [--token-file FILE|--stdin] [--ca-file FILE]  kubectl via the gate (token never seen by the agent)
   agent add-db KEY --url postgres|mysql|redis[s]://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
                                        sealed database login; agents get DATABASE_URL / MYSQL_* / REDIS_URL to a local gate port
   agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new

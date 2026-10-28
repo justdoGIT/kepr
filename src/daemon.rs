@@ -11,6 +11,7 @@ mod atomic_file;
 mod audit;
 mod audit_chain;
 mod audit_checkpoint;
+mod audit_verify;
 mod cred_meta;
 mod crypto;
 mod crypto_inproc;
