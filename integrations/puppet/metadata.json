@@ -1,0 +1,9 @@
+{
+  "name": "kepr-kepr",
+  "version": "0.1.0",
+  "author": "kepr contributors",
+  "summary": "kepr::secret(): read a credential from the local kepr daemon",
+  "license": "MIT OR Apache-2.0",
+  "source": "https://github.com/justdoGIT/kepr",
+  "dependencies": []
+}

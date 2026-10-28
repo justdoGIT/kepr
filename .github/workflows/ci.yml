@@ -72,6 +72,8 @@ jobs:
               - '.github/workflows/ci.yml'
             ruby:
               - 'sdk/ruby/**'
+              - 'integrations/chef/**'
+              - 'integrations/puppet/**'
               - '.github/workflows/ci.yml'
             java:
               - 'sdk/java/**'
@@ -207,6 +209,8 @@ jobs:
             exit 0
           fi
           ruby test/test_kepr.rb
+          ruby ../../integrations/chef/test/test_lookup.rb
+          ruby ../../integrations/puppet/test/test_lookup.rb
 
   go-sdk:
     name: Go SDK
