@@ -1,7 +1,7 @@
 // client.rs — CLI-side transport: framed JSON over Unix socket.
 
 use std::os::unix::net::UnixStream;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -16,7 +16,12 @@ fn connect_socket() -> Result<UnixStream, String> {
     }
 
     if std::env::var_os("KEPR_SYSTEM_MODE").is_none() {
-        let _ = Command::new("kepr-daemon").arg("--user").spawn();
+        let _ = Command::new("kepr-daemon")
+            .arg("--user")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
         for _ in 0..40 {
             thread::sleep(Duration::from_millis(50));
             if let Ok(stream) = UnixStream::connect(&socket) {
