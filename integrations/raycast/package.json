@@ -1,0 +1,21 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "kepr",
+  "title": "kepr",
+  "description": "List kepr credentials (metadata only) and copy one to the clipboard through `kepr copy`.",
+  "icon": "icon.png",
+  "author": "justdogit",
+  "license": "MIT",
+  "platforms": ["macOS"],
+  "commands": [
+    {
+      "name": "list-credentials",
+      "title": "List Credentials",
+      "description": "Names, types, tags and expiry; never values.",
+      "mode": "view"
+    }
+  ],
+  "dependencies": { "@raycast/api": "^1.80.0" },
+  "devDependencies": { "typescript": "^5.4.0", "@types/node": "^20.0.0", "@types/react": "^18.0.0" },
+  "scripts": { "test": "node --test test/*.test.js" }
+}

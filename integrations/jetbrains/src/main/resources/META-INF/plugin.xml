@@ -1,0 +1,12 @@
+<idea-plugin>
+  <id>io.kepr.jetbrains</id>
+  <name>kepr</name>
+  <vendor>kepr contributors</vendor>
+  <description>Shows the kepr vault's lock state in the status bar, lists credential names, tags and expiry (never values), and copies one to the clipboard through `kepr copy`.</description>
+  <depends>com.intellij.modules.platform</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <statusBarWidgetFactory id="io.kepr.status" implementation="io.kepr.idea.KeprStatusWidgetFactory"/>
+    <toolWindow id="kepr" anchor="right" factoryClass="io.kepr.idea.KeprToolWindowFactory"/>
+  </extensions>
+</idea-plugin>

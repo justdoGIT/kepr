@@ -36,6 +36,7 @@ jobs:
       ruby: ${{ github.event_name != 'pull_request' || steps.some.outputs.ruby == 'true' }}
       java: ${{ github.event_name != 'pull_request' || steps.some.outputs.java == 'true' }}
       dotnet: ${{ github.event_name != 'pull_request' || steps.some.outputs.dotnet == 'true' }}
+      integrations: ${{ github.event_name != 'pull_request' || steps.some.outputs.integrations == 'true' }}
       templates: ${{ github.event_name != 'pull_request' || steps.some.outputs.templates == 'true' }}
       csi: ${{ github.event_name != 'pull_request' || steps.some.outputs.csi == 'true' }}
       terraform: ${{ github.event_name != 'pull_request' || steps.some.outputs.terraform == 'true' }}
@@ -77,6 +78,12 @@ jobs:
               - 'integrations/puppet/**'
               - '.github/workflows/ci.yml'
             java:
+              - 'sdk/java/**'
+              - '.github/workflows/ci.yml'
+            integrations:
+              - 'integrations/raycast/**'
+              - 'integrations/iterm2/**'
+              - 'integrations/jetbrains/**'
               - 'sdk/java/**'
               - '.github/workflows/ci.yml'
             dotnet:
@@ -219,6 +226,20 @@ jobs:
           ruby test/test_kepr.rb
           ruby ../../integrations/chef/test/test_lookup.rb
           ruby ../../integrations/puppet/test/test_lookup.rb
+
+  editor-integrations:
+    name: Raycast, iTerm2, JetBrains parsing
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.integrations == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Raycast (node)
+        run: node --test integrations/raycast/test/*.test.js
+      - name: iTerm2 (python)
+        run: python3 -m unittest discover -s integrations/iterm2/test
+      - name: JetBrains (java)
+        run: bash integrations/jetbrains/test.sh
 
   dotnet-sdk:
     name: .NET SDK
