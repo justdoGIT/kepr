@@ -636,6 +636,108 @@ fn a_dismissed_or_failed_unlock_completes_as_dismissed() {
 }
 
 #[test]
+fn a_dialog_just_dismissed_is_not_shown_again_by_an_explicit_unlock() {
+    let r = rig_with(Policy::default(), false);
+    let c = who(":1.5");
+    let s = r.plain_session(&c);
+    let item = r.create(&c, &s, "L", &[("k", "v")], b"x");
+    r.store.set_locked(true);
+    r.srv.view.stale();
+    for round in 1..=3 {
+        let prompt = r.ok(
+            &c,
+            n::ROOT,
+            n::I_SERVICE,
+            "Unlock",
+            vec![Value::paths(vec![item.clone()])],
+        )[1]
+        .as_str()
+        .unwrap()
+        .to_string();
+        r.ok(&c, &prompt, n::I_PROMPT, "Prompt", vec![Value::str("")]);
+        let t = Instant::now();
+        while r.sink.named("Completed").len() < round {
+            assert!(t.elapsed() < Duration::from_secs(5), "round {round}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let done = &r.sink.named("Completed")[round - 1];
+        assert_eq!(done.body[0], Value::Bool(true), "dismissed");
+    }
+    assert_eq!(
+        *r.unlocker.asked.lock().unwrap(),
+        1,
+        "one dialog; the retries in a loop were not shown"
+    );
+    let last = r.srv.audit.lines().pop().unwrap();
+    assert!(last.contains("a dialog was dismissed"), "{last}");
+}
+
+#[test]
+fn an_item_is_read_only_under_the_collection_it_is_in() {
+    let r = rig();
+    let c = who(":1.5");
+    let s = r.plain_session(&c);
+    let item = r.create(&c, &s, "L", &[("k", "v")], b"x");
+    let id = item.rsplit('/').next().unwrap();
+    let fake = n::item_path("session", id);
+    let m = r.ok(
+        &c,
+        n::ROOT,
+        n::I_SERVICE,
+        "GetSecrets",
+        vec![Value::paths(vec![fake]), Value::path(&s)],
+    );
+    assert!(
+        m[0].as_array().unwrap().is_empty(),
+        "wrong collection: skipped"
+    );
+    let m = r.ok(
+        &c,
+        n::ROOT,
+        n::I_SERVICE,
+        "GetSecrets",
+        vec![Value::paths(vec![item]), Value::path(&s)],
+    );
+    assert_eq!(m[0].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_caller_the_server_cannot_name_gets_nothing_under_a_policy() {
+    let policy =
+        Policy::parse("[[rule]]\nexe = \"/usr/bin/chromium*\"\nop = \"read\"\naction = \"deny\"\n")
+            .unwrap();
+    let r = rig_with(policy, true);
+    let c = who(":1.5");
+    let s = r.plain_session(&c);
+    let item = r.create(&c, &s, "Mail", &[("k", "v")], b"x");
+    // The same connection, its program no longer readable in /proc.
+    let hidden = Caller {
+        exe: None,
+        ..c.clone()
+    };
+    assert_eq!(
+        r.err(
+            &hidden,
+            &item,
+            n::I_ITEM,
+            "GetSecret",
+            vec![Value::path(&s)]
+        ),
+        n::E_DENIED
+    );
+    assert_eq!(
+        r.err(
+            &hidden,
+            n::ROOT,
+            n::I_SERVICE,
+            "OpenSession",
+            vec![Value::str("plain"), Value::variant(Value::str(""))]
+        ),
+        n::E_DENIED
+    );
+}
+
+#[test]
 fn the_session_collection_works_while_kepr_is_locked() {
     let r = rig();
     let c = who(":1.6");
@@ -965,22 +1067,27 @@ fn unknown_things_get_the_standard_errors_and_introspection_works() {
 }
 
 #[test]
-fn many_prompts_and_sessions_from_one_client_are_bounded() {
+fn many_sessions_from_one_client_are_bounded_and_the_oldest_makes_room() {
     let r = rig();
     let c = who(":1.13");
-    for _ in 0..super::session::MAX_PER_OWNER {
+    let first = r.plain_session(&c);
+    for _ in 1..super::session::MAX_PER_OWNER {
         r.plain_session(&c);
     }
-    assert_eq!(
-        r.err(
-            &c,
-            n::ROOT,
-            n::I_SERVICE,
-            "OpenSession",
-            vec![Value::str("plain"), Value::variant(Value::str(""))]
-        ),
-        n::E_FAILED
-    );
+    assert!(r
+        .srv
+        .sessions
+        .exists(first.rsplit('/').next().unwrap(), ":1.13"));
+    // One more is still served: it costs the client its oldest.
+    let newest = r.plain_session(&c);
+    assert!(!r
+        .srv
+        .sessions
+        .exists(first.rsplit('/').next().unwrap(), ":1.13"));
+    assert!(r
+        .srv
+        .sessions
+        .exists(newest.rsplit('/').next().unwrap(), ":1.13"));
     let _ = Ordering::SeqCst;
 }
 

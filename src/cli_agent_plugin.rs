@@ -112,6 +112,29 @@ fn cursor_rule() -> String {
     )
 }
 
+/// Fail if `path`, or any directory between `root` and it, is a symlink: a
+/// repository can plant `.github/copilot-instructions.md -> ~/.bashrc`, and
+/// writing guidance through it would overwrite a file outside the project.
+pub fn refuse_links(root: &Path, path: &Path) -> Result<(), String> {
+    let below = path.strip_prefix(root).unwrap_or(path);
+    let mut at = root.to_path_buf();
+    for part in below.components() {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(format!(
+                    "{} is a symbolic link; kepr will not write project files through one",
+                    at.display()
+                ))
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("{}: {e}", at.display())),
+        }
+    }
+    Ok(())
+}
+
 /// Write the guidance for `harness` through `cli_agent_install::apply`
 /// (timestamped 0600 backup, idempotent). None: no guidance for it.
 pub fn install_guidance(
@@ -122,6 +145,11 @@ pub fn install_guidance(
     let Some(path) = guidance_path(harness, home, env) else {
         return Ok(None);
     };
+    // Project files come from a checkout that may not be ours; the other
+    // harnesses' files are the user's own (dotfile managers link those).
+    if matches!(harness, "cursor" | "copilot") {
+        refuse_links(home, &path)?;
+    }
     let changed = match harness {
         "codex" | "copilot" => {
             crate::cli_agent_install::apply(&path, |t| upsert_block(t, skill_body()))
@@ -376,6 +404,33 @@ mod tests {
         assert!(!write_plugin(&dir, GROK).unwrap());
         assert!(dir.join(".grok-plugin/plugin.json").is_file());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_guidance_is_never_written_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let none = |_: &str| None;
+        let proj = tempfile::tempdir().unwrap();
+        let victim = tempfile::tempdir().unwrap();
+        let target = victim.path().join("bashrc");
+        std::fs::write(&target, "export A=1\n").unwrap();
+        // The file itself is a link out of the project.
+        std::fs::create_dir_all(proj.path().join(".github")).unwrap();
+        symlink(&target, proj.path().join(".github/copilot-instructions.md")).unwrap();
+        let e = install_guidance("copilot", proj.path(), &none).unwrap_err();
+        assert!(e.contains("symbolic link"), "{e}");
+        // A directory on the way is a link out of the project.
+        symlink(victim.path(), proj.path().join(".cursor")).unwrap();
+        let e = install_guidance("cursor", proj.path(), &none).unwrap_err();
+        assert!(e.contains("symbolic link"), "{e}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "export A=1\n");
+        assert_eq!(std::fs::read_dir(victim.path()).unwrap().count(), 1);
+        // The user's own files may be links (dotfile managers do that).
+        let home = tempfile::tempdir().unwrap();
+        let real = victim.path().join("AGENTS.md");
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        symlink(&real, home.path().join(".codex/AGENTS.md")).unwrap();
+        assert!(install_guidance("codex", home.path(), &none).is_ok());
     }
 
     #[test]

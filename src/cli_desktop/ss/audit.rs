@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use super::caller::Caller;
+use super::caller::{printable, Caller};
 
 const MAX_BYTES: u64 = 1024 * 1024;
 
@@ -98,7 +98,9 @@ fn append(path: &std::path::Path, line: &str) -> std::io::Result<()> {
 /// One log line as text: `2026-10-28 12:00:01 ok      GetSecret  /usr/bin/x (pid 1)  Label`.
 pub fn format_line(line: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("-");
+    // Programs and items name themselves: nothing from the file reaches the
+    // terminal as a control character.
+    let s = |k: &str| printable(v.get(k).and_then(|x| x.as_str()).unwrap_or("-"));
     let ts = v.get("ts").and_then(|x| x.as_u64())?;
     let pid = v
         .get("pid")
@@ -190,6 +192,14 @@ mod tests {
             "{t}"
         );
         assert_eq!(format_line("not json"), None);
+        let hostile = Caller {
+            exe: Some("/tmp/\x1b[2Jx".into()),
+            ..who()
+        };
+        a.record(&hostile, "GetSecret", "ID", Some("a\x07b\nc"), "ok");
+        let t = format_line(&a.lines()[1]).unwrap();
+        assert!(!t.chars().any(char::is_control), "{t:?}");
+        assert!(t.contains("/tmp/?[2Jx") && t.contains("a?b?c"), "{t:?}");
         assert_eq!(clock(0), "1970-01-01 00:00:00");
         assert_eq!(
             clock(951_782_400 + 86_399),

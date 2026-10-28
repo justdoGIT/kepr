@@ -121,12 +121,7 @@ impl Server {
     /// program to ask. A dialog that was just dismissed is not shown again
     /// at once.
     pub fn await_unlock(self: &Arc<Self>, who: &Caller) -> DResult<()> {
-        let recently = self
-            .last_refusal
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some_and(|t| t.elapsed() < COOLDOWN);
-        if recently {
+        if self.cooling() {
             return Err(super::store::StoreError::Locked.into());
         }
         let cancel = Arc::new(AtomicBool::new(false));
@@ -142,9 +137,23 @@ impl Server {
             return Ok(());
         }
         cancel.store(true, Ordering::SeqCst);
-        *self.last_refusal.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        self.note_refusal();
         self.audit.record(who, "AutoUnlock", "-", None, "refused");
         Err(super::store::StoreError::Locked.into())
+    }
+
+    /// Was a dialog just dismissed or timed out? Neither the first-ask
+    /// dialog nor an explicit `Unlock` prompt is shown again until it passes,
+    /// so a program in a loop cannot flood the screen.
+    fn cooling(&self) -> bool {
+        self.last_refusal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|t| t.elapsed() < COOLDOWN)
+    }
+
+    fn note_refusal(&self) {
+        *self.last_refusal.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     }
 
     /// Test control: how long `await_unlock` waits.
@@ -341,21 +350,25 @@ impl Server {
 
     /// The body of a prompt thread: the unlock dialog, then `Completed`.
     pub fn run_prompt(&self, who: &Caller, id: &str, objects: Vec<String>, cancel: &AtomicBool) {
-        let unlocked = match self.unlocker.unlock(cancel) {
-            Ok(u) => u && !cancel.load(Ordering::SeqCst),
-            Err(e) => {
-                eprintln!("kepr secret-service: {e}");
-                false
-            }
-        };
+        let cooling = self.cooling();
+        let unlocked = !cooling
+            && match self.unlocker.unlock(cancel) {
+                Ok(u) => u && !cancel.load(Ordering::SeqCst),
+                Err(e) => {
+                    eprintln!("kepr secret-service: {e}");
+                    false
+                }
+            };
+        if !unlocked && !cooling {
+            self.note_refusal();
+        }
         self.view.stale();
-        self.audit.record(
-            who,
-            "Unlock",
-            "-",
-            None,
-            if unlocked { "ok" } else { "refused" },
-        );
+        let result = match (unlocked, cooling) {
+            (true, _) => "ok",
+            (false, true) => "refused (a dialog was dismissed a moment ago)",
+            (false, false) => "refused",
+        };
+        self.audit.record(who, "Unlock", "-", None, result);
         let result = if unlocked { objects } else { Vec::new() };
         self.emit(
             &n::prompt_path(id),

@@ -98,7 +98,17 @@ impl Policy {
         }
     }
 
+    /// Does this policy restrict anything (a rule, or a default deny)?
+    fn restricts(&self) -> bool {
+        self.default_deny || !self.rules.is_empty()
+    }
+
     pub fn check(&self, who: &Caller, op: Op) -> Action {
+        // A rule cannot judge a program it cannot name; a policy that
+        // restricts anything does not wave such a caller through.
+        if self.restricts() && !who.identified() {
+            return Action::Deny;
+        }
         for r in &self.rules {
             let op_ok = match r.op.as_str() {
                 "read" => op == Op::Read,
@@ -218,6 +228,32 @@ mod tests {
         assert_eq!(
             Policy::deny_all().check(&who("/usr/bin/gh", false), Op::Read),
             Action::Deny
+        );
+    }
+
+    #[test]
+    fn a_caller_that_cannot_be_named_is_refused_once_the_policy_restricts_anything() {
+        let unnamed = Caller {
+            pid: Some(7),
+            ..Caller::unknown(":1.8")
+        };
+        let rules = Policy::parse(
+            "[[rule]]\nexe = \"/usr/bin/chromium*\"\nop = \"read\"\naction = \"deny\"\n",
+        )
+        .unwrap();
+        for op in [Op::Search, Op::Read, Op::Write] {
+            assert_eq!(rules.check(&unnamed, op), Action::Deny, "{op:?}");
+            assert_eq!(Policy::deny_all().check(&unnamed, op), Action::Deny);
+        }
+        assert_eq!(
+            rules.check(&who("/usr/bin/curl", false), Op::Read),
+            Action::Allow,
+            "a named program the rules do not mention keeps the default"
+        );
+        assert_eq!(
+            Policy::default().check(&unnamed, Op::Read),
+            Action::Allow,
+            "no policy file: every program of the session, as documented"
         );
     }
 

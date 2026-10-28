@@ -98,7 +98,7 @@ fn log(args: &[&str]) -> Response {
     for l in &lines[lines.len().saturating_sub(count)..] {
         match audit::format_line(l) {
             Some(f) => println!("{f}"),
-            None => println!("{l}"),
+            None => println!("{}", super::ss::caller::printable(l)),
         }
     }
     Response::Pong

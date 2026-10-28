@@ -14,6 +14,7 @@ use kepr_core::protocol::Response;
 use kepr_core::protocol_desktop::{self as pd, DesktopResponse, SsItemInfo};
 use zeroize::Zeroizing;
 
+use super::ss::caller::printable;
 use super::ss::daemon_store::DaemonStore;
 use super::ss::store::{Attrs, Store, StoreError};
 use crate::{cli_mode, cli_ui};
@@ -86,18 +87,20 @@ pub fn find(store: &dyn Store, attrs: &Attrs) -> Result<Vec<SsItemInfo>, StoreEr
 }
 
 fn describe(i: &SsItemInfo) -> String {
+    // Labels and attributes are whatever the program that stored the item
+    // chose; an escape sequence in one must not act on this terminal.
     let attrs: Vec<String> = i
         .attributes
         .iter()
         .map(|(k, v)| format!("{k} = {v}"))
         .collect();
-    format!(
+    printable(&format!(
         "[{}/{}] {}  ({})",
         i.collection,
         i.id,
         i.label,
         attrs.join(", ")
-    )
+    ))
 }
 
 fn open() -> DaemonStore {
@@ -302,5 +305,15 @@ mod tests {
             .is_empty());
         assert!(describe(&found[0]).contains("GitHub") && !describe(&found[0]).contains("two"));
         assert!(store_item(&m, "login", "Big", &a, &vec![0u8; pd::MAX_SECRET_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn a_hostile_label_or_attribute_prints_without_control_characters() {
+        let m = MemStore::new(&[pd::LOGIN]);
+        let a = parse_attrs(&["user", "x\x1b]0;pwned\x07"]).unwrap();
+        let it = store_item(&m, "login", "\x1b[2Jlabel\r", &a, b"pw").unwrap();
+        let line = describe(&it);
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(line.contains("label") && line.contains("pwned"));
     }
 }

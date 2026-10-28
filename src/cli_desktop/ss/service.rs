@@ -70,8 +70,10 @@ pub fn call(srv: &Arc<Server>, who: &Caller, member: &str, b: &[Value]) -> DResu
             let mut entries = Vec::new();
             for o in objects {
                 let Obj::Item(c, id) = o else { continue };
-                let Some(info) = srv.view.item(&id) else { continue };
-                if !item_open(srv, &c) {
+                // The path names a collection too; only the item's own counts,
+                // so `session/<id>` cannot pose as an open collection.
+                let Some(info) = srv.view.item(&id).filter(|i| i.collection == c) else { continue };
+                if !item_open(srv, &info.collection) {
                     return Err(StoreError::Locked.into());
                 }
                 let r = srv.view.store().secret(&id).map_err(DErr::from).and_then(|(s, ct)| srv.sessions.encode(session, &who.name, &s, &ct));

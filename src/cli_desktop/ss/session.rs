@@ -8,8 +8,12 @@
 //
 // A session belongs to the connection that opened it: any other
 // connection naming its path gets `NoSession`. Sessions end on `Close`,
-// when their owner leaves the bus, and (a bound against a client that
-// never closes any) at MAX_PER_OWNER per connection.
+// when their owner leaves the bus, and (a bound against clients that never
+// close any) when a table is full: a connection past MAX_PER_OWNER loses its
+// own oldest session, and when the whole table (MAX_TOTAL) is full the
+// oldest session of the connection holding the most goes. A flood of
+// connections cannot hold the table, and cannot push out a client that
+// keeps few sessions.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -26,10 +30,48 @@ const MAX_TOTAL: usize = 256;
 struct Session {
     owner: String,
     key: Option<Zeroizing<[u8; 16]>>,
+    /// Opening order, to find the oldest.
+    seq: u64,
 }
 
 #[derive(Default)]
-pub struct Sessions(Mutex<HashMap<String, Session>>);
+struct Table {
+    by_id: HashMap<String, Session>,
+    next: u64,
+}
+
+#[derive(Default)]
+pub struct Sessions(Mutex<Table>);
+
+impl Table {
+    /// Make room for one more session of `owner`.
+    fn make_room(&mut self, owner: &str) {
+        let mine = self.by_id.values().filter(|s| s.owner == owner).count();
+        let victim = if mine >= MAX_PER_OWNER {
+            Some(owner.to_string())
+        } else if self.by_id.len() >= MAX_TOTAL {
+            let mut held: HashMap<&str, usize> = HashMap::new();
+            for s in self.by_id.values() {
+                *held.entry(&s.owner).or_default() += 1;
+            }
+            held.into_iter()
+                .max_by_key(|&(o, n)| (n, o))
+                .map(|(o, _)| o.to_string())
+        } else {
+            None
+        };
+        let oldest = victim.and_then(|v| {
+            self.by_id
+                .iter()
+                .filter(|(_, s)| s.owner == v)
+                .min_by_key(|(_, s)| s.seq)
+                .map(|(id, _)| id.clone())
+        });
+        if let Some(id) = oldest {
+            self.by_id.remove(&id);
+        }
+    }
+}
 
 fn fresh_id() -> String {
     let mut b = [0u8; 8];
@@ -38,7 +80,7 @@ fn fresh_id() -> String {
 }
 
 impl Sessions {
-    fn m(&self) -> std::sync::MutexGuard<'_, HashMap<String, Session>> {
+    fn m(&self) -> std::sync::MutexGuard<'_, Table> {
         self.0.lock().unwrap_or_else(|p| p.into_inner())
     }
 
@@ -61,37 +103,37 @@ impl Sessions {
                 ))
             }
         };
-        let mut m = self.m();
-        if m.len() >= MAX_TOTAL || m.values().filter(|s| s.owner == owner).count() >= MAX_PER_OWNER
-        {
-            return Err(DErr::new(names::E_FAILED, "too many open sessions"));
-        }
+        let mut t = self.m();
+        t.make_room(owner);
         let id = fresh_id();
-        m.insert(
+        let seq = t.next;
+        t.next += 1;
+        t.by_id.insert(
             id.clone(),
             Session {
                 owner: owner.into(),
                 key,
+                seq,
             },
         );
         Ok((id, output))
     }
 
     pub fn close(&self, id: &str, owner: &str) -> bool {
-        let mut m = self.m();
-        if m.get(id).is_some_and(|s| s.owner == owner) {
-            m.remove(id);
+        let mut t = self.m();
+        if t.by_id.get(id).is_some_and(|s| s.owner == owner) {
+            t.by_id.remove(id);
             return true;
         }
         false
     }
 
     pub fn drop_owner(&self, owner: &str) {
-        self.m().retain(|_, s| s.owner != owner);
+        self.m().by_id.retain(|_, s| s.owner != owner);
     }
 
     pub fn exists(&self, id: &str, owner: &str) -> bool {
-        self.m().get(id).is_some_and(|s| s.owner == owner)
+        self.m().by_id.get(id).is_some_and(|s| s.owner == owner)
     }
 
     fn session_id(path: &str) -> Option<String> {
@@ -112,8 +154,12 @@ impl Sessions {
         let no = || DErr::new(names::E_NO_SESSION, "no such session");
         let id = Self::session_id(path).ok_or_else(no)?;
         let key = {
-            let m = self.m();
-            let s = m.get(&id).filter(|s| s.owner == owner).ok_or_else(no)?;
+            let t = self.m();
+            let s = t
+                .by_id
+                .get(&id)
+                .filter(|s| s.owner == owner)
+                .ok_or_else(no)?;
             s.key.clone()
         };
         let (params, value) = match key {
@@ -143,8 +189,9 @@ impl Sessions {
         let no = || DErr::new(names::E_NO_SESSION, "no such session");
         let id = Self::session_id(path).ok_or_else(no)?;
         let key = {
-            let m = self.m();
-            m.get(&id)
+            let t = self.m();
+            t.by_id
+                .get(&id)
                 .filter(|s| s.owner == owner)
                 .ok_or_else(no)?
                 .key
@@ -274,18 +321,6 @@ mod tests {
             .is_err(),
             "a trivial public key"
         );
-        for _ in 0..MAX_PER_OWNER {
-            s.open(":1.9", "plain", &Value::variant(Value::str("")))
-                .unwrap();
-        }
-        assert!(s
-            .open(":1.9", "plain", &Value::variant(Value::str("")))
-            .is_err());
-        assert!(
-            s.open(":1.10", "plain", &Value::variant(Value::str("")))
-                .is_ok(),
-            "other connections are unaffected"
-        );
         // Garbage structs.
         assert_eq!(
             s.decode(":1.1", &Value::Struct(vec![])).unwrap_err().0,
@@ -312,5 +347,49 @@ mod tests {
             s.decode(":1.1", &not_a_session).unwrap_err().0,
             names::E_NO_SESSION
         );
+    }
+
+    fn plain(s: &Sessions, owner: &str) -> String {
+        s.open(owner, "plain", &Value::variant(Value::str("")))
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn a_client_past_its_share_loses_its_oldest_session_and_nobody_elses() {
+        let s = Sessions::default();
+        let other = plain(&s, ":1.10");
+        let first = plain(&s, ":1.9");
+        let rest: Vec<String> = (1..MAX_PER_OWNER).map(|_| plain(&s, ":1.9")).collect();
+        assert!(s.exists(&first, ":1.9"), "at the limit, none lost yet");
+        let newest = plain(&s, ":1.9");
+        assert!(!s.exists(&first, ":1.9"), "the oldest went");
+        assert!(rest.iter().chain([&newest]).all(|i| s.exists(i, ":1.9")));
+        assert!(
+            s.exists(&other, ":1.10"),
+            "other connections are unaffected"
+        );
+    }
+
+    #[test]
+    fn a_full_table_cannot_be_held_by_many_connections() {
+        let s = Sessions::default();
+        let victim = plain(&s, ":victim");
+        // 16 sessions on each of enough connections to fill the table.
+        let mut held = Vec::new();
+        for c in 0..(MAX_TOTAL / MAX_PER_OWNER + 4) {
+            for _ in 0..MAX_PER_OWNER {
+                held.push((format!(":flood.{c}"), plain(&s, &format!(":flood.{c}"))));
+            }
+        }
+        assert!(s.0.lock().unwrap().by_id.len() <= MAX_TOTAL, "bounded");
+        assert!(
+            s.exists(&victim, ":victim"),
+            "a connection with one session is not the one that pays for the flood"
+        );
+        // The service still opens sessions for new clients.
+        let fresh = plain(&s, ":late");
+        assert!(s.exists(&fresh, ":late"));
+        assert!(s.0.lock().unwrap().by_id.len() <= MAX_TOTAL);
     }
 }

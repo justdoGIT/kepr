@@ -8,6 +8,12 @@
 // log still has, ending at that offset, the entry it names (same seq and
 // hash); anything else, and `KEPR_AUDIT_FULL_VERIFY=1`, means a full walk.
 //
+// The checkpoint also carries when the whole log was last walked
+// (`full_walk_unix`). Start-ups that resume from it pass that stamp on
+// unchanged, so a daemon restarted every few days still walks the whole
+// file once a week; the file's mtime would be renewed by each start-up and
+// say nothing about that.
+//
 // This does not weaken tamper evidence against anyone who can write the
 // log: the chain is unkeyed, so such a writer can rebuild it whole (see
 // the anchors, T13.22). `kepr audit-verify` always checks the full file.
@@ -24,11 +30,28 @@ pub struct Checkpoint {
     pub entries: u64,
     pub hash: String,
     pub offset: u64,
+    /// Unix time of the last start-up that walked the whole log. Absent in
+    /// checkpoints from older versions, which therefore force one full walk.
+    #[serde(default)]
+    pub full_walk_unix: u64,
 }
 
-/// A checkpoint older than this is not used: the whole log is walked
-/// again, so a quiet edit of old entries surfaces within a week.
-const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+/// A checkpoint whose last full walk is older than this is not used: the
+/// whole log is walked again, so a quiet edit of old entries surfaces
+/// within a week.
+const MAX_AGE_SECS: u64 = 7 * 24 * 3600;
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Is a full walk stamped `stamp` recent enough? A stamp from the future
+/// (a clock set back, a hand-written file) is never recent.
+fn fresh(stamp: u64, now: u64) -> bool {
+    stamp != 0 && stamp <= now + 24 * 3600 && now.saturating_sub(stamp) <= MAX_AGE_SECS
+}
 
 /// Longest log line looked at when confirming a checkpoint.
 const MAX_LINE: u64 = 64 * 1024;
@@ -44,17 +67,10 @@ pub fn usable(chain: &Path) -> Option<Checkpoint> {
     if std::env::var_os("KEPR_AUDIT_FULL_VERIFY").is_some_and(|v| v == "1") {
         return None;
     }
-    let file = path_for(chain);
-    let age = std::fs::metadata(&file)
-        .ok()?
-        .modified()
-        .ok()?
-        .elapsed()
-        .ok()?;
-    if age > MAX_AGE {
+    let c: Checkpoint = serde_json::from_slice(&std::fs::read(path_for(chain)).ok()?).ok()?;
+    if !fresh(c.full_walk_unix, now_unix()) {
         return None; // a full walk now and then
     }
-    let c: Checkpoint = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
     confirm(chain, &c).then_some(c)
 }
 
@@ -91,9 +107,11 @@ fn confirm(chain: &Path, c: &Checkpoint) -> bool {
         .is_ok_and(|e| e.seq == c.entries && e.hash == c.hash)
 }
 
-/// Record the head just verified. Best effort: without a checkpoint the
-/// next start walks the whole log.
-pub fn save(chain: &Path, r: &VerifyReport) {
+/// Record the head just verified. `resumed` is the checkpoint the walk
+/// started from, if any: its full-walk stamp is kept; a walk from the start
+/// stamps now. Best effort: without a checkpoint the next start walks the
+/// whole log.
+pub fn save(chain: &Path, r: &VerifyReport, resumed: Option<&Checkpoint>) {
     if r.entries == 0 {
         return;
     }
@@ -101,6 +119,7 @@ pub fn save(chain: &Path, r: &VerifyReport) {
         entries: r.entries as u64,
         hash: r.last_hash.clone(),
         offset: r.end_offset,
+        full_walk_unix: resumed.map_or_else(now_unix, |c| c.full_walk_unix),
     };
     if let Ok(b) = serde_json::to_vec(&c) {
         let _ = crate::atomic_file::write(&path_for(chain), &b, 0o640);
@@ -206,19 +225,60 @@ mod tests {
         );
     }
 
+    fn stamp(p: &Path, unix: u64) {
+        let mut c: Checkpoint =
+            serde_json::from_slice(&std::fs::read(path_for(p)).unwrap()).unwrap();
+        c.full_walk_unix = unix;
+        std::fs::write(path_for(p), serde_json::to_vec(&c).unwrap()).unwrap();
+    }
+
     #[test]
     fn an_old_checkpoint_forces_a_full_walk() {
         let (p, _d) = log(4);
         AuditChain::open(p.clone()).unwrap();
         assert!(usable(&p).is_some());
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 24 * 3600);
-        std::fs::File::options()
-            .write(true)
-            .open(path_for(&p))
-            .unwrap()
-            .set_modified(old)
-            .unwrap();
+        stamp(&p, now_unix() - 8 * 24 * 3600);
         assert!(usable(&p).is_none());
+        // Missing (an older version's file) or from the future: not trusted.
+        stamp(&p, 0);
+        assert!(usable(&p).is_none());
+        stamp(&p, now_unix() + 30 * 24 * 3600);
+        assert!(usable(&p).is_none());
+    }
+
+    #[test]
+    fn restarting_does_not_postpone_the_weekly_full_walk() {
+        let (p, _d) = log(4);
+        AuditChain::open(p.clone()).unwrap();
+        let six_days = now_unix() - 6 * 24 * 3600;
+        stamp(&p, six_days);
+        // Many resumed start-ups later the stamp is still the old one...
+        for _ in 0..3 {
+            AuditChain::open(p.clone()).unwrap();
+            assert_eq!(usable(&p).unwrap().full_walk_unix, six_days);
+        }
+        // ...so when it ages out the next start walks everything again and
+        // stamps now, even though the file itself was written a moment ago.
+        stamp(&p, now_unix() - 8 * 24 * 3600);
+        AuditChain::open(p.clone()).unwrap();
+        assert!(usable(&p).unwrap().full_walk_unix + 60 > now_unix());
+    }
+
+    #[test]
+    fn a_full_walk_catches_an_old_edit_the_resumed_one_skipped() {
+        let (p, _d) = log(6);
+        AuditChain::open(p.clone()).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap().replace("K1", "KX");
+        std::fs::write(&p, text).unwrap();
+        assert!(
+            AuditChain::open(p.clone()).is_ok(),
+            "resumed: trusts the prefix"
+        );
+        stamp(&p, now_unix() - 8 * 24 * 3600);
+        assert!(
+            AuditChain::open(p).is_err(),
+            "due: walks it all and refuses"
+        );
     }
 
     /// `cargo test --bin kepr-daemon audit_checkpoint -- --ignored --nocapture`

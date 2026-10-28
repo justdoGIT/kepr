@@ -126,7 +126,7 @@ impl AuditChain {
                 drop_torn_tail(&path)?;
                 let start = crate::audit_checkpoint::usable(&path);
                 let report = Self::verify_from(&path, start.as_ref())?;
-                crate::audit_checkpoint::save(&path, &report);
+                crate::audit_checkpoint::save(&path, &report, start.as_ref());
                 ChainState {
                     last_hash: report.last_hash,
                     next_seq: report.entries as u64 + 1,

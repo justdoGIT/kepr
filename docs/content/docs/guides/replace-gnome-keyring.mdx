@@ -86,7 +86,9 @@ way to say "locked", and kepr uses it.
   reboot): the first call that needs the store shows the dialog and waits for
   it (up to 20 seconds, as libsecret clients give up at 25). If it is
   dismissed or times out, the program gets `IsLocked`, and no dialog is shown
-  again for ten seconds, so a program retrying in a loop does not flood you.
+  again for ten seconds (by the first-ask path or by a program calling
+  `Unlock`), so a program retrying in a loop does not flood you. A program the
+  policy refuses everywhere gets neither a session nor a dialog.
 * **The `session` collection** (programs' throw-away secrets) lives in memory
   and never needs kepr to be unlocked.
 
@@ -126,6 +128,10 @@ action = "allow"
 * `exe` is a glob on the calling program's path, read from `/proc` for the
   process the bus names (on every call, so a program that execs another one
   is judged by what it is now).
+* A program whose entries in `/proc` kepr cannot read (one that made itself
+  non-dumpable, so even its path is hidden) cannot be matched by any rule.
+  Once the file holds a rule or `default = "deny"`, such a caller is refused
+  everything; with no file, as with other keyrings, it is not.
 * `op` is `search`, `read` (a secret), `write` (create, change, delete) or
   `all` (default).
 * `sandboxed = true` matches a caller in another PID namespace (a container,
