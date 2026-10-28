@@ -63,7 +63,7 @@ hmac = "0.13"
 # `kepr sync-{push,pull} --url gcp-sm:…` — GCP Secret Manager
 # wraps payload bytes in base64. RustCrypto-adjacent crate, ~30 KB,
 # pure Rust, no system deps.
-base64 = "0.22"
+base64 = "0.23"
 # Phase 2 η: FIDO2 assertion verification. Most FIDO2 authenticators
 # use ECDSA P-256 (ES256). `p256` is RustCrypto, pure Rust, ~1MB total
 # with its dependencies — comparable to the existing sha2+hmac footprint.

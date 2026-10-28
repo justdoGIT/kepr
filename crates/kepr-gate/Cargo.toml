@@ -26,7 +26,7 @@ sha2 = "0.11"
 hex = "0.4"
 getrandom = "0.4"
 memchr = "2"
-base64 = "0.22"
+base64 = "0.23"
 # P2.1 egress proxy: the per-session CA and leaf certificates (ring
 # backend, same as rustls here) and the TLS server side.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }

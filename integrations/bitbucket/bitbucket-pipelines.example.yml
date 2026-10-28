@@ -1,0 +1,37 @@
+# kepr on Bitbucket Pipelines (plan T8.07 family): install kepr, log in to the
+# cloud store with the step's OIDC token, and pull secrets into a step-local
+# kepr daemon. Use them with `kepr exec`; nothing is printed.
+#
+# Bitbucket has no remote include, so copy this file's `definitions` and the
+# step you need into your bitbucket-pipelines.yml. The shared script is
+# fetched from a pinned tag and checked against a SHA-256 you set once:
+#   curl -fsSL https://raw.githubusercontent.com/justdoGIT/kepr/<tag>/integrations/ci/kepr-ci.sh | sha256sum
+#
+# Repository variables: KEPR_CI_TAG, KEPR_CI_SHA256, KEPR_CLOUD (aws | gcp |
+# vault | none), plus the cloud's own (KEPR_AWS_ROLE_ARN and AWS_REGION, or
+# KEPR_GCP_WIF_PROVIDER, or VAULT_ADDR and KEPR_VAULT_ROLE; see kepr-ci.sh).
+# Bitbucket does not mask values that appear at run time, so this never
+# prints one; KEPR_EXPORT=true exports them into this step's shell only.
+# The image needs bash, curl, jq and cosign.
+
+definitions:
+  steps:
+    - step: &kepr-deploy
+        name: Deploy with kepr secrets
+        image: your-image-with-bash-curl-jq-and-cosign
+        oidc: true # sets BITBUCKET_STEP_OIDC_TOKEN
+        script:
+          - export KEPR_ID_TOKEN="$BITBUCKET_STEP_OIDC_TOKEN"
+          - export KEPR_OIDC_AUDIENCE="${KEPR_OIDC_AUDIENCE:-sts.amazonaws.com}"
+          - export KEPR_SECRETS=$'DB_PASSWORD=aws-sm:prod/db/password\nAPI_TOKEN=aws-sm:prod/api/token'
+          - curl -fsSL "https://raw.githubusercontent.com/justdoGIT/kepr/${KEPR_CI_TAG}/integrations/ci/kepr-ci.sh" -o /tmp/kepr-ci.sh
+          - echo "${KEPR_CI_SHA256}  /tmp/kepr-ci.sh" | sha256sum -c -
+          - export KEPR_BIN_DIR="$HOME/.local/bin" PATH="$HOME/.local/bin:$PATH"
+          - bash /tmp/kepr-ci.sh install
+          - bash /tmp/kepr-ci.sh run
+          - kepr exec --env DB_PASSWORD,API_TOKEN -- ./deploy.sh
+
+pipelines:
+  branches:
+    main:
+      - step: *kepr-deploy

@@ -33,6 +33,8 @@ jobs:
       python: ${{ github.event_name != 'pull_request' || steps.some.outputs.python == 'true' }}
       node: ${{ github.event_name != 'pull_request' || steps.some.outputs.node == 'true' }}
       go: ${{ github.event_name != 'pull_request' || steps.some.outputs.go == 'true' }}
+      ruby: ${{ github.event_name != 'pull_request' || steps.some.outputs.ruby == 'true' }}
+      java: ${{ github.event_name != 'pull_request' || steps.some.outputs.java == 'true' }}
       templates: ${{ github.event_name != 'pull_request' || steps.some.outputs.templates == 'true' }}
       csi: ${{ github.event_name != 'pull_request' || steps.some.outputs.csi == 'true' }}
       terraform: ${{ github.event_name != 'pull_request' || steps.some.outputs.terraform == 'true' }}
@@ -68,10 +70,18 @@ jobs:
             go:
               - 'sdk/go/**'
               - '.github/workflows/ci.yml'
+            ruby:
+              - 'sdk/ruby/**'
+              - '.github/workflows/ci.yml'
+            java:
+              - 'sdk/java/**'
+              - '.github/workflows/ci.yml'
             templates:
               - 'integrations/ci/**'
               - 'integrations/podman/**'
               - 'integrations/gitlab/**'
+              - 'integrations/bitbucket/**'
+              - 'integrations/jenkins/**'
               - 'integrations/github-action/**'
               - '.github/workflows/**'
             csi:
@@ -176,6 +186,25 @@ jobs:
         working-directory: integrations/vscode
         run: node --test test/*.test.js
 
+  ruby-sdk:
+    name: Ruby SDK
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.ruby == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: minitest
+        working-directory: sdk/ruby
+        # ruby/setup-ruby only supports GitHub-hosted images, so on the
+        # self-hosted runner (no Ruby installed) say so loudly and skip; on
+        # hosted runners Ruby is preinstalled and the tests run.
+        run: |
+          if ! command -v ruby >/dev/null; then
+            echo "::warning title=Ruby SDK tests skipped::ruby is not installed on this runner"
+            exit 0
+          fi
+          ruby test/test_kepr.rb
+
   go-sdk:
     name: Go SDK
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
@@ -255,7 +284,7 @@ jobs:
         working-directory: docs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
           cache: npm
