@@ -1355,7 +1355,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "aws-lc-rs",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cbc",
  "chacha20",
  "ciborium",
@@ -1389,7 +1389,7 @@ dependencies = [
 name = "kepr-core"
 version = "0.4.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "codspeed-divan-compat",
  "getrandom 0.4.3",
  "hmac",
@@ -1415,7 +1415,7 @@ dependencies = [
 name = "kepr-gate"
 version = "0.4.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "getrandom 0.4.3",
  "hex",
