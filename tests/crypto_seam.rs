@@ -18,8 +18,6 @@ const ALLOWED: &[&str] = &["src/daemon_eco/cipher.rs", "src/daemon_eco/crypto_fi
 
 /// Files that still use the crates directly. Shrink only.
 const PENDING: &[&str] = &[
-    "src/daemon_vault/keys.rs",
-    "src/daemon_vault/place.rs",
     "src/daemon_sharing/kem.rs",
     "src/daemon_sharing/link.rs",
     "src/daemon_sharing/emergency_proof.rs",
