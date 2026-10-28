@@ -182,6 +182,10 @@
 
       kepr_ci_login_gcp() {
       	[ -n "${KEPR_GCP_WIF_PROVIDER:-}" ] || kepr_ci_die "gcp: set KEPR_GCP_WIF_PROVIDER"
+      	[[ "$KEPR_GCP_WIF_PROVIDER" =~ ^projects/[0-9]+/locations/global/workloadIdentityPools/[A-Za-z0-9_-]+/providers/[A-Za-z0-9_-]+$ ]] ||
+      		kepr_ci_die "gcp: KEPR_GCP_WIF_PROVIDER is not a workload identity provider path"
+      	[[ -z "${KEPR_GCP_SERVICE_ACCOUNT:-}" || "$KEPR_GCP_SERVICE_ACCOUNT" =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+$ ]] ||
+      		kepr_ci_die "gcp: KEPR_GCP_SERVICE_ACCOUNT is not a service account email"
       	local jwt fed
       	jwt="$(kepr_ci_id_token "${KEPR_OIDC_AUDIENCE:-https://iam.googleapis.com/$KEPR_GCP_WIF_PROVIDER}")"
       	fed="$(KEPR_JWT="$jwt" jq -n --arg aud "//iam.googleapis.com/$KEPR_GCP_WIF_PROVIDER" '{
@@ -206,6 +210,10 @@
 
       kepr_ci_login_vault() {
       	if [ -z "${VAULT_ADDR:-}" ] || [ -z "${KEPR_VAULT_ROLE:-}" ]; then kepr_ci_die "vault: set VAULT_ADDR and KEPR_VAULT_ROLE"; fi
+      	# The login sends the OIDC token and returns a Vault token: https only
+      	# (loopback excepted), and the auth mount is a plain path.
+      	[[ "$VAULT_ADDR" =~ ^(https://|http://(127\.0\.0\.1|localhost)([:/]|$)) ]] || kepr_ci_die "vault: VAULT_ADDR must be https://"
+      	[[ "${KEPR_VAULT_AUTH_PATH:-jwt}" =~ ^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$ ]] || kepr_ci_die "vault: bad KEPR_VAULT_AUTH_PATH"
       	local jwt
       	jwt="$(kepr_ci_id_token "${KEPR_OIDC_AUDIENCE:-$VAULT_ADDR}")"
       	VAULT_TOKEN="$(KEPR_JWT="$jwt" jq -n --arg r "$KEPR_VAULT_ROLE" '{role: $r, jwt: env.KEPR_JWT}' |
@@ -247,6 +255,12 @@
       # NAME VALUE → later steps' environment (GitHub); multi-line safe.
       kepr_ci_export() {
       	[ -n "${GITHUB_ENV:-}" ] || return 0
+      	# A value must not become a way to run code in later steps.
+      	case "$1" in
+      	PATH | LD_* | BASH_ENV | ENV | NODE_OPTIONS | PYTHONPATH | PYTHONSTARTUP | RUBYOPT | PERL5OPT | GITHUB_* | RUNNER_* | CI | HOME | SHELL | IFS | PS4 | PROMPT_COMMAND)
+      		kepr_ci_die "KEPR_EXPORT: $1 cannot be exported to later steps"
+      		;;
+      	esac
       	local delim
       	delim="KEPR_EOF_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
       	case "$2" in *"$delim"*) kepr_ci_die "delimiter collision" ;; esac

@@ -147,6 +147,25 @@ class ClientTests(unittest.TestCase):
         with self.assertRaisesRegex(KeprError, "cannot reach"):
             Client("/nonexistent/kepr.sock", timeout=1).ping()
 
+    def test_socket_served_by_another_user_is_refused(self):
+        # System mode expects root; a fake daemon run by anyone else is not it.
+        if os.geteuid() == 0 or not hasattr(socket, "SO_PEERCRED"):
+            self.skipTest("needs a non-root Linux user")
+        d = FakeDaemon(lambda r: {"kind": "get_ok", "value": "x"})
+        old = os.environ.get("KEPR_SYSTEM_MODE")
+        os.environ["KEPR_SYSTEM_MODE"] = "1"
+        try:
+            with self.assertRaises(KeprError) as cm:
+                Client(d.path).get("A")
+            self.assertIn("expected credential daemon", str(cm.exception))
+            self.assertEqual(d.seen, [])
+        finally:
+            d.close()
+            if old is None:
+                del os.environ["KEPR_SYSTEM_MODE"]
+            else:
+                os.environ["KEPR_SYSTEM_MODE"] = old
+
     def test_bad_name(self):
         with self.assertRaises(KeprError):
             Client("/x").get("")

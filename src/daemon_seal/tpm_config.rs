@@ -36,13 +36,17 @@ fn env(name: &str) -> Option<String> {
 impl TpmConfig {
     /// The configuration, when the TPM2 PIN or counter is asked for.
     pub fn from_env(seal: Option<&str>) -> Result<Option<Self>, String> {
-        Self::parse(
+        let cfg = Self::parse(
             seal,
             env("KEPR_TPM2_PIN").as_deref(),
             env("KEPR_TPM2_PIN_FILE").as_deref(),
             env("KEPR_TPM2_NV_INDEX").as_deref(),
             env("KEPR_TPM2_PCRS").as_deref(),
-        )
+        )?;
+        if let Some(f) = cfg.as_ref().and_then(|c| c.pin_file.as_deref()) {
+            check_pin_file_mode("KEPR_TPM2_PIN_FILE", f)?;
+        }
+        Ok(cfg)
     }
 
     pub fn parse(
@@ -84,6 +88,20 @@ impl TpmConfig {
             })?,
             pcrs: pcrs.map(pcr_list).transpose()?,
         }))
+    }
+}
+
+/// The PIN guards the key against someone holding the disk and the TPM; a
+/// file other users can read gives it to them. A file that isn't there yet
+/// (written at boot) is checked when it appears, by the tools' own read.
+pub(super) fn check_pin_file_mode(var: &str, f: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(f) {
+        Ok(m) if m.permissions().mode() & 0o077 != 0 => Err(format!(
+            "{var} {} is readable by group or others; chmod 600 it",
+            f.display()
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -241,5 +259,21 @@ mod tests {
             assert!(e.starts_with("KEPR_TPM2_IMAGE_NV_INDEX="), "{bad}: {e}");
             assert!(e.contains("0x01000000-0x01FFFFFF"), "{bad}: {e}");
         }
+    }
+
+    #[test]
+    fn a_pin_file_other_users_can_read_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("pin");
+        std::fs::write(&f, b"123456").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let e = check_pin_file_mode("KEPR_TPM2_PIN_FILE", &f).unwrap_err();
+        assert!(e.contains("chmod 600"), "{e}");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(check_pin_file_mode("KEPR_TPM2_PIN_FILE", &f).is_err());
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(check_pin_file_mode("KEPR_TPM2_PIN_FILE", &f).is_ok());
+        assert!(check_pin_file_mode("KEPR_TPM2_PIN_FILE", &d.path().join("not-yet")).is_ok());
     }
 }

@@ -18,7 +18,15 @@ use super::kdbx::{split, u32le};
 const ARGON2D: &str = "ef636ddf8c29444b91f7a9a403e30a0c";
 const ARGON2ID: &str = "9e298b1956db4773b23dfc3ec6f0a1e6";
 const AES_KDF: &str = "c9d9f39a628a4460bf740d08c18a4fea";
-const MAX_ARGON2_KIB: u64 = 4 << 20; // 4 GiB
+/// The header is read before anything authenticates it, so a hostile file
+/// chooses these. KeePassXC's defaults (64 MiB, a few passes) and any sane
+/// setting stay far inside the limits; a file asking for gigabytes or for
+/// hours of hashing is refused instead of run.
+const MAX_ARGON2_KIB: u64 = 1 << 20; // 1 GiB
+const MAX_ARGON2_PASSES: u64 = 256;
+const MAX_ARGON2_LANES: u64 = 64;
+/// Memory passes in total (KiB × iterations): about 16 GiB of hashing.
+const MAX_ARGON2_WORK: u64 = 16 << 20;
 
 /// A KeePass VariantDictionary: name → raw value bytes.
 pub fn variant_dict(b: &[u8]) -> Result<HashMap<String, Vec<u8>>, String> {
@@ -88,7 +96,11 @@ impl Keys {
             _ => return Err("unsupported Argon2 version".into()),
         };
         let too_big = || "the database's Argon2 settings are out of range".to_string();
-        if m_kib > MAX_ARGON2_KIB {
+        if m_kib > MAX_ARGON2_KIB
+            || t > MAX_ARGON2_PASSES
+            || p > MAX_ARGON2_LANES
+            || m_kib.saturating_mul(t) > MAX_ARGON2_WORK
+        {
             return Err(too_big());
         }
         let n = |v: u64| u32::try_from(v).map_err(|_| too_big());
@@ -133,4 +145,44 @@ pub fn hmac(key: &[u8; 64], parts: &[&[u8]]) -> Hmac<Sha256> {
         m.update(p);
     }
     m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kdf(m_bytes: u64, i: u64, p: u32) -> HashMap<String, Vec<u8>> {
+        let mut h = HashMap::new();
+        h.insert("$UUID".into(), hex::decode(ARGON2ID).unwrap());
+        h.insert("S".into(), vec![7; 32]);
+        h.insert("M".into(), m_bytes.to_le_bytes().to_vec());
+        h.insert("I".into(), i.to_le_bytes().to_vec());
+        h.insert("P".into(), p.to_le_bytes().to_vec());
+        h.insert("V".into(), 0x13u32.to_le_bytes().to_vec());
+        h
+    }
+
+    #[test]
+    fn a_header_that_asks_for_gigabytes_or_hours_is_refused_before_hashing() {
+        let t = std::time::Instant::now();
+        for (m, i, p) in [
+            (4u64 << 30, 2u64, 1u32), // 4 GiB
+            (64 << 20, 1 << 31, 1),   // billions of passes
+            (64 << 20, 2, 1 << 20),   // a million lanes
+            (1 << 30, 100, 1),        // 1 GiB x 100 passes
+        ] {
+            let e = Keys::derive(&kdf(m, i, p), &[0; 32], b"pw").err().unwrap();
+            assert!(e.contains("out of range"), "{m} {i} {p}: {e}");
+        }
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(1),
+            "nothing was hashed"
+        );
+    }
+
+    #[test]
+    fn ordinary_settings_still_derive_keys() {
+        // 1 MiB, 2 passes, 2 lanes (the test fixture's own settings).
+        assert!(Keys::derive(&kdf(1 << 20, 2, 2), &[0; 32], b"pw").is_ok());
+    }
 }

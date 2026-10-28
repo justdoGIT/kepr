@@ -26,6 +26,8 @@ use store::{Limits, Put, Status, Store};
 
 const DEFAULT_TTL: u64 = 24 * 3600;
 const MAX_CONNECTIONS: usize = 64;
+/// The whole request must arrive within this, however slowly it is sent.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Relay {
@@ -110,7 +112,10 @@ impl Relay {
         };
         let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
         let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
-        let reply = match http::read_request(&stream, self.limits.max_blob) {
+        let reply = match http::read_request(
+            http::Deadline::new(&stream, REQUEST_DEADLINE),
+            self.limits.max_blob,
+        ) {
             Ok(req) => self.handle(req, ip, now()),
             Err((status, msg)) => text(status, msg),
         };

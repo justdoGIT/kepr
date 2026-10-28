@@ -8,6 +8,10 @@ use std::collections::HashMap;
 pub struct Limits {
     pub max_blob: usize,
     pub max_blobs: usize,
+    /// How many "already opened" markers are kept (they outlive their blob
+    /// until it would have expired, and a PUT / GET loop adds one per
+    /// round, so without a cap they grow without bound).
+    pub max_opened: usize,
     pub max_bytes: usize,
     pub max_ttl: u64,
 }
@@ -17,6 +21,7 @@ impl Default for Limits {
         Self {
             max_blob: 1 << 20,
             max_blobs: 10_000,
+            max_opened: 100_000,
             max_bytes: 256 << 20,
             max_ttl: 7 * 86_400,
         }
@@ -50,6 +55,9 @@ pub struct Store {
     /// Fetched ids, until their blob would have expired.
     opened: HashMap<String, u64>,
     bytes: usize,
+    /// When the last full sweep ran: a sweep walks every entry, so it runs
+    /// at most once a second. Reads still check an entry's own expiry.
+    swept: u64,
 }
 
 /// 16 to 64 characters of `[A-Za-z0-9_-]`.
@@ -62,6 +70,10 @@ pub fn valid_id(id: &str) -> bool {
 
 impl Store {
     pub fn sweep(&mut self, now: u64) {
+        if now == self.swept && now != 0 {
+            return;
+        }
+        self.swept = now;
         let mut freed = 0;
         self.blobs.retain(|_, b| {
             let keep = b.expires > now;
@@ -85,7 +97,10 @@ impl Store {
         if self.blobs.contains_key(id) || self.opened.contains_key(id) {
             return Put::Exists;
         }
-        if self.blobs.len() >= l.max_blobs || self.bytes + data.len() > l.max_bytes {
+        if self.blobs.len() >= l.max_blobs
+            || self.opened.len() >= l.max_opened
+            || self.bytes + data.len() > l.max_bytes
+        {
             return Put::Full;
         }
         self.bytes += data.len();
@@ -99,15 +114,18 @@ impl Store {
         self.sweep(now);
         let b = self.blobs.remove(id)?;
         self.bytes -= b.data.len();
+        if b.expires <= now {
+            return None;
+        }
         self.opened.insert(id.to_string(), b.expires);
         Some(b.data)
     }
 
     pub fn status(&mut self, id: &str, now: u64) -> Status {
         self.sweep(now);
-        if self.blobs.contains_key(id) {
+        if self.blobs.get(id).is_some_and(|b| b.expires > now) {
             Status::Present
-        } else if self.opened.contains_key(id) {
+        } else if self.opened.get(id).is_some_and(|exp| *exp > now) {
             Status::Opened
         } else {
             Status::Unknown
@@ -149,6 +167,7 @@ mod tests {
         let l = Limits {
             max_blob: 4,
             max_blobs: 1,
+            max_opened: 100,
             max_bytes: 10,
             max_ttl: 60,
         };
@@ -160,5 +179,34 @@ mod tests {
         let other = "fedcba9876543210fedcba9876543210";
         assert_eq!(s.put(other, vec![0; 4], 60, 1, &l), Put::Full);
         assert!(valid_id(ID) && !valid_id("short") && !valid_id(&"a/".repeat(10)));
+    }
+
+    #[test]
+    fn opened_markers_are_capped_and_a_full_relay_says_so() {
+        let l = Limits {
+            max_opened: 3,
+            ..Limits::default()
+        };
+        let mut s = Store::default();
+        for i in 0..3 {
+            let id = format!("{i:0>16}");
+            assert_eq!(s.put(&id, vec![1], 3600, 10 + i, &l), Put::Stored);
+            assert!(s.take(&id, 10 + i).is_some());
+        }
+        let id = format!("{:0>16}", 9);
+        assert_eq!(s.put(&id, vec![1], 3600, 20, &l), Put::Full);
+        // They age out with the blob they replaced, then there is room.
+        assert_eq!(s.put(&id, vec![1], 3600, 10 + 3601, &l), Put::Stored);
+    }
+
+    #[test]
+    fn expiry_is_exact_even_when_the_sweep_is_throttled() {
+        let (mut s, l) = (Store::default(), Limits::default());
+        s.put(ID, b"b".to_vec(), 60, 100, &l);
+        assert_eq!(s.status(ID, 150), Status::Present); // sweeps at 150
+                                                        // Same second as the last sweep, but past the blob's expiry:
+        s.swept = 161;
+        assert_eq!(s.status(ID, 161), Status::Unknown);
+        assert_eq!(s.take(ID, 161), None);
     }
 }

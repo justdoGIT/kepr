@@ -40,6 +40,15 @@ read in the code, tested, or only reasoned about.
 | 8 | Medium | The passphrase envelope stored no Argon2id parameters (64 MiB, 3 passes, 1 lane were constants), so the cost could not be raised for existing stores. | New `kepr_pw3` envelope with the cost in an authenticated header; stored costs outside 8 MiB to 1 GiB, 1 to 10 passes and 1 to 8 lanes are refused before any hashing; old envelopes open and are rewritten on the next unlock (T13.20). |
 | 9 | Info | The refusal of an executable binding under the system daemon did not say how to enable it. | `systemd/kepr.service.d/ptrace.conf.example` adds only `CAP_SYS_PTRACE`; a test pins that the base unit lacks it and the refusal names the drop-in (T13.19). |
 
+| 10 | Medium | The relay read a request with a per-read timeout only, so a client sending one byte every few seconds held one of its 64 connections for minutes; the "already fetched" markers were unbounded; every request swept the whole table. | A 10 s deadline for the whole request (`http::Deadline`), `max_opened` (100,000) for the markers, and a throttled sweep with exact expiry checks on read. |
+| 11 | Medium | `kepr import` of a KDBX file trusted the Argon2 memory, pass and lane counts in the unauthenticated header, so a crafted file could ask for terabytes or hours before the password was ever checked. | Bounds of 1 GiB, 256 passes, 64 lanes and a product cap, refused before hashing. |
+| 12 | Low | `kepr mount` dotenv rendering left `$` and backticks unescaped inside double quotes, so a stored value sourced by a shell ran as a command. | `$` and backtick are escaped. |
+| 13 | Low | KDBX XML entity scan searched the whole remaining input for `;`. | The search is limited to 12 bytes. |
+| 14 | Low | `pki init` replacing a CA could leave new metadata beside the old key when storing the key failed. | `install_ca` restores the old metadata (or removes the new) on failure. |
+| 15 | Low | A TPM2 or PKCS#11 PIN file readable by group or others was accepted. | Refused at start-up with a "chmod 600" message. |
+| 16 | Low | The Python and Go SDKs never checked who served the socket. | Both read `SO_PEERCRED` and refuse any peer that is not the caller's uid (user mode) or root (system mode). |
+| 17 | Low | `kepr-ci.sh` put `KEPR_VAULT_AUTH_PATH` and `KEPR_GCP_SERVICE_ACCOUNT` into URLs unchecked, accepted a plain-http `VAULT_ADDR` (OIDC token in clear), and `KEPR_EXPORT` accepted names such as `LD_PRELOAD` or `BASH_ENV` that run code in later steps. | Format checks for the provider path, service account and auth path, https required for Vault (loopback excepted), and a denylist for exported names. Tests added. |
+
 Items 4 to 7 were also fixed in the P12 pull request itself.
 
 ## Controls that held up
@@ -75,8 +84,14 @@ Items 4 to 7 were also fixed in the P12 pull request itself.
 
 ## What this review did not cover
 
-The SDKs, the CI integration scripts, the FUSE mount, KDBX parsing, the
-local PKI and SPIFFE code, the relay, and the TPM2 and KMS sealers were
-not read in depth. Fuzzing (`frame_fuzz`, `protocol_fuzz`) exists only for
-the framing and request parser. A formal external audit before a 1.0
-release is still the right next step.
+Read for this review with no defect found beyond the table above: the
+relay's store and framing, the FUSE mount's access checks, KDBX decryption
+and XML handling, the local CA's signing path, SPIFFE SVID and TPM quote
+checks, the TPM2 blob format, the KMS request signing and HTTP transport
+(no redirects, error text limited to provider codes), and the Node, Ruby
+and Java SDK transports (bounded frames and timeouts; they have no peer
+check, because the runtime directory is owned by the user). The Terraform,
+Ansible, CSI, VS Code and Podman integrations were skimmed only.
+Fuzzing (`frame_fuzz`, `protocol_fuzz`) exists only for the framing and
+request parser. A formal external audit before a 1.0 release is still the
+right next step.
