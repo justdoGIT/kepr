@@ -56,6 +56,8 @@ pub mod protocol_sharing_types;
 pub mod protocol_syncx;
 // batch: policy
 pub mod policy;
+pub mod policy_glob;
+pub mod policy_roles;
 pub mod protocol_policy;
 // batch: gate
 pub mod gate_journal;

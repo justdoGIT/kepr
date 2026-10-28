@@ -16,6 +16,7 @@ mod daily;
 mod enforce;
 mod events;
 mod report;
+mod roles;
 mod sessions;
 mod usage;
 
