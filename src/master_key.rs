@@ -20,6 +20,8 @@ use std::process::{Command, Stdio};
 
 use zeroize::Zeroizing;
 
+use crate::daemon_eco::cipher;
+
 const MASTER_KEY_LEN: usize = 32;
 const SYSTEMD_CREDS_BIN: &str = "/usr/bin/systemd-creds";
 const KEY_TYPE: &str = "host";
@@ -33,7 +35,7 @@ const BYOK_KINDS: &str =
 /// but adds an extra dependency.
 pub fn random_master_key() -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
     let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
-    getrandom::fill(key.as_mut()).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(key.as_mut()).map_err(|_| "CSPRNG failure".to_string())?;
     Ok(key)
 }
 

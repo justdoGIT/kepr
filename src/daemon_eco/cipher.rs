@@ -6,11 +6,12 @@
 // switches `Active` to aws-lc-rs (crypto_fips.rs). Both produce
 // byte-identical output (AES-GCM is ciphertext || 16-byte tag), so the
 // on-disk formats do not change and either build reads the other's files.
-// Callers: crypto_inproc.rs (credential files), key_unlock.rs
-// (passphrase-wrapped master key), daemon_recovery.rs (key proof and
-// fingerprint), audit_chain.rs (hash chain). HMAC has no daemon caller
-// outside the share envelopes' HKDF, which sits on X25519 (not a FIPS
-// key agreement) and stays on RustCrypto.
+// HMAC-SHA256, HKDF-SHA256 and key/nonce randomness go through it too
+// (T12.39), so a `fips` build runs them in aws-lc-rs as well. Callers:
+// crypto_inproc.rs (credential files), key_unlock.rs (passphrase-wrapped
+// master key), master_key.rs (key generation), daemon_recovery.rs (key proof
+// and fingerprint), audit_chain.rs (hash chain). tests/crypto_seam.rs lists
+// the files that still use the RustCrypto crates directly.
 
 use zeroize::Zeroizing;
 
@@ -38,6 +39,20 @@ pub trait CipherSuite {
     ) -> Result<Zeroizing<Vec<u8>>, CryptoError>;
     /// SHA-256 over the concatenation of `parts`.
     fn sha256(parts: &[&[u8]]) -> [u8; 32];
+    // The HMAC and HKDF methods have no production caller until T12.40-T12.42
+    // move the files listed in tests/crypto_seam.rs over; drop the allows then.
+    /// HMAC-SHA256 over the concatenation of `parts`.
+    #[allow(dead_code)]
+    fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32];
+    /// Constant-time check of a full 32-byte tag; any other length is false.
+    #[allow(dead_code)]
+    fn hmac_sha256_verify(key: &[u8], parts: &[&[u8]], tag: &[u8]) -> bool;
+    /// HKDF-SHA256 (RFC 5869) to 32 bytes; `None` salt is the RFC's zero salt.
+    /// `info` is the concatenation of its parts.
+    #[allow(dead_code)]
+    fn hkdf_sha256(salt: Option<&[u8]>, ikm: &[u8], info: &[&[u8]]) -> Zeroizing<[u8; 32]>;
+    /// Fill `buf` from the system CSPRNG; the error carries no detail.
+    fn fill_random(buf: &mut [u8]) -> Result<(), CryptoError>;
     /// True only when running inside a validated FIPS module.
     fn fips() -> bool;
 }
@@ -85,8 +100,43 @@ impl CipherSuite for RustCrypto {
         h.finalize().into()
     }
 
+    fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+        use hmac::Mac;
+        Self::mac(key, parts).finalize().into_bytes().into()
+    }
+
+    fn hmac_sha256_verify(key: &[u8], parts: &[&[u8]], tag: &[u8]) -> bool {
+        use hmac::Mac;
+        Self::mac(key, parts).verify_slice(tag).is_ok()
+    }
+
+    fn hkdf_sha256(salt: Option<&[u8]>, ikm: &[u8], info: &[&[u8]]) -> Zeroizing<[u8; 32]> {
+        let mut out = Zeroizing::new([0u8; 32]);
+        hkdf::Hkdf::<sha2::Sha256>::new(salt, ikm)
+            .expand_multi_info(info, out.as_mut())
+            .expect("32 bytes is within HKDF-SHA256's output limit");
+        out
+    }
+
+    fn fill_random(buf: &mut [u8]) -> Result<(), CryptoError> {
+        getrandom::fill(buf).map_err(|_| CryptoError)
+    }
+
     fn fips() -> bool {
         false
+    }
+}
+
+#[cfg(any(not(feature = "fips"), test))]
+impl RustCrypto {
+    fn mac(key: &[u8], parts: &[&[u8]]) -> hmac::Hmac<sha2::Sha256> {
+        use hmac::{KeyInit, Mac};
+        let mut m = <hmac::Hmac<sha2::Sha256> as KeyInit>::new_from_slice(key)
+            .expect("HMAC takes any key length");
+        for p in parts {
+            m.update(p);
+        }
+        m
     }
 }
 
@@ -115,6 +165,25 @@ pub fn open(
 
 pub fn sha256(parts: &[&[u8]]) -> [u8; 32] {
     Active::sha256(parts)
+}
+
+#[allow(dead_code)]
+pub fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    Active::hmac_sha256(key, parts)
+}
+
+#[allow(dead_code)]
+pub fn hmac_sha256_verify(key: &[u8], parts: &[&[u8]], tag: &[u8]) -> bool {
+    Active::hmac_sha256_verify(key, parts, tag)
+}
+
+#[allow(dead_code)]
+pub fn hkdf_sha256(salt: Option<&[u8]>, ikm: &[u8], info: &[&[u8]]) -> Zeroizing<[u8; 32]> {
+    Active::hkdf_sha256(salt, ikm, info)
+}
+
+pub fn fill_random(buf: &mut [u8]) -> Result<(), CryptoError> {
+    Active::fill_random(buf)
 }
 
 /// (provider name, running in a validated FIPS module).
@@ -169,6 +238,62 @@ mod tests {
         assert_eq!(open(&h(K), &nonce(), &h(A), &h(CT)[..10]), Err(CryptoError));
     }
 
+    /// RFC 4231 test case 2.
+    #[test]
+    fn hmac_rfc4231_case2() {
+        let want = h("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+        let tag = hmac_sha256(b"Jefe", &[b"what do ya want ", b"for nothing?"]);
+        assert_eq!(tag.to_vec(), want);
+        assert!(hmac_sha256_verify(
+            b"Jefe",
+            &[b"what do ya want for nothing?"],
+            &want
+        ));
+    }
+
+    #[test]
+    fn hmac_verify_rejects_flipped_bit_and_short_tag() {
+        let mut tag = hmac_sha256(b"k", &[b"msg"]);
+        assert!(hmac_sha256_verify(b"k", &[b"msg"], &tag));
+        assert!(!hmac_sha256_verify(b"k", &[b"msg"], &tag[..31]));
+        assert!(!hmac_sha256_verify(b"k", &[b"msg"], &[]));
+        assert!(!hmac_sha256_verify(b"other", &[b"msg"], &tag));
+        tag[5] ^= 0x01;
+        assert!(!hmac_sha256_verify(b"k", &[b"msg"], &tag));
+    }
+
+    /// RFC 5869 test case 1 (first 32 bytes of OKM), info passed as two parts.
+    #[test]
+    fn hkdf_rfc5869_case1() {
+        let ikm = [0x0bu8; 22];
+        let salt: Vec<u8> = (0u8..=0x0c).collect();
+        let info: Vec<u8> = (0xf0u8..=0xf9).collect();
+        let okm = hkdf_sha256(Some(&salt), &ikm, &[&info[..5], &info[5..]]);
+        assert_eq!(
+            okm.to_vec(),
+            h("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf")
+        );
+    }
+
+    /// RFC 5869 test case 3: no salt (the all-zero salt of the RFC), no info.
+    #[test]
+    fn hkdf_rfc5869_case3_no_salt() {
+        let okm = hkdf_sha256(None, &[0x0bu8; 22], &[]);
+        assert_eq!(
+            okm.to_vec(),
+            h("8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d")
+        );
+    }
+
+    #[test]
+    fn fill_random_draws_differ() {
+        let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
+        fill_random(&mut a).unwrap();
+        fill_random(&mut b).unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, [0u8; 32]);
+    }
+
     #[cfg(not(feature = "fips"))]
     #[test]
     fn default_build_uses_rustcrypto() {
@@ -189,6 +314,20 @@ mod tests {
             assert_eq!(*AwsLc::open(&key, &n, b"uid+name", &a).unwrap(), msg);
             assert_eq!(*RustCrypto::open(&key, &n, b"uid+name", &b).unwrap(), msg);
             assert_eq!(RustCrypto::sha256(&[&msg]), AwsLc::sha256(&[&msg]));
+            let (mac_a, mac_b) = (
+                RustCrypto::hmac_sha256(&key, &[&msg, b"x"]),
+                AwsLc::hmac_sha256(&key, &[&msg, b"x"]),
+            );
+            assert_eq!(mac_a, mac_b);
+            assert!(RustCrypto::hmac_sha256_verify(&key, &[&msg, b"x"], &mac_b));
+            assert!(AwsLc::hmac_sha256_verify(&key, &[&msg, b"x"], &mac_a));
+            for salt in [None, Some(&b"salt"[..])] {
+                let info: [&[u8]; 2] = [b"kepr", &msg];
+                assert_eq!(
+                    *RustCrypto::hkdf_sha256(salt, &key, &info),
+                    *AwsLc::hkdf_sha256(salt, &key, &info)
+                );
+            }
         }
         assert_eq!(describe().0, AwsLc::NAME);
     }

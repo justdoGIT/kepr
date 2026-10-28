@@ -211,7 +211,7 @@ impl Backend for InProcBackend {
         self.versions
             .with_next(&cred_name, |counter| {
                 let mut nonce_bytes = [0u8; NONCE_LEN];
-                getrandom::fill(&mut nonce_bytes).map_err(|e| format!("CSPRNG failure: {e}"))?;
+                cipher::fill_random(&mut nonce_bytes).map_err(|_| "CSPRNG failure".to_string())?;
 
                 // v2 plaintext = [8B counter LE u64][secret bytes].
                 // The counter is inside the AEAD plaintext so the GCM
