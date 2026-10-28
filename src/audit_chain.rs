@@ -112,6 +112,8 @@ struct ChainState {
 pub struct VerifyReport {
     pub entries: usize,
     pub last_hash: String,
+    /// Bytes of the file the verified entries end at.
+    pub end_offset: u64,
 }
 
 impl AuditChain {
@@ -122,17 +124,17 @@ impl AuditChain {
     /// should refuse to start rather than silently begin a fresh
     /// chain on top of corruption.
     ///
-    /// NOTE: full-chain verification on every daemon start is O(N)
-    /// in the number of audit entries. A chain with millions of
-    /// entries may cause significant startup delay. TODO(#future):
-    /// defer verification to a background thread, or cache the last
-    /// verified head hash in a sibling checkpoint file.
+    /// Start-up verifies only what was appended since the last start
+    /// (`audit_checkpoint`); `kepr audit-verify` and
+    /// `KEPR_AUDIT_FULL_VERIFY=1` walk the whole file.
     pub fn open(path: PathBuf) -> Result<Self, String> {
         let state = match fs::metadata(&path) {
             Ok(_) => {
                 // Existing file — verify and recover state from it.
                 drop_torn_tail(&path)?;
-                let report = Self::verify(&path)?;
+                let start = crate::audit_checkpoint::usable(&path);
+                let report = Self::verify_from(&path, start.as_ref())?;
+                crate::audit_checkpoint::save(&path, &report);
                 ChainState {
                     last_hash: report.last_hash,
                     next_seq: report.entries as u64 + 1,
@@ -249,29 +251,52 @@ impl AuditChain {
     /// even on a multi-megabyte chain — a single sequential pass
     /// with one SHA-256 per entry.
     pub fn verify(path: &Path) -> Result<VerifyReport, String> {
-        let f = fs::File::open(path).map_err(|e| format!("open chain for verify: {e}"))?;
-        let reader = BufReader::new(f);
-        let mut entries = 0usize;
-        let mut prev_hash = ZERO_HASH.to_string();
-        let mut expected_seq = 1u64;
-        for (idx, line) in reader.lines().enumerate() {
-            let line = line.map_err(|e| format!("read chain line {}: {e}", idx + 1))?;
-            if line.is_empty() {
+        Self::verify_from(path, None)
+    }
+
+    /// [`verify`](Self::verify) from a trusted checkpoint: the entries
+    /// before `start.offset` are not re-read.
+    pub fn verify_from(
+        path: &Path,
+        start: Option<&crate::audit_checkpoint::Checkpoint>,
+    ) -> Result<VerifyReport, String> {
+        use std::io::{Seek, SeekFrom};
+        let mut f = fs::File::open(path).map_err(|e| format!("open chain for verify: {e}"))?;
+        let (mut entries, mut prev_hash, mut offset) = (0usize, ZERO_HASH.to_string(), 0u64);
+        if let Some(c) = start {
+            f.seek(SeekFrom::Start(c.offset))
+                .map_err(|e| format!("seek chain: {e}"))?;
+            (entries, prev_hash, offset) = (c.entries as usize, c.hash.clone(), c.offset);
+        }
+        let mut reader = BufReader::new(f);
+        let mut expected_seq = entries as u64 + 1;
+        let mut idx = entries;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| format!("read chain line {}: {e}", idx + 1))?;
+            if n == 0 {
+                break;
+            }
+            idx += 1;
+            offset += n as u64;
+            let text = line.trim_end_matches(['\n', '\r']);
+            if text.is_empty() {
                 continue; // tolerant of stray trailing newline
             }
-            let entry: ChainEntry = serde_json::from_str(&line)
-                .map_err(|e| format!("parse chain line {}: {e}", idx + 1))?;
+            let entry: ChainEntry =
+                serde_json::from_str(text).map_err(|e| format!("parse chain line {idx}: {e}"))?;
             if entry.seq != expected_seq {
                 return Err(format!(
-                    "chain line {}: seq {} != expected {expected_seq} (reordered or dropped entry)",
-                    idx + 1,
+                    "chain line {idx}: seq {} != expected {expected_seq} (reordered or dropped entry)",
                     entry.seq
                 ));
             }
             if entry.prev_hash != prev_hash {
                 return Err(format!(
-                    "chain line {}: prev_hash mismatch (expected {prev_hash}, found {})",
-                    idx + 1,
+                    "chain line {idx}: prev_hash mismatch (expected {prev_hash}, found {})",
                     entry.prev_hash
                 ));
             }
@@ -285,12 +310,11 @@ impl AuditChain {
                 result: &entry.result,
             };
             let canonical_bytes = serde_json::to_vec(&canonical)
-                .map_err(|e| format!("canonicalise line {}: {e}", idx + 1))?;
+                .map_err(|e| format!("canonicalise line {idx}: {e}"))?;
             let computed = compute_hash(&prev_hash, &canonical_bytes)?;
             if computed != entry.hash {
                 return Err(format!(
-                    "chain line {}: hash mismatch — entry has been edited",
-                    idx + 1
+                    "chain line {idx}: hash mismatch — entry has been edited"
                 ));
             }
             prev_hash = entry.hash;
@@ -300,6 +324,7 @@ impl AuditChain {
         Ok(VerifyReport {
             entries,
             last_hash: prev_hash,
+            end_offset: offset,
         })
     }
 }

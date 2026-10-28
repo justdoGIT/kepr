@@ -10,6 +10,7 @@
 mod atomic_file;
 mod audit;
 mod audit_chain;
+mod audit_checkpoint;
 mod cred_meta;
 mod crypto;
 mod crypto_inproc;
