@@ -106,6 +106,31 @@ pub const ADAPTERS: &[Adapter] = &[
         ],
         port: Some(INSTALL_PORT),
     },
+    // Gemini CLI (T12.13): GOOGLE_GEMINI_BASE_URL (the API root; the SDK
+    // adds /v1beta) + GEMINI_API_KEY (sent as x-goog-api-key).
+    Adapter {
+        harness: "gemini",
+        program: "gemini",
+        creds: &[("google", "GEMINI_API_KEY")],
+        env: &[
+            var("GOOGLE_GEMINI_BASE_URL", Value::BaseUrl("google", "")),
+            var("GEMINI_API_KEY", Value::Placeholder("GEMINI_API_KEY")),
+        ],
+        port: None,
+    },
+    // opencode (T12.13): opencode.json (written by `kepr agent install
+    // opencode`) sets provider.anthropic.options.apiKey to
+    // "{env:KEPR_PH_ANTHROPIC}".
+    Adapter {
+        harness: "opencode",
+        program: "opencode",
+        creds: &[("anthropic", "ANTHROPIC_API_KEY")],
+        env: &[
+            var("KEPR_PH_ANTHROPIC", Value::Placeholder("ANTHROPIC_API_KEY")),
+            var("ANTHROPIC_API_KEY", Value::Placeholder("ANTHROPIC_API_KEY")),
+        ],
+        port: Some(INSTALL_PORT),
+    },
 ];
 
 pub fn lookup(harness: &str) -> Result<&'static Adapter, String> {
@@ -146,6 +171,25 @@ mod tests {
                 assert!(kepr_core::providers::lookup(p).is_some(), "{p}");
             }
         }
+    }
+
+    #[test]
+    fn gemini_and_opencode_rows() {
+        let mut ph = std::collections::HashMap::new();
+        ph.insert("google".to_string(), "kepr-ph-g".to_string());
+        let gemini = lookup("gemini").unwrap();
+        assert_eq!((gemini.program, gemini.port), ("gemini", None));
+        let env = crate::cli_agent_run::build_env(gemini, 7001, &ph, std::iter::empty());
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(
+            get("GOOGLE_GEMINI_BASE_URL"),
+            Some("http://127.0.0.1:7001/google")
+        );
+        assert_eq!(get("GEMINI_API_KEY"), Some("kepr-ph-g"));
+        let oc = lookup("opencode").unwrap();
+        assert_eq!((oc.program, oc.port), ("opencode", Some(INSTALL_PORT)));
+        assert_eq!(oc.creds, &[("anthropic", "ANTHROPIC_API_KEY")]);
+        assert!(oc.env.iter().any(|v| v.name == "KEPR_PH_ANTHROPIC"));
     }
 
     #[test]

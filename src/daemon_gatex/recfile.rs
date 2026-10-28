@@ -20,13 +20,10 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::Aes256Gcm;
-use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use zeroize::Zeroizing;
 
+use crate::daemon_eco::cipher;
 use kepr_core::gate_record::GateRecord;
 use kepr_core::protocol_gatex::RecordingInfo;
 
@@ -54,11 +51,7 @@ pub fn user_dir(root: &Path, uid: u32) -> PathBuf {
 }
 
 fn wrap_key(kek: &[u8; 32], salt: &[u8]) -> Zeroizing<[u8; 32]> {
-    let mut out = Zeroizing::new([0u8; 32]);
-    Hkdf::<Sha256>::new(Some(salt), kek)
-        .expand(b"kepr-rec1 wrap", out.as_mut())
-        .expect("32 bytes is a valid HKDF length");
-    out
+    cipher::hkdf_sha256(Some(salt), kek, &[b"kepr-rec1 wrap"])
 }
 
 fn aad(uid: u32, session: &str, frame: Option<u64>) -> Vec<u8> {
@@ -72,11 +65,8 @@ fn aad(uid: u32, session: &str, frame: Option<u64>) -> Vec<u8> {
 
 fn seal(key: &[u8; 32], aad: &[u8], msg: &[u8]) -> Result<Vec<u8>, String> {
     let mut nonce = [0u8; NONCE];
-    getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG failure: {e}"))?;
-    let c = Aes256Gcm::new_from_slice(key).map_err(|_| "bad key")?;
-    let ct = c
-        .encrypt(&nonce.into(), Payload { msg, aad })
-        .map_err(|_| "encryption failed")?;
+    cipher::fill_random(&mut nonce).map_err(|_| "CSPRNG failure")?;
+    let ct = cipher::seal(key, &nonce, aad, msg).map_err(|_| "encryption failed")?;
     Ok([&nonce[..], &ct].concat())
 }
 
@@ -84,17 +74,8 @@ fn open(key: &[u8; 32], aad: &[u8], sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>,
     if sealed.len() < NONCE {
         return Err("damaged recording".into());
     }
-    let c = Aes256Gcm::new_from_slice(key).map_err(|_| "bad key")?;
     let nonce: [u8; NONCE] = sealed[..NONCE].try_into().expect("12 bytes");
-    c.decrypt(
-        &nonce.into(),
-        Payload {
-            msg: &sealed[NONCE..],
-            aad,
-        },
-    )
-    .map(Zeroizing::new)
-    .map_err(|_| "damaged recording".into())
+    cipher::open(key, &nonce, aad, &sealed[NONCE..]).map_err(|_| "damaged recording".into())
 }
 
 fn put(f: &mut File, bytes: &[u8]) -> Result<(), String> {
@@ -162,9 +143,9 @@ impl Writer {
         prune(root, uid, MAX_SESSIONS - 1);
         let mut key = Zeroizing::new([0u8; 32]);
         let mut salt = [0u8; 32];
-        getrandom::fill(key.as_mut())
-            .and_then(|_| getrandom::fill(&mut salt))
-            .map_err(|e| format!("CSPRNG failure: {e}"))?;
+        cipher::fill_random(key.as_mut())
+            .and_then(|_| cipher::fill_random(&mut salt))
+            .map_err(|_| "CSPRNG failure")?;
         let wrapped = seal(
             &wrap_key(kek, &salt),
             &aad(uid, session, None),
@@ -432,6 +413,20 @@ pub(super) mod tests {
         assert_eq!(kept.len(), MAX_SESSIONS);
         assert_eq!(kept[0].session, format!("{:016x}", 2));
         assert_eq!(kept[0].started, "1970-01-01 00:01");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // Written by the code before it moved onto the cipher seam (T12.41).
+    #[test]
+    fn a_recording_written_by_the_old_code_still_reads() {
+        let root = root();
+        fs::create_dir_all(user_dir(&root, 1000)).unwrap();
+        let hexed = "6b6570725f726563310a000000fa7b2273657373696f6e223a2230313233343536373839616263646566222c22737461727465645f756e6978223a372c2273616c74223a2233383164616537373664366337646139396563646165396331336338646366623238313130323763346437376430356361383937333465393763643130353332222c226b6579223a22643732623936646336616137666430306564626539653162323764616636396436313162646439386261373965363961326331646530326539613235323134356535323536323535643861326132333937626333633264343764643466323830383366666266316331646133323530396438653733363565227d000000cca9d5e0bfc80ed51f10bc86cfa10f187e22dfa5102ea72fa8894b5a6ced5e26841e109eaa22a1ae1e73a1e8a1507ab40c36b4356c1e11eeddfe48a3448a24689c88f587d9777c86f4ccb68d2bec69406e7e288f1175c70029157e3fe034fe36d00b317e3e9ef9321f9044add86baecb354a9d6e564f630448f46a869339a607eaceffa57b2f1fdb29c61a4db66fb181b9ce92fc1b3059b19fa9c55627844b8a78e4b9f8f02a85042a7f0ce875c0fdf9aa498066d0bd9c0b5089ab895d4ffc91f602c03fa848cfde652699d11f";
+        let path = user_dir(&root, 1000).join(format!("{SID}.rec"));
+        fs::write(&path, hex::decode(hexed).unwrap()).unwrap();
+        let page = read(&root, 1000, SID, &KEK, (0, 0)).unwrap();
+        assert_eq!(page.batch, batch("SELECT 1"));
+        assert_eq!(page.started_unix, 7);
         fs::remove_dir_all(&root).unwrap();
     }
 }

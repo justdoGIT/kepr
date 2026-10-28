@@ -26,24 +26,41 @@ COMMANDS:
   doctor                               diagnose common setup issues
   env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval
   rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid|words]   atomic rotation
+  rotate --due                         run your due scheduled rotations (under the system daemon,
+                                       from the kepr-rotate.timer user timer)
   audit-verify                         verify the hash-chained audit log
   sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:|gcp-sm:)
   sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally
   fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions
   fido2-list                             list registered FIDO2 keys
-  agent add KEY [--for PROVIDER] [--requires-consent]  store a write-only key (paste once)
+  agent add KEY [--for PROVIDER] [--stdin|--from-clipboard] [--requires-consent]
+                                       store a write-only key (paste once); --from-clipboard reads
+                                       it once and clears the clipboard (a clipboard manager may
+                                       keep its own copy)
+                                       --for github also binds github.com (git over HTTPS); add an
+                                       existing sealed GitHub key again to gain that binding
   agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox]
             [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
             [--max-requests-day N] [--max-tokens-day N]  per key per day, across sessions
-                                       run claude|codex|grok-cli|aider|omp|grok sandboxed, with
-                                       placeholders; a local gate injects the real key on the wire
+                                       run claude|codex|grok-cli|aider|gemini|omp|grok|opencode
+                                       sandboxed, with placeholders; a local gate injects the real
+                                       key on the wire
   agent add-db KEY --url postgres|mysql|redis[s]://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
                                        sealed database login; agents get DATABASE_URL / MYSQL_* / REDIS_URL to a local gate port
   agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new
-  agent install omp|grok               point the harness's config file at the gate and install
-                                       kepr's plugin for it (once)
+  agent install omp|grok|opencode      point the harness's config file at the gate and install
+                                       kepr's plugin for it (once; opencode: config only)
+  agent install claude|codex           install kepr's guidance for the model (Claude Code skill,
+                                       a block in Codex's AGENTS.md)
+  agent doctor [--port N] [--json]     check omp / Grok Build still route through the gate and
+                                       kepr's plugin is current; non-zero exit on any problem
+  agent shim HARNESS [--dir DIR] [--remove]
+                                       launcher so typing `claude` (etc.) runs it through
+                                       `kepr agent run`; put DIR (~/.local/share/kepr/shims) first on PATH
   hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
-  agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc files into kepr
+  agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc / shell history /
+                                       harness config files into kepr (JSON / YAML files are
+                                       never rewritten)
   agent ls | agent revoke KEY          list / delete sealed keys
   mcp                                  MCP server (stdio): list keys, call provider APIs, no values
   panic                                stop all agent gates; lock the store if passphrase-protected
@@ -54,8 +71,9 @@ COMMANDS:
                                        incident, show where to revoke it at the provider; --rotate:
                                        replace an AWS IAM key through the IAM API instead
   totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
-  inject -i TEMPLATE [-o OUT]          fill kepr:// references (OUT 0600): NAME, NAME/field[i][sub],
-                                       NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape)
+  inject -i TEMPLATE [-o OUT [--allow-disk]]  fill kepr:// references: NAME, NAME/field[i][sub],
+                                       NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape);
+                                       OUT is new, 0600, on tmpfs / ramfs unless --allow-disk
   scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
   copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
   record add KEY --type T [--field k=v|k=-|k[]=v]... [--custom LABEL=v]...  typed record
@@ -72,8 +90,8 @@ COMMANDS:
   import FILE [--format auto|csv|json|env] [--prefix P] [--seal] [--overwrite] [--yes]
                                        from 1Password/Bitwarden/KeePassXC/LastPass/browser CSV,
                                        Bitwarden/Vault/Doppler/Infisical JSON or .env
-  ssh generate KEY [--comment C] | ssh import KEY FILE | ssh list
-                                       SSH keys that stay in the daemon (sign-only)
+  ssh generate KEY [--type ed25519|ecdsa] [--comment C] | ssh import KEY FILE | ssh list
+                                       SSH keys (Ed25519, ECDSA P-256) that stay in the daemon (sign-only)
   ssh-agent [--foreground] [--socket PATH]  ssh-agent for those keys: eval "$(kepr ssh-agent)"
 {MORE}
 GLOBAL FLAGS:

@@ -20,6 +20,8 @@ use std::process::{Command, Stdio};
 
 use zeroize::Zeroizing;
 
+use crate::daemon_eco::cipher;
+
 const MASTER_KEY_LEN: usize = 32;
 const SYSTEMD_CREDS_BIN: &str = "/usr/bin/systemd-creds";
 const KEY_TYPE: &str = "host";
@@ -33,7 +35,7 @@ const BYOK_KINDS: &str =
 /// but adds an extra dependency.
 pub fn random_master_key() -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
     let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
-    getrandom::fill(key.as_mut()).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(key.as_mut()).map_err(|_| "CSPRNG failure".to_string())?;
     Ok(key)
 }
 
@@ -43,6 +45,43 @@ pub fn random_master_key() -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
 pub trait Sealer: Send + Sync {
     fn seal(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<Vec<u8>, String>;
     fn unseal(&self, blob: &[u8]) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String>;
+    /// T12.33: what a key sealed now is bound to (`host`, `tpm2`,
+    /// `host+tpm2`), for sealers whose blob doesn't say; recorded in
+    /// `master.key.seal` for `kepr status`.
+    fn seal_kind(&self) -> Option<String> {
+        None
+    }
+}
+
+/// T12.33: `--with-key=KIND` as it applies to a key sealed now; `auto`
+/// is what `has-tpm2` says (None when it couldn't run).
+pub fn seal_kind_for(kind: &str, has_tpm2: impl FnOnce() -> Option<bool>) -> Option<String> {
+    match kind {
+        "host" | "tpm2" | "host+tpm2" => Some(kind.into()),
+        "auto" => has_tpm2().map(|t| if t { "host+tpm2" } else { "host" }.into()),
+        _ => None,
+    }
+}
+
+/// `master.key.seal` next to the key file `key`.
+pub fn seal_record_path(key: &Path) -> std::path::PathBuf {
+    let mut name = key.file_name().unwrap_or_default().to_os_string();
+    name.push(".seal");
+    key.with_file_name(name)
+}
+
+/// Record what `sealer` bound a key just written to `key` to, or drop a
+/// stale record when it can't say. Best effort: status only reads it.
+pub fn record_seal_kind(key: &Path, sealer: &dyn Sealer) {
+    let record = seal_record_path(key);
+    match sealer.seal_kind() {
+        Some(kind) => {
+            let _ = crate::atomic_file::write(&record, kind.as_bytes(), 0o600);
+        }
+        None => {
+            let _ = fs::remove_file(&record);
+        }
+    }
 }
 
 /// Wraps `/usr/bin/systemd-creds {encrypt,decrypt} --with-key=host` over
@@ -107,6 +146,20 @@ impl Sealer for SystemdCredsSealer {
             return Err("master-key seal failed".to_string());
         }
         Ok(out.stdout)
+    }
+
+    fn seal_kind(&self) -> Option<String> {
+        let kind = std::env::var("KEPR_MASTER_KEY_SEAL").unwrap_or_else(|_| KEY_TYPE.into());
+        seal_kind_for(&kind, || {
+            Command::new(SYSTEMD_CREDS_BIN)
+                .arg("has-tpm2")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok()
+                .map(|s| s.success())
+        })
     }
 
     fn unseal(&self, blob: &[u8]) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
@@ -238,6 +291,7 @@ pub fn load_or_generate(
     if let Some(dir) = path.parent().and_then(|d| fs::File::open(d).ok()) {
         let _ = dir.sync_all();
     }
+    record_seal_kind(path, sealer); // T12.33
     Ok(key)
 }
 
@@ -375,6 +429,62 @@ mod tests {
             parent_mode, 0o700,
             "parent dir must be 0700, got {parent_mode:o}"
         );
+    }
+
+    #[test]
+    fn seal_kind_resolves_auto_with_has_tpm2() {
+        let never = || -> Option<bool> { panic!("has-tpm2 asked for a fixed kind") };
+        assert_eq!(seal_kind_for("host", never).as_deref(), Some("host"));
+        assert_eq!(seal_kind_for("tpm2", never).as_deref(), Some("tpm2"));
+        assert_eq!(
+            seal_kind_for("host+tpm2", never).as_deref(),
+            Some("host+tpm2")
+        );
+        assert_eq!(
+            seal_kind_for("auto", || Some(true)).as_deref(),
+            Some("host+tpm2")
+        );
+        assert_eq!(
+            seal_kind_for("auto", || Some(false)).as_deref(),
+            Some("host")
+        );
+        assert_eq!(seal_kind_for("auto", || None), None);
+        assert_eq!(seal_kind_for("evil", never), None);
+    }
+
+    /// A sealer that says what it bound the key to.
+    struct KindSealer(Option<&'static str>);
+
+    impl Sealer for KindSealer {
+        fn seal(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<Vec<u8>, String> {
+            MockSealer::new().seal(key)
+        }
+        fn unseal(&self, blob: &[u8]) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, String> {
+            MockSealer::new().unseal(blob)
+        }
+        fn seal_kind(&self) -> Option<String> {
+            self.0.map(String::from)
+        }
+    }
+
+    #[test]
+    fn a_new_key_records_what_sealed_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("master.key");
+        let record = seal_record_path(&path);
+        assert_eq!(record, dir.path().join("master.key.seal"));
+        load_or_generate(&path, &KindSealer(Some("host+tpm2"))).unwrap();
+        assert_eq!(fs::read_to_string(&record).unwrap(), "host+tpm2");
+        let mode = fs::metadata(&record).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // Loading an existing key leaves the record alone.
+        load_or_generate(&path, &KindSealer(Some("host"))).unwrap();
+        assert_eq!(fs::read_to_string(&record).unwrap(), "host+tpm2");
+        // A sealer that can't say drops a stale record.
+        record_seal_kind(&path, &KindSealer(None));
+        assert!(!record.exists());
+        record_seal_kind(&path, &KindSealer(Some("tpm2")));
+        assert_eq!(fs::read_to_string(&record).unwrap(), "tpm2");
     }
 
     #[test]

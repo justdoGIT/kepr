@@ -4,12 +4,14 @@
 //   kepr rotate NAME --every 30d --aws-iam | --db
 //   kepr rotate NAME --every off          stop rotating NAME
 //   kepr rotate NAME --scheduled          rotate now, the scheduled way
+//   kepr rotate --due                     every due one (T12.50)
 //
 // The schedule lives in the credential's `.meta` (daemon_aws/
 // rotate_sched.rs). The user-mode daemon spawns `kepr rotate NAME
 // --scheduled` when one is due, which reads `rotate_via` back from
 // `kepr list` and runs the matching rotator here, so the rotators and
-// their network code never run inside the daemon.
+// their network code never run inside the daemon. The system daemon
+// spawns nothing: the user's kepr-rotate.timer runs `kepr rotate --due`.
 
 use std::path::Path;
 
@@ -105,7 +107,8 @@ pub fn schedule(a: &Args, name: &str, every: &str) -> Response {
     {
         crate::cli_ui::ok(&match (every, next_at) {
             (Some(e), Some(_)) => format!(
-                "{name} rotates every {} (next in {}); the user-mode daemon runs it, \
+                "{name} rotates every {} (next in {}); the user-mode daemon runs it \
+                 (under the system daemon: kepr-rotate.timer), \
                  `kepr rotate {name} --scheduled` runs it now",
                 human(e),
                 rough(e)
@@ -165,6 +168,71 @@ pub fn run_scheduled(name: &str) -> Response {
             Some((kind, path)) => run_hook(&upper, kind, path),
             None => Response::fail("unknown rotation in the schedule"),
         },
+    }
+}
+
+/// The credentials whose scheduled rotation is due at `now`.
+pub fn due_names(creds: &[CredInfo], now: u64) -> Vec<String> {
+    creds
+        .iter()
+        .filter(|c| c.rotate_every_secs.is_some() && c.rotate_via.is_some())
+        .filter(|c| c.rotate_next_at.is_some_and(|t| t <= now))
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+/// `kepr rotate --due` (T12.50): run the caller's due rotations. The
+/// user-mode daemon runs them itself; this is for the system daemon,
+/// from kepr-rotate.timer. A failed one is retried on the next run.
+pub fn run_due() -> Response {
+    let send = |r: &Request| crate::client::send_request(r).unwrap_or_else(Response::fail);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    run_due_with(&send, &run_scheduled, now)
+}
+
+fn run_due_with(
+    send: &dyn Fn(&Request) -> Response,
+    run: &dyn Fn(&str) -> Response,
+    now: u64,
+) -> Response {
+    let say = |m: &str| {
+        if !crate::cli_ui::json_mode() {
+            crate::cli_ui::info(m);
+        }
+    };
+    match send(&Request::Status) {
+        Response::StatusOk { info, .. } if info.mode.as_deref() == Some("user") => {
+            say("the user-mode daemon runs due rotations itself");
+            return Response::Pong;
+        }
+        Response::StatusOk { .. } => {}
+        other => return Response::fail(other.err_msg().unwrap_or("unexpected response")),
+    }
+    let credentials = match send(&Request::List) {
+        Response::ListOk { credentials, .. } => credentials,
+        other => return Response::fail(other.err_msg().unwrap_or("unexpected response")),
+    };
+    let names = due_names(&credentials, now);
+    let mut failed = 0;
+    for name in &names {
+        match run(name).err_msg() {
+            None => say(&format!("{name}: ok")),
+            Some(e) => {
+                failed += 1;
+                say(&format!("{name}: failed: {e}"));
+            }
+        }
+    }
+    match (failed, names.len()) {
+        (0, 0) => {
+            say("no scheduled rotation is due");
+            Response::Pong
+        }
+        (0, _) => Response::Pong,
+        (f, n) => Response::fail(format!("{f} of {n} due rotations failed")),
     }
 }
 
@@ -234,6 +302,85 @@ mod tests {
             "{v}"
         );
         assert!(via(Some(Path::new("/no/such/hook")), GenKind::Hex, false, false).is_err());
+    }
+
+    #[test]
+    fn due_names_are_scheduled_and_due() {
+        let c = |name: &str, every: Option<u64>, via: Option<&str>, next: Option<u64>| CredInfo {
+            name: name.into(),
+            rotate_every_secs: every,
+            rotate_via: via.map(Into::into),
+            rotate_next_at: next,
+            ..Default::default()
+        };
+        let creds = [
+            c("DUE", Some(60), Some("aws-iam"), Some(100)),
+            c("EXACTLY_NOW", Some(60), Some("db"), Some(500)),
+            c("LATER", Some(60), Some("aws-iam"), Some(501)),
+            c("NO_VIA", Some(60), None, Some(100)),
+            c("NO_SCHEDULE", None, None, None),
+        ];
+        assert_eq!(due_names(&creds, 500), ["DUE", "EXACTLY_NOW"]);
+        assert!(due_names(&creds, 99).is_empty());
+    }
+
+    fn daemon(mode: &str) -> impl Fn(&Request) -> Response {
+        let mode = mode.to_string();
+        move |r: &Request| match r {
+            Request::Status => Response::StatusOk {
+                locked: false,
+                password_protected: false,
+                info: kepr_core::protocol_session::StatusInfo {
+                    mode: Some(mode.clone()),
+                    ..Default::default()
+                },
+            },
+            Request::List => {
+                let due = |n: &str, next: u64| CredInfo {
+                    name: n.into(),
+                    rotate_every_secs: Some(60),
+                    rotate_via: Some("aws-iam".into()),
+                    rotate_next_at: Some(next),
+                    ..Default::default()
+                };
+                let credentials = vec![due("A", 10), due("B", 20), due("LATER", 9999)];
+                Response::ListOk {
+                    credentials,
+                    count: 3,
+                }
+            }
+            _ => Response::fail("unexpected request"),
+        }
+    }
+
+    #[test]
+    fn due_runs_each_due_one_under_the_system_daemon() {
+        let ran = std::cell::RefCell::new(Vec::new());
+        let run = |n: &str| {
+            ran.borrow_mut().push(n.to_string());
+            if n == "B" {
+                Response::fail("hook exited with status 1")
+            } else {
+                Response::Pong
+            }
+        };
+        let r = run_due_with(&daemon("system"), &run, 100);
+        assert_eq!(*ran.borrow(), ["A", "B"]);
+        assert_eq!(r.err_msg(), Some("1 of 2 due rotations failed"));
+        ran.borrow_mut().clear();
+        assert!(run_due_with(&daemon("system"), &run, 15).is_success());
+        assert_eq!(*ran.borrow(), ["A"]);
+    }
+
+    #[test]
+    fn due_leaves_the_user_mode_daemon_alone() {
+        let run = |_: &str| -> Response { panic!("the user-mode daemon runs them") };
+        assert!(run_due_with(&daemon("user"), &run, 100).is_success());
+        let down = |_: &Request| Response::fail("daemon unreachable");
+        assert_eq!(
+            run_due_with(&down, &run, 100).err_msg(),
+            Some("daemon unreachable")
+        );
     }
 
     #[test]

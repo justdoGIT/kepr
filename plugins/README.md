@@ -27,3 +27,10 @@ grok plugin install ./plugins/grok/kepr --trust
 
 Neither plugin makes network calls or has dependencies; both need `kepr`
 on `PATH` (the omp extension also honours `KEPR_BIN`).
+
+`grok/kepr/skills/kepr/SKILL.md` is written for any harness and is the one
+source of kepr's guidance for the model. `kepr agent install claude` writes
+it as a Claude Code skill (`${CLAUDE_CONFIG_DIR:-~/.claude}/skills/kepr/SKILL.md`),
+and `kepr agent install codex` puts its body, without the front matter,
+between `<!-- kepr:begin -->` and `<!-- kepr:end -->` in
+`${CODEX_HOME:-~/.codex}/AGENTS.md`; the rest of that file is left as it is.

@@ -16,12 +16,9 @@
 // from a pinned device, unchanged.
 
 use base64::Engine;
-use hkdf::Hkdf;
-use hmac::{Hmac, KeyInit, Mac};
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol_syncx::BUNDLE_MAGIC;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
@@ -79,7 +76,7 @@ struct Wrap {
 
 /// A device's short id (the one `kepr device ls` shows).
 pub fn device_id(public_text: &str) -> String {
-    hex::encode(&Sha256::digest(public_text.as_bytes())[..4])
+    hex::encode(&cipher::sha256(&[public_text.as_bytes()])[..4])
 }
 
 fn mac_key(
@@ -93,22 +90,18 @@ fn mac_key(
         return None;
     }
     let info = [&b"kepr-sync-v1"[..], from, to].concat();
-    let mut key = Zeroizing::new([0u8; 32]);
-    Hkdf::<Sha256>::new(None, ss.as_bytes())
-        .expand(&info, key.as_mut())
-        .ok()?;
-    Some(key)
+    Some(cipher::hkdf_sha256(None, ss.as_bytes(), &[&info]))
 }
 
-fn tag(key: &[u8; 32], h: &Header, w: &Wrap, ct: &[u8]) -> Hmac<Sha256> {
-    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("any key length");
-    m.update(b"kepr-sync-bundle-v1");
+/// The bytes a wrap's MAC covers.
+fn signed(h: &Header, w: &Wrap, ct: &[u8]) -> Vec<u8> {
+    let mut m = b"kepr-sync-bundle-v1".to_vec();
     for part in [&h.from, &h.nonce, &w.to, &w.wrap] {
-        m.update(&(part.len() as u32).to_be_bytes());
-        m.update(part.as_bytes());
+        m.extend_from_slice(&(part.len() as u32).to_be_bytes());
+        m.extend_from_slice(part.as_bytes());
     }
-    m.update(&h.at.to_be_bytes());
-    m.update(&Sha256::digest(ct));
+    m.extend_from_slice(&h.at.to_be_bytes());
+    m.extend_from_slice(&cipher::sha256(&[ct]));
     m
 }
 
@@ -130,8 +123,8 @@ pub fn seal(
     let from_x = *from.x25519();
     let mut content = Zeroizing::new([0u8; 32]);
     let mut nonce = [0u8; NONCE_LEN];
-    getrandom::fill(content.as_mut()).map_err(|e| format!("CSPRNG failure: {e}"))?;
-    getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(content.as_mut()).map_err(|_| "CSPRNG failure")?;
+    cipher::fill_random(&mut nonce).map_err(|_| "CSPRNG failure")?;
     let mut h = Header {
         kind: KIND.into(),
         from: from.text(),
@@ -150,7 +143,7 @@ pub fn seal(
         };
         let key =
             mac_key(&me.x, r.x25519(), &from_x, r.x25519()).ok_or("a device key is not usable")?;
-        w.mac = B64.encode(tag(&key, &h, &w, &ct).finalize().into_bytes());
+        w.mac = B64.encode(cipher::hmac_sha256(key.as_ref(), &[&signed(&h, &w, &ct)]));
         h.keys.push(w);
     }
     let mut out = BUNDLE_MAGIC.to_vec();
@@ -192,9 +185,9 @@ pub fn open(me: &ShareSecret, trusted: &[Recipient], bytes: &[u8]) -> Result<Ope
         .ok_or("not encrypted to this device")?;
     let key = mac_key(&me.x, &from_x, &from_x, &my_x).ok_or(FORGED)?;
     let mac = B64.decode(&w.mac).map_err(|_| FORGED)?;
-    tag(&key, &h, w, ct)
-        .verify_slice(&mac)
-        .map_err(|_| FORGED)?;
+    if !cipher::hmac_sha256_verify(key.as_ref(), &[&signed(&h, w, ct)], &mac) {
+        return Err(FORGED.into());
+    }
     let content = kem::open(me, &w.wrap).map_err(|_| FORGED)?;
     let nonce: [u8; NONCE_LEN] = B64
         .decode(&h.nonce)
@@ -285,5 +278,23 @@ mod tests {
         assert!(seal(&a, &[], &body(), 3)
             .unwrap_err()
             .contains("no devices"));
+    }
+
+    fn fixed(x: u8, seed: u8) -> ShareSecret {
+        ShareSecret {
+            x: StaticSecret::from([x; 32]),
+            mlkem_seed: Some(Zeroizing::new([seed; 64])),
+        }
+    }
+
+    // Made by the code before it moved onto the cipher seam (T12.42).
+    #[test]
+    fn a_bundle_from_the_old_code_still_opens() {
+        let (a, b) = (fixed(5, 6), fixed(7, 8));
+        let bytes = include_bytes!("testdata/device_bundle.bin");
+        let got = open(&b, &[a.recipient()], bytes).unwrap();
+        assert_eq!(got.body.entries[0].value.as_ref().unwrap().as_str(), "v");
+        assert_eq!(got.at, 9);
+        assert_eq!(device_id("kepr-pk2-abc"), "d5149cc1");
     }
 }

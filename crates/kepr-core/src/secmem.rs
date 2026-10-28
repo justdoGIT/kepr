@@ -12,10 +12,21 @@
 //!
 //! `SplitKey` keeps a key as two XOR shares in two regions and can move
 //! them to fresh random addresses, so no single memory snapshot holds
-//! the key in one place.
+//! the key in one place. `GuardedKey` (T12.21) is a `SplitKey`, or a
+//! wiped-on-drop plain copy when no secret region can be had.
 
 use std::ptr;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
+
+/// Which pages a region may use (T12.21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backing {
+    /// memfd_secret where the kernel has it, else locked no-dump pages.
+    Auto,
+    /// Locked no-dump pages only: memfd_secret pages make the kernel
+    /// refuse hibernation while they exist.
+    Locked,
+}
 
 /// True iff `memfd_secret(2)` works on this kernel (Linux 5.14+, and on
 /// some kernels only with `secretmem.enable=1`).
@@ -70,6 +81,10 @@ unsafe impl Sync for SecretRegion {}
 
 impl SecretRegion {
     pub fn new(len: usize) -> Result<Self, String> {
+        Self::with_backing(len, Backing::Auto)
+    }
+
+    pub fn with_backing(len: usize, backing: Backing) -> Result<Self, String> {
         let page = page_size();
         let data_len = len.max(1).div_ceil(page) * page;
         let total = data_len + 2 * page;
@@ -104,7 +119,7 @@ impl SecretRegion {
         }
         // SAFETY: data = base + one guard page, inside our reservation.
         let data = unsafe { (base as *mut u8).add(page) } as *mut libc::c_void;
-        let secret_backed = Self::map_secret(data, data_len);
+        let secret_backed = backing == Backing::Auto && Self::map_secret(data, data_len);
         if !secret_backed {
             if let Err(e) = Self::map_locked(data, data_len) {
                 // Not wrapped in Self yet, so Drop (which zeroizes the
@@ -224,18 +239,23 @@ impl Drop for SecretRegion {
 pub struct SplitKey<const N: usize> {
     a: SecretRegion,
     b: SecretRegion,
+    backing: Backing,
 }
 
 impl<const N: usize> SplitKey<N> {
     pub fn new(key: &[u8; N]) -> Result<Self, String> {
-        let mut a = SecretRegion::new(N)?;
-        let mut b = SecretRegion::new(N)?;
+        Self::with_backing(key, Backing::Auto)
+    }
+
+    pub fn with_backing(key: &[u8; N], backing: Backing) -> Result<Self, String> {
+        let mut a = SecretRegion::with_backing(N, backing)?;
+        let mut b = SecretRegion::with_backing(N, backing)?;
         getrandom::fill(&mut a.as_mut_slice()[..N]).map_err(|e| format!("CSPRNG failure: {e}"))?;
         let mask = &a.as_slice()[..N];
         for ((dst, k), m) in b.as_mut_slice()[..N].iter_mut().zip(key).zip(mask) {
             *dst = k ^ m;
         }
-        Ok(Self { a, b })
+        Ok(Self { a, b, backing })
     }
 
     /// Recombine into a zeroized stack buffer for the duration of `f`.
@@ -249,7 +269,8 @@ impl<const N: usize> SplitKey<N> {
 
     /// Move both shares to fresh random addresses with a fresh mask.
     pub fn relocate(&mut self) -> Result<(), String> {
-        let fresh = self.with_key(Self::new)?;
+        let backing = self.backing;
+        let fresh = self.with_key(|k| Self::with_backing(k, backing))?;
         *self = fresh; // old regions are zeroized and unmapped on drop
         Ok(())
     }
@@ -257,6 +278,58 @@ impl<const N: usize> SplitKey<N> {
     /// Share addresses (diagnostics and tests).
     pub fn addrs(&self) -> (usize, usize) {
         (self.a.data_addr(), self.b.data_addr())
+    }
+}
+
+/// A long-lived key (T12.21): split shares in secret regions, or, only
+/// when those can't be had (address space, RLIMIT_MEMLOCK), a plain
+/// copy wiped on drop. No `Debug`, no `Clone`.
+pub enum GuardedKey<const N: usize> {
+    Split(SplitKey<N>),
+    Plain(Zeroizing<[u8; N]>),
+}
+
+impl<const N: usize> GuardedKey<N> {
+    /// `Plain` only when `SplitKey` fails.
+    pub fn new(key: &[u8; N], backing: Backing) -> Self {
+        match SplitKey::with_backing(key, backing) {
+            Ok(s) => Self::Split(s),
+            Err(_) => {
+                let mut plain = Zeroizing::new([0u8; N]);
+                plain.copy_from_slice(key);
+                Self::Plain(plain)
+            }
+        }
+    }
+
+    /// The key for the duration of `f` (recombined into a wiped stack
+    /// buffer when split).
+    pub fn with_key<R>(&self, f: impl FnOnce(&[u8; N]) -> R) -> R {
+        match self {
+            Self::Split(s) => s.with_key(f),
+            Self::Plain(k) => f(k),
+        }
+    }
+
+    /// Fresh addresses and a fresh mask; a no-op for `Plain`. On error
+    /// the key stays where it was.
+    pub fn relocate(&mut self) -> Result<(), String> {
+        match self {
+            Self::Split(s) => s.relocate(),
+            Self::Plain(_) => Ok(()),
+        }
+    }
+
+    pub fn is_split(&self) -> bool {
+        matches!(self, Self::Split(_))
+    }
+
+    /// Share addresses when split (diagnostics and tests).
+    pub fn addrs(&self) -> Option<(usize, usize)> {
+        match self {
+            Self::Split(s) => Some(s.addrs()),
+            Self::Plain(_) => None,
+        }
     }
 }
 
@@ -318,6 +391,50 @@ mod tests {
             f.read_exact(&mut buf).is_err(),
             "memfd_secret page was readable via /proc/self/mem"
         );
+    }
+
+    #[test]
+    fn guarded_key_round_trips_and_hides_key() {
+        let key = [0x42u8; 32];
+        let g = GuardedKey::new(&key, Backing::Auto);
+        assert!(g.is_split());
+        g.with_key(|k| assert_eq!(k, &key));
+        let GuardedKey::Split(s) = &g else {
+            panic!("expected split shares")
+        };
+        assert_ne!(&s.a.as_slice()[..32], &key);
+        assert_ne!(&s.b.as_slice()[..32], &key);
+        let (a, b) = g.addrs().unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn locked_backing_skips_memfd_secret() {
+        let r = SecretRegion::with_backing(16, Backing::Locked).unwrap();
+        assert!(!r.is_secret_backed());
+        // Relocation keeps the backing it was made with.
+        let mut s = SplitKey::with_backing(&[9u8; 16], Backing::Locked).unwrap();
+        s.relocate().unwrap();
+        assert!(!s.a.is_secret_backed() && !s.b.is_secret_backed());
+        s.with_key(|k| assert_eq!(k, &[9u8; 16]));
+    }
+
+    #[test]
+    fn plain_key_relocate_is_a_noop() {
+        let mut g = GuardedKey::Plain(zeroize::Zeroizing::new([7u8; 32]));
+        assert!(!g.is_split());
+        assert_eq!(g.addrs(), None);
+        assert!(g.relocate().is_ok());
+        g.with_key(|k| assert_eq!(k, &[7u8; 32]));
+    }
+
+    #[test]
+    fn guarded_key_relocation_moves_the_shares() {
+        let mut g = GuardedKey::new(&[3u8; 32], Backing::Auto);
+        let before = g.addrs();
+        g.relocate().unwrap();
+        assert_ne!(g.addrs(), before);
+        g.with_key(|k| assert_eq!(k, &[3u8; 32]));
     }
 
     #[test]

@@ -167,14 +167,18 @@ pub enum Request {
     Ping,
     /// `kepr panic`: stop the caller's gates; lock if passphrase-protected.
     Panic,
-    /// P2.4 SSH agent: create a new sign-only Ed25519 key in the vault.
+    /// P2.4 SSH agent: create a new sign-only key in the vault.
     SshGenerate {
         name: String,
         comment: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         requires_consent: Option<bool>,
+        /// T12.11: `ed25519` (also when absent) or `ecdsa` (P-256).
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        key_type: Option<String>,
     },
-    /// Import an unencrypted OpenSSH Ed25519 private key (sign-only after).
+    /// Import an unencrypted OpenSSH Ed25519 or ECDSA P-256 private key
+    /// (sign-only after).
     SshImport {
         name: String,
         private_key: ZeroString,

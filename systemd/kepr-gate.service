@@ -37,6 +37,10 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @debug
+# Session gates keep values in secret memory and confine themselves with
+# a syscall filter and a Landlock ruleset (T12.02–T12.04); @system-service
+# has none of these calls, and a filtered call kills the process.
+SystemCallFilter=memfd_secret landlock_create_ruleset landlock_add_rule landlock_restrict_self
 # Upstream TLS to the providers, loopback for agents, the control socket.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 InaccessiblePaths=-/etc/credstore.encrypted -/var/lib/kepr

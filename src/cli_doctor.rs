@@ -227,12 +227,22 @@ pub fn production_checks() -> Vec<Box<dyn Diagnostic>> {
     ]
 }
 
+/// T12.36: the daemon's mode and key sealer, from one `Status` round trip,
+/// for the lock-on-sleep line. None when the daemon can't be reached.
+fn daemon_facts() -> (Option<String>, Option<String>) {
+    match client::send_request(&Request::Status) {
+        Ok(Response::StatusOk { info, .. }) => (info.mode, info.key_sealer),
+        _ => (None, None),
+    }
+}
+
 /// Top-level handler. Runs the production checks, prints results
 /// in text mode, and returns a CheckOk-shaped Response so the
 /// `--json` flag works the same way as for `kepr check`.
 pub fn cmd_doctor(json: bool) -> Response {
     let report = run(&production_checks());
-    let mut hardening = crate::cli_doctor_hardening::report();
+    let (mode, sealer) = daemon_facts();
+    let mut hardening = crate::cli_doctor_hardening::report(mode.as_deref(), sealer.as_deref());
     hardening.push(crate::cli_platform::fingerprint::finding()); // T10.03
     if !json {
         print!("{}", report.render_text());

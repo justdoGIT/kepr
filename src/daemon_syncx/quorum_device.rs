@@ -11,13 +11,11 @@
 // it only from a device enrolled with it, never from its own key.
 
 use base64::Engine;
-use hkdf::Hkdf;
-use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
+use crate::daemon_eco::cipher;
 use crate::daemon_sharing::kem::{Recipient, ShareSecret};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -82,21 +80,17 @@ fn key(
         return None;
     }
     let info = [&b"kepr-quorum-v1"[..], from, to].concat();
-    let mut k = Zeroizing::new([0u8; 32]);
-    Hkdf::<Sha256>::new(None, ss.as_bytes())
-        .expand(&info, k.as_mut())
-        .ok()?;
-    Some(k)
+    Some(cipher::hkdf_sha256(None, ss.as_bytes(), &[&info]))
 }
 
-fn mac(key: &[u8; 32], ask: &Ask) -> Hmac<Sha256> {
-    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("any key length");
-    m.update(b"kepr-quorum-approval-v1");
+/// The bytes an approval's MAC covers.
+fn signed(ask: &Ask) -> Vec<u8> {
+    let mut m = b"kepr-quorum-approval-v1".to_vec();
     for part in [&ask.owner, &ask.id, &ask.name, &ask.action] {
-        m.update(&(part.len() as u32).to_be_bytes());
-        m.update(part.as_bytes());
+        m.extend_from_slice(&(part.len() as u32).to_be_bytes());
+        m.extend_from_slice(part.as_bytes());
     }
-    m.update(&ask.expires_at.to_be_bytes());
+    m.extend_from_slice(&ask.expires_at.to_be_bytes());
     m
 }
 
@@ -110,7 +104,7 @@ pub fn sign(me: &ShareSecret, ask: &Ask) -> Result<String, String> {
     let a = Approval {
         id: ask.id.clone(),
         from: from.text(),
-        mac: B64.encode(mac(&k, ask).finalize().into_bytes()),
+        mac: B64.encode(cipher::hmac_sha256(k.as_ref(), &[&signed(ask)])),
     };
     Ok(format!(
         "{APPROVAL}{}",
@@ -148,9 +142,9 @@ pub fn verify(
     }
     let k = key(&me.x, from.x25519(), from.x25519(), &my_x).ok_or("approval does not verify")?;
     let got = B64.decode(&a.mac).map_err(|_| "approval does not verify")?;
-    mac(&k, ask)
-        .verify_slice(&got)
-        .map_err(|_| "approval does not verify")?;
+    if !cipher::hmac_sha256_verify(k.as_ref(), &[&signed(ask)], &got) {
+        return Err("approval does not verify".into());
+    }
     Ok(approver_id(from.x25519()))
 }
 
@@ -248,5 +242,28 @@ mod tests {
             );
             assert_eq!(verify(&a, &devices, &req, &text).unwrap(), want);
         }
+    }
+
+    fn fixed(x: u8, seed: u8) -> ShareSecret {
+        ShareSecret {
+            x: StaticSecret::from([x; 32]),
+            mlkem_seed: Some(Zeroizing::new([seed; 64])),
+        }
+    }
+
+    // Made by the code before it moved onto the cipher seam (T12.42).
+    #[test]
+    fn an_approval_from_the_old_code_still_verifies() {
+        let (dev, owner) = (fixed(5, 6), fixed(7, 8));
+        let a = Approval {
+            id: "0a1b2c3d".into(),
+            from: dev.recipient().text(),
+            mac: "fsE3Acl8Gd7O8kPY_kUw-c5XywuHq7EaePOVYk2ETjU".into(),
+        };
+        let text = format!("{APPROVAL}{}", B64.encode(serde_json::to_vec(&a).unwrap()));
+        let got = verify(&owner, &[dev.recipient()], &ask(&owner), &text).unwrap();
+        assert_eq!(got, approver_id(dev.recipient().x25519()));
+        // Signing today gives the same MAC.
+        assert_eq!(sign(&dev, &ask(&owner)).unwrap(), text);
     }
 }

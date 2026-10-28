@@ -7,12 +7,19 @@
 // kepr_core::providers::detect). Values are never printed. `--remove`
 // rewrites files without keeping a plaintext backup (a backup would
 // leave the key on disk, which is what adoption is meant to end).
+// Agent harness config files (JSON / YAML) are read by key through
+// cli_agent_adopt_harness.rs (T12.18) and never rewritten; shell history
+// through cli_agent_adopt_history.rs (T12.19). `--remove` is in
+// cli_agent_adopt_remove.rs.
 
 use std::path::{Path, PathBuf};
 
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
+use zeroize::Zeroizing;
 
+use crate::cli_agent_adopt_history::{is_history_file, scan_history};
+use crate::cli_agent_adopt_remove::remove_adopted;
 use crate::{cli_agent_detect, cli_ui, client};
 
 pub struct Found {
@@ -21,6 +28,16 @@ pub struct Found {
     pub name: String,
     pub provider: &'static str,
     pub value: ZeroString,
+    /// The key in a structured file (T12.18); None for line-based files.
+    pub key: Option<String>,
+}
+
+/// `file:line`, or `file (key)` for a key in a JSON file (line 0).
+pub fn place(f: &Found) -> String {
+    match (&f.key, f.line) {
+        (Some(k), 0) => format!("{} ({k})", f.file.display()),
+        _ => format!("{}:{}", f.file.display(), f.line),
+    }
 }
 
 fn default_files() -> Vec<PathBuf> {
@@ -36,15 +53,32 @@ fn default_files() -> Vec<PathBuf> {
         ] {
             v.push(home.join(f));
         }
+        v.extend(
+            crate::cli_agent_adopt_harness::HARNESS_FILES
+                .iter()
+                .map(|f| home.join(f)),
+        );
+        let env = |k: &str| std::env::var(k).ok();
+        v.extend(crate::cli_agent_adopt_history::history_files(&home, &env));
     }
     v
 }
 
-fn unquote(v: &str) -> &str {
+/// A value written out in full: not `$VAR`, `$(…)`, `` `…` ``, a
+/// half-quoted word or several words.
+pub fn literal(v: &str) -> bool {
+    !v.chars()
+        .any(|c| c.is_whitespace() || "$`'\"(){}<>;|&\\".contains(c))
+}
+
+/// The value up to its closing quote (`"v" # note` → v), or its first word.
+pub fn unquote(v: &str) -> &str {
     let v = v.trim();
     for q in ['"', '\''] {
-        if let Some(inner) = v.strip_prefix(q).and_then(|s| s.strip_suffix(q)) {
-            return inner;
+        if let Some(inner) = v.strip_prefix(q).and_then(|s| s.split(q).next()) {
+            if v.len() > inner.len() + 1 {
+                return inner;
+            }
         }
     }
     v.split_whitespace().next().unwrap_or_default()
@@ -75,30 +109,40 @@ pub fn scan_text(file: &Path, text: &str) -> Vec<Found> {
         .enumerate()
         .filter_map(|(i, l)| {
             let (name, value) = parse_line(l)?;
+            let mut value = Zeroizing::new(value);
+            if !literal(&value) {
+                return None;
+            }
             let provider = kepr_core::providers::detect(Some(&name), &value)?.name;
             Some(Found {
                 file: file.to_path_buf(),
                 line: i + 1,
                 name,
                 provider,
-                value: ZeroString::from_string(value),
+                value: ZeroString::from_string(std::mem::take(&mut *value)),
+                key: None,
             })
         })
         .collect()
 }
 
-/// Delete the given 1-based line numbers from `text`.
-pub fn remove_lines(text: &str, lines: &[usize]) -> String {
-    let mut out: String = text
-        .lines()
-        .enumerate()
-        .filter(|(i, _)| !lines.contains(&(i + 1)))
-        .map(|(_, l)| format!("{l}\n"))
-        .collect();
-    if !text.ends_with('\n') && out.ends_with('\n') {
-        out.pop();
+/// Read one file the way its kind needs: a history file even when it is
+/// not UTF-8 (zsh), any other file only when it is.
+pub fn scan_file(p: &Path, history: bool) -> Vec<Found> {
+    let Ok(bytes) = std::fs::read(p).map(Zeroizing::new) else {
+        return Vec::new();
+    };
+    if history {
+        let text = Zeroizing::new(String::from_utf8_lossy(&bytes).into_owned());
+        return scan_history(p, &text);
     }
-    out
+    match std::str::from_utf8(&bytes) {
+        Ok(t) if crate::cli_agent_adopt_harness::is_structured(p) => {
+            crate::cli_agent_adopt_harness::scan_structured(p, t)
+        }
+        Ok(t) => scan_text(p, t),
+        Err(_) => Vec::new(),
+    }
 }
 
 fn store(f: &Found) -> Result<(), String> {
@@ -158,10 +202,7 @@ pub fn plan<'a>(
             .iter()
             .any(|f| f.value.as_str() != group[0].value.as_str())
         {
-            let places: Vec<String> = group
-                .iter()
-                .map(|f| format!("{}:{}", f.file.display(), f.line))
-                .collect();
+            let places: Vec<String> = group.iter().map(|f| place(f)).collect();
             p.skipped.push((
                 name.into(),
                 format!(
@@ -201,24 +242,18 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
         .collect();
     paths.sort();
     paths.dedup();
-    let mut found: Vec<Found> = Vec::new();
-    for p in &paths {
-        if let Ok(text) = std::fs::read_to_string(p) {
-            found.extend(scan_text(p, &text));
-        }
-    }
+    let known = crate::cli_agent_adopt_history::known_files();
+    let is_history = |p: &Path| is_history_file(p, &known);
+    let found: Vec<Found> = paths
+        .iter()
+        .flat_map(|p| scan_file(p, is_history(p)))
+        .collect();
     if found.is_empty() {
         cli_ui::info("no provider API keys found in the scanned files");
         return Response::Pong;
     }
     for f in &found {
-        println!(
-            "{}:{}  {}  ({})",
-            f.file.display(),
-            f.line,
-            f.name,
-            f.provider
-        );
+        println!("{}  {}  ({})", place(f), f.name, f.provider);
     }
     let plan = plan(
         &found,
@@ -247,31 +282,9 @@ pub fn cmd_adopt(files: &[String], yes: bool, remove: bool) -> Response {
         cli_ui::warn("the plaintext lines are still in place; delete them or re-run with --remove");
         return Response::Pong;
     }
-    for file in &paths {
-        let lines: Vec<usize> = plan
-            .remove
-            .iter()
-            .filter(|(p, _)| p == file)
-            .filter(|(p, l)| {
-                found
-                    .iter()
-                    .any(|f| &f.file == p && f.line == *l && stored.contains(&f.name.as_str()))
-            })
-            .map(|(_, l)| *l)
-            .collect();
-        if lines.is_empty() {
-            continue;
-        }
-        let result = std::fs::read_to_string(file)
-            .and_then(|t| std::fs::write(file, remove_lines(&t, &lines)));
-        match result {
-            Ok(()) => cli_ui::ok(&format!(
-                "removed {} line(s) from {}",
-                lines.len(),
-                file.display()
-            )),
-            Err(e) => cli_ui::err(&format!("{}: {e}", file.display())),
-        }
+    let rewritten = remove_adopted(&paths, &plan, &found, &stored);
+    if rewritten.iter().any(|p| is_history(p)) {
+        cli_ui::warn(crate::cli_agent_adopt_history::REMOVE_WARNING);
     }
     Response::Pong
 }
@@ -303,6 +316,14 @@ mod tests {
         assert_eq!(parse_line("BAD-NAME=sk-x"), None);
         assert_eq!(
             parse_line("K=sk-x # comment"),
+            Some(("K".into(), "sk-x".into()))
+        );
+        assert_eq!(
+            parse_line("K=\"sk-x\" # comment"),
+            Some(("K".into(), "sk-x".into()))
+        );
+        assert_eq!(
+            parse_line("export K='sk-x'; claude"),
             Some(("K".into(), "sk-x".into()))
         );
     }
@@ -350,9 +371,30 @@ mod tests {
     }
 
     #[test]
-    fn remove_lines_keeps_the_rest() {
-        assert_eq!(remove_lines("a\nb\nc\n", &[2]), "a\nc\n");
-        assert_eq!(remove_lines("a\nb", &[2]), "a");
-        assert_eq!(remove_lines("a\nb\nc", &[1, 3]), "b");
+    fn plan_skips_stored_and_canary_keys_from_harness_files() {
+        use crate::cli_agent_adopt_harness::scan_structured;
+        let found = scan_structured(
+            Path::new("auth.json"),
+            r#"{"OPENAI_API_KEY": "sk-proj-abcdefghijkl", "x": {"apiKey": "xai-abcdefghijkl"}}"#,
+        );
+        assert_eq!(found.len(), 2);
+        assert_eq!(place(&found[0]), "auth.json (OPENAI_API_KEY)");
+        let existing: std::collections::HashSet<String> = ["OPENAI_API_KEY".to_string()].into();
+        let decoy = crate::cli_policy::Canaries::of(&["xai-abcdefghijkl"]);
+        let p = plan(&found, &existing, &decoy);
+        assert!(p.store.is_empty() && p.remove.is_empty());
+        let why: Vec<&str> = p.skipped.iter().map(|(_, w)| w.as_str()).collect();
+        assert!(
+            why.iter().any(|w| w.contains("canary")) && why.iter().any(|w| w.contains("already"))
+        );
+    }
+
+    #[test]
+    fn values_that_are_not_written_out_are_left_alone() {
+        let text = "export OPENAI_API_KEY=$(pass show openai)\nXAI_API_KEY=\"$XAI\"\n\
+                    ANTHROPIC_API_KEY=`cat k`\n";
+        assert!(scan_text(Path::new(".bashrc"), text).is_empty());
+        assert!(literal("sk-proj-abc_DEF.1/2+3="));
+        assert!(!literal("${X}") && !literal("'half") && !literal("a b"));
     }
 }

@@ -13,12 +13,22 @@
 // actually linked and passed its power-on self tests.
 
 use aws_lc_rs::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
-use aws_lc_rs::digest;
+use aws_lc_rs::hkdf::{KeyType, Salt, HKDF_SHA256};
+use aws_lc_rs::{constant_time, digest, hmac, rand};
 use zeroize::Zeroizing;
 
 use super::cipher::{CipherSuite, CryptoError, NONCE_LEN};
 
 pub struct AwsLc;
+
+/// HKDF output length for `expand`: always 32 bytes here.
+struct Len32;
+
+impl KeyType for Len32 {
+    fn len(&self) -> usize {
+        32
+    }
+}
 
 fn key_for(key: &[u8]) -> Result<LessSafeKey, CryptoError> {
     UnboundKey::new(&AES_256_GCM, key)
@@ -77,6 +87,40 @@ impl CipherSuite for AwsLc {
             .as_ref()
             .try_into()
             .expect("SHA-256 is 32 bytes")
+    }
+
+    fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+        let k = hmac::Key::new(hmac::HMAC_SHA256, key);
+        let mut ctx = hmac::Context::with_key(&k);
+        for p in parts {
+            ctx.update(p);
+        }
+        ctx.sign()
+            .as_ref()
+            .try_into()
+            .expect("HMAC-SHA256 is 32 bytes")
+    }
+
+    fn hmac_sha256_verify(key: &[u8], parts: &[&[u8]], tag: &[u8]) -> bool {
+        let want = Self::hmac_sha256(key, parts);
+        // Different lengths are rejected before any comparison.
+        tag.len() == want.len() && constant_time::verify_slices_are_equal(&want, tag).is_ok()
+    }
+
+    fn hkdf_sha256(salt: Option<&[u8]>, ikm: &[u8], info: &[&[u8]]) -> Zeroizing<[u8; 32]> {
+        // RFC 5869: no salt means HashLen zero bytes.
+        let zero = [0u8; 32];
+        let prk = Salt::new(HKDF_SHA256, salt.unwrap_or(&zero)).extract(ikm);
+        let mut out = Zeroizing::new([0u8; 32]);
+        prk.expand(info, Len32)
+            .expect("32 bytes is within HKDF-SHA256's output limit")
+            .fill(out.as_mut())
+            .expect("output length matches");
+        out
+    }
+
+    fn fill_random(buf: &mut [u8]) -> Result<(), CryptoError> {
+        rand::fill(buf).map_err(|_| CryptoError)
     }
 
     fn fips() -> bool {

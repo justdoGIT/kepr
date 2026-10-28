@@ -13,14 +13,13 @@
 //
 // The relay sees the blob and its id, never the key.
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::Aes256Gcm;
 use base64::Engine;
 use kepr_core::protocol::Response;
 use kepr_core::protocol_sharing::{SentShare, SharingResponse};
 use zeroize::Zeroizing;
 
 use super::{audit_r, sent};
+use crate::daemon_eco::cipher;
 use crate::daemon_share::{new_payload, received, store_payload, Payload1};
 use crate::expiry;
 
@@ -33,18 +32,9 @@ const NOT_OPENED: &str = "this link can't be opened (wrong key, or the blob was 
 pub fn seal(payload: &[u8]) -> Result<(Zeroizing<[u8; 32]>, String), String> {
     let mut key = Zeroizing::new([0u8; 32]);
     let mut nonce = [0u8; 12];
-    getrandom::fill(key.as_mut()).map_err(|e| format!("CSPRNG failure: {e}"))?;
-    getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG failure: {e}"))?;
-    let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "bad key")?;
-    let ct = cipher
-        .encrypt(
-            &nonce.into(),
-            Payload {
-                msg: payload,
-                aad: AAD,
-            },
-        )
-        .map_err(|_| "encryption failed")?;
+    cipher::fill_random(key.as_mut()).map_err(|_| "CSPRNG failure")?;
+    cipher::fill_random(&mut nonce).map_err(|_| "CSPRNG failure")?;
+    let ct = cipher::seal(key.as_ref(), &nonce, AAD, payload).map_err(|_| "encryption failed")?;
     Ok((
         key,
         format!("{BLOB_PREFIX}{}", B64.encode([&nonce[..], &ct].concat())),
@@ -58,18 +48,8 @@ pub fn open(key: &[u8], blob: &str) -> Result<Zeroizing<Vec<u8>>, String> {
         .and_then(|b| B64.decode(b).ok())
         .filter(|r| r.len() > 12 + 16)
         .ok_or("not a kepr link blob")?;
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| NOT_OPENED)?;
     let nonce: [u8; 12] = raw[..12].try_into().map_err(|_| NOT_OPENED)?;
-    cipher
-        .decrypt(
-            &nonce.into(),
-            Payload {
-                msg: &raw[12..],
-                aad: AAD,
-            },
-        )
-        .map(Zeroizing::new)
-        .map_err(|_| NOT_OPENED.into())
+    cipher::open(key, &nonce, AAD, &raw[12..]).map_err(|_| NOT_OPENED.into())
 }
 
 /// The link key as it travels in the fragment.
@@ -258,5 +238,14 @@ mod tests {
         assert!(handle_open(b, "t", &blob, key.as_str(), None).is_success());
         assert_eq!(testkit::meta(b, "LINK_VW").view_window_secs, Some(300));
         assert_eq!(testkit::meta(b, "LINK_VW").expires_at_unix, None);
+    }
+
+    #[test]
+    fn a_blob_written_by_the_old_code_still_opens() {
+        let key = B64
+            .decode("6C1vTd2T4EjQS2He0QK44K3Po6SGuDsdEbjD-g4HA_g")
+            .unwrap();
+        let blob = "kepr-link1-pkIBg73Cw3mHwoF0ILF_yPHiTJdrBWQnFc-BaepiBeatJrlxmAbD";
+        assert_eq!(&**open(&key, blob).unwrap(), b"pinned link");
     }
 }

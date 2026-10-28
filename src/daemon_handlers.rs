@@ -527,6 +527,7 @@ mod tests {
             name: "KS_SSH".into(),
             comment: "c".into(),
             requires_consent: None,
+            key_type: None,
         };
         let r = crate::daemon_ssh::dispatch(uid, 0, "t", gen);
         assert!(matches!(r, Response::SshKeyOk { .. }), "{r:?}");

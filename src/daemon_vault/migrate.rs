@@ -200,8 +200,8 @@ mod tests {
         let store = dir.path().join("store");
         std::fs::create_dir(&store).unwrap();
         let vs = Arc::new(VersionState::load(dir.path().join("v.json")).unwrap());
-        let files = InProcBackend::with_store_dir(KEY, store.clone(), Arc::clone(&vs));
-        let image = ImageBackend::new(store.join("vault.img"), key, Some(vs));
+        let files = InProcBackend::with_store_dir(&KEY, store.clone(), Arc::clone(&vs));
+        let image = ImageBackend::new(store.join("vault.img"), key, Some(vs)).with_create_mib(2);
         Fixture { dir, files, image }
     }
 

@@ -8,7 +8,10 @@
 //
 //   body = version u16 | image id [16] | slot count u32 | epoch u64 |
 //          Merkle root [32] | index length u32 | n u16 | n × slot u32,
-//          zero-padded to a fixed length so n doesn't show
+//          zero-padded to a fixed length so n doesn't show; version 2
+//          (T12.27) ends in anchor index u32 | anchor value u64, index 0
+//          for none (rollback.rs), and has room for 253 index slots
+//          where version 1 had 256. Version 1 headers still open.
 //
 // The GCM tag is the header MAC. Version, slot count and epoch sit
 // inside the ciphertext, so two images differ everywhere except the
@@ -19,12 +22,17 @@ use super::image::SLOT;
 use super::keys::{gcm_open, gcm_seal, noise, Keys, NONCE, SALT, TAG};
 
 pub const MAGIC: &[u8; 8] = b"kepr_vi1";
-pub const VERSION: u16 = 1;
-/// Cap on index slots (1 MiB of index), so the header fits one slot.
-pub const MAX_INDEX_SLOTS: usize = 256;
+pub const VERSION: u16 = 2;
+/// Room for index slot numbers in a body (version 1 used all of it).
+const INDEX_ROOM: usize = 256;
+/// anchor index u32 ‖ anchor value u64, at the end of a version 2 body.
+const ANCHOR_LEN: usize = 4 + 8;
+/// Cap on index slots (about 1 MiB of index), so the header fits one
+/// slot and the anchor fits after the list.
+pub const MAX_INDEX_SLOTS: usize = INDEX_ROOM - ANCHOR_LEN / 4;
 const BODY_FIXED: usize = 2 + 16 + 4 + 8 + 32 + 4 + 2;
 /// Every header body is padded to this length before sealing.
-pub const BODY_LEN: usize = BODY_FIXED + 4 * MAX_INDEX_SLOTS;
+pub const BODY_LEN: usize = BODY_FIXED + 4 * INDEX_ROOM;
 pub const SEALED_AT: usize = 8 + SALT;
 const SEALED_LEN: usize = NONCE + BODY_LEN + TAG;
 
@@ -38,6 +46,8 @@ pub struct Header {
     /// Length in bytes of the index blob spread over `index_slots`.
     pub index_len: u32,
     pub index_slots: Vec<u32>,
+    /// (counter index, value) the image is bound to (T12.27).
+    pub anchor: Option<(u32, u64)>,
 }
 
 impl Header {
@@ -57,27 +67,46 @@ impl Header {
         for s in &self.index_slots {
             b.extend_from_slice(&s.to_le_bytes());
         }
-        b.resize(BODY_LEN, 0);
+        b.resize(BODY_LEN - ANCHOR_LEN, 0);
+        let (index, value) = match self.anchor {
+            None => (0, 0),
+            Some((0, _)) => return Err("vault anchor index 0 is reserved".into()),
+            Some(a) => a,
+        };
+        b.extend_from_slice(&index.to_le_bytes());
+        b.extend_from_slice(&value.to_le_bytes());
         Ok(b)
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, String> {
         let mut r = Reader(b);
-        if u16::from_le_bytes(r.take()?) != VERSION {
-            return Err("unsupported vault image version".into());
-        }
+        let version = u16::from_le_bytes(r.take()?);
+        let cap = match version {
+            1 => INDEX_ROOM,
+            VERSION => MAX_INDEX_SLOTS,
+            _ => return Err("unsupported vault image version".into()),
+        };
         let image_id = r.take()?;
         let slot_count = u32::from_le_bytes(r.take()?);
         let epoch = u64::from_le_bytes(r.take()?);
         let root = r.take()?;
         let index_len = u32::from_le_bytes(r.take()?);
         let n = u16::from_le_bytes(r.take()?) as usize;
-        if n > MAX_INDEX_SLOTS {
+        if n > cap {
             return Err("vault image header is malformed".into());
         }
         let index_slots = (0..n)
             .map(|_| r.take().map(u32::from_le_bytes))
             .collect::<Result<Vec<_>, _>>()?;
+        let anchor = match version {
+            1 => None,
+            _ => {
+                let mut t = Reader(b.get(BODY_LEN - ANCHOR_LEN..BODY_LEN).unwrap_or_default());
+                let index = u32::from_le_bytes(t.take()?);
+                let value = u64::from_le_bytes(t.take()?);
+                (index != 0).then_some((index, value))
+            }
+        };
         Ok(Self {
             image_id,
             slot_count,
@@ -85,6 +114,7 @@ impl Header {
             root,
             index_len,
             index_slots,
+            anchor,
         })
     }
 }
@@ -116,7 +146,16 @@ pub fn seal_header(
     salt: &[u8; SALT],
     header: &Header,
 ) -> Result<Box<[u8; SLOT]>, String> {
-    let sealed = gcm_seal(&keys.header, &header_aad(salt), &header.encode()?)?;
+    seal_body(keys, salt, &header.encode()?)
+}
+
+/// Slot 0's bytes for an encoded body.
+pub(super) fn seal_body(
+    keys: &Keys,
+    salt: &[u8; SALT],
+    body: &[u8],
+) -> Result<Box<[u8; SLOT]>, String> {
+    let sealed = gcm_seal(&keys.header, &header_aad(salt), body)?;
     let mut slot = Box::new([0u8; SLOT]);
     noise(&mut slot[..])?;
     slot[..8].copy_from_slice(MAGIC);

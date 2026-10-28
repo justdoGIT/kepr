@@ -19,9 +19,9 @@ verbs print their usage line when called without arguments.
 | `check` | — | Decrypt-check every credential. |
 | `exec` | `[--env CSV\|--env VAR=kepr://…] [--memfd CSV] [--pull KEY,…] [--manifest P] [--stage S] [--mask] -- CMD` | Run CMD with credentials in its environment, in sealed memfds, or fetched by CMD on demand. |
 | `env` | `[--env CSV\|--manifest P] [--stage S]` | Print `export` lines for `eval`. |
-| `inject` | `-i TEMPLATE [-o OUT]` | Fill `kepr://` references in a template (OUT is mode 0600). |
+| `inject` | `-i TEMPLATE [-o OUT [--allow-disk]]` | Fill `kepr://` references in a template. OUT is a new mode-0600 file on a memory-backed file system (tmpfs, ramfs, e.g. under `$XDG_RUNTIME_DIR` or `/dev/shm`); a disk path is refused, before any value is fetched, unless `--allow-disk` is given. |
 | `resolve` | `kepr://KEY[/…]` | Print what one reference stands for (an attachment raw). |
-| `copy` | `KEY [--clear SECS]` | Copy to the clipboard, cleared after SECS (default 20). |
+| `copy` | `KEY [--clear SECS]` | Copy to the clipboard, cleared after SECS (default 20). On Wayland compositors with a data-control protocol (wlroots compositors, KWin) and on local X11 displays kepr serves the selection itself, with `x-kde-passwordManagerHint` = `secret` so clipboard managers that honour the hint don't store it; elsewhere (GNOME on Wayland, remote X displays, X11 values over 64 KiB) it falls back to wl-copy (under a private in-memory /tmp), xclip or xsel. |
 | `totp` | `KEY` | Current 2FA code from a stored seed or `otpauth://` URI. |
 | `strength` | — | Estimate the bits of a value typed at a hidden prompt or piped on stdin. |
 | `scan` | `[PATH...] [--staged]` | Find leaked API keys and private keys; exit 1 if any. |
@@ -40,6 +40,7 @@ verbs print their usage line when called without arguments.
 | `reauth` | `KEY [--on\|--off]` | Enter the passphrase now (KEY readable for 60 s), or turn KEY's re-auth requirement on or off. |
 | `recovery-kit create` | `[--threshold K] [--shares N] [--out-dir DIR]` · `--words` | Split the master key into K-of-N shares (default 3 of 5), or print it as 24 words and a QR code. |
 | `recovery-kit restore` | `[--words]` | Rebuild a lost master key from K shares or the 24 words, under a new passphrase. |
+| `recovery-key` | `enrol [--replace]` · `unlock` | On a store with no passphrase: print a recovery key (24 words and a QR code) once; the daemon keeps the master key wrapped under it. `unlock` opens the store with it when the sealed key did not unseal at start-up. |
 | `break-glass` | `NAME` | Reveal a sealed credential once with k recovery-kit shares (audited; marks it must-rotate). |
 | `escrow` | `enable ADMIN_KEY\|CONTACT` · `disable` · `status` · `open FILE [--out-dir DIR]` | Wrap the master key to an administrator's share key; the admin opens it as a 2-of-2 recovery kit. |
 | `panic` | — | Stop all agent gates; lock the store if it is passphrase-protected. |
@@ -128,8 +129,8 @@ verbs print their usage line when called without arguments.
 
 | Verb | Args | What it does |
 | ---- | ---- | ------------ |
-| `ssh generate` | `KEY [--comment C] [--requires-consent]` | New Ed25519 key that stays in the daemon (sign-only). |
-| `ssh import` | `KEY FILE [--requires-consent]` | Import an unencrypted OpenSSH Ed25519 key. |
+| `ssh generate` | `KEY [--type ed25519\|ecdsa] [--comment C] [--requires-consent]` | New Ed25519 (default) or ECDSA P-256 key that stays in the daemon (sign-only). |
+| `ssh import` | `KEY FILE [--requires-consent]` | Import an unencrypted OpenSSH Ed25519 or ECDSA P-256 (`ecdsa-sha2-nistp256`) key. |
 | `ssh list` | — | Public keys as `authorized_keys` lines. |
 | `ssh rotate` | `KEY --host [USER@]HOST [--port N]` | Replace KEY on one host and in the vault. |
 | `ssh-agent` | `[--foreground] [--socket PATH]` | ssh-agent for those keys: `eval "$(kepr ssh-agent)"`. |
@@ -140,12 +141,14 @@ See the [AI agents guide](/docs/guides/ai-agents) for the full walkthrough.
 
 | Verb | Args | What it does |
 | ---- | ---- | ------------ |
-| `agent add` | `KEY [--for PROVIDER\|HOST[:PORT]:INJECT]... [--requires-consent] [--stdin]` | Store a write-only key bound to a provider or host (INJECT: `bearer`, `basic`, `header=NAME`, `query=NAME`, `sigv4`). |
+| `agent add` | `KEY [--for PROVIDER\|HOST[:PORT]:INJECT]... [--requires-consent] [--stdin\|--from-clipboard]` | Store a write-only key bound to a provider or host (INJECT: `bearer`, `basic`, `header=NAME`, `query=NAME`, `sigv4`). `--from-clipboard` reads the key once and clears the clipboard (a clipboard manager may keep its own copy). |
 | `agent add-db` | `KEY --url postgres\|mysql\|redis[s]://USER@HOST[:PORT]/DB [--kind K] [--sslmode verify-full\|disable] [--ca FILE] [--stdin] [--requires-consent]` | Store a sealed database login. |
 | `agent rotate-db` | `KEY [--abort]` | Set a new random database password; nobody sees the old or new one. |
 | `agent run` | `HARNESS [--port N] [--isolate-net\|--no-sandbox\|--strict-sandbox] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [--tunnel NAME=HOST:PORT]... [--grant NAME=ROLE:ADMIN]... [--record] [-- ARGV]` | Run a harness sandboxed, with placeholders and a gate. |
-| `agent install` | `omp\|grok [--port N]` | Point the harness's config at the gate and install kepr's plugin. |
-| `agent adopt` | `[FILE...] [--yes] [--remove]` | Move keys from `.env` and shell rc files into kepr. |
+| `agent install` | `omp\|grok\|opencode\|claude\|codex [--port N]` | Point the harness's config at the gate and install kepr's plugin (omp, Grok Build); for `claude` and `codex`, install kepr's guidance for the model (a Claude Code skill, a block in Codex's `AGENTS.md`). |
+| `agent doctor` | `[--port N] [--json]` | Check that omp and Grok Build still route through the gate and that kepr's plugin is installed and current; prints each problem's fix, exits non-zero on any. Prints paths only, never file contents. |
+| `agent shim` | `HARNESS [--dir DIR] [--remove]` | Write a launcher so typing the harness's own command runs it through `kepr agent run` (default DIR `~/.local/share/kepr/shims`, to put first on `PATH`). |
+| `agent adopt` | `[FILE...] [--yes] [--remove]` | Move keys from `.env`, shell rc, shell history (bash, zsh, fish) and agent harness config files into kepr; JSON / YAML files and non-UTF-8 history are never rewritten. |
 | `agent ls` / `agent revoke` | `[KEY] [--force]` | List or delete sealed keys. |
 | `agent replay` | `[SESSION]` · `SESSION --typescript FILE --timing FILE` | List or print recorded sessions; export PostgreSQL traffic for `scriptreplay`. |
 | `agent logs` | `[SESSION] [-n N] [--follow]` | The gate's request journal. |
@@ -744,11 +747,11 @@ attachment chunks as records in one fixed-size file, `vault.img` in the
 store directory.
 
 ```bash
-kepr vault init --size 64      # MiB, 1-4096 (default 16), filled with random noise
+kepr vault init --size 64M     # MiB, 1-4096 (default 64), filled with random noise
 # set KEPR_STORE=image for the daemon and restart it, then:
 kepr vault migrate             # move per-file credentials in (each one read back first)
 kepr vault verify              # check every used slot and the Merkle root
-kepr vault status              # active store, size and fill, files left to move
+kepr vault status              # active store, size and fill, rollback guard, files left to move
 ```
 
 What the image protects:
@@ -760,18 +763,33 @@ What the image protects:
   slot number and epoch as associated data. A Merkle root over the used
   slots lets `vault verify` name damaged slots.
 - **Placement:** record pages go to keyed pseudo-random free slots, and
-  every write also rewrites 3 random free slots with fresh noise.
+  every write also rewrites 3 random free slots with fresh noise. Each
+  record and the index take 1, 2, 4, 8, … slots (the rest of the bucket
+  is encrypted empty pages), so comparing two copies doesn't give a
+  record's size to the slot; the padding counts toward the fill.
 - **Crash safety:** commits go through a journal slot; after a crash the
   image opens in the old state or the new one.
 - **Crypto-shred:** every write uses a fresh record key, wrapped under a
   key derived from the master key. Delete drops the wrapped key, scrubs the
   record's pages and bumps the epoch. The daemon keeps the highest epoch it
   has seen and refuses an older copy of the image.
+- **Rollback:** that epoch lives in the state file (`cred-versions.json`),
+  so a copy of the whole disk, image and state file together, would still
+  open. With `KEPR_TPM2_IMAGE_NV_INDEX=0x01800A12` the header also carries
+  an anchor to a TPM2 NV counter that every commit raises, and an image
+  behind the counter is refused. `kepr vault status` names the guard in
+  use. The cost: each commit runs `tpm2_nvincrement` plus `tpm2_nvread`
+  (with `tpm2_nvreadpublic` checks, about five tool runs, each an NV
+  access on the TPM), and each open reads the counter. An image made
+  before the counter is anchored by its next write; once the counter
+  exists, an unanchored image, or one bound to another index, is refused.
 
 Limits:
 
-- The size is fixed at creation; there is no resize, and a full image
-  refuses writes ("vault image is full"). The index is capped at 256 slots
+- The size is fixed at creation (64 MiB unless `init --size` says
+  otherwise; the first write makes a 64 MiB image when there is none);
+  there is no resize, and a full image
+  refuses writes ("vault image is full"). The index is capped at 253 slots
   (about 1 MiB).
 - There is no migration back to files. While the image is active, keys
   still in per-file storage are not listed or served until
@@ -802,7 +820,7 @@ is no re-seal command.
 | Setting | Master key sealed by |
 | --- | --- |
 | `KEPR_MASTER_KEY_SEAL=tpm2`, `host+tpm2` or `auto`, optionally `KEPR_TPM2_PCRS=7+11` | the credential backend, bound to the TPM (and those PCRs) |
-| `KEPR_TPM2_PIN=1` and `KEPR_TPM2_PIN_FILE=/abs/path` | the TPM through tpm2-tools; unsealing also needs the PIN, read by the tools from that file, never from argv |
+| `KEPR_TPM2_PIN=1` and `KEPR_TPM2_PIN_FILE=/abs/path` | the TPM through tpm2-tools; unsealing also needs the PIN, read by the tools from that file, never from argv. The key and the PIN cross the TPM bus only inside salted sessions with parameter encryption |
 | `KEPR_TPM2_NV_INDEX=0x01800A11` | the TPM with an anti-rollback NV counter: an older sealed copy of the key is refused |
 | `KEPR_MASTER_KEY_SEAL=aws-kms:ARN` | AWS KMS (key or alias ARN; region from the ARN), with encryption context `{"kepr":"master-key"}` |
 | `KEPR_MASTER_KEY_SEAL=gcp-kms:projects/P/locations/L/keyRings/R/cryptoKeys/K` | Google Cloud KMS |
@@ -814,9 +832,12 @@ Notes and limits:
 
 - **TPM2 PIN and counter:** both need `KEPR_MASTER_KEY_SEAL` unset or
   `tpm2`. The NV index defaults to `0x01800A11` when either option is set.
-  The counter protects the sealed master key, not the vault image (which
-  has its own epoch check). A missing tool gives an error naming the
-  tpm2-tools package.
+  The counter protects the sealed master key, not the vault image, which
+  takes a counter of its own with `KEPR_TPM2_IMAGE_NV_INDEX` (with any
+  master-key sealer; it must be another index). Seal and unseal run in salted, encrypting
+  sessions, so sniffing a discrete TPM's bus yields ciphertext; this needs
+  tpm2-tools 5.0 or newer (`tpm2_sessionconfig`). A missing tool gives an
+  error naming the tpm2-tools package.
 - **Key services:** credentials come only from the daemon's environment:
   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and optional
   `AWS_SESSION_TOKEN` for AWS (no instance role or profile lookup),
@@ -841,8 +862,12 @@ Notes and limits:
   (opens `/dev/tpmrm0`), `kms.conf.example` (opens `AF_INET`/`AF_INET6` and
   loads `/etc/kepr/kms.env`) or `pkcs11.conf.example` (YubiHSM connector
   and USB).
-- `kepr status` reports the protection as passphrase, file or host only; it
-  doesn't show which of these sealers is in use.
+- `kepr status` names the sealer: TPM2 with its PIN, PCR and counter
+  options, the key service or token, the keychain, or for the default
+  system sealer whether the key is bound to the host key alone or also to
+  the TPM (`auto` is recorded as what it picked, in `master.key.seal`), so
+  a host that fell back from TPM2 to the host key shows it. Keys sealed
+  before that record existed show as host-bound with TPM use unrecorded.
 
 ### Passphrase plus security key
 
@@ -873,6 +898,48 @@ gate running) and are audited as `recovery-words` / `recovery-restore`.
 
 An unknown word is reported by its position. A wrong but valid word fails
 the checksum, which can't say which word it was.
+
+### Recovery key for a sealed master key
+
+A store whose master key is sealed (host key, TPM2, a key service, a token
+or the keychain) has no passphrase, so the recovery kit and recovery words
+don't apply. `kepr recovery-key enrol` makes a random 256-bit recovery key,
+prints it once as 24 words and a QR code, and the daemon keeps the master
+key wrapped under it (Argon2id + AES-256-GCM) in `master.key.recovery` next
+to the key file. Only the master key's fingerprint comes back from the
+daemon. `kepr recovery-key enrol --replace` asks for the enrolled key's
+words first and swaps in a new key. Enrolling is refused on a passphrase
+store, while any agent gate runs and, in system mode, for anyone but root;
+every attempt is audited as `recovery-key-enrol`. `kepr status` shows
+whether one is enrolled.
+
+When the sealed key won't unseal at start-up (PCRs changed after a firmware
+or kernel update, a changed boot chain, a lost key service) and a recovery
+key is enrolled, the daemon starts locked instead of exiting; it does the
+same when the key file is gone, rather than making a new key that would
+orphan the credentials. `kepr status` then says `Master key: did not unseal
+at start-up`. `kepr recovery-key unlock` asks for the 24 words, checks that
+the recovered key opens the credential files, unlocks the store and seals
+the key again for the current boot state (audited as `recovery-unlock`).
+Wrong words get one error after a one-second pause. If sealing again fails,
+the store stays unlocked until the daemon stops and the next start needs
+the words again. Without a recovery key, a key that won't unseal still
+stops the daemon.
+
+On macOS, with `KEPR_MASTER_KEY_SEAL=keychain`, `kepr recovery-key enrol` and
+`kepr lock` first show a dialog that names the action and defaults to Deny.
+Only a click on Allow within 60 seconds goes ahead; no answer, no desktop
+session or any error changes nothing. Without that, any process of your user,
+an agent included, could add a way into the store that the keychain does
+not guard. Stores sealed any other way are not asked.
+
+<Warning>
+  The words and the `master.key.recovery` file together open the store.
+  Keep the words offline, never next to the machine. Sealing again binds
+  the key to whatever boot chain is running now, so kepr can't tell a
+  firmware update from a tampered boot: only run `kepr recovery-key unlock`
+  on a machine you trust.
+</Warning>
 
 ### FIPS build
 
@@ -1022,6 +1089,11 @@ open them.
   nothing new can be created directly in them, and a file replaced there by
   rename (such as `~/.claude.json`) loses access. `KEPR_LANDLOCK=0` turns
   the rules off.
+- Descriptors the caller left open above stderr (`3<DIR`) are closed in
+  the sandbox before the harness starts, so an inherited handle can't
+  reach what the mounts and Landlock hide: the harness gets stdin, stdout
+  and stderr only. If they can't be closed, the sandbox counts as
+  unavailable, as when any other setup step fails.
 - Landlock doesn't mediate `connect()` on a Unix socket, so the daemon
   socket is protected by its hiding mount. On a kernel without Landlock,
   kepr prints a warning and the mounts still apply. Not with `--no-sandbox`.
@@ -1099,8 +1171,11 @@ Bound to `api.github.com` only (no GitHub Enterprise Server host).
   second checkout is refused until `kepr checkin KEY` with the printed
   token (saved under `$XDG_STATE_HOME/kepr/holds`; `--token` or
   `KEPR_HOLD_TOKEN` override). `checkin --rotate` runs KEY's schedule first
-  and keeps the hold if that fails. Holds coordinate within one account:
-  they don't stop the owner reading KEY, and they can't block another user.
+  and keeps the hold if that fails. A hold that runs out without a check-in
+  is cleared by the user-mode daemon (audited `checkout-lapsed`), and if KEY
+  has a rotation schedule it is rotated on the next sweep. Holds coordinate
+  within one account: they don't stop the owner reading KEY, and they can't
+  block another user.
 
 ### Cloud secret stores
 
@@ -1307,6 +1382,12 @@ a file is opened, kept per file handle and zeroized on release.
   reading programs by digest, and `--consent` asks polkit on every open
   (60 s to decide). These checks run in your own `kepr mount` process, not
   in the daemon; the daemon sees `kepr` as the reader.
+- Agent sessions can't read them: `kepr agent run` covers every `kepr
+  mount` directory with an empty tmpfs, as it does the store and the
+  daemon socket, and closes a descriptor to it passed into the session.
+  An open from a process inside a sandbox (or one whose mount table can't
+  be read) is refused anyway, before `--exe` and `--consent`.
+  A `--no-sandbox` session is not detectable; use `--exe` or `--consent`.
 - It runs in the foreground; Ctrl-C or `fusermount3 -u DIR` unmounts.
   Root mounts with mount(2), others through fusermount3; no `allow_other`.
 
@@ -1392,6 +1473,14 @@ opens a 60 s window; `kepr reauth KEY` opens it ahead of time, for scripts.
   seconds; `0` or `off` disables it) locks a passphrase-protected user-mode
   store after that long without requests, like `kepr panic`. `status` and
   `ping` polling don't count, and nothing locks while an agent gate runs.
+- **Sleep, screen lock and key removal:** the user-mode daemon does what
+  `kepr panic` does when the machine suspends, when the screen locks (a
+  logind `Lock`, or the session's `LockedHint` turning true), and when a
+  FIDO2 security key is unplugged. Key removal applies when unlocking
+  needs a security key (`kepr lock --fido2`) or with
+  `KEPR_LOCK_ON_KEY_REMOVAL=1`; any FIDO2 token counts. These need
+  `gdbus` and `udevadm`; without them nothing happens, and `kepr doctor`
+  says so.
 - **Fingerprint:** `kepr unlock --fingerprint` reopens a store the idle
   timer or sleep watcher locked, after a polkit fingerprint prompt. A
   fingerprint can't derive the key-wrapping key, so this needs the daemon
@@ -1463,16 +1552,21 @@ and per-token rate limits.
 - Both refuse lines that carry a value (`--value`, `-v`, `--stdin`, inline
   `--field k=v`): use `--generate`, `kepr://` references, or (in the shell)
   a masked `--field k=-` prompt.
-- `kepr ui` is a full-screen credential list: `j`/`k` or arrows, `g`/`G`,
-  `/` to search, Enter or `c` to copy, `d` then `y` to delete (to the
+- `kepr ui` is a full-screen credential list with each credential's type,
+  expiry, flags and tags: `j`/`k` or arrows, `g`/`G`, `/` to search (names,
+  types and tags), Enter or `c` to copy, `d` then `y` to delete (to the
   trash), `r` to refresh, `q` to quit. It never draws a value, needs a
   terminal and doesn't run under `--json`.
 
 ### Status
 
 `kepr status` prints the lock state plus mode, profile, store backend
-(files or image), what protects the master key (passphrase, file or host),
-your running agent gates, whether escrow is on, and the crypto module.
+(files or image), what protects the master key (the passphrase, with or
+without a security key; the owner-only key file; or the sealer: host key,
+TPM2 and its options, a key service or token, the keychain; or that it did
+not unseal at start-up),
+your running agent gates, whether escrow is on, whether a recovery key is
+enrolled (on a store with no passphrase), and the crypto module.
 
 ## Client SDKs
 
@@ -1628,6 +1722,7 @@ starts `kepr-daemon --user`).
 | `KEPR_TPM2_PCRS` | PCRs to bind a TPM2 seal to, e.g. `7+11`. |
 | `KEPR_TPM2_PIN=1`, `KEPR_TPM2_PIN_FILE` | TPM2 seal that also needs the PIN in that file (absolute path). |
 | `KEPR_TPM2_NV_INDEX` | NV index of the anti-rollback counter (`0x01000000`-`0x01FFFFFF`; default `0x01800A11`). |
+| `KEPR_TPM2_IMAGE_NV_INDEX` | NV index of the vault image's own anti-rollback counter, e.g. `0x01800A12`; never the master key's. Unset: the state file only. A bad value stops start-up. |
 | `KEPR_KMS_ENDPOINT` | Override the AWS KMS or Cloud KMS endpoint. |
 | `KEPR_PKCS11_PIN_FILE` | PIN file for the PKCS#11 sealer. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `GCP_ACCESS_TOKEN`, `AZURE_ACCESS_TOKEN` | Credentials for the key-service sealers, read once at start-up. |
@@ -1637,6 +1732,8 @@ starts `kepr-daemon --user`).
 | `KEPR_FINGERPRINT_UNLOCK` | How long after an idle or sleep lock `kepr unlock --fingerprint` may reopen the store (`8h`). |
 | `KEPR_WIPE_AFTER` | Destroy the wrapped master key after N wrong passphrases in a row (off by default). |
 | `KEPR_LOCK_ON_SLEEP=0` | Don't lock the user-mode store on suspend or screen lock. |
+| `KEPR_LOCK_ON_KEY_REMOVAL` | `1`: lock the user-mode store when a FIDO2 security key is unplugged; `0`: never. Unset: only when unlocking needs a security key. |
+| `KEPR_SECRET_MEMORY=locked` | Hold the master key in locked, no-dump pages instead of memfd_secret pages, which keep the kernel from hibernating. |
 
 ### Set by kepr
 

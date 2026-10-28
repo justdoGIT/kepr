@@ -5,15 +5,16 @@
 // PolicyPCR with KEPR_TPM2_PCRS), so wrong PINs count towards the TPM's
 // dictionary-attack lockout. The tools read the PIN themselves
 // (`-p file:PATH`); the key goes in on stdin and comes back on stdout.
+// Between the tools and the TPM it travels only inside salted sessions
+// with parameter encryption (T12.29, tpm_session.rs), so the TPM bus
+// carries ciphertext.
 //
-// The NV counter is defined (`nt=counter`) on the first seal and
-// incremented on every seal, i.e. every new master key. Its value is
+// The NV counter (tpm_counter.rs) is defined (`nt=counter`) on the first
+// seal and incremented on every seal, i.e. every new master key. Its value is
 // sealed in the TPM object with the key and the index (key ‖ counter ‖
 // index) and written in the blob's header; unseal refuses a blob whose
-// sealed counter is lower than the TPM's: an older copy of the key.
-//
-// Blob: "kepr-tpm2-v1\n" | flags (1: PIN, 2: PCRs) | counter u64 | index
-// u32 | pcrs (u8 len, `7,11`) | public (u16 len) | private (u16 len).
+// sealed counter is lower than the TPM's: an older copy of the key. The
+// blob format is in tpm_blob.rs.
 
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
@@ -22,17 +23,27 @@ use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 use super::runner::{Cmd, RunError, Runner};
+use super::tpm_blob::{Blob, FLAG_PCRS, FLAG_PIN};
 use super::tpm_config::TpmConfig;
+use super::tpm_counter::{bump_counter, read_counter, COUNTER_FAILED};
+use super::tpm_session::Session;
 use crate::master_key::Sealer;
 
-const MAGIC: &[u8] = b"kepr-tpm2-v1\n";
-const FLAG_PIN: u8 = 1;
-const FLAG_PCRS: u8 = 2;
 const PAYLOAD: usize = 32 + 8 + 4;
-const SEAL_FAILED: &str = "master-key seal failed";
+pub(super) const SEAL_FAILED: &str = "master-key seal failed";
 const UNSEAL_FAILED: &str = "master-key unseal failed";
-const COUNTER_FAILED: &str = "cannot use the TPM2 anti-rollback counter";
 const MISSING: &str = "TPM2 sealing needs the tpm2-tools package installed";
+/// tpm2_sessionconfig came with tpm2-tools 5.0.
+const MISSING_SESSIONS: &str =
+    "TPM2 sealing needs the tpm2-tools package installed (tpm2-tools 5.0 or newer)";
+
+/// A tool's failure as the user sees it: never its stderr.
+pub(super) fn tool_err(e: RunError, missing: &str, failed: &str) -> String {
+    match e {
+        RunError::Missing => missing.into(),
+        RunError::Failed => failed.into(),
+    }
+}
 
 /// A private scratch directory for the tools' context files, removed on
 /// drop. Nothing secret is written there.
@@ -64,71 +75,6 @@ impl Drop for WorkDir {
     }
 }
 
-struct Blob {
-    flags: u8,
-    counter: u64,
-    index: u32,
-    pcrs: String,
-    public: Vec<u8>,
-    private: Vec<u8>,
-}
-
-fn put16(out: &mut Vec<u8>, b: &[u8]) -> Result<(), String> {
-    let n = u16::try_from(b.len()).map_err(|_| SEAL_FAILED)?;
-    out.extend_from_slice(&n.to_be_bytes());
-    out.extend_from_slice(b);
-    Ok(())
-}
-
-impl Blob {
-    fn encode(&self) -> Result<Vec<u8>, String> {
-        let mut out = MAGIC.to_vec();
-        out.push(self.flags);
-        out.extend_from_slice(&self.counter.to_be_bytes());
-        out.extend_from_slice(&self.index.to_be_bytes());
-        out.push(self.pcrs.len() as u8);
-        out.extend_from_slice(self.pcrs.as_bytes());
-        put16(&mut out, &self.public)?;
-        put16(&mut out, &self.private)?;
-        Ok(out)
-    }
-
-    fn decode(blob: &[u8]) -> Result<Self, String> {
-        let bad =
-            || "the master key was not sealed with the TPM2 PIN / counter options".to_string();
-        let mut r = blob.strip_prefix(MAGIC).ok_or_else(bad)?;
-        let mut take = |n: usize| -> Result<Vec<u8>, String> {
-            if r.len() < n {
-                return Err(bad());
-            }
-            let (a, b) = r.split_at(n);
-            r = b;
-            Ok(a.to_vec())
-        };
-        let flags = take(1)?[0];
-        let counter = u64::from_be_bytes(take(8)?.try_into().map_err(|_| bad())?);
-        let index = u32::from_be_bytes(take(4)?.try_into().map_err(|_| bad())?);
-        let n = take(1)?[0];
-        let pcrs = String::from_utf8(take(n.into())?).map_err(|_| bad())?;
-        let n = u16::from_be_bytes(take(2)?.try_into().map_err(|_| bad())?);
-        let public = take(n.into())?;
-        let n = u16::from_be_bytes(take(2)?.try_into().map_err(|_| bad())?);
-        let private = take(n.into())?;
-        let pcrs_ok = pcrs.bytes().all(|b| b.is_ascii_digit() || b == b',');
-        if !r.is_empty() || !pcrs_ok || (flags & FLAG_PCRS != 0) == pcrs.is_empty() {
-            return Err(bad());
-        }
-        Ok(Self {
-            flags,
-            counter,
-            index,
-            pcrs,
-            public,
-            private,
-        })
-    }
-}
-
 pub struct TpmSealer<R: Runner> {
     pub cfg: TpmConfig,
     pub runner: R,
@@ -138,38 +84,33 @@ pub struct TpmSealer<R: Runner> {
 
 impl<R: Runner> TpmSealer<R> {
     fn run(&self, cmd: Cmd, failed: &str) -> Result<Zeroizing<Vec<u8>>, String> {
-        self.runner.run(&cmd).map_err(|e| match e {
-            RunError::Missing => MISSING.into(),
-            RunError::Failed => failed.to_string(),
-        })
+        self.runner
+            .run(&cmd)
+            .map_err(|e| tool_err(e, MISSING, failed))
     }
 
+    /// A salted session with parameter encryption on `primary`, in the
+    /// scratch file `name`; flushed when dropped.
+    fn salted(
+        &self,
+        w: &WorkDir,
+        (name, policy): (&str, bool),
+        primary: &str,
+        failed: &str,
+    ) -> Result<Session<'_, R>, String> {
+        Session::salted(&self.runner, w.file(name), primary, policy)
+            .map_err(|e| tool_err(e, MISSING_SESSIONS, failed))
+    }
+
+    /// The value of the master key's counter (tpm_counter.rs).
     fn read_counter(&self, index: u32) -> Result<u64, String> {
-        let i = format!("{index:#010x}");
-        let out = self.run(
-            Cmd::new("tpm2_nvread", &["-C", "o", "-s", "8", &i]),
-            COUNTER_FAILED,
-        )?;
-        let b: [u8; 8] = out[..].try_into().map_err(|_| COUNTER_FAILED)?;
-        Ok(u64::from_be_bytes(b))
+        read_counter(&self.runner, index).map_err(|e| tool_err(e, MISSING, COUNTER_FAILED))
     }
 
     /// Define the counter on first use, increment it, return the value.
     fn bump_counter(&self) -> Result<u64, String> {
-        let i = format!("{:#010x}", self.cfg.nv_index);
-        if let Err(e) = self.runner.run(&Cmd::new("tpm2_nvreadpublic", &[&i])) {
-            if e == RunError::Missing {
-                return Err(MISSING.into());
-            }
-            let attrs = "nt=counter|ownerread|ownerwrite";
-            let define = ["-C", "o", "-s", "8", "-a", attrs, &i];
-            self.run(Cmd::new("tpm2_nvdefine", &define), COUNTER_FAILED)?;
-        }
-        self.run(
-            Cmd::new("tpm2_nvincrement", &["-C", "o", &i]),
-            COUNTER_FAILED,
-        )?;
-        self.read_counter(self.cfg.nv_index)
+        bump_counter(&self.runner, self.cfg.nv_index)
+            .map_err(|e| tool_err(e, MISSING, COUNTER_FAILED))
     }
 
     fn primary(&self, w: &WorkDir, failed: &str) -> Result<String, String> {
@@ -186,40 +127,37 @@ impl<R: Runner> TpmSealer<R> {
         &self,
         w: &WorkDir,
         (flags, pcrs): (u8, &str),
-        digest: Option<&str>,
-        then: impl FnOnce(&str) -> Result<T, String>,
+        (primary, digest): (&str, Option<&str>),
+        then: impl FnOnce(&Session<'_, R>) -> Result<T, String>,
     ) -> Result<T, String> {
         let failed = if digest.is_some() {
             SEAL_FAILED
         } else {
             UNSEAL_FAILED
         };
-        let s = w.file("session.ctx");
-        // A trial session computes the digest; a policy session satisfies it.
-        let mut start = vec!["-S", s.as_str()];
-        if digest.is_none() {
-            start.insert(0, "--policy-session");
+        // A trial session computes the digest (nothing secret crosses the
+        // bus); a salted, encrypting policy session satisfies it.
+        let session = match digest {
+            Some(_) => Session::trial(&self.runner, w.file("session.ctx"))
+                .map_err(|e| tool_err(e, MISSING, failed))?,
+            None => self.salted(w, ("session.ctx", true), primary, failed)?,
+        };
+        let s = session.path();
+        let pcr = format!("sha256:{pcrs}");
+        let mut steps: Vec<(&str, Vec<&str>)> = Vec::new();
+        if flags & FLAG_PCRS != 0 {
+            steps.push(("tpm2_policypcr", vec!["-S", s, "-l", &pcr]));
         }
-        self.run(Cmd::new("tpm2_startauthsession", &start), failed)?;
-        let r = (|| {
-            let pcr = format!("sha256:{pcrs}");
-            let mut steps: Vec<(&str, Vec<&str>)> = Vec::new();
-            if flags & FLAG_PCRS != 0 {
-                steps.push(("tpm2_policypcr", vec!["-S", &s, "-l", &pcr]));
-            }
-            if flags & FLAG_PIN != 0 {
-                steps.push(("tpm2_policyauthvalue", vec!["-S", &s]));
-            }
-            if let (Some(d), Some(last)) = (digest, steps.last_mut()) {
-                last.1.extend(["-L", d]);
-            }
-            for (tool, args) in steps {
-                self.run(Cmd::new(tool, &args), failed)?;
-            }
-            then(&s)
-        })();
-        let _ = self.runner.run(&Cmd::new("tpm2_flushcontext", &[&s]));
-        r
+        if flags & FLAG_PIN != 0 {
+            steps.push(("tpm2_policyauthvalue", vec!["-S", s]));
+        }
+        if let (Some(d), Some(last)) = (digest, steps.last_mut()) {
+            last.1.extend(["-L", d]);
+        }
+        for (tool, args) in steps {
+            self.run(Cmd::new(tool, &args), failed)?;
+        }
+        then(&session)
     }
 
     fn pin_auth(&self) -> Result<String, String> {
@@ -235,6 +173,9 @@ impl<R: Runner> Sealer for TpmSealer<R> {
         let w = WorkDir::new(&self.work)?;
         let counter = self.bump_counter()?;
         let primary = self.primary(&w, SEAL_FAILED)?;
+        // The key (and the PIN) go to the TPM parameter-encrypted.
+        let session = self.salted(&w, ("hmac.ctx", false), &primary, SEAL_FAILED)?;
+        let auth = session.auth();
         let pcrs = self.cfg.pcrs.clone().unwrap_or_default();
         let flags = if self.cfg.pin_file.is_some() {
             FLAG_PIN
@@ -245,12 +186,14 @@ impl<R: Runner> Sealer for TpmSealer<R> {
         let mut create = Cmd::new(
             "tpm2_create",
             &[
-                "-C", &primary, "-g", "sha256", "-u", &public, "-r", &private, "-i", "-",
+                "-C", &primary, "-P", &auth, "-g", "sha256", "-u", &public, "-r", &private, "-i",
+                "-",
             ],
         );
         if flags != 0 {
             let digest = w.file("policy.digest");
-            self.with_policy(&w, (flags, &pcrs), Some(&digest), |_| Ok(()))?;
+            let trial = (primary.as_str(), Some(digest.as_str()));
+            self.with_policy(&w, (flags, &pcrs), trial, |_| Ok(()))?;
             create
                 .args
                 .extend(["-L", &digest, "-a", "fixedtpm|fixedparent"].map(String::from));
@@ -284,21 +227,21 @@ impl<R: Runner> Sealer for TpmSealer<R> {
         let primary = self.primary(&w, UNSEAL_FAILED)?;
         let load = ["-C", &primary, "-u", &public, "-r", &private, "-c", &ctx];
         self.run(Cmd::new("tpm2_load", &load), UNSEAL_FAILED)?;
-        let unseal = |auth: Option<String>| {
-            let mut c = Cmd::new("tpm2_unseal", &["-c", &ctx]);
-            c.args
-                .extend(auth.into_iter().flat_map(|a| ["-p".to_string(), a]));
+        let unseal = |auth: &str| {
+            let c = Cmd::new("tpm2_unseal", &["-c", &ctx, "-p", auth]);
             self.run(c, UNSEAL_FAILED)
         };
+        // The key comes back parameter-encrypted.
         let out = if b.flags == 0 {
-            unseal(None)?
+            let s = self.salted(&w, ("hmac.ctx", false), &primary, UNSEAL_FAILED)?;
+            unseal(&s.auth())?
         } else {
             let pin = match b.flags & FLAG_PIN {
                 0 => String::new(),
                 _ => format!("+{}", self.pin_auth()?),
             };
-            self.with_policy(&w, (b.flags, &b.pcrs), None, |s| {
-                unseal(Some(format!("session:{s}{pin}")))
+            self.with_policy(&w, (b.flags, &b.pcrs), (&primary, None), |s| {
+                unseal(&format!("{}{pin}", s.auth()))
             })?
         };
         if out.len() != PAYLOAD {
@@ -325,6 +268,7 @@ impl<R: Runner> Sealer for TpmSealer<R> {
 #[cfg(test)]
 mod tests {
     use super::super::runner::fake::{arg, FakeRunner};
+    use super::super::tpm_blob::MAGIC;
     use super::super::tpm_config::DEFAULT_NV_INDEX;
     use super::*;
     use std::sync::{Arc, Mutex};
@@ -342,6 +286,11 @@ mod tests {
             let mut t = tpm.lock().unwrap();
             match c.tool {
                 "tpm2_nvreadpublic" => t.counter.map(|_| Vec::new()).ok_or(RunError::Failed),
+                "tpm2_getcap" => Ok(if t.counter.is_some() {
+                    b"- 0x1800a11\n".to_vec()
+                } else {
+                    Vec::new()
+                }),
                 "tpm2_nvdefine" => {
                     t.counter = Some(0);
                     Ok(Vec::new())
@@ -515,5 +464,242 @@ mod tests {
         let mut blob = s.seal(&[4u8; 32]).unwrap();
         blob.push(0);
         assert!(s.unseal(&blob).is_err());
+    }
+
+    // T12.29: salted, encrypting sessions. The scripts below pin every
+    // tpm2-tools call and its argv, in order.
+
+    /// `fake`, except that `tool` fails (or is missing).
+    fn fake_failing(tpm: Arc<Mutex<Tpm>>, tool: &'static str, missing: bool) -> FakeRunner {
+        let inner = fake(tpm);
+        FakeRunner::new(move |c| match c.tool == tool {
+            true if missing => Err(RunError::Missing),
+            true => Err(RunError::Failed),
+            false => inner.run(c).map(|z| z.to_vec()),
+        })
+    }
+
+    /// The calls since `from`, one line each (tool and argv; stdin not
+    /// shown), each scratch directory written `W` and the PIN file `PIN`.
+    fn script(r: &FakeRunner, from: usize, pin: Option<&Path>) -> Vec<String> {
+        let calls = r.calls().split_off(from);
+        let dirs: Vec<String> = calls
+            .iter()
+            .filter(|c| c.0 == "tpm2_createprimary")
+            .map(|c| {
+                let ctx = Path::new(arg(&c.1, "-c").unwrap());
+                ctx.parent().unwrap().to_string_lossy().into_owned()
+            })
+            .collect();
+        calls
+            .iter()
+            .map(|c| {
+                let mut line = std::iter::once(c.0.as_str())
+                    .chain(c.1.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                for d in &dirs {
+                    line = line.replace(d.as_str(), "W");
+                }
+                if let Some(p) = pin {
+                    line = line.replace(&p.display().to_string(), "PIN");
+                }
+                line
+            })
+            .collect()
+    }
+
+    const COUNTER_SEAL: &[&str] = &[
+        "tpm2_nvreadpublic 0x01800a11",
+        "tpm2_getcap handles-nv-index",
+        "tpm2_nvdefine -C o -s 8 -a nt=counter|ownerread|ownerwrite 0x01800a11",
+        "tpm2_nvincrement -C o 0x01800a11",
+        "tpm2_nvread -C o -s 8 0x01800a11",
+        "tpm2_createprimary -C o -g sha256 -G ecc -c W/primary.ctx",
+    ];
+
+    #[test]
+    fn unseal_without_policy_uses_a_salted_encrypting_hmac_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let tpm = Arc::new(Mutex::new(Tpm::default()));
+        let s = sealer(counter_only(), &tpm, dir.path());
+        let blob = s.seal(&[5u8; 32]).unwrap();
+        let from = s.runner.calls().len();
+        assert_eq!(*s.unseal(&blob).unwrap(), [5u8; 32]);
+        assert_eq!(
+            script(&s.runner, from, None),
+            [
+                "tpm2_createprimary -C o -g sha256 -G ecc -c W/primary.ctx",
+                "tpm2_load -C W/primary.ctx -u W/key.pub -r W/key.priv -c W/key.ctx",
+                "tpm2_startauthsession --hmac-session -S W/hmac.ctx -c W/primary.ctx",
+                "tpm2_sessionconfig W/hmac.ctx --enable-encrypt --enable-decrypt",
+                "tpm2_unseal -c W/key.ctx -p session:W/hmac.ctx",
+                "tpm2_flushcontext W/hmac.ctx",
+                "tpm2_nvread -C o -s 8 0x01800a11",
+            ]
+        );
+    }
+
+    #[test]
+    fn seal_passes_the_key_over_a_decrypting_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let tpm = Arc::new(Mutex::new(Tpm::default()));
+        let s = sealer(counter_only(), &tpm, dir.path());
+        s.seal(&[6u8; 32]).unwrap();
+        let mut want = COUNTER_SEAL.to_vec();
+        want.extend([
+            "tpm2_startauthsession --hmac-session -S W/hmac.ctx -c W/primary.ctx",
+            "tpm2_sessionconfig W/hmac.ctx --enable-encrypt --enable-decrypt",
+            "tpm2_create -C W/primary.ctx -P session:W/hmac.ctx -g sha256 -u W/key.pub \
+             -r W/key.priv -i -",
+            "tpm2_flushcontext W/hmac.ctx",
+        ]);
+        assert_eq!(script(&s.runner, 0, None), want);
+        // The key goes in on stdin of tpm2_create only.
+        let calls = s.runner.calls();
+        let with_stdin: Vec<_> = calls.iter().filter(|c| !c.2.is_empty()).collect();
+        assert_eq!(with_stdin.len(), 1);
+        assert_eq!(with_stdin[0].0, "tpm2_create");
+        assert_eq!(&with_stdin[0].2[..32], &[6u8; 32]);
+
+        // With a PIN and PCRs: the trial session stays unsalted.
+        let pin = dir.path().join("pin");
+        fs::write(&pin, b"246810").unwrap();
+        let cfg = TpmConfig {
+            pin_file: Some(pin.clone()),
+            nv_index: DEFAULT_NV_INDEX,
+            pcrs: Some("7".into()),
+        };
+        let s = sealer(cfg, &tpm, &dir.path().join("w"));
+        s.seal(&[7u8; 32]).unwrap();
+        assert_eq!(
+            script(&s.runner, 0, Some(&pin)),
+            [
+                "tpm2_nvreadpublic 0x01800a11",
+                "tpm2_nvincrement -C o 0x01800a11",
+                "tpm2_nvread -C o -s 8 0x01800a11",
+                "tpm2_createprimary -C o -g sha256 -G ecc -c W/primary.ctx",
+                "tpm2_startauthsession --hmac-session -S W/hmac.ctx -c W/primary.ctx",
+                "tpm2_sessionconfig W/hmac.ctx --enable-encrypt --enable-decrypt",
+                "tpm2_startauthsession -S W/session.ctx",
+                "tpm2_policypcr -S W/session.ctx -l sha256:7",
+                "tpm2_policyauthvalue -S W/session.ctx -L W/policy.digest",
+                "tpm2_flushcontext W/session.ctx",
+                "tpm2_create -C W/primary.ctx -P session:W/hmac.ctx -g sha256 -u W/key.pub \
+                 -r W/key.priv -i - -L W/policy.digest -a fixedtpm|fixedparent -p file:PIN",
+                "tpm2_flushcontext W/hmac.ctx",
+            ]
+        );
+    }
+
+    #[test]
+    fn pin_unseal_runs_its_policy_on_a_salted_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let pin = dir.path().join("pin");
+        fs::write(&pin, b"135790").unwrap();
+        let tpm = Arc::new(Mutex::new(Tpm::default()));
+        let cfg = TpmConfig {
+            pin_file: Some(pin.clone()),
+            nv_index: DEFAULT_NV_INDEX,
+            pcrs: Some("7,11".into()),
+        };
+        let s = sealer(cfg, &tpm, &dir.path().join("w"));
+        let blob = s.seal(&[8u8; 32]).unwrap();
+        let from = s.runner.calls().len();
+        assert_eq!(*s.unseal(&blob).unwrap(), [8u8; 32]);
+        assert_eq!(
+            script(&s.runner, from, Some(&pin)),
+            [
+                "tpm2_createprimary -C o -g sha256 -G ecc -c W/primary.ctx",
+                "tpm2_load -C W/primary.ctx -u W/key.pub -r W/key.priv -c W/key.ctx",
+                "tpm2_startauthsession --policy-session -S W/session.ctx -c W/primary.ctx",
+                "tpm2_sessionconfig W/session.ctx --enable-encrypt --enable-decrypt",
+                "tpm2_policypcr -S W/session.ctx -l sha256:7,11",
+                "tpm2_policyauthvalue -S W/session.ctx",
+                "tpm2_unseal -c W/key.ctx -p session:W/session.ctx+file:PIN",
+                "tpm2_flushcontext W/session.ctx",
+                "tpm2_nvread -C o -s 8 0x01800a11",
+            ]
+        );
+        assert!(s
+            .runner
+            .calls()
+            .iter()
+            .all(|c| c.1.iter().all(|a| !a.contains("135790"))));
+    }
+
+    /// (tpm2_startauthsession calls, tpm2_flushcontext calls)
+    fn starts_and_flushes(r: &FakeRunner) -> (usize, usize) {
+        let tools = r.tools();
+        let n = |t: &str| tools.iter().filter(|x| *x == t).count();
+        (n("tpm2_startauthsession"), n("tpm2_flushcontext"))
+    }
+
+    #[test]
+    fn every_session_is_flushed_even_when_unseal_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let pin = dir.path().join("pin");
+        fs::write(&pin, b"1234").unwrap();
+        let with_pin = TpmConfig {
+            pin_file: Some(pin),
+            nv_index: DEFAULT_NV_INDEX,
+            pcrs: None,
+        };
+        let session_steps = ["tpm2_unseal", "tpm2_sessionconfig"];
+        let policy_steps = ["tpm2_unseal", "tpm2_sessionconfig", "tpm2_policyauthvalue"];
+        for (cfg, tools) in [
+            (counter_only(), &session_steps[..]),
+            (with_pin, &policy_steps),
+        ] {
+            let tpm = Arc::new(Mutex::new(Tpm::default()));
+            let blob = sealer(cfg.clone(), &tpm, dir.path())
+                .seal(&[9u8; 32])
+                .unwrap();
+            for &tool in tools {
+                let s = TpmSealer {
+                    cfg: cfg.clone(),
+                    runner: fake_failing(Arc::clone(&tpm), tool, false),
+                    work: dir.path().to_path_buf(),
+                };
+                let e = s.unseal(&blob).unwrap_err();
+                assert_eq!(e, "master-key unseal failed", "{tool}");
+                let (starts, flushes) = starts_and_flushes(&s.runner);
+                assert_eq!(starts, 1, "{tool}");
+                assert_eq!(flushes, starts, "{tool}");
+            }
+        }
+        // Seal too: a failing create still flushes the HMAC session.
+        let tpm = Arc::new(Mutex::new(Tpm::default()));
+        let s = TpmSealer {
+            cfg: counter_only(),
+            runner: fake_failing(tpm, "tpm2_create", false),
+            work: dir.path().to_path_buf(),
+        };
+        assert_eq!(s.seal(&[1u8; 32]).unwrap_err(), "master-key seal failed");
+        assert_eq!(starts_and_flushes(&s.runner), (1, 1));
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "only the PIN file"
+        );
+    }
+
+    #[test]
+    fn old_tools_without_sessionconfig_get_a_clear_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let tpm = Arc::new(Mutex::new(Tpm::default()));
+        let blob = sealer(counter_only(), &tpm, dir.path())
+            .seal(&[2u8; 32])
+            .unwrap();
+        let old = TpmSealer {
+            cfg: counter_only(),
+            runner: fake_failing(Arc::clone(&tpm), "tpm2_sessionconfig", true),
+            work: dir.path().to_path_buf(),
+        };
+        let want = "TPM2 sealing needs the tpm2-tools package installed (tpm2-tools 5.0 or newer)";
+        assert_eq!(old.seal(&[3u8; 32]).unwrap_err(), want);
+        assert_eq!(old.unseal(&blob).unwrap_err(), want);
+        assert_eq!(starts_and_flushes(&old.runner), (2, 2));
+        assert!(!old.runner.tools().iter().any(|t| t == "tpm2_create"));
     }
 }

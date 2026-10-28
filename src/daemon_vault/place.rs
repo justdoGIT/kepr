@@ -12,8 +12,7 @@
 
 use std::collections::HashSet;
 
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
+use crate::daemon_eco::cipher;
 
 use super::image::{SlotIo, VaultImage, FIRST_DATA_SLOT, SLOT};
 use super::keys::noise;
@@ -57,11 +56,10 @@ impl Allocator {
         let n = u64::from(self.data_slots());
         let mut last = FIRST_DATA_SLOT;
         for attempt in 0..PROBES {
-            let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes any key length");
-            mac.update(record_id);
-            mac.update(&part.to_le_bytes());
-            mac.update(&attempt.to_le_bytes());
-            let h = mac.finalize().into_bytes();
+            let h = cipher::hmac_sha256(
+                key,
+                &[record_id, &part.to_le_bytes(), &attempt.to_le_bytes()],
+            );
             let v = u64::from_le_bytes(h[..8].try_into().expect("8 bytes"));
             last = FIRST_DATA_SLOT + (v % n) as u32;
             if self.is_free(last) {
@@ -204,5 +202,14 @@ mod tests {
         assert_eq!(changed.len(), 1 + DECOYS, "{changed:?}");
         assert!(changed.contains(&s));
         assert!(!changed.contains(&0), "header untouched");
+    }
+
+    #[test]
+    fn placement_is_pinned() {
+        let mut alloc = Allocator::new(64, []);
+        let slots: Vec<u32> = (0..4)
+            .map(|part| alloc.place(&[3u8; 32], b"rec", part).unwrap())
+            .collect();
+        assert_eq!(slots, [50, 45, 52, 20]);
     }
 }

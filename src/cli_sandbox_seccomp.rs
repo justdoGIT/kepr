@@ -5,107 +5,27 @@
 // init/finit_module. Everything else is allowed. Requires
 // PR_SET_NO_NEW_PRIVS (set here). Debuggers (gdb, strace) stop working
 // inside a sandboxed session; that is intended.
+//
+// The filter itself lives in kepr_core::seccomp (T12.03), shared with
+// kepr-gate sessions; these wrappers keep the sandbox's names.
 
-#[cfg(target_arch = "x86_64")]
-const AUDIT_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
-#[cfg(target_arch = "aarch64")]
-const AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
-
-/// offsetof(struct seccomp_data, nr) and (…, arch)
-const OFF_NR: u32 = 0;
-const OFF_ARCH: u32 = 4;
+use kepr_core::seccomp;
 
 pub fn denied_syscalls() -> Vec<i64> {
-    let mut v = vec![
-        libc::SYS_ptrace,
-        libc::SYS_process_vm_readv,
-        libc::SYS_process_vm_writev,
-        libc::SYS_bpf,
-        libc::SYS_perf_event_open,
-        libc::SYS_kexec_load,
-        libc::SYS_init_module,
-        libc::SYS_finit_module,
-    ];
-    #[cfg(target_arch = "x86_64")]
-    v.push(libc::SYS_kexec_file_load);
-    v
+    seccomp::sandbox_denied()
 }
 
-fn stmt(code: u32, k: u32) -> libc::sock_filter {
-    libc::sock_filter {
-        code: code as u16,
-        jt: 0,
-        jf: 0,
-        k,
-    }
-}
-
-fn jump(code: u32, k: u32, jt: u8, jf: u8) -> libc::sock_filter {
-    libc::sock_filter {
-        code: code as u16,
-        jt,
-        jf,
-        k,
-    }
-}
-
-/// Build the BPF program: kill on a foreign arch (blocks the x32 /
-/// i386 syscall-table bypass), EPERM for denied syscalls, allow the rest.
+/// The BPF program: kill on a foreign arch (blocks the x32 / i386
+/// syscall-table bypass), EPERM for denied syscalls, allow the rest.
 pub fn program() -> Vec<libc::sock_filter> {
-    use libc::{BPF_ABS, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD, BPF_RET, BPF_W};
-    let ld = |off| stmt(BPF_LD | BPF_W | BPF_ABS, off);
-    let ret = |v| stmt(BPF_RET | BPF_K, v);
-    let denied = denied_syscalls();
-    let mut p = vec![
-        ld(OFF_ARCH),
-        jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH, 1, 0),
-        ret(libc::SECCOMP_RET_KILL_PROCESS),
-        ld(OFF_NR),
-    ];
-    #[cfg(target_arch = "x86_64")]
-    {
-        // x32 ABI syscalls have bit 30 set: refuse them outright.
-        p.push(jump(BPF_JMP | libc::BPF_JGE | BPF_K, 0x4000_0000, 0, 1));
-        p.push(ret(libc::SECCOMP_RET_KILL_PROCESS));
-    }
-    let n = denied.len();
-    for (i, nr) in denied.iter().enumerate() {
-        // match → jump to the EPERM return after the remaining checks
-        // and the ALLOW return.
-        let to_deny = (n - i) as u8;
-        p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, *nr as u32, to_deny, 0));
-    }
-    p.push(ret(libc::SECCOMP_RET_ALLOW));
-    p.push(ret(libc::SECCOMP_RET_ERRNO | libc::EPERM as u32));
-    p
+    seccomp::program(&denied_syscalls())
 }
 
 /// Install `prog` on the calling thread (inherited across exec). Takes
 /// a prebuilt program so it is safe to call between fork and exec
 /// (no allocation).
 pub fn install(prog: &[libc::sock_filter]) -> Result<(), &'static str> {
-    let fprog = libc::sock_fprog {
-        len: prog.len() as u16,
-        filter: prog.as_ptr() as *mut libc::sock_filter,
-    };
-    // SAFETY: prctl with documented arguments; `fprog` points at `prog`,
-    // which outlives the call (the kernel copies the program).
-    unsafe {
-        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-            return Err("cannot set no_new_privs");
-        }
-        if libc::prctl(
-            libc::PR_SET_SECCOMP,
-            libc::SECCOMP_MODE_FILTER,
-            &fprog as *const _,
-            0,
-            0,
-        ) != 0
-        {
-            return Err("cannot install seccomp filter");
-        }
-    }
-    Ok(())
+    seccomp::install(prog)
 }
 
 #[cfg(test)]

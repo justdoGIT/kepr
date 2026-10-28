@@ -27,3 +27,8 @@ Environment=KEPR_TPM2_NV_INDEX=0x01800A11
 
 # Bind to the boot chain too:
 #Environment=KEPR_TPM2_PCRS=7
+
+# Give the vault image (KEPR_STORE=image) a counter of its own, so a
+# restored copy of the whole disk is refused too (T12.30; another index
+# than the master key's):
+#Environment=KEPR_TPM2_IMAGE_NV_INDEX=0x01800A12

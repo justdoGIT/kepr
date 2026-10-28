@@ -5,7 +5,8 @@
 //   │                        relays sandbox connections to the gate
 //   └ child: unshare(user, mount, pid[, net]); maps our own uid/gid
 //      └ pid 1: private mounts; empty tmpfs over the vault, state and
-//        │      socket dirs; fresh /proc (host processes invisible)
+//        │      socket dirs; fresh /proc (host processes invisible);
+//        │      closes the caller's fds above stderr (T12.52)
 //        ├ acceptor [--isolate-net]: listens on 127.0.0.1:PORT inside the
 //        │   netns and hands each connection to the relay (SCM_RIGHTS)
 //        └ harness: no capabilities, no_new_privs, Landlock (T1.23),
@@ -19,6 +20,7 @@
 use std::ffi::CString;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
@@ -44,8 +46,13 @@ fn base(var: &str, default_rel: &str) -> Option<PathBuf> {
 }
 
 /// Directories the agent must not see: credential store, daemon state
-/// (master key, audit log), the daemon socket, and the system-mode paths.
+/// (master key, audit log), the daemon socket, the system-mode paths,
+/// and every `kepr mount` directory (T12.20).
 pub fn hide_dirs() -> Vec<PathBuf> {
+    hide_dirs_with(&std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default())
+}
+
+fn hide_dirs_with(mountinfo: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = [
         base("XDG_DATA_HOME", ".local/share"),
         base("XDG_STATE_HOME", ".local/state"),
@@ -57,6 +64,7 @@ pub fn hide_dirs() -> Vec<PathBuf> {
     v.push(kepr_core::protocol::socket_dir());
     v.push(kepr_core::protocol::runtime_root()); // T11.16: every profile's socket
     v.extend(["/etc/credstore.encrypted", "/var/lib/kepr", "/run/kepr"].map(PathBuf::from));
+    v.extend(sys::fuse_kepr_mounts(mountinfo));
     outermost(v.into_iter().filter(|p| p.is_dir()).collect())
 }
 
@@ -193,7 +201,8 @@ pub fn probe(isolate_net: bool) -> Result<(), String> {
         }
         let inner = fork();
         if inner == 0 {
-            report(sys::setup_mounts(&hide));
+            let keep = [wr.as_raw_fd()]; // T12.52: a failure makes the default warn
+            report(sys::setup_mounts(&hide).and_then(|()| sys::close_inherited(&keep)));
         }
         wait_code(inner);
         // SAFETY: _exit after fork.
@@ -242,6 +251,14 @@ fn exec_harness(plan: &Plan) -> ! {
 /// pid 1 of the sandbox: set up mounts, start the acceptor, run and reap.
 fn init(plan: &Plan, relay: Option<UnixStream>) -> ! {
     if let Err(e) = sys::setup_mounts(&plan.hide) {
+        die(&e);
+    }
+    // T12.52: no fd the caller left open reaches pid 1, the acceptors or
+    // the harness; only the acceptors' relay socket is kept (dropped
+    // before the harness forks). It runs before the harness's Landlock
+    // and seccomp, so the filter needs no new syscall.
+    let keep: Vec<RawFd> = relay.iter().map(|r| r.as_raw_fd()).collect();
+    if let Err(e) = sys::close_inherited(&keep) {
         die(&e);
     }
     // One acceptor per relayed port; each hands connections to the relay.
@@ -339,6 +356,25 @@ mod tests {
             ]),
             [p("/r/kepr"), p("/r/kepr2"), p("/s/kepr")]
         );
+    }
+
+    #[test]
+    fn kepr_mount_points_are_hidden_too() {
+        // T12.20: a `kepr mount` directory gets the same empty tmpfs.
+        let dir = std::env::temp_dir().join(format!("kepr hide {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let escaped = dir.display().to_string().replace(' ', "\\040");
+        let mi = format!("40 22 0:35 / {escaped} ro,nosuid - fuse.kepr kepr ro\n");
+        let gone = dir.join("missing");
+        let mi = format!(
+            "{mi}41 22 0:36 / {} ro - fuse.kepr kepr ro\n",
+            gone.display()
+        );
+        let hidden = hide_dirs_with(&mi);
+        assert!(hidden.contains(&dir), "{hidden:?}");
+        assert!(!hidden.contains(&gone), "only existing directories");
+        assert!(!hide_dirs_with("").contains(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

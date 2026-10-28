@@ -25,71 +25,22 @@
 // rules are out of scope (the net namespace handles those). Kernels
 // without Landlock get a warning, and the mounts still apply.
 
+//
+// The syscall layer (ABI probe, rights, rulesets) is kepr_core::landlock,
+// shared with kepr-gate sessions (T12.04); the policy stays here.
+
 use std::ffi::{CString, OsStr};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-const CREATE_RULESET_VERSION: libc::c_uint = 1;
-const RULE_PATH_BENEATH: libc::c_int = 1;
-
-pub const EXECUTE: u64 = 1 << 0;
-pub const WRITE_FILE: u64 = 1 << 1;
-pub const READ_FILE: u64 = 1 << 2;
-pub const READ_DIR: u64 = 1 << 3;
-// 1 << 4 ..= 1 << 12: remove dir / file, make char / dir / reg / sock /
-// fifo / block / sym (directory rights).
-pub const TRUNCATE: u64 = 1 << 14;
-pub const IOCTL_DEV: u64 = 1 << 15;
-/// The only rights a rule on a non-directory may carry.
-const FILE_RIGHTS: u64 = EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE | IOCTL_DEV;
-
-/// `struct landlock_ruleset_attr`, filesystem part only (the kernel takes
-/// any size from this field on; network rules are out of scope).
-#[repr(C)]
-pub struct RulesetAttr {
-    pub handled_access_fs: u64,
-}
-
-/// `struct landlock_path_beneath_attr` (packed in the kernel's UAPI).
-#[repr(C, packed)]
-struct PathBeneath {
-    allowed_access: u64,
-    parent_fd: i32,
-}
+#[cfg(test)]
+use kepr_core::landlock::TRUNCATE;
+use kepr_core::landlock::{abi, ruleset_attr_for_abi, Ruleset, EXECUTE, READ_DIR, READ_FILE};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LandlockStatus {
     Enforced { abi: i32, rules: usize },
     Unsupported,
-}
-
-/// Every filesystem right of a Landlock ABI: 13 in ABI 1, REFER from 2,
-/// TRUNCATE from 3, IOCTL_DEV from 5 (4 only added network rights).
-pub fn ruleset_attr_for_abi(abi: i32) -> RulesetAttr {
-    let handled_access_fs = match abi {
-        i32::MIN..=0 => 0,
-        1 => 0x1FFF,
-        2 => 0x3FFF,
-        3 | 4 => 0x7FFF,
-        _ => 0xFFFF,
-    };
-    RulesetAttr { handled_access_fs }
-}
-
-/// The running kernel's Landlock ABI; 0 when it has none (not built,
-/// disabled at boot, or the call is filtered).
-pub fn abi() -> i32 {
-    // SAFETY: the version query takes no attribute (NULL, 0).
-    let r = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_create_ruleset,
-            std::ptr::null::<RulesetAttr>(),
-            0usize,
-            CREATE_RULESET_VERSION,
-        )
-    };
-    i32::try_from(r).unwrap_or(0).max(0)
 }
 
 /// The entries of `dir`, without the ones in `deny`, sorted.
@@ -139,71 +90,14 @@ fn roots(ro: u64, rw: u64) -> Vec<(PathBuf, u64)> {
     v
 }
 
-fn os_err(what: &str) -> String {
-    format!("{what}: {}", std::io::Error::last_os_error())
-}
-
-/// Add one rule; a path that vanished or turned into a symlink is skipped
-/// (one rule fewer only ever means less access).
-fn add_rule(ruleset: &OwnedFd, path: &Path, access: u64) -> Result<bool, String> {
-    let Ok(c) = CString::new(path.as_os_str().as_bytes()) else {
-        return Ok(false);
-    };
-    let flags = libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW;
-    // SAFETY: `c` is a valid NUL-terminated path.
-    let fd = unsafe { libc::open(c.as_ptr(), flags) };
-    if fd < 0 {
-        return Ok(false);
-    }
-    // SAFETY: `fd` was just opened and is owned here.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    // SAFETY: an all-zero `stat` is a valid value of this plain C struct.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: fstat writes into the stack-local `st` it is given.
-    if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
-        return Ok(false);
-    }
-    let allowed_access = match st.st_mode & libc::S_IFMT {
-        libc::S_IFDIR => access,
-        libc::S_IFLNK => 0,
-        _ => access & FILE_RIGHTS,
-    };
-    if allowed_access == 0 {
-        return Ok(false);
-    }
-    let attr = PathBeneath {
-        allowed_access,
-        parent_fd: fd.as_raw_fd(),
-    };
-    // SAFETY: `attr` is a valid path-beneath attribute for the call.
-    let r = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_add_rule,
-            ruleset.as_raw_fd(),
-            RULE_PATH_BENEATH,
-            &attr as *const PathBeneath,
-            0u32,
-        )
-    };
-    if r == 0 {
-        return Ok(true);
-    }
-    // EBADFD: a kernel-internal filesystem, which takes no rules.
-    let e = std::io::Error::last_os_error();
-    match e.raw_os_error() {
-        Some(libc::EBADFD) => Ok(false),
-        _ => Err(format!("landlock rule for {}: {e}", path.display())),
-    }
-}
-
 /// Restrict the calling thread (and what it execs) to the rule set
 /// above, with every path in `deny` left out. Sets no_new_privs.
 pub fn restrict(deny: &[PathBuf]) -> Result<LandlockStatus, String> {
     let abi = abi();
     let handled = ruleset_attr_for_abi(abi).handled_access_fs;
-    if handled == 0 {
+    let Some(mut ruleset) = Ruleset::create(handled)? else {
         return Ok(LandlockStatus::Unsupported);
-    }
+    };
     let deny: Vec<PathBuf> = deny
         .iter()
         .map(|d| d.canonicalize().unwrap_or_else(|_| d.clone()))
@@ -214,37 +108,14 @@ pub fn restrict(deny: &[PathBuf]) -> Result<LandlockStatus, String> {
             grants(&root, access, &deny, &mut rules);
         }
     }
-    let attr = RulesetAttr {
-        handled_access_fs: handled,
-    };
-    // SAFETY: `attr` is valid for the size passed.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_create_ruleset,
-            &attr as *const RulesetAttr,
-            std::mem::size_of::<RulesetAttr>(),
-            0u32,
-        )
-    };
-    if fd < 0 {
-        return Err(os_err("landlock_create_ruleset"));
-    }
-    // SAFETY: a new ruleset fd, owned here.
-    let ruleset = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
-    let mut added = 0;
+    // A path that vanished or turned into a symlink is skipped (one rule
+    // fewer only ever means less access).
     for (path, access) in &rules {
-        added += usize::from(add_rule(&ruleset, path, *access)?);
+        ruleset.allow(path, *access)?;
     }
-    // SAFETY: constant prctl / landlock_restrict_self arguments.
-    unsafe {
-        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-            return Err(os_err("no_new_privs"));
-        }
-        if libc::syscall(libc::SYS_landlock_restrict_self, ruleset.as_raw_fd(), 0u32) != 0 {
-            return Err(os_err("landlock_restrict_self"));
-        }
-    }
-    Ok(LandlockStatus::Enforced { abi, rules: added })
+    let rules = ruleset.rules();
+    ruleset.restrict_self()?;
+    Ok(LandlockStatus::Enforced { abi, rules })
 }
 
 /// The hidden paths Landlock fences as well (all canonical): without

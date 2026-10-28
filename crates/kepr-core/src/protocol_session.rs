@@ -71,8 +71,12 @@ pub struct StatusInfo {
     /// `file` or `image` (T4.06 vault image).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_backend: Option<String>,
-    /// What protects the master key at rest: `passphrase`, `host` (the
-    /// credential backend, system mode) or `file` (owner-only key file).
+    /// What protects the master key at rest: `passphrase` or
+    /// `passphrase+fido2`; `file` (owner-only key file); the credential
+    /// backend's `host`, `tpm2` or `host+tpm2` (`host-unrecorded` for a
+    /// key sealed before that was recorded); `tpm2+pin+pcrs+counter` (or
+    /// a subset) for the TPM2 PIN / counter sealer; `aws-kms`, `gcp-kms`,
+    /// `azure-kv`, `pkcs11`; `keychain`; `unseal-failed` (T12.32).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_sealer: Option<String>,
     /// Agent gates running for the caller.
@@ -84,6 +88,10 @@ pub struct StatusInfo {
     /// The FIPS-validated crypto module is in use (T7.16).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fips: Option<bool>,
+    /// A recovery key for the sealed master key is enrolled (T12.31);
+    /// `None` on a passphrase store that has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_key: Option<bool>,
 }
 
 #[cfg(test)]
@@ -101,6 +109,7 @@ mod tests {
             gates: Some(2),
             escrow: Some(false),
             fips: Some(false),
+            recovery_key: Some(true),
         };
         let r = Response::StatusOk {
             locked: false,
@@ -119,6 +128,7 @@ mod tests {
             "gates",
             "escrow",
             "fips",
+            "recovery_key",
         ] {
             assert!(v.get(k).is_some(), "{k} missing from {v}");
         }

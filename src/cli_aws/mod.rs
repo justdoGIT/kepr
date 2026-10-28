@@ -10,6 +10,7 @@
 //   flags      this batch's flags on the core `rotate` verb
 //   leaked     `kepr leaked NAME --rotate`: provider-API rotation (T9.09)
 //   github_app `kepr github-app add`: sealed GitHub App keys (T7.08)
+//   gcp        `kepr gcp add`: sealed Google credentials, gate-minted tokens (T12.10)
 //   presets    npm / docker files for agent sessions (T2.04)
 //   grant      `kepr grant`: just-in-time windows for sealed keys (T7.10)
 //   checkout   `kepr checkout` / `kepr checkin`: one holder (T7.11)
@@ -21,6 +22,7 @@
 pub mod checkout;
 pub mod credproc;
 pub mod flags;
+pub mod gcp;
 pub mod github_app;
 pub mod grant;
 pub mod iam;
@@ -43,7 +45,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::cli_exec::{CredFetcher, DaemonFetcher};
 
-pub const VERBS: &[&str] = &["aws", "github-app", "grant", "checkout", "checkin"];
+pub const VERBS: &[&str] = &["aws", "github-app", "gcp", "grant", "checkout", "checkin"];
 
 pub const HELP: &str = "\
   aws whoami KEY [--region R]          which AWS account and principal the stored key KEY is
@@ -62,6 +64,9 @@ pub const HELP: &str = "\
   github-app add KEY --app-id N --installation-id N [--key-file PEM]
                                        store a GitHub App private key sealed; agent sessions get
                                        1-hour installation tokens for gh / GH_TOKEN (gate-minted)
+  gcp add KEY [--key-file JSON] [--impersonate SA_EMAIL] [--scope URL]...
+                                       store a Google service-account key or authorized_user file
+                                       sealed; agent sessions get 1-hour access tokens for gcloud
   grant KEY --to HARNESS --for 2h      let `kepr agent run HARNESS` sessions use the sealed KEY
                                        for a window; outside every window none can (just-in-time)
   grant KEY --revoke [--to HARNESS]    close the windows now
@@ -82,6 +87,7 @@ pub fn dispatch(verb: &str, args: &[String]) -> Response {
         ("aws", Some("whoami")) => cmd_whoami(&args[1..]),
         ("aws", Some("credential-process")) => credproc::cmd(&args[1..]),
         ("github-app", _) => github_app::cmd(&args),
+        ("gcp", _) => gcp::cmd(&args),
         ("grant", _) => grant::cmd(&args),
         (v @ ("checkout" | "checkin"), _) => checkout::cmd(v, &args),
         _ => Response::fail(format!("usage:\n{HELP}")),

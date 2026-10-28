@@ -1,6 +1,7 @@
 // cli_status.rs — `kepr status`: store lock state, then (T11.24) mode,
-// profile, store backend, what seals the master key, running gates and
-// escrow, then the crypto backend line with the FIPS flag (T7.16). An
+// profile, store backend, what seals the master key, running gates,
+// escrow and the recovery key (T12.31), then the crypto backend line with
+// the FIPS flag (T7.16). An
 // older daemon sends only the lock state; then only that line prints.
 
 use crate::cli_args::Args;
@@ -38,12 +39,46 @@ pub fn cmd_status(a: &Args) -> Response {
     resp
 }
 
+/// One line per `key_sealer` token (T12.33); never a tool's name.
 fn sealer_text(s: &str) -> String {
     match s {
         "passphrase" => "store passphrase (Argon2id)".into(),
-        "host" => "host-bound (the credential backend)".into(),
+        "passphrase+fido2" => "store passphrase (Argon2id) and a FIDO2 security key".into(),
         "file" => "owner-only key file".into(),
-        other => other.into(),
+        "host" => "host key only, no TPM (the credential backend)".into(),
+        "tpm2" => "TPM2 only (the credential backend)".into(),
+        "host+tpm2" => "host key and TPM2 (the credential backend)".into(),
+        "host-unrecorded" => "host-bound (TPM use was not recorded for this key)".into(),
+        "aws-kms" => "wrapped by an AWS KMS key".into(),
+        "gcp-kms" => "wrapped by a Google Cloud KMS key".into(),
+        "azure-kv" => "wrapped by an Azure Key Vault key".into(),
+        "pkcs11" => "wrapped by a PKCS#11 token or HSM key".into(),
+        "key-service" => "wrapped by a key service".into(),
+        "keychain" => "macOS login keychain".into(),
+        "unseal-failed" => "did not unseal at start-up; run `kepr recovery-key unlock`".into(),
+        other => match other.strip_prefix("tpm2+") {
+            Some(opts) => tpm2_text(opts),
+            None => other.into(),
+        },
+    }
+}
+
+/// `tpm2+pin+pcrs+counter` and its subsets, from the TPM2 PIN / counter
+/// sealer.
+fn tpm2_text(opts: &str) -> String {
+    let parts: Vec<&str> = opts
+        .split('+')
+        .filter_map(|o| match o {
+            "pin" => Some("a PIN"),
+            "pcrs" => Some("PCR binding"),
+            "counter" => Some("an anti-rollback counter"),
+            _ => None,
+        })
+        .collect();
+    match parts.as_slice() {
+        [] => "TPM2".into(),
+        [one] => format!("TPM2 with {one}"),
+        [rest @ .., last] => format!("TPM2 with {} and {last}", rest.join(", ")),
     }
 }
 
@@ -69,6 +104,14 @@ pub fn status_lines(s: &StatusInfo) -> Vec<String> {
     if let Some(e) = s.escrow {
         out.push(format!("Escrow: {}", if e { "on" } else { "off" }));
     }
+    if let Some(r) = s.recovery_key {
+        let state = if r {
+            "enrolled"
+        } else {
+            "none (kepr recovery-key enrol)"
+        };
+        out.push(format!("Recovery key: {state}"));
+    }
     out
 }
 
@@ -86,6 +129,7 @@ mod tests {
             gates: Some(2),
             escrow: Some(true),
             fips: Some(false),
+            recovery_key: Some(true),
         };
         assert_eq!(
             status_lines(&s),
@@ -95,8 +139,71 @@ mod tests {
                 "Master key: store passphrase (Argon2id)",
                 "Agent gates: 2 running",
                 "Escrow: on",
+                "Recovery key: enrolled",
             ]
         );
+        let none = StatusInfo {
+            recovery_key: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            status_lines(&none),
+            ["Recovery key: none (kepr recovery-key enrol)"]
+        );
+    }
+
+    #[test]
+    fn every_sealer_token_has_its_line() {
+        let line = |t: &str| sealer_text(t);
+        assert_eq!(
+            line("host"),
+            "host key only, no TPM (the credential backend)"
+        );
+        assert_eq!(
+            line("host+tpm2"),
+            "host key and TPM2 (the credential backend)"
+        );
+        assert_eq!(line("tpm2"), "TPM2 only (the credential backend)");
+        assert_eq!(
+            line("host-unrecorded"),
+            "host-bound (TPM use was not recorded for this key)"
+        );
+        assert_eq!(
+            line("tpm2+pin+pcrs+counter"),
+            "TPM2 with a PIN, PCR binding and an anti-rollback counter"
+        );
+        assert_eq!(
+            line("tpm2+pin+counter"),
+            "TPM2 with a PIN and an anti-rollback counter"
+        );
+        assert_eq!(line("tpm2+counter"), "TPM2 with an anti-rollback counter");
+        assert_eq!(line("aws-kms"), "wrapped by an AWS KMS key");
+        assert_eq!(line("pkcs11"), "wrapped by a PKCS#11 token or HSM key");
+        assert_eq!(line("keychain"), "macOS login keychain");
+        assert!(line("passphrase+fido2").contains("FIDO2"));
+        for t in [
+            "passphrase",
+            "passphrase+fido2",
+            "file",
+            "host",
+            "tpm2",
+            "host+tpm2",
+            "host-unrecorded",
+            "tpm2+pin+pcrs+counter",
+            "aws-kms",
+            "gcp-kms",
+            "azure-kv",
+            "pkcs11",
+            "key-service",
+            "keychain",
+            "unseal-failed",
+        ] {
+            let l = line(t);
+            assert_ne!(l, t, "{t} has no line of its own");
+            assert!(!l.contains("systemd") && !l.contains("tpm2-tools"), "{l}");
+        }
+        // A token from a newer daemon is shown as is.
+        assert_eq!(line("something-new"), "something-new");
     }
 
     #[test]
@@ -107,6 +214,17 @@ mod tests {
             ..Default::default()
         };
         let lines = status_lines(&s);
-        assert_eq!(lines, ["Master key: host-bound (the credential backend)"]);
+        assert_eq!(
+            lines,
+            ["Master key: host key only, no TPM (the credential backend)"]
+        );
+        let s = StatusInfo {
+            key_sealer: Some("unseal-failed".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            status_lines(&s),
+            ["Master key: did not unseal at start-up; run `kepr recovery-key unlock`"]
+        );
     }
 }

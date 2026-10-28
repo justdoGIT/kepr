@@ -21,13 +21,11 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use hkdf::Hkdf;
-use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use super::folder_bundle::{Opened, Payload};
+use crate::daemon_eco::cipher;
 use crate::daemon_sharing::kem::ShareSecret;
 use crate::daemon_sharing::{load, save, state_path};
 use crate::expiry::{self, CredMeta};
@@ -88,7 +86,7 @@ impl State {
 /// the credential's lock.
 pub fn mark(uid: u32, name: &str) -> Result<String, String> {
     let mut raw = [0u8; 8];
-    getrandom::fill(&mut raw).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(&mut raw).map_err(|_| "CSPRNG failure")?;
     let mark = hex::encode(raw);
     let mp = expiry::meta_path_for(&cred_path(uid, name));
     let mut m = match expiry::read_meta(&mp) {
@@ -113,25 +111,51 @@ pub fn next_at(uid: u32, id: &str, now: u64) -> Result<u64, String> {
 }
 
 pub fn fp_key(me: &ShareSecret) -> Zeroizing<[u8; 32]> {
-    let mut key = Zeroizing::new([0u8; 32]);
     let secret = Zeroizing::new(me.x.to_bytes());
-    Hkdf::<Sha256>::new(None, secret.as_ref())
-        .expand(b"kepr-folder-fingerprint-v1", key.as_mut())
-        .expect("32 bytes is a valid HKDF length");
-    key
+    cipher::hkdf_sha256(None, secret.as_ref(), &[b"kepr-folder-fingerprint-v1"])
 }
 
 pub fn fingerprint(key: &[u8; 32], name: &str, p: &Payload, sealed: bool) -> String {
-    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("any key length");
     let meta = serde_json::to_vec(&p.meta).unwrap_or_default();
+    let mut msg = Vec::new();
     for part in [
         name.as_bytes(),
         p.value.as_bytes(),
         &meta,
         &[u8::from(sealed)],
     ] {
-        m.update(&(part.len() as u64).to_be_bytes());
-        m.update(part);
+        msg.extend_from_slice(&(part.len() as u64).to_be_bytes());
+        msg.extend_from_slice(part);
     }
-    hex::encode(&m.finalize().into_bytes()[..16])
+    hex::encode(&cipher::hmac_sha256(key, &[&msg])[..16])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixed(x: u8, seed: u8) -> ShareSecret {
+        ShareSecret {
+            x: x25519_dalek::StaticSecret::from([x; 32]),
+            mlkem_seed: Some(Zeroizing::new([seed; 64])),
+        }
+    }
+
+    // Computed by the code before it moved onto the cipher seam (T12.42).
+    #[test]
+    fn fingerprints_match_the_old_code() {
+        let k = fp_key(&fixed(5, 6));
+        assert_eq!(
+            hex::encode(*k),
+            "d91d4e6ab861f396182694006a6ed1af8623e20de8ff6c4168d8471b52110edc"
+        );
+        let p = Payload {
+            value: "v".into(),
+            meta: Default::default(),
+        };
+        assert_eq!(
+            fingerprint(&k, "NAME", &p, true),
+            "a6f39505c7308bb74d4f9d62b0222f90"
+        );
+    }
 }

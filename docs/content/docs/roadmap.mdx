@@ -49,8 +49,9 @@ most of the Phase 1 and Phase 2 Linux work:
   unlock, hash-chained audit verification, ESO integration, and Vault/AWS/GCP
   sync adapters.
 - **Still missing:** macOS Keychain/XPC support, Phase 3 team mode, Rekor
-  anchoring, SLSA-3 hermetic builds, the STRIDE threat-model document, and
-  committed fuzz harnesses. The Phase 0/Phase 1 release tags and the manual
+  anchoring, bit-for-bit reproducible release builds (the release build is
+  network-isolated from locked sources since T12.38), the STRIDE
+  threat-model document, and committed fuzz harnesses. The Phase 0/Phase 1 release tags and the manual
   end-to-end validation gate are also still pending.
 - **Operational follow-up:** the historical gap bullets should not be read as
   a report of the current tree; use the shipped/missing lists above when

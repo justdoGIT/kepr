@@ -21,7 +21,8 @@ pub fn binding_for(spec: &str) -> Result<Binding, String> {
 }
 
 /// `binding_for`, plus the extra hosts a preset binds (T2.04: `--for
-/// gcloud` also binds the common `*.googleapis.com` services).
+/// gcloud` also binds the common `*.googleapis.com` services; T12.06:
+/// `--for github` also binds github.com for git over HTTPS).
 pub fn bindings_for(spec: &str) -> Result<Vec<Binding>, String> {
     let first = binding_for(spec)?;
     let extra: &[&str] = match spec {
@@ -32,7 +33,13 @@ pub fn bindings_for(spec: &str) -> Result<Vec<Binding>, String> {
         host: h.to_string(),
         ..first.clone()
     });
-    Ok(std::iter::once(first.clone()).chain(more).collect())
+    let git = (spec == "github")
+        .then(|| providers::lookup("git").map(|p| p.binding()))
+        .flatten();
+    Ok(std::iter::once(first.clone())
+        .chain(more)
+        .chain(git)
+        .collect())
 }
 
 #[cfg(test)]
@@ -50,6 +57,20 @@ mod tests {
             .all(|x| x.inject == Inject::Bearer && x.port == 443));
         assert!(b.iter().any(|x| x.host == "storage.googleapis.com"));
         assert_eq!(bindings_for("npm").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn github_also_binds_github_com_for_git() {
+        let b = bindings_for("github").unwrap();
+        let got: Vec<(&str, &Inject)> = b.iter().map(|x| (x.host.as_str(), &x.inject)).collect();
+        assert_eq!(
+            got,
+            [
+                ("api.github.com", &Inject::Bearer),
+                ("github.com", &Inject::BasicPassword)
+            ]
+        );
+        assert!(b.iter().all(|x| x.port == 443));
     }
 
     #[test]

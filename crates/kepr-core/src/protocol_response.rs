@@ -94,13 +94,14 @@ pub enum Response {
     },
     SshKeyOk {
         name: String,
-        /// `ssh-ed25519 AAAA… comment`
+        /// `ssh-ed25519 AAAA… comment` (or `ecdsa-sha2-nistp256 …`, T12.11)
         public_line: String,
     },
     SshListOk {
         keys: Vec<SshKeyInfo>,
     },
-    /// OpenSSH signature blob (`string "ssh-ed25519" || string sig`), base64.
+    /// OpenSSH signature blob (`string "ssh-ed25519" || string sig`, or
+    /// the `ecdsa-sha2-nistp256` blob with mpint r and s), base64.
     SshSignOk {
         signature_b64: String,
     },

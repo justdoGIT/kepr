@@ -7,11 +7,12 @@
 // touches this module; it only speaks to the daemon over its socket.
 
 use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Once, OnceLock};
 
 use crate::crypto_inproc::InProcBackend;
 use crate::version_state::VersionState;
 use kepr_core::generate::ZeroString;
+use kepr_core::secmem::{Backing, GuardedKey};
 
 // ── Wire-error sanitiser ──────────────────────────────────────────────────────
 //
@@ -95,12 +96,35 @@ const NOT_READY: &str = "credential backend is not initialized";
 /// returns Err and the existing backend is left in place.
 static INPROC_BACKEND: OnceLock<InProcBackend> = OnceLock::new();
 
+/// `KEPR_SECRET_MEMORY=locked`: locked no-dump pages, never memfd_secret
+/// (whose pages make the kernel refuse hibernation). Anything else: Auto.
+fn backing() -> Backing {
+    match std::env::var("KEPR_SECRET_MEMORY").as_deref() {
+        Ok("locked") => Backing::Locked,
+        _ => Backing::Auto,
+    }
+}
+
+static PLAIN_WARNING: Once = Once::new();
+
+/// The master key in secret memory (T12.21); when no secret region can
+/// be had it falls back to ordinary memory and says so once.
+pub(crate) fn guard_key(key: &[u8; 32]) -> GuardedKey<32> {
+    let g = GuardedKey::new(key, backing());
+    if !g.is_split() {
+        PLAIN_WARNING.call_once(|| {
+            eprintln!("[kepr-daemon] secret memory unavailable; master key held in ordinary memory")
+        });
+    }
+    g
+}
+
 /// Install the in-process AEAD backend as the daemon's default. Called
 /// from `kepr-daemon::main` after the master key + VersionState are
 /// loaded; repeated calls return Err so a misconfigured restart cannot
 /// silently swap backends mid-process.
 pub fn initialize_inproc_backend(
-    master_key: [u8; 32],
+    master_key: &[u8; 32],
     versions: Arc<VersionState>,
 ) -> Result<(), String> {
     INPROC_BACKEND
@@ -125,11 +149,17 @@ pub fn lock_backend() -> Result<(), String> {
     Ok(())
 }
 
-pub fn unlock_backend(master_key: [u8; 32]) -> Result<(), String> {
+pub fn unlock_backend(master_key: &[u8; 32]) -> Result<(), String> {
     INPROC_BACKEND
         .get()
         .ok_or_else(|| NOT_READY.to_string())?
         .unlock(master_key)
+}
+
+/// T12.22: relocate the master key's shares; Ok before start-up has
+/// installed the backend.
+pub fn relocate_key() -> Result<(), String> {
+    INPROC_BACKEND.get().map_or(Ok(()), InProcBackend::relocate)
 }
 
 pub fn backend_is_locked() -> bool {
@@ -142,7 +172,6 @@ pub fn snapshot_key() -> Result<zeroize::Zeroizing<[u8; 32]>, String> {
     let backend = INPROC_BACKEND.get().ok_or_else(|| NOT_READY.to_string())?;
     backend
         .snapshot_key()
-        .map(zeroize::Zeroizing::new)
         .ok_or_else(|| "credential store is locked".to_string())
 }
 
@@ -161,6 +190,13 @@ pub fn default_backend() -> &'static dyn Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T12.21: the key comes back out of secret memory intact.
+    #[test]
+    fn snapshot_key_matches_installed_key() {
+        let _ = crate::daemon_store::testkit::uid();
+        assert_eq!(*snapshot_key().unwrap(), [0x5a; 32]);
+    }
 
     #[test]
     fn uninitialised_backend_fails_closed() {

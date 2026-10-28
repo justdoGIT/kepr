@@ -1,12 +1,16 @@
-// cli_agent_install.rs — `kepr agent install omp|grok [--port N]`
+// cli_agent_install.rs — `kepr agent install omp|grok|opencode [--port N]`
 // (T1.15). Points a harness's own config file at the gate once, so the
 // user just runs `kepr agent run omp` / `kepr agent run grok`
 // afterwards. Plain line editing (no YAML/TOML crates); always writes a
 // timestamped backup first; idempotent; never removes user entries.
+// `install claude|codex` writes only kepr's guidance for the model
+// (cli_agent_plugin::install_guidance, T12.15).
 //
 // Config shapes follow the harnesses' docs as of 2026-10:
 //   omp:  ~/.omp/agent/models.yml  providers.<id>.{baseUrl,api,apiKey}
 //   grok: ~/.grok/config.toml      [model.<key>] {model,base_url,env_key}
+//   opencode: ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json
+//         provider.anthropic.options.{baseURL,apiKey} (serde_json, T12.13)
 // Re-verify when a harness changes its configuration format.
 
 use std::path::PathBuf;
@@ -97,6 +101,59 @@ pub fn upsert_grok(text: &str, port: u16) -> String {
     join(&lines)
 }
 
+/// Point opencode's `anthropic` provider at the gate (T12.13). Plain JSON
+/// only: a root that isn't an object, a non-object on the way, or JSONC
+/// comments are refused rather than rewritten. Every other key is kept.
+pub fn upsert_opencode(text: &str, port: u16) -> Result<String, String> {
+    use serde_json::{Map, Value};
+    let bad = |what: &str| format!("opencode.json: {what} is not a JSON object; edit it by hand");
+    let mut root: Value = match text.trim() {
+        "" => Value::Object(Map::new()),
+        t => serde_json::from_str(t).map_err(|_| bad("the file"))?,
+    };
+    let obj = root.as_object_mut().ok_or_else(|| bad("the file"))?;
+    obj.entry("$schema")
+        .or_insert_with(|| "https://opencode.ai/config.json".into());
+    let mut at = obj;
+    for key in ["provider", "anthropic", "options"] {
+        at = at
+            .entry(key)
+            .or_insert_with(|| Value::Object(Map::new()))
+            .as_object_mut()
+            .ok_or_else(|| bad(key))?;
+    }
+    let base = format!("http://127.0.0.1:{port}/anthropic/v1");
+    at.insert("baseURL".into(), base.into());
+    at.insert("apiKey".into(), "{env:KEPR_PH_ANTHROPIC}".into());
+    let mut out = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    out.push('\n');
+    Ok(out)
+}
+
+/// `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json`; a relative
+/// XDG_CONFIG_HOME is ignored, as the XDG spec says.
+fn opencode_config(home: &std::path::Path, xdg: Option<std::ffi::OsString>) -> PathBuf {
+    xdg.map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".config"))
+        .join("opencode/opencode.json")
+}
+
+/// Check first, then write through `apply`: a file opencode can read but
+/// kepr can't is left as it is, with no backup.
+fn install_opencode(path: &std::path::Path, port: u16) -> Result<bool, String> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => {
+            upsert_opencode(&t, port)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    }
+    apply(path, |t| {
+        upsert_opencode(t, port).unwrap_or_else(|_| t.to_string())
+    })
+}
+
 fn home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -140,6 +197,22 @@ pub fn apply(path: &std::path::Path, edit: impl Fn(&str) -> String) -> Result<bo
     Ok(true)
 }
 
+/// claude / codex: no config to edit (the environment points them at the
+/// gate), only kepr's guidance for the model (T12.15).
+fn guidance(harness: &str, home: &std::path::Path) -> Response {
+    let env = |k: &str| std::env::var(k).ok();
+    match crate::cli_agent_plugin::install_guidance(harness, home, &env) {
+        Ok(Some((path, changed))) => {
+            let what = if changed { "installed" } else { "up to date" };
+            cli_ui::ok(&format!("kepr guidance {what}: {}", path.display()));
+            cli_ui::info(&format!("start it with: kepr agent run {harness}"));
+            Response::Pong
+        }
+        Ok(None) => Response::fail(format!("no guidance for '{harness}'")),
+        Err(e) => Response::fail(e),
+    }
+}
+
 pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
     let port = port.unwrap_or(INSTALL_PORT);
     let home = match home() {
@@ -157,13 +230,21 @@ pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
             let r = apply(&p, |t| upsert_grok(t, port));
             (p, r)
         }
-        "claude" | "codex" | "grok-cli" | "aider" => {
+        "opencode" => {
+            let p = opencode_config(&home, std::env::var_os("XDG_CONFIG_HOME"));
+            let r = install_opencode(&p, port);
+            (p, r)
+        }
+        "claude" | "codex" => return guidance(harness, &home),
+        "grok-cli" | "aider" | "gemini" => {
             return Response::fail(format!(
                 "{harness} needs no install step: run `kepr agent run {harness}`"
             ))
         }
         other => {
-            return Response::fail(format!("no installer for '{other}' (supported: omp, grok)"))
+            return Response::fail(format!(
+                "no installer for '{other}' (supported: omp, grok, opencode, claude, codex)"
+            ))
         }
     };
     match result {
@@ -222,6 +303,83 @@ mod tests {
         let moved = upsert_grok(&added, 9000);
         assert!(moved.contains(":9000/xai/v1") && !moved.contains(":7878/"));
         assert_eq!(moved.matches(GROK_HEADER).count(), 1);
+    }
+
+    #[test]
+    fn opencode_config_path_ignores_a_relative_xdg_dir() {
+        let home = std::path::Path::new("/h");
+        let want = |p: &str| PathBuf::from(p).join("opencode/opencode.json");
+        assert_eq!(opencode_config(home, None), want("/h/.config"));
+        assert_eq!(opencode_config(home, Some("/x".into())), want("/x"));
+        assert_eq!(
+            opencode_config(home, Some("rel".into())),
+            want("/h/.config")
+        );
+        assert_eq!(opencode_config(home, Some("".into())), want("/h/.config"));
+    }
+
+    #[test]
+    fn opencode_fresh_config() {
+        let want = r#"{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "anthropic": {
+      "options": {
+        "apiKey": "{env:KEPR_PH_ANTHROPIC}",
+        "baseURL": "http://127.0.0.1:7878/anthropic/v1"
+      }
+    }
+  }
+}
+"#;
+        let fresh = upsert_opencode("", 7878).unwrap();
+        assert_eq!(fresh, want);
+        assert_eq!(upsert_opencode(" \n", 7878).unwrap(), want);
+        assert_eq!(upsert_opencode(&fresh, 7878).unwrap(), fresh);
+        assert!(!fresh.contains("sk-"));
+    }
+
+    #[test]
+    fn opencode_keeps_user_keys() {
+        let user = r#"{"$schema": "https://example.test/mine.json", "model": "anthropic/claude-sonnet-4-5",
+          "provider": {"openai": {"options": {"baseURL": "https://proxy.example/v1"}},
+                       "anthropic": {"models": {"x": {}}, "options": {"apiKey": "sk-ant-api03-old", "timeout": 5}}}}"#;
+        let out = upsert_opencode(user, 9000).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["$schema"], "https://example.test/mine.json");
+        assert_eq!(v["model"], "anthropic/claude-sonnet-4-5");
+        assert_eq!(
+            v["provider"]["openai"]["options"]["baseURL"],
+            "https://proxy.example/v1"
+        );
+        let a = &v["provider"]["anthropic"];
+        assert_eq!(a["models"]["x"], serde_json::json!({}));
+        assert_eq!(a["options"]["timeout"], 5);
+        assert_eq!(
+            a["options"]["baseURL"],
+            "http://127.0.0.1:9000/anthropic/v1"
+        );
+        assert_eq!(a["options"]["apiKey"], "{env:KEPR_PH_ANTHROPIC}");
+        assert!(!out.contains("sk-"));
+        assert_eq!(upsert_opencode(&out, 9000).unwrap(), out);
+    }
+
+    #[test]
+    fn opencode_refuses_a_non_object_and_leaves_the_file() {
+        for bad in ["[1, 2]", "{\"provider\": 3}", "{\"a\": 1, // note\n}"] {
+            assert!(upsert_opencode(bad, 7878).is_err(), "{bad}");
+        }
+        let dir = std::env::temp_dir().join(format!("kepr-oc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("opencode.json");
+        std::fs::write(&path, "[1, 2]\n").unwrap();
+        assert!(install_opencode(&path, 7878).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[1, 2]\n");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no backup");
+        std::fs::remove_file(&path).unwrap();
+        assert!(install_opencode(&path, 7878).unwrap());
+        assert!(!install_opencode(&path, 7878).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

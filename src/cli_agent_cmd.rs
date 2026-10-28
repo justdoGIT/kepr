@@ -2,9 +2,11 @@
 // P1). Parsed separately from the main argv parser because the verbs
 // take their own flags.
 //
-//   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin] [--requires-consent]
+//   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin|--from-clipboard] [--requires-consent]
 //   kepr agent run HARNESS [--port N] [--no-sandbox|--strict-sandbox] [--isolate-net] [-- ARGV...]
-//   kepr agent install omp|grok [--port N]
+//   kepr agent install omp|grok|opencode|claude|codex [--port N]
+//   kepr agent doctor [--port N] [--json]
+//   kepr agent shim HARNESS [--dir DIR] [--remove]
 //   kepr agent adopt [FILE...] [--yes] [--remove]
 //   kepr agent ls
 //   kepr agent revoke NAME [--force]
@@ -19,7 +21,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok | ls | revoke NAME";
+const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok|opencode|claude|codex | doctor [--port N] [--json] | shim HARNESS [--dir DIR] [--remove] | ls | revoke NAME";
 
 #[derive(Debug, Default, PartialEq)]
 pub struct AgentArgs {
@@ -28,6 +30,7 @@ pub struct AgentArgs {
     pub fors: Vec<String>,
     pub port: Option<u16>,
     pub stdin: bool,
+    pub from_clipboard: bool,
     pub force: bool,
     pub requires_consent: bool,
     pub yes: bool,
@@ -96,6 +99,7 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
             }
             f if crate::cli_gatex::SessionOpts::FLAGS.contains(&f) => i = a.session.take(raw, i)?,
             "--stdin" => a.stdin = true,
+            "--from-clipboard" => a.from_clipboard = true,
             "--force" | "-f" => a.force = true,
             "--requires-consent" => a.requires_consent = true,
             "--yes" | "-y" => a.yes = true,
@@ -112,6 +116,9 @@ pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
             other => return Err(format!("unexpected argument: {other}\n{USAGE}")),
         }
         i += 1;
+    }
+    if a.stdin && a.from_clipboard {
+        return Err("use one of --stdin or --from-clipboard".into());
     }
     Ok(a)
 }
@@ -131,7 +138,13 @@ fn cmd_add(a: &AgentArgs) -> Response {
             "kepr agent add needs a NAME, e.g. kepr agent add ANTHROPIC_API_KEY",
         );
     };
-    let value = read_value(a.stdin, &name);
+    let value = match a.from_clipboard {
+        true => match crate::cli_copy::take_clipboard() {
+            Ok(v) => v,
+            Err(e) => return Response::fail(e),
+        },
+        false => read_value(a.stdin, &name),
+    };
     if value.as_str().is_empty() {
         return Response::fail("empty value — nothing stored");
     }
@@ -177,6 +190,9 @@ fn cmd_add(a: &AgentArgs) -> Response {
                 hosts.join(", ")
             ));
             cli_ui::info("it can no longer be read back; agents use it through `kepr agent run`");
+            if a.from_clipboard {
+                cli_ui::ok("clipboard cleared");
+            }
             r
         }
         Ok(r) => r,
@@ -285,11 +301,12 @@ fn cmd_revoke(a: &AgentArgs) -> Response {
 }
 
 pub fn main(raw: &[String]) -> Response {
-    if raw.first().map(String::as_str) == Some("add-db") {
-        return crate::cli_agent_db::cmd_add_db(&raw[1..]);
-    }
-    if raw.first().map(String::as_str) == Some("rotate-db") {
-        return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]);
+    match raw.first().map(String::as_str) {
+        Some("add-db") => return crate::cli_agent_db::cmd_add_db(&raw[1..]),
+        Some("rotate-db") => return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]),
+        Some("doctor") => return crate::cli_agent_doctor::cmd_doctor(&raw[1..]),
+        Some("shim") => return crate::cli_agent_shim::cmd_shim(&raw[1..]),
+        _ => {}
     }
     if let Some(r) = crate::cli_gatex::agent_verb(raw) {
         return r;
@@ -317,7 +334,7 @@ pub fn main(raw: &[String]) -> Response {
         },
         "install" => match a.target.as_deref() {
             Some(h) => cli_agent_install::cmd_install(h, a.port),
-            None => Response::fail("kepr agent install needs omp or grok"),
+            None => Response::fail("kepr agent install needs a HARNESS, e.g. omp or claude"),
         },
         "ls" | "list" => cmd_ls(),
         "adopt" => crate::cli_agent_adopt::cmd_adopt(&a.files, a.yes, a.remove),
@@ -362,6 +379,14 @@ mod tests {
     }
 
     #[test]
+    fn from_clipboard_parses_and_excludes_stdin() {
+        let a = parse(&v(&["add", "K", "--from-clipboard"])).unwrap();
+        assert!(a.from_clipboard && !a.stdin);
+        let e = parse(&v(&["add", "K", "--from-clipboard", "--stdin"])).unwrap_err();
+        assert_eq!(e, "use one of --stdin or --from-clipboard");
+    }
+
+    #[test]
     fn daily_caps_parse() {
         let r = parse(&v(&[
             "run",
@@ -383,6 +408,10 @@ mod tests {
     fn unknown_verb_is_an_error() {
         match main(&v(&["frobnicate"])) {
             Response::Err { error } => assert!(error.contains("unknown agent command")),
+            other => panic!("{other:?}"),
+        }
+        match main(&v(&["doctor", "--bogus"])) {
+            Response::Err { error } => assert!(error.contains("kepr agent doctor")),
             other => panic!("{other:?}"),
         }
     }

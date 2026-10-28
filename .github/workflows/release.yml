@@ -58,10 +58,120 @@ jobs:
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-  # ─── 2. Build binaries, package deb/rpm/tar, sign, attest ──────────────────
+  # ─── 2. Build binaries and package deb/rpm/tar (no signing identity) ───────
+  # Everything that compiles third-party code runs here, in a job without
+  # `id-token`: a build script or the cargo-deb / cargo-generate-rpm sources
+  # cannot ask GitHub for an OIDC token. Signing is the next job.
   build:
     name: Build + package (x86_64)
     needs: tag-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.tag-check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # workflow_dispatch may target an older tag — pin to the
+          # resolved tag, not whatever main currently points at.
+          ref: ${{ needs.tag-check.outputs.tag }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          # Exact, and the MSRV CI already tests (ci.yml): a re-run of a
+          # tag builds with the same compiler.
+          toolchain: 1.87.0
+
+      # T12.38: no build cache (a cache another run wrote could change what
+      # this build compiles). Sources come from Cargo.lock only, fetched
+      # here, before the build loses the network.
+      - name: Fetch locked sources
+        run: cargo fetch --locked
+
+      # The build runs in a network namespace with no interfaces. The probe
+      # must fail, which proves there is no network; --frozen keeps cargo on
+      # Cargo.lock and the fetched sources. Build scripts and proc macros run
+      # as the runner user, who has sudo and docker access: setpriv drops the
+      # supplementary groups (docker.sock is a path, reachable from any
+      # network namespace) and capabilities and sets no_new_privs, so sudo
+      # cannot raise the privileges of anything it starts.
+      - name: cargo build --release (no network)
+        run: |
+          set -euo pipefail
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all env PATH="$PATH" HOME="$HOME" CARGO_NET_OFFLINE=true sh -c '! curl -fsS --max-time 5 https://index.crates.io/config.json && ! sudo -n true && cargo build --release --frozen --bins && cargo build --release --frozen -p kepr-gate'
+
+      # Build scripts could write anywhere the runner user can: the checked
+      # out tree, or a cargo config in the home directory that the
+      # un-isolated steps below would read. Nothing outside target/ may have
+      # changed, no cargo config may exist, and the binaries' hashes are
+      # kept to be checked again before they are packaged.
+      - name: Check what the isolated build touched
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain --ignored | grep -v '^!! target/' || true)" ]; then
+            git status --porcelain --ignored | grep -v '^!! target/'
+            echo "::error::the isolated build changed files outside target/"
+            exit 1
+          fi
+          for c in "$HOME/.cargo/config" "$HOME/.cargo/config.toml" "${CARGO_HOME:-$HOME/.cargo}/config" "${CARGO_HOME:-$HOME/.cargo}/config.toml" .cargo/config .cargo/config.toml; do
+            if [ -e "$c" ]; then echo "::error::cargo config appeared: $c"; exit 1; fi
+          done
+          sha256sum target/release/kepr target/release/kepr-daemon target/release/kepr-gate \
+            target/release/docker-credential-kepr target/release/git-credential-kepr > "$RUNNER_TEMP/binaries.sha256"
+
+      # Exact versions, the newest that build on the pinned toolchain
+      # (cargo-deb 3.7+ and cargo-generate-rpm 0.21 need Rust 1.88).
+      - name: Install cargo-deb and cargo-generate-rpm
+        run: |
+          cargo install cargo-deb --locked --version 3.6.4
+          cargo install cargo-generate-rpm --locked --version 0.20.0
+
+      - name: Check the binaries are the ones that were built
+        run: sha256sum --check --strict "$RUNNER_TEMP/binaries.sha256"
+
+      - name: cargo deb
+        run: cargo deb --no-build --output "dist/kepr_${VERSION}_amd64.deb"
+
+      - name: cargo generate-rpm
+        run: cargo generate-rpm --output "dist/kepr-${VERSION}-1.x86_64.rpm"
+
+      - name: Build tarball
+        run: |
+          set -euo pipefail
+          STAGE="kepr-${VERSION}-x86_64-linux"
+          mkdir -p "dist/${STAGE}"
+          cp target/release/kepr                   "dist/${STAGE}/"
+          cp target/release/kepr-daemon            "dist/${STAGE}/"
+          cp target/release/kepr-gate              "dist/${STAGE}/"
+          cp target/release/docker-credential-kepr "dist/${STAGE}/"
+          cp target/release/git-credential-kepr    "dist/${STAGE}/"
+          cp systemd/kepr.service                  "dist/${STAGE}/"
+          cp systemd/kepr-gate.service             "dist/${STAGE}/"
+          cp systemd/polkit/io.kepr.policy         "dist/${STAGE}/"
+          cp completions/kepr.bash      "dist/${STAGE}/"
+          # install.sh loads the agent sandbox's AppArmor profile from here.
+          mkdir -p "dist/${STAGE}/packaging/apparmor"
+          cp packaging/apparmor/kepr    "dist/${STAGE}/packaging/apparmor/kepr"
+          cp install.sh README.md SECURITY.md LICENSE-MIT LICENSE-APACHE "dist/${STAGE}/"
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+          rm -rf "dist/${STAGE}"
+
+      - name: List artefacts
+        run: ls -la dist/
+
+      - name: Upload unsigned dist/
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: kepr-unsigned
+          path: dist/
+          if-no-files-found: error
+
+  # ─── 2b. SBOM, signatures, attestation (no compiler runs here) ─────────────
+  sign:
+    name: Sign + attest
+    needs: [tag-check, build]
     runs-on: ubuntu-latest
     permissions:
       contents:     read
@@ -73,45 +183,10 @@ jobs:
     env:
       VERSION: ${{ needs.tag-check.outputs.version }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          # workflow_dispatch may target an older tag — pin to the
-          # resolved tag, not whatever main currently points at.
-          ref: ${{ needs.tag-check.outputs.tag }}
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-
-      - name: cargo build --release
-        run: cargo build --release --bins
-
-      - name: Install cargo-deb and cargo-generate-rpm
-        run: |
-          cargo install cargo-deb --locked
-          cargo install cargo-generate-rpm --locked
-
-      - name: cargo deb
-        run: cargo deb --no-build --output dist/kepr_${VERSION}_amd64.deb
-
-      - name: cargo generate-rpm
-        run: cargo generate-rpm --output dist/kepr-${VERSION}-1.x86_64.rpm
-
-      - name: Build tarball
-        run: |
-          set -euo pipefail
-          STAGE="kepr-${VERSION}-x86_64-linux"
-          mkdir -p "dist/${STAGE}"
-          cp target/release/kepr        "dist/${STAGE}/"
-          cp target/release/kepr-daemon "dist/${STAGE}/"
-          cp systemd/kepr.service       "dist/${STAGE}/"
-          cp completions/kepr.bash      "dist/${STAGE}/"
-          cp install.sh README.md SECURITY.md LICENSE-MIT LICENSE-APACHE "dist/${STAGE}/"
-          tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
-          rm -rf "dist/${STAGE}"
-
-      - name: List artefacts
-        run: ls -la dist/
+          name: kepr-unsigned
+          path: dist/
 
       - name: Generate SBOM per artefact (SPDX-JSON)
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
@@ -173,7 +248,7 @@ jobs:
   # ─── 3. SLSA provenance (generic generator) ───────────────────────────────
   provenance:
     name: SLSA provenance
-    needs: build
+    needs: sign
     permissions:
       actions:  read    # the generator reads the workflow path
       id-token: write   # keyless signing of the provenance
@@ -182,8 +257,8 @@ jobs:
     # slsa-verifier matches the builder ID against that tag.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
-      base64-subjects: ${{ needs.build.outputs.hashes }}
-      provenance-name: kepr-${{ needs.build.outputs.version }}.intoto.jsonl
+      base64-subjects: ${{ needs.sign.outputs.hashes }}
+      provenance-name: kepr-${{ needs.sign.outputs.version }}.intoto.jsonl
       # The release job attaches it, so one job creates the release.
       upload-assets: false
       # Logs the repository name in the public Rekor log, which the cosign
@@ -252,7 +327,7 @@ jobs:
   # ─── 5. Create the GitHub Release and upload assets ───────────────────────
   release:
     name: Publish release
-    needs: [build, provenance, changelog, tag-check]
+    needs: [sign, provenance, changelog, tag-check]
     runs-on: ubuntu-latest
     permissions:
       contents: write
