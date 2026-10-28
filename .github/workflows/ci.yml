@@ -242,7 +242,13 @@ jobs:
       - name: iTerm2 (python)
         run: python3 -m unittest discover -s integrations/iterm2/test
       - name: JetBrains (java)
-        run: bash integrations/jetbrains/test.sh
+        # GitHub-hosted images ship a JDK; a self-hosted runner without one says so and skips.
+        run: |
+          if ! command -v javac >/dev/null; then
+            echo "::warning title=JetBrains tests skipped::javac is not installed on this runner"
+            exit 0
+          fi
+          bash integrations/jetbrains/test.sh
 
   dotnet-sdk:
     name: .NET SDK
