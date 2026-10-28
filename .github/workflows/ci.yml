@@ -20,7 +20,9 @@ jobs:
   # always run everything. A draft PR runs nothing until it is ready for review.
   changes:
     name: Changed paths
-    runs-on: ubuntu-latest
+    # CI_RUNS_ON (repo variable, JSON) selects the runner for every job here, e.g. ["self-hosted","hp"];
+    # unset means GitHub-hosted. The same variable is used by security.yml and pr-reviewer.yml.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     if: github.event.pull_request.draft != true
     permissions:
@@ -31,6 +33,8 @@ jobs:
       python: ${{ github.event_name != 'pull_request' || steps.some.outputs.python == 'true' }}
       node: ${{ github.event_name != 'pull_request' || steps.some.outputs.node == 'true' }}
       go: ${{ github.event_name != 'pull_request' || steps.some.outputs.go == 'true' }}
+      ruby: ${{ github.event_name != 'pull_request' || steps.some.outputs.ruby == 'true' }}
+      java: ${{ github.event_name != 'pull_request' || steps.some.outputs.java == 'true' }}
       templates: ${{ github.event_name != 'pull_request' || steps.some.outputs.templates == 'true' }}
       csi: ${{ github.event_name != 'pull_request' || steps.some.outputs.csi == 'true' }}
       terraform: ${{ github.event_name != 'pull_request' || steps.some.outputs.terraform == 'true' }}
@@ -66,10 +70,18 @@ jobs:
             go:
               - 'sdk/go/**'
               - '.github/workflows/ci.yml'
+            ruby:
+              - 'sdk/ruby/**'
+              - '.github/workflows/ci.yml'
+            java:
+              - 'sdk/java/**'
+              - '.github/workflows/ci.yml'
             templates:
               - 'integrations/ci/**'
               - 'integrations/podman/**'
               - 'integrations/gitlab/**'
+              - 'integrations/bitbucket/**'
+              - 'integrations/jenkins/**'
               - 'integrations/github-action/**'
               - '.github/workflows/**'
             csi:
@@ -84,7 +96,7 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     strategy:
@@ -122,7 +134,7 @@ jobs:
     # ubuntu-latest. The `--all-features` lint above links AWS-LC's ordinary
     # build only, which needs just a C compiler.
     name: Rust (FIPS module)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     steps:
@@ -150,7 +162,7 @@ jobs:
 
   python-sdk:
     name: Python SDK
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.python == 'true'
     steps:
@@ -162,7 +174,7 @@ jobs:
 
   node-sdk:
     name: Node SDK
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.node == 'true'
     steps:
@@ -174,9 +186,28 @@ jobs:
         working-directory: integrations/vscode
         run: node --test test/*.test.js
 
+  ruby-sdk:
+    name: Ruby SDK
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.ruby == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: minitest
+        working-directory: sdk/ruby
+        # ruby/setup-ruby only supports GitHub-hosted images, so on the
+        # self-hosted runner (no Ruby installed) say so loudly and skip; on
+        # hosted runners Ruby is preinstalled and the tests run.
+        run: |
+          if ! command -v ruby >/dev/null; then
+            echo "::warning title=Ruby SDK tests skipped::ruby is not installed on this runner"
+            exit 0
+          fi
+          ruby test/test_kepr.rb
+
   go-sdk:
     name: Go SDK
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.go == 'true'
     steps:
@@ -190,7 +221,7 @@ jobs:
 
   ci-templates:
     name: GitHub Action + GitLab template
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.templates == 'true'
     steps:
@@ -211,13 +242,13 @@ jobs:
           bash integrations/podman/test_kepr_podman_driver.sh
       - name: GitLab template parses
         run: |
-          python3 -m pip install --quiet pyyaml
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
           python3 -c "import yaml; yaml.safe_load(open('integrations/gitlab/kepr.gitlab-ci.yml'))"
 
   # batch: platform
   csi-provider:
     name: Secrets Store CSI provider
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.csi == 'true'
     steps:
@@ -231,7 +262,7 @@ jobs:
 
   terraform-provider:
     name: Terraform provider
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.terraform == 'true'
     steps:
@@ -245,7 +276,7 @@ jobs:
 
   docs:
     name: Docs (Fumadocs)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.docs == 'true'
     defaults:

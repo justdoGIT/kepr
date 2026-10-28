@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    # The HP runner for this repo (dev-setup docs/hp-live-usb.md, "GitHub Actions runner").
+    - hp

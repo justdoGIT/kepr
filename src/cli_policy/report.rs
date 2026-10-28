@@ -9,8 +9,11 @@ use crate::{cli_mode, cli_ui};
 
 pub fn cmd_report(args: &[String]) -> Response {
     let a = super::plain_args(args);
+    if let Some((&"compliance", rest)) = a.split_first() {
+        return super::compliance::cmd_compliance(rest);
+    }
     let ["access", name] = a.as_slice() else {
-        return Response::fail("usage: kepr report access NAME");
+        return Response::fail("usage: kepr report access NAME | compliance --framework F");
     };
     let r = super::send(PolicyRequest::ReportAccess {
         name: name.to_string(),

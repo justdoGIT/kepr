@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_gatex::{GatexRequest, GatexResponse, LogCursor};
 
-use super::anomaly::{parse_line, Baseline, Finding, GateEvent, Rules};
+use super::anomaly::{parse_line, Baseline, Finding, GateEvent, Risk, Rules};
 use super::notify::{self, Format, Note};
 use super::{siem, tail};
 use crate::{cli_mode, cli_ui};
@@ -54,7 +54,7 @@ pub struct Act<'a> {
     pub now: &'a dyn Fn() -> u64,
 }
 
-fn note(f: &Finding, ev: &GateEvent, revoked: Option<&str>) -> Note {
+fn note(f: &Finding, risk: Risk, ev: &GateEvent, revoked: Option<&str>) -> Note {
     let mut lines = vec![
         f.detail.clone(),
         format!("session {} at {}", ev.session, siem::rfc3339(ev.ts)),
@@ -63,7 +63,12 @@ fn note(f: &Finding, ev: &GateEvent, revoked: Option<&str>) -> Note {
         lines.push(r.to_string());
     }
     Note {
-        title: format!("kepr anomaly: {} ({})", f.kind, f.provider),
+        title: format!(
+            "kepr anomaly: {} ({}) [{}]",
+            f.kind,
+            f.provider,
+            risk.as_str()
+        ),
         lines,
     }
 }
@@ -82,11 +87,14 @@ pub fn handle(rules: &Rules, st: &mut State, ev: &GateEvent, act: &Act) -> Vec<F
             continue;
         }
         st.sent.insert(key, ev.ts);
-        let revoked = act.revoke.map(|r| match r() {
-            Ok(m) => m,
-            Err(e) => format!("kepr panic failed: {e}"),
-        });
-        let n = note(&f, ev, revoked.as_deref());
+        let revoked = act
+            .revoke
+            .filter(|_| rules.revokes(f.kind))
+            .map(|r| match r() {
+                Ok(m) => m,
+                Err(e) => format!("kepr panic failed: {e}"),
+            });
+        let n = note(&f, rules.risk_of(f.kind), ev, revoked.as_deref());
         if !cli_mode::json_mode() {
             println!("{}: {}", n.title, n.lines.join("; "));
         }
@@ -171,6 +179,9 @@ fn panic_gates() -> Result<String, String> {
 fn load_rules(path: &Path) -> Result<(Rules, u64), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let rules: Rules = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    rules
+        .validate()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let throttle = match rules.throttle.as_deref() {
         None => 600,
         Some("0") => 0,
@@ -246,7 +257,7 @@ fn run(args: &[String], file: &Path, rules: &Rules, throttle_secs: u64) -> Resul
     let act = Act {
         throttle_secs,
         send: &send,
-        revoke: rules.revoke.then_some(revoke),
+        revoke: rules.can_revoke().then_some(revoke),
         utc_offset: &utc_offset,
         now: &tail::now_unix,
     };
@@ -331,7 +342,7 @@ mod tests {
         }
         assert_eq!((hits, panics.get()), (1, 1));
         let n = notes.borrow()[0].clone();
-        assert_eq!(n.title, "kepr anomaly: error-burst (openai)");
+        assert_eq!(n.title, "kepr anomaly: error-burst (openai) [medium]");
         assert_eq!(n.lines[1], "session s1 at 1970-01-01T00:16:41Z");
         assert_eq!(n.lines[2], "revoked: kepr panic stopped 1 agent gate(s)");
         // After the throttle window the next burst alerts again.
@@ -389,5 +400,35 @@ mod tests {
         std::fs::write(&p, "webhok = \"https://x\"\n").unwrap();
         assert!(load_rules(&p).is_err());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn revoke_at_answers_only_hits_at_or_above_the_level() {
+        let r = rules("revoke_at = \"high\"\n[error_burst]\nerrors = 2");
+        let panics = Cell::new(0);
+        let revoke = || {
+            panics.set(panics.get() + 1);
+            Ok("revoked".to_string())
+        };
+        let act = Act {
+            throttle_secs: 0,
+            send: &|_| Ok(()),
+            revoke: Some(&revoke),
+            utc_offset: &|_| 0,
+            now: &|| 1_000,
+        };
+        let mut st = State::default();
+        // error-burst is medium by default: alerts, no panic.
+        handle(&r, &mut st, &ev(1000, "openai", "/v1/x", 500), &act);
+        let hits = handle(&r, &mut st, &ev(1001, "openai", "/v1/x", 500), &act);
+        assert_eq!((hits.len(), panics.get()), (1, 0));
+        // Raised to critical in the rules, the same burst revokes.
+        let r = rules(
+            "revoke_at = \"high\"\n[risk]\nerror-burst = \"critical\"\n[error_burst]\nerrors = 2",
+        );
+        let mut st = State::default();
+        handle(&r, &mut st, &ev(1000, "openai", "/v1/x", 500), &act);
+        handle(&r, &mut st, &ev(1001, "openai", "/v1/x", 500), &act);
+        assert_eq!(panics.get(), 1);
     }
 }

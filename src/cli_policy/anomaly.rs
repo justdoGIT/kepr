@@ -8,6 +8,10 @@
 //   off hours     a request outside the allowed local hours / weekdays
 //   error burst   N errors (HTTP ≥ 400 or blocked) within a window
 //
+// Every hit has a risk level (low / medium / high / critical): the kind's
+// default below, or the `[risk]` table of rules.toml. `revoke_at = "high"`
+// answers only hits at that level or above with `kepr panic`.
+//
 // The first two need `baseline_days` of data before they fire. Journal
 // lines carry provider, method, path (no query), status: never a value.
 
@@ -49,6 +53,35 @@ impl From<&kepr_core::gate_journal::JournalEntry> for GateEvent {
 /// A journal line, alone or after a log prefix (`journalctl -o short`).
 pub fn parse_line(line: &str) -> Option<GateEvent> {
     serde_json::from_str(&line[line.find('{')?..]).ok()
+}
+
+/// How serious a hit is; ordered, so `risk >= revoke_at` works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Risk {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl Risk {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Risk::Low => "low",
+            Risk::Medium => "medium",
+            Risk::High => "high",
+            Risk::Critical => "critical",
+        }
+    }
+
+    fn default_for(kind: &str) -> Risk {
+        match kind {
+            "volume-spike" => Risk::High,
+            "off-hours" => Risk::Low,
+            _ => Risk::Medium, // new-path, error-burst
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,6 +130,13 @@ pub struct Rules {
     /// A hit runs `kepr panic`: every agent gate stops.
     #[serde(default)]
     pub revoke: bool,
+    /// Revoke only for hits at this risk or above (implies `revoke`).
+    #[serde(default)]
+    pub revoke_at: Option<Risk>,
+    /// Risk per rule kind (`new-path`, `volume-spike`, `off-hours`,
+    /// `error-burst`), overriding the defaults.
+    #[serde(default)]
+    pub risk: BTreeMap<String, Risk>,
     #[serde(default = "seven")]
     pub baseline_days: u64,
     #[serde(default)]
@@ -123,6 +163,40 @@ fn minute() -> u64 {
 }
 fn seven() -> u64 {
     7
+}
+
+impl Rules {
+    pub fn risk_of(&self, kind: &str) -> Risk {
+        self.risk
+            .get(kind)
+            .copied()
+            .unwrap_or_else(|| Risk::default_for(kind))
+    }
+
+    /// Does a hit of `kind` get answered with `kepr panic`?
+    pub fn revokes(&self, kind: &str) -> bool {
+        match self.revoke_at {
+            Some(at) => self.risk_of(kind) >= at,
+            None => self.revoke,
+        }
+    }
+
+    /// Some revoke setting is on, so the panic action is wired up.
+    pub fn can_revoke(&self) -> bool {
+        self.revoke || self.revoke_at.is_some()
+    }
+
+    /// Reject `[risk]` entries that name no rule kind.
+    pub fn validate(&self) -> Result<(), String> {
+        const KINDS: [&str; 4] = ["new-path", "volume-spike", "off-hours", "error-burst"];
+        match self.risk.keys().find(|k| !KINDS.contains(&k.as_str())) {
+            Some(k) => Err(format!(
+                "[risk]: unknown rule kind {k:?} ({})",
+                KINDS.join(", ")
+            )),
+            None => Ok(()),
+        }
+    }
 }
 
 /// What the evaluator learned; persisted between runs.
@@ -288,6 +362,22 @@ mod tests {
 
     fn kinds(f: &[Finding]) -> Vec<&'static str> {
         f.iter().map(|x| x.kind).collect()
+    }
+
+    #[test]
+    fn risk_defaults_overrides_and_revoke_threshold() {
+        let r = rules("");
+        assert_eq!(r.risk_of("volume-spike"), Risk::High);
+        assert_eq!(r.risk_of("off-hours"), Risk::Low);
+        assert!(!r.revokes("volume-spike") && !r.can_revoke());
+        let r = rules("revoke_at = \"high\"\n[risk]\nerror-burst = \"critical\"");
+        assert!(r.can_revoke() && r.validate().is_ok());
+        assert!(r.revokes("error-burst") && r.revokes("volume-spike"));
+        assert!(!r.revokes("new-path") && !r.revokes("off-hours"));
+        let plain = rules("revoke = true");
+        assert!(plain.revokes("off-hours"));
+        assert!(rules("[risk]\nnope = \"low\"").validate().is_err());
+        assert!(toml::from_str::<Rules>("[risk]\nnew-path = \"severe\"").is_err());
     }
 
     #[test]

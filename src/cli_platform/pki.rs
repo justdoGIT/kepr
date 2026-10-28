@@ -125,7 +125,7 @@ pub fn write_new(path: &Path, data: &[u8], mode: u32, force: bool) -> Result<(),
 
 /// A new P-256 leaf key: (PKCS#8 PEM, hex public point).
 pub fn leaf_key() -> Result<(Zeroizing<String>, String), String> {
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use p256::elliptic_curve::sec1::ToSec1Point;
     let sk = loop {
         let mut b = Zeroizing::new([0u8; 32]);
         getrandom::fill(b.as_mut()).map_err(|e| format!("CSPRNG failure: {e}"))?;
@@ -133,7 +133,7 @@ pub fn leaf_key() -> Result<(Zeroizing<String>, String), String> {
             break sk;
         }
     };
-    let point = sk.public_key().to_encoded_point(false);
+    let point = sk.public_key().to_sec1_point(false);
     let scalar: Zeroizing<[u8; 32]> = Zeroizing::new(sk.to_bytes().into());
     let der = Zeroizing::new(kepr_core::x509_build::pkcs8_p256(&scalar, point.as_bytes()));
     Ok((
