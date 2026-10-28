@@ -80,9 +80,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          # Exact, and the MSRV CI already tests (ci.yml): a re-run of a
-          # tag builds with the same compiler.
-          toolchain: 1.87.0
+          # Exact: a re-run of a tag builds with the same compiler. 1.88,
+          # not the 1.87 MSRV of the root crates (ci.yml): kepr-gate's
+          # certificate crates (rcgen, time 0.3.47+, the fix for
+          # RUSTSEC-2026-0009) need it, and the gate ships in the packages.
+          toolchain: 1.88.0
 
       # T12.38: no build cache (a cache another run wrote could change what
       # this build compiles). Sources come from Cargo.lock only, fetched

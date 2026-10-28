@@ -2,6 +2,9 @@
 name = "kepr-gate"
 version = "0.4.0"
 edition = "2021"
+# rcgen and time (0.3.47+, the RUSTSEC-2026-0009 fix) need 1.88; the root
+# crates keep 1.87.
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "Credential-injecting local proxy for kepr agent sessions"
 publish = false
