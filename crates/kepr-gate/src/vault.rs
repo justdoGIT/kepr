@@ -434,7 +434,12 @@ mod tests {
         let c = Cache::new(Box::new(Record(rec)), DEFAULT_TTL);
         c.get("DB", "db.example.com", 5432).unwrap();
         let got: Vec<String> = c.needles().iter().map(|z| z.to_owned_string()).collect();
-        assert_eq!(got, vec!["s3cret-PW-only".to_string()]);
+        // The password and its Base64 spellings; never the user or database.
+        assert!(got.contains(&"s3cret-PW-only".to_string()));
+        assert!(!got
+            .iter()
+            .any(|g| g.contains("app-user") || g.contains("main-")));
+        assert_eq!(got.len(), 3, "{got:?}");
     }
 
     #[test]
@@ -444,7 +449,8 @@ mod tests {
         assert!(c.needles().is_empty(), "under MIN_SECRET_LEN");
         c.mint([1; 32], &ZeroString::from("ghs_minted-token-1"), 100, 0);
         let got: Vec<String> = c.needles().iter().map(|z| z.to_owned_string()).collect();
-        assert_eq!(got, vec!["ghs_minted-token-1".to_string()]);
+        assert!(got.contains(&"ghs_minted-token-1".to_string()));
+        assert_eq!(got.len(), 2, "the token and its Base64 form: {got:?}");
     }
 
     #[test]

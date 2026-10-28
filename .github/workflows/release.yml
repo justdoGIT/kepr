@@ -102,12 +102,34 @@ jobs:
           set -euo pipefail
           sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all env PATH="$PATH" HOME="$HOME" CARGO_NET_OFFLINE=true sh -c '! curl -fsS --max-time 5 https://index.crates.io/config.json && ! sudo -n true && cargo build --release --frozen --bins && cargo build --release --frozen -p kepr-gate'
 
+      # Build scripts could write anywhere the runner user can: the checked
+      # out tree, or a cargo config in the home directory that the
+      # un-isolated steps below would read. Nothing outside target/ may have
+      # changed, no cargo config may exist, and the binaries' hashes are
+      # kept to be checked again before they are packaged.
+      - name: Check what the isolated build touched
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain --ignored | grep -v '^!! target/' || true)" ]; then
+            git status --porcelain --ignored | grep -v '^!! target/'
+            echo "::error::the isolated build changed files outside target/"
+            exit 1
+          fi
+          for c in "$HOME/.cargo/config" "$HOME/.cargo/config.toml" "${CARGO_HOME:-$HOME/.cargo}/config" "${CARGO_HOME:-$HOME/.cargo}/config.toml" .cargo/config .cargo/config.toml; do
+            if [ -e "$c" ]; then echo "::error::cargo config appeared: $c"; exit 1; fi
+          done
+          sha256sum target/release/kepr target/release/kepr-daemon target/release/kepr-gate \
+            target/release/docker-credential-kepr target/release/git-credential-kepr > "$RUNNER_TEMP/binaries.sha256"
+
       # Exact versions, the newest that build on the pinned toolchain
       # (cargo-deb 3.7+ and cargo-generate-rpm 0.21 need Rust 1.88).
       - name: Install cargo-deb and cargo-generate-rpm
         run: |
           cargo install cargo-deb --locked --version 3.6.4
           cargo install cargo-generate-rpm --locked --version 0.20.0
+
+      - name: Check the binaries are the ones that were built
+        run: sha256sum --check --strict "$RUNNER_TEMP/binaries.sha256"
 
       - name: cargo deb
         run: cargo deb --no-build --output "dist/kepr_${VERSION}_amd64.deb"

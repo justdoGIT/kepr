@@ -188,12 +188,20 @@ pub fn report_at(root: &Path) -> Vec<Finding> {
     let read = |p: &str| fs::read_to_string(under(root, p)).ok();
     let resume = read("/sys/power/resume");
     let resume_crypt = resume.as_deref().is_some_and(|r| dev_is_crypt(root, r));
+    let state = read("/sys/power/state");
+    // A kernel without suspend has no such file; one we can't read is not
+    // proof it can't hibernate.
+    let hibernation = if state.is_none() && under(root, "/sys/power/state").exists() {
+        f(
+            "hibernation",
+            Level::Warn,
+            "can't read /sys/power/state: hibernation not checked",
+        )
+    } else {
+        check_hibernation(state.as_deref(), resume.as_deref(), resume_crypt)
+    };
     vec![
-        check_hibernation(
-            read("/sys/power/state").as_deref(),
-            resume.as_deref(),
-            resume_crypt,
-        ),
+        hibernation,
         check_swap(read("/proc/swaps").as_deref(), |d| swap_is_crypt(root, d)),
         check_thunderbolt_dma(&thunderbolt_values(root)),
         check_tpm2(
@@ -232,6 +240,17 @@ mod tests {
         assert!(w.detail.contains("encrypt it or disable hibernation"));
         // No /sys/power/state: this kernel can't hibernate at all.
         assert_eq!(check_hibernation(None, None, false).level, Level::Good);
+    }
+
+    #[test]
+    fn an_unreadable_power_state_is_not_a_pass() {
+        let d = tempfile::tempdir().unwrap();
+        // A directory where the file should be: present, but unreadable.
+        fs::create_dir_all(d.path().join("sys/power/state")).unwrap();
+        let v = report_at(d.path());
+        let h = v.iter().find(|x| x.name == "hibernation").unwrap();
+        assert_eq!(h.level, Level::Warn);
+        assert!(h.detail.contains("not checked"));
     }
 
     #[test]

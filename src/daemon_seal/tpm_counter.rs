@@ -21,13 +21,34 @@ fn hex(index: u32) -> String {
     format!("{index:#010x}")
 }
 
-/// The counter's public area, or None when it isn't defined.
+/// The counter's public area, or None when it isn't defined. A failed
+/// read counts as "not defined" only when the TPM's list of NV indexes,
+/// read separately, shows the index is absent: a TPM that errors (busy,
+/// no access) must not make a counter look new, because an undefined
+/// counter lets an unanchored, older image open.
 fn public<R: Runner + ?Sized>(runner: &R, index: u32) -> Result<Option<Vec<u8>>, RunError> {
     match runner.run(&Cmd::new("tpm2_nvreadpublic", &[&hex(index)])) {
         Ok(out) => Ok(Some(out.to_vec())),
         Err(RunError::Missing) => Err(RunError::Missing),
-        Err(RunError::Failed) => Ok(None),
+        Err(RunError::Failed) => {
+            let list = runner.run(&Cmd::new("tpm2_getcap", &["handles-nv-index"]))?;
+            if lists(&list, index) {
+                Err(RunError::Failed)
+            } else {
+                Ok(None)
+            }
+        }
     }
+}
+
+/// Does `tpm2_getcap handles-nv-index` output name `index`? (`- 0x1800a12`
+/// lines; leading zeros vary.)
+fn lists(out: &[u8], index: u32) -> bool {
+    String::from_utf8_lossy(out)
+        .split_whitespace()
+        .filter_map(|w| w.strip_prefix("0x"))
+        .filter_map(|h| u32::from_str_radix(h, 16).ok())
+        .any(|v| v == index)
 }
 
 /// `tpm2_nvread -C o -s 8 IDX`: the value, big-endian.
@@ -129,6 +150,10 @@ mod tests {
                     };
                     Ok(format!("0x1800a12:\n  attributes:\n    friendly: {attrs}\n").into_bytes())
                 }
+                "tpm2_getcap" => Ok(match *n {
+                    Some(_) => b"- 0x1800a12\n".to_vec(),
+                    None => b"- 0x1c00002\n".to_vec(),
+                }),
                 "tpm2_nvdefine" => {
                     *n = Some((0, false));
                     Ok(Vec::new())
@@ -172,7 +197,13 @@ mod tests {
         let nv = Nv::default();
         let c = counter(&nv);
         assert_eq!(c.read(), Ok(None));
-        assert_eq!(argv(&c.runner), ["tpm2_nvreadpublic 0x01800a12"]);
+        assert_eq!(
+            argv(&c.runner),
+            [
+                "tpm2_nvreadpublic 0x01800a12",
+                "tpm2_getcap handles-nv-index"
+            ]
+        );
     }
 
     #[test]
@@ -184,6 +215,7 @@ mod tests {
             argv(&c.runner),
             [
                 "tpm2_nvreadpublic 0x01800a12",
+                "tpm2_getcap handles-nv-index",
                 "tpm2_nvdefine -C o -s 8 -a nt=counter|ownerread|ownerwrite 0x01800a12",
                 "tpm2_nvincrement -C o 0x01800a12",
                 "tpm2_nvread -C o -s 8 0x01800a12",
@@ -287,5 +319,26 @@ mod tests {
         assert_eq!(c.read(), Ok(None));
         assert_eq!(c.increment(), Ok(41));
         assert_eq!(c.read(), Ok(Some(41)));
+    }
+
+    #[test]
+    fn a_failing_tpm_does_not_make_a_defined_counter_look_undefined() {
+        // nvreadpublic fails, yet the index is in the TPM's list.
+        let listed = NvCounter {
+            index: IMAGE_INDEX,
+            runner: FakeRunner::new(|c| match c.tool {
+                "tpm2_getcap" => Ok(b"- 0x1800a12\n".to_vec()),
+                _ => Err(RunError::Failed),
+            }),
+        };
+        assert_eq!(listed.read(), Err(COUNTER_FAILED.to_string()));
+        // Neither call works: still an error, never "undefined".
+        let dead = NvCounter {
+            index: IMAGE_INDEX,
+            runner: FakeRunner::new(|_| Err(RunError::Failed)),
+        };
+        assert_eq!(dead.read(), Err(COUNTER_FAILED.to_string()));
+        assert!(lists(b"- 0x01800a12\n", IMAGE_INDEX));
+        assert!(!lists(b"- 0x1c00002\n", IMAGE_INDEX));
     }
 }

@@ -286,6 +286,11 @@ mod tests {
             let mut t = tpm.lock().unwrap();
             match c.tool {
                 "tpm2_nvreadpublic" => t.counter.map(|_| Vec::new()).ok_or(RunError::Failed),
+                "tpm2_getcap" => Ok(if t.counter.is_some() {
+                    b"- 0x1800a11\n".to_vec()
+                } else {
+                    Vec::new()
+                }),
                 "tpm2_nvdefine" => {
                     t.counter = Some(0);
                     Ok(Vec::new())
@@ -506,6 +511,7 @@ mod tests {
 
     const COUNTER_SEAL: &[&str] = &[
         "tpm2_nvreadpublic 0x01800a11",
+        "tpm2_getcap handles-nv-index",
         "tpm2_nvdefine -C o -s 8 -a nt=counter|ownerread|ownerwrite 0x01800a11",
         "tpm2_nvincrement -C o 0x01800a11",
         "tpm2_nvread -C o -s 8 0x01800a11",

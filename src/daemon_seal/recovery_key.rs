@@ -169,6 +169,9 @@ pub fn handle_enrol(
             )
         });
     let status = r.as_ref().map(|_| ()).map_err(Clone::clone);
+    if r.is_ok() {
+        write_family(&path(), &crate::master_key_path());
+    }
     super::audit_result("recovery-key-enrol", uid, username, &status);
     match r {
         Ok(fingerprint) => Response::Seal(SealResponse::RecoveryKeyEnrolled { fingerprint }),
@@ -194,6 +197,8 @@ pub(crate) struct Unlock<'a> {
 /// The sealer family a key blob belongs to, by its header; `None` for
 /// what systemd-creds wrote or a file too damaged to tell (the reason the
 /// recovery key is being used).
+const KNOWN_FAMILIES: [&str; 4] = ["tpm2", "key service", "keychain", "owner-only file"];
+
 fn family(blob: &[u8]) -> Option<&'static str> {
     const KNOWN: [(&[u8], &str); 4] = [
         (b"kepr-tpm2-v1\n", "tpm2"),
@@ -207,21 +212,51 @@ fn family(blob: &[u8]) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// `master.key.recovery.seal`: the sealer family the key file had when the
+/// recovery key was enrolled (`default` for systemd-creds's), so a key file
+/// that has since broken, or been swapped, can't change what it is sealed
+/// with again.
+fn family_path(envelope: &Path) -> PathBuf {
+    let mut name = envelope.file_name().unwrap_or_default().to_os_string();
+    name.push(".seal");
+    envelope.with_file_name(name)
+}
+
+fn write_family(envelope: &Path, key_file: &Path) {
+    let name = std::fs::read(key_file)
+        .ok()
+        .as_deref()
+        .and_then(family)
+        .unwrap_or("default");
+    let _ = crate::atomic_file::write(&family_path(envelope), name.as_bytes(), 0o600);
+}
+
 /// Refuse to replace the key file with a seal of another family or other
 /// binding than the one it has (`master.key.seal` records `host`, `tpm2`
 /// or `host+tpm2`).
-fn not_weaker(key_file: &Path, sealer: &dyn Sealer, blob: &[u8]) -> Result<(), String> {
+fn not_weaker(
+    key_file: &Path,
+    envelope: &Path,
+    sealer: &dyn Sealer,
+    blob: &[u8],
+) -> Result<(), String> {
     let differs = |what: &str| {
         Err(format!(
             "the sealer settings differ from the ones that sealed this key ({what}); \
              start the daemon with its usual KEPR_MASTER_KEY_SEAL settings, then unlock again"
         ))
     };
-    // A header we recognise on the old file must be the new file's too.
-    if let Some(was) = std::fs::read(key_file).ok().as_deref().and_then(family) {
-        if family(blob) != Some(was) {
-            return differs(was);
-        }
+    // The family recorded at enrolment, else the old file's own header,
+    // must be the new file's too.
+    let recorded = std::fs::read_to_string(family_path(envelope)).ok();
+    let was = match recorded.as_deref().map(str::trim) {
+        Some("default") => None,
+        Some(name) => KNOWN_FAMILIES.iter().copied().find(|k| *k == name),
+        None => std::fs::read(key_file).ok().as_deref().and_then(family),
+    };
+    let recorded_default = recorded.as_deref().map(str::trim) == Some("default");
+    if (was.is_some() || recorded_default) && family(blob) != was {
+        return differs(was.unwrap_or("host key"));
     }
     let recorded = std::fs::read_to_string(crate::master_key::seal_record_path(key_file)).ok();
     match (recorded.as_deref().map(str::trim), sealer.seal_kind()) {
@@ -257,7 +292,7 @@ fn unlock_with(uid: u32, fence: Fence, words: &str, u: &Unlock) -> Result<Option
     (u.install)(&key)?;
     let resealed = (u.sealer)().and_then(|s| {
         let blob = s.seal(&key)?;
-        not_weaker(u.key_file, s.as_ref(), &blob)?;
+        not_weaker(u.key_file, u.envelope, s.as_ref(), &blob)?;
         crate::atomic_file::write(u.key_file, &blob, 0o600)
             .map_err(|e| format!("cannot write master key: {e}"))?;
         crate::master_key::record_seal_kind(u.key_file, s.as_ref()); // T12.33
@@ -583,6 +618,28 @@ mod tests {
         assert!(rig.run(0, OPEN, words.as_str()).unwrap().is_some());
         assert_eq!(std::fs::read(rig.key_file()).unwrap(), b"sealed elsewhere");
         rig.kind = Some("host+tpm2");
+        assert_eq!(rig.run(0, OPEN, words.as_str()), Ok(None));
+    }
+
+    #[test]
+    fn the_family_recorded_at_enrolment_beats_a_broken_key_file() {
+        let words = words(1);
+        let rig = Rig::new();
+        // Enrolled while the key file was a key-service blob; broken since.
+        std::fs::write(rig.key_file(), b"kepr-kek1\nrest").unwrap();
+        write_family(&rig.dir.path().join("rec"), &rig.key_file());
+        std::fs::write(rig.key_file(), b"no longer unseals").unwrap();
+        let r = rig.run(0, OPEN, words.as_str()).unwrap();
+        assert!(r.unwrap().contains("sealer settings differ"));
+        assert_eq!(std::fs::read(rig.key_file()).unwrap(), b"no longer unseals");
+        // Enrolled on a default (systemd-creds) key: a different family
+        // from the mock's (none) is fine, an owner-only file is not.
+        let rig = Rig::new();
+        write_family(&rig.dir.path().join("rec"), &rig.key_file());
+        assert_eq!(
+            std::fs::read(family_path(&rig.dir.path().join("rec"))).unwrap(),
+            b"default"
+        );
         assert_eq!(rig.run(0, OPEN, words.as_str()), Ok(None));
     }
 

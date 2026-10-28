@@ -11,9 +11,7 @@
 /// `path` may carry a query string; percent-encoding and repeated slashes
 /// do not change the answer.
 pub fn mints_credentials(method: &str, host: &str, path: &str) -> bool {
-    if !method.eq_ignore_ascii_case("POST") {
-        return false;
-    }
+    let post = method.eq_ignore_ascii_case("POST");
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     if host != "googleapis.com" && !host.ends_with(".googleapis.com") {
         return false;
@@ -34,14 +32,22 @@ pub fn mints_credentials(method: &str, host: &str, path: &str) -> bool {
     // An API key: apikeys.googleapis.com .../keys (and :undelete).
     let api_key =
         host == "apikeys.googleapis.com" && (is(last, "keys") || is(last, "keys:undelete"));
-    // Tokens and signed JWTs minted outside the gate (IAM Credentials).
-    let minted = ["generateAccessToken", "generateIdToken", "signJwt"]
-        .iter()
-        .any(|verb| {
-            last.rsplit_once(':')
-                .is_some_and(|(_, v)| v.eq_ignore_ascii_case(verb))
-        });
-    sa_key || hmac_key || api_key || minted
+    // Reading an API key's secret string is a read, not a POST.
+    let key_string = host == "apikeys.googleapis.com" && is(last, "keyString");
+    // Tokens and signatures minted outside the gate (IAM Credentials, and
+    // the IAM v1 `signBlob` / `signJwt`, which sign as the account).
+    let minted = [
+        "generateAccessToken",
+        "generateIdToken",
+        "signJwt",
+        "signBlob",
+    ]
+    .iter()
+    .any(|verb| {
+        last.rsplit_once(':')
+            .is_some_and(|(_, v)| v.eq_ignore_ascii_case(verb))
+    });
+    key_string || (post && (sa_key || hmac_key || api_key || minted))
 }
 
 fn percent_decode(s: &str) -> String {
@@ -103,6 +109,14 @@ mod tests {
                 "iamcredentials.googleapis.com",
                 "/v1/projects/-/serviceAccounts/x:signJwt",
             ),
+            (
+                "iamcredentials.googleapis.com",
+                "/v1/projects/-/serviceAccounts/x:signBlob",
+            ),
+            (
+                "iam.googleapis.com",
+                "/v1/projects/p/serviceAccounts/x:signBlob",
+            ),
             // Encoded or doubled separators do not hide it.
             (
                 "iam.googleapis.com",
@@ -123,6 +137,17 @@ mod tests {
         ] {
             assert!(mints_credentials("POST", host, path), "{host}{path}");
             assert!(mints_credentials("post", host, path), "{host}{path}");
+        }
+    }
+
+    #[test]
+    fn reading_an_api_keys_secret_string_is_refused_for_any_method() {
+        for m in ["GET", "POST"] {
+            assert!(mints_credentials(
+                m,
+                "apikeys.googleapis.com",
+                "/v2/projects/p/locations/global/keys/k/keyString"
+            ));
         }
     }
 

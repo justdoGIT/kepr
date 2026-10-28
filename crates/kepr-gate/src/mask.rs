@@ -81,6 +81,25 @@ fn json_escaped(v: &str, slash: bool) -> ZeroString {
     ZeroString::from_string(s)
 }
 
+/// Percent-encoding (RFC 3986 unreserved kept) and Base64 spellings of `v`.
+fn encoded_forms(v: &str) -> Vec<ZeroString> {
+    use base64::Engine;
+    let mut pct = String::with_capacity(v.len() * 3);
+    for b in v.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            pct.push(b as char);
+        } else {
+            pct.push_str(&format!("%{b:02X}"));
+        }
+    }
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    let mut out = vec![ZeroString::from_string(pct)];
+    for e in [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD] {
+        out.push(ZeroString::from_string(e.encode(v.as_bytes())));
+    }
+    out
+}
+
 /// The needles one value contributes: its secret parts, each with its
 /// JSON-escaped forms when they differ, none shorter than
 /// `MIN_SECRET_LEN`.
@@ -93,6 +112,13 @@ pub fn forms(value: &str) -> Vec<ZeroString> {
         for slash in [false, true] {
             let e = json_escaped(&part, slash);
             if e.as_str() != part.as_str() && !out.iter().any(|o| o.as_str() == e.as_str()) {
+                out.push(e);
+            }
+        }
+        // The forms the gate itself sends: URL-encoded, and Base64 of the
+        // value alone (standard and URL alphabets, padded or not).
+        for e in encoded_forms(&part) {
+            if !out.iter().any(|o| o.as_str() == e.as_str()) && e.as_str() != part.as_str() {
                 out.push(e);
             }
         }
@@ -447,7 +473,10 @@ mod tests {
             .iter()
             .map(|z| z.to_owned_string())
             .collect();
-        assert_eq!(plain, vec!["sk-live-abcdefgh".to_string()]);
+        // The value, plus its Base64 spellings (nothing to percent-encode).
+        assert_eq!(plain.len(), 3);
+        assert!(plain.contains(&"sk-live-abcdefgh".to_string()));
+        assert!(plain.contains(&"c2stbGl2ZS1hYmNkZWZnaA==".to_string()));
         // T12.09: a Google authorized_user file's secrets.
         let user = r#"{"type":"authorized_user","client_id":"cid.apps.example","client_secret":"user-secret-1","refresh_token":"1//refresh-1"}"#;
         let got: Vec<String> = forms(user).iter().map(|z| z.to_owned_string()).collect();
@@ -481,5 +510,20 @@ mod tests {
         );
         assert_eq!(b.size_hint().exact(), n);
         assert_eq!(all(b).len() as u64, n.unwrap());
+    }
+
+    #[test]
+    fn encoded_spellings_are_needles_too() {
+        let f: Vec<String> = forms("s3cr3t/key+value=")
+            .iter()
+            .map(|z| z.as_str().to_string())
+            .collect();
+        for want in [
+            "s3cr3t%2Fkey%2Bvalue%3D",
+            "czNjcjN0L2tleSt2YWx1ZT0=",
+            "czNjcjN0L2tleSt2YWx1ZT0",
+        ] {
+            assert!(f.iter().any(|x| x == want), "{want} not in {f:?}");
+        }
     }
 }

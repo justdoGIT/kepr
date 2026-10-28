@@ -85,8 +85,10 @@ that it can't reach crates.io and stops if it can. Build scripts run with
 the runner user's groups, capabilities and sudo rights removed
 (`setpriv --clear-groups --no-new-privs`), so they can reach neither the
 host network through sudo nor the Docker socket. The packaging tools are
-pinned to exact versions and compiled in that same `build` job, which has no
-signing identity; a separate `sign` job, which runs no compiler, downloads
+pinned to exact versions and compiled in that same `build` job after a
+check that the isolated build changed nothing outside `target/` and left no
+cargo config behind, with the binaries' hashes verified again before they
+are packaged. That job has no signing identity; a separate `sign` job, which runs no compiler, downloads
 the packages and holds the OIDC token for the cosign signatures and
 attestation. The build is not bit-for-bit reproducible yet:
 rebuilding a tag gives the same sources and compiler, not identical bytes.
