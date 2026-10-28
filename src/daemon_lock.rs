@@ -49,6 +49,10 @@ fn handle_lock(password: &[u8]) -> Response {
     if protected_master_key_path().exists() {
         return Response::fail("credential store is already password protected");
     }
+    // T12.53: on a keychain-sealed store the owner approves at the machine.
+    if let Err(e) = crate::daemon_seal::presence::require(crate::daemon_seal::presence::LOCK) {
+        return Response::fail(e);
+    }
     let key = match crypto::snapshot_key() {
         Ok(key) => key,
         Err(e) => return Response::fail(e),

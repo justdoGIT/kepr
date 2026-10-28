@@ -21,6 +21,8 @@
 //   kms_aws    T4.11 AWS KMS (SigV4)
 //   kms_cloud  T4.12 GCP Cloud KMS and Azure Key Vault (bearer tokens)
 //   pkcs11     T4.13 PKCS#11 token / HSM through pkcs11-tool (RSA-OAEP)
+//   presence   T12.53 a person must approve `lock` / recovery-key enrol on
+//              a keychain-sealed store
 //   keychain   T10.04 the macOS keychain (`security`), macOS only at run time
 //   http      the key services' HTTPS transport (fake / loopback in tests)
 //
@@ -35,6 +37,7 @@ mod kms;
 mod kms_aws;
 mod kms_cloud;
 mod pkcs11;
+pub mod presence;
 mod recovery;
 pub mod recovery_key;
 mod runner;

@@ -926,6 +926,13 @@ the store stays unlocked until the daemon stops and the next start needs
 the words again. Without a recovery key, a key that won't unseal still
 stops the daemon.
 
+On macOS, with `KEPR_MASTER_KEY_SEAL=keychain`, `kepr recovery-key enrol` and
+`kepr lock` first show a dialog that names the action and defaults to Deny.
+Only a click on Allow within 60 seconds goes ahead; no answer, no desktop
+session or any error changes nothing. Without that, any process of your user,
+an agent included, could add a way into the store that the keychain does
+not guard. Stores sealed any other way are not asked.
+
 <Warning>
   The words and the `master.key.recovery` file together open the store.
   Keep the words offline, never next to the machine. Sealing again binds

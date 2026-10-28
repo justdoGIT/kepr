@@ -153,14 +153,21 @@ pub fn handle_enrol(
     current: Option<&ZeroString>,
 ) -> Response {
     let _one = one_at_a_time();
-    let r = enrol_at(
-        uid,
-        Fence::now(),
-        crypto::snapshot_key,
-        &path(),
-        words.as_str(),
-        current.map(|c| c.as_str()),
-    );
+    let fence = Fence::now();
+    // T12.53: on a keychain-sealed store the owner approves at the machine.
+    let r = fence
+        .check(uid)
+        .and_then(|()| super::presence::require(super::presence::ENROL))
+        .and_then(|()| {
+            enrol_at(
+                uid,
+                fence,
+                crypto::snapshot_key,
+                &path(),
+                words.as_str(),
+                current.map(|c| c.as_str()),
+            )
+        });
     let status = r.as_ref().map(|_| ()).map_err(Clone::clone);
     super::audit_result("recovery-key-enrol", uid, username, &status);
     match r {

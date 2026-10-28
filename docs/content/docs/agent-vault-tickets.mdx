@@ -54,7 +54,7 @@ the exact commands that prove it's done.
 | P9 (remaining): T9.04–T9.09 approval notifications, MCP `db_query` / `ssh_run`, per-day caps, governance report, honeytokens (`kepr canary`), leaked-key rotation | shipped |
 | P10: T10.01–T10.12 `kepr mount`, KDBX 4 import, fingerprint unlock, Keychain sealer, `logon` keyring, unit-file credentials, Podman driver, CSI provider, binary-identity bindings, local PKI, SPIFFE SVIDs, native Keychain unseal | shipped |
 | P11: T11.1–T11.24 search, trash, history diff, duplicates, aliases, linked records, custom types, record templates, `delete --all`, `doctor --verify`, aging and policy reports, idle lock, unlock backoff, re-auth, share contacts, profiles, sync maps, `kepr batch`, `kepr serve`, discovery rules, `kepr ssh rotate`, `kepr agent logs`, health ignores, richer `kepr status` | shipped |
-| P12: T12.01–T12.52 plan gaps from the 2026-10-15 audit: response masking, gate syscall filter and Landlock, git and GCP presets, master key in secret memory, vault anti-rollback, recovery key for a sealed master key, the rest of the FIPS seam, clipboard hygiene | open |
+| P12: T12.01–T12.53 plan gaps from the 2026-10-15 audit: response masking, gate syscall filter and Landlock, git and GCP presets, master key in secret memory, vault anti-rollback, recovery key for a sealed master key, the rest of the FIPS seam, clipboard hygiene | open |
 
 **Where the code differs from the ticket text** (the code is authoritative):
 
@@ -4693,6 +4693,28 @@ Tests:
 Out of scope: `--no-sandbox` sessions; an opt-in to keep a descriptor (a later `--keep-fd N` if a harness needs one).
 Security: no descriptor the caller opened reaches the sandboxed harness. Nothing is logged but the count closed. Each file stays under 350 production lines; no new crate; MSRV 1.87.
 Done when: the standard commands pass and the new `./tests/agent_e2e.sh` cases pass.
+
+### T12.53 Presence check for `kepr lock` and recovery-key enrol on keychain stores (S) 🔒
+
+Goal: with `KEPR_MASTER_KEY_SEAL=keychain` (T10.04), a person at the machine approves `kepr lock` and `kepr recovery-key enrol`. The keychain item is readable only by the daemon binary, but both requests can be sent by any process of the same user, an agent included, and each leaves a way to open the store the keychain does not guard: a passphrase envelope the sender chose, or the master key wrapped under words the sender knows.
+Depends on: T12.31, T10.04.
+Files: create `src/daemon_seal/presence.rs`; modify `src/daemon_seal/mod.rs`, `src/daemon_seal/recovery_key.rs` (`handle_enrol`), `src/daemon_lock.rs` (`handle_lock`), `docs/content/docs/reference/features.mdx`.
+Add:
+- `trait Presence { fn confirm(&self, action: &str) -> Result<(), String>; }` and `MacDialog`: `/usr/bin/osascript` `display dialog` naming the action, buttons Deny and Allow, default and cancel Deny, giving up after 60 s. Only `button returned:Allow, gave up:false` with a zero exit is approval; a missing GUI session, a timeout, a cancel or any error is a refusal. On other systems the dialog always refuses.
+- `required()` is true when `KEPR_MASTER_KEY_SEAL` is `keychain`; `require_with(required, presence, action)` asks only then, so every other sealer behaves as before.
+- `handle_lock` asks after its cheap checks (empty password, already protected) and before it reads the key. `handle_enrol` asks after the fences and before it touches the key or the envelope. Both refusals are audited with the existing `lock` and `recovery-key-enrol` operations; the error never says why a dialog failed.
+Steps:
+1. Write the `presence.rs` tests below; they fail to compile.
+2. Implement the module and the two call sites.
+3. Document the prompt and that a refused or unanswered request changes nothing.
+Tests:
+- a store sealed any other way is never asked;
+- a keychain store asks once with the action text and obeys the answer;
+- only an explicit Allow in time counts (`gave up:true`, Deny, a non-zero exit and empty output do not);
+- without macOS the dialog refuses.
+Out of scope: Touch ID or LocalAuthentication (needs a signed helper); prompting for `unlock` or `recovery-key unlock`, which already need a secret; a bypass variable.
+Security: the dialog text is fixed; no value, name or word reaches `osascript`. An agent that can drive the dialog through accessibility permissions can still approve it; that permission is the user's to withhold and `kepr doctor` is not yet able to see it.
+Done when: the standard commands pass; the macOS e2e run shows a refusal with no answer.
 
 ## Ticket template
 
