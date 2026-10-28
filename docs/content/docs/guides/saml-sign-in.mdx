@@ -1,0 +1,52 @@
+---
+title: "SAML identity providers"
+description: "Enrol devices against a SAML-only identity provider by putting an OIDC bridge in front of it."
+---
+
+`kepr device add LABEL --oidc ISSUER` and `kepr device enroll TOKEN --oidc
+ISSUER --client-id ID` check the person at enrolment with an OpenID Connect
+ID token (device-code login, RS256 or ES256 signature, issuer, audience and
+expiry checked in the user's own process).
+
+kepr does **not** accept SAML 2.0 assertions directly, and that is a
+decision, not a gap to be closed by a quick patch (T13.14):
+
+- Verifying a SAML assertion means XML Signature validation with exclusive
+  canonicalisation. That is a long record of signature-wrapping and
+  canonicalisation bugs in every implementation that has tried it, and the
+  verifier would sit in a program that handles credentials.
+- A vetted Rust crate for it (`samael` is the candidate) pulls in libxml2 and
+  xmlsec1 through C bindings. kepr's binaries are small and static on
+  purpose; none of them link C XML libraries.
+- Every mainstream SAML identity provider can be fronted by an OIDC
+  provider. The bridge does the XML; kepr sees a plain ID token.
+
+## The recommended route
+
+Run an OIDC bridge in front of the SAML identity provider and give kepr the
+bridge's issuer.
+
+| Bridge | Notes |
+| --- | --- |
+| Keycloak | "Identity brokering" with the SAML IdP; clients get OIDC. Supports the device authorisation grant. |
+| Dex | SAML connector (`saml`), OIDC out. Enable the device flow on the static client. |
+| Authentik / Zitadel | SAML source, OIDC provider. |
+| Cloud IdPs with both protocols | Okta, Entra ID and Google Workspace offer an OIDC app for the same directory: use that and skip the bridge. |
+
+Register a public client for kepr, allow the **device authorisation grant**
+and the `openid` scope, and note the client id.
+
+```bash
+kepr device add laptop-2 --oidc https://idp.example.com/realms/corp
+kepr device enroll KD1-… --oidc https://idp.example.com/realms/corp --client-id kepr-cli
+```
+
+## What would change this
+
+A direct `--saml` flag becomes worth building if a SAML provider with no
+OIDC option and no bridge is a hard requirement for a team. The work, in
+order, would be: pick the XML-signature library and review it; accept only
+`Response` messages whose `Assertion` is itself signed and whose `Audience`,
+`Recipient`, `NotOnOrAfter` and `InResponseTo` match; refuse DTDs and
+duplicate `ID` attributes before parsing the signature. None of it is
+started.
