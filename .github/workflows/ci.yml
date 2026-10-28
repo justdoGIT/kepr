@@ -208,6 +208,11 @@ jobs:
     if: needs.changes.outputs.java == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The self-hosted runner has no JDK; the client needs Java 16+.
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
       - name: javac + fake-daemon tests
         run: bash sdk/java/test.sh
 
