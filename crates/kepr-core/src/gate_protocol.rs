@@ -378,7 +378,7 @@ mod tests {
             value: ZeroString::from("new"),
         };
         let wire = serde_json::to_string(&r).unwrap();
-        assert!(wire.contains("rotate_commit"));
+        assert!(wire.contains("rotatecommit"));
         assert!(matches!(
             serde_json::from_str::<GateRequest>(&wire).unwrap(),
             GateRequest::RotateCommit { id: 4, .. }
