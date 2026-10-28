@@ -81,6 +81,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "gate_protocol_fuzz"
+path = "fuzz_targets/gate_protocol_fuzz.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 # Empty workspace block: explicitly declares that this crate is its
 # own workspace root, so `cargo +nightly fuzz run ...` does not try to

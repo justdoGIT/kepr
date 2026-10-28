@@ -51,6 +51,15 @@ read in the code, tested, or only reasoned about.
 
 Items 4 to 7 were also fixed in the P12 pull request itself.
 
+## Performance changes
+
+Measured on this container, release build, 200,000 audit entries:
+
+| Path | Before | After | How |
+| --- | --- | --- | --- |
+| Daemon start-up audit verification | 962 ms | 48 ms | Only the entries appended since the last start are re-hashed; a checkpoint (`audit.log.ckpt`) names the last verified entry, is used only when the log still holds that entry at that offset, expires after seven days, and `KEPR_AUDIT_FULL_VERIFY=1` or `kepr audit-verify` walk the whole file. A prefix edited in place is therefore caught by the next full walk rather than at start-up. |
+| One forwarder poll (`AuditTail` with a resume point) | 248 ms | 0.17 ms | The log is read from its end until the resume hash is found instead of parsing every line on every poll (a forwarder polls every few seconds). Results equal the whole-file read for block sizes from 1 byte up (tested). |
+
 ## Controls that held up
 
 - **No path returns a sealed value.** `meta_gate` refuses sealed, SSH and
@@ -78,9 +87,9 @@ Items 4 to 7 were also fixed in the P12 pull request itself.
 
 | Severity | Item | Why it matters | Ticket |
 | --- | --- | --- | --- |
-| Medium | A store without a passphrase keeps its key in RAM by design, and a same-uid process can send `lock` or (off macOS) `recovery-key enrol`. | Fenced by "no gate running" and owner checks, but any process of the user can ask. The presence check exists only for the macOS keychain sealer. | T13.21 |
-| Low | The audit chain is tamper-evident, not tamper-proof: someone who can rewrite the whole file can replace it. | Forwarding (`kepr audit forward`) mitigates; anchoring is not built. | T13.22 |
-| Info | 190 `unsafe` blocks, almost all libc calls and `memfd_secret` / Landlock / seccomp syscalls. | Not individually audited here. | T13.23 |
+| Medium | A store without a passphrase keeps its key in RAM by design, and a same-uid process can send `lock` or (off macOS) `recovery-key enrol`. | Fenced by "no gate running" and owner checks, but any process of the user can ask. A presence check exists for the macOS keychain sealer, and for Linux with `KEPR_PRESENCE=polkit`; it is off by default because headless hosts have no polkit agent. | T13.21 |
+| Low | The audit chain is tamper-evident, not tamper-proof: someone who can rewrite the whole file can replace it. | `kepr audit anchor` publishes the chain head and `kepr audit verify --anchor` catches a truncated or replaced log, but only when the anchors are kept somewhere the daemon's account cannot rewrite, and only for entries older than the newest anchor. | T13.22 |
+| Info | 191 `unsafe` blocks, almost all libc calls and `memfd_secret` / Landlock / seccomp syscalls. | Each now has a one-line `SAFETY:` comment, enforced by `tests/unsafe_comments.rs`; the comments were written for this change, not yet reviewed by a second person. | T13.23 |
 
 ## What this review did not cover
 

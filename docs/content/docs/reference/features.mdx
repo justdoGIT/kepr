@@ -102,10 +102,11 @@ verbs print their usage line when called without arguments.
 | `policy` | `test FILE` · `status` · `reload` | Run a policy file's test cases; show or reload what the daemon enforces. |
 | `report access` | `KEY` | Every path KEY can take: bindings, shares, gate releases, reads, aliases, devices, policy. |
 | `quorum` | `set KEY N\|off` · `request KEY [--for DUR]` · `approve ID [--with APPROVAL]` · `sign REQUEST` · `ls` | M-of-N approvals before each use window. |
-| `approvals` | `set KEY --via desktop\|ntfy\|any` · `set KEY --off` · `serve [--desktop] [--ntfy URL --listen ADDR:PORT [--callback-url URL]]` | Answer consent prompts from a notification. |
+| `approvals` | `set KEY --via desktop\|ntfy\|any` · `set KEY --off` · `serve [--desktop] [--ntfy URL] [--slack-webhook URL --slack-signing-secret FILE] [--teams-webhook URL] [--listen ADDR:PORT [--callback-url URL]]` | Answer consent prompts from a notification, Slack or Teams. |
 | `canary` | `plant [--for PROVIDER] [--name NAME] [--in FILE\|DIR]` · `ls` · `rm NAME` · `listen --listen ADDR:PORT` | Decoy keys that raise an alarm when used. |
 | `exe` | `KEY [--allow PATH]... [--clear]` | Show, replace or drop the programs allowed to read KEY. |
 | `audit forward` | `--to jsonl:PATH\|syslog:udp://HOST[:PORT]\|otlp:URL [--once] [--interval SECS] [--state FILE]` | Stream audit events (never values) to a SIEM. |
+| `audit anchor` / `audit verify` | `anchor --to jsonl:PATH\|syslog:udp://HOST[:PORT] [--once] [--interval SECS]` · `verify --anchor FILE` | Publish the audit chain head elsewhere; check the log against published heads. |
 | `alerts` | `check [--file F]` · `run [--once] [--file F] [--interval SECS] [--state FILE]` | Post matching audit events to webhooks. |
 | `anomaly` | `check [--rules F]` · `run [--journal daemon\|FILE\|-] [--rules F] [--once] [--interval SECS] [--state F]` | Watch the gate journal for unusual traffic. |
 | `usage` | `[--days N]` · `--report [--days N] [--unused-days N] [--prices FILE]` | Uses per key; `--report`: agent traffic, cost and unused bindings. |
@@ -752,7 +753,21 @@ kepr vault init --size 64M     # MiB, 1-4096 (default 64), filled with random no
 kepr vault migrate             # move per-file credentials in (each one read back first)
 kepr vault verify              # check every used slot and the Merkle root
 kepr vault status              # active store, size and fill, rollback guard, files left to move
+kepr vault resize --size 128M  # rebuild at another size (a shrink keeps 25 % spare)
+kepr vault to-files            # move the records back into per-file credentials
 ```
+
+`resize` builds the new image beside the old one, copies every record (its
+write time is kept, so health ages stay right), checks the copy record by
+record and by the Merkle root, and only then renames it over the old
+image. A failure before the rename removes the copy and leaves the old
+image as it was; with a TPM2 counter, a failed rename leaves the copy as
+the current image and the error says where it is. No agent session may run
+(`kepr panic` first), and only the store's owner (root for the shared
+store) may run it. `to-files` writes each record as a per-file credential
+and `.meta`, reads it back, and only then removes it from the image; a
+record whose file already holds another value stays. Restart the daemon
+without `KEPR_STORE=image` afterwards.
 
 What the image protects:
 
@@ -933,6 +948,13 @@ session or any error changes nothing. Without that, any process of your user,
 an agent included, could add a way into the store that the keychain does
 not guard. Stores sealed any other way are not asked.
 
+On Linux the same two requests can ask through polkit: set
+`KEPR_PRESENCE=polkit` for the daemon and `kepr lock` and `kepr
+recovery-key enrol` need the person at the machine to authenticate
+(`io.kepr.protect`, `auth_self`, asked every time, 60 seconds). It is off
+by default because a headless host or CI has no polkit agent and would be
+locked out of both commands.
+
 <Warning>
   The words and the `master.key.recovery` file together open the store.
   Keep the words offline, never next to the machine. Sealing again binds
@@ -940,6 +962,14 @@ not guard. Stores sealed any other way are not asked.
   firmware update from a tampered boot: only run `kepr recovery-key unlock`
   on a machine you trust.
 </Warning>
+
+### Post-quantum TLS in the gate
+
+`cargo build --release -p kepr-gate --features pq` makes the gate's own TLS
+to upstream hosts offer the hybrid key exchange `X25519MLKEM768` first (the
+`fips` build does too); a server without it gets X25519 as before. The
+session CA's local keys are not affected. `kepr-gate --tls-info` prints
+what a build offers first.
 
 ### FIPS build
 
@@ -1027,6 +1057,16 @@ directory.
   logins, with `ALTER USER CURRENT_USER() IDENTIFIED BY`. Unlike
   PostgreSQL's SCRAM verifier, the new password travels in the SQL text
   (over TLS unless `sslmode=disable`); backslash and NUL are refused.
+- `--db-user NAME=ROLE[:TTL]` (PostgreSQL) logs the agent in as a role the
+  gate makes for the session. NAME's sealed record is an admin login that
+  may `CREATE ROLE`; the agent never uses it. The gate creates
+  `kepr_e_<random>` with a random password (sent as a SCRAM verifier),
+  `VALID UNTIL` now + TTL (60 s to 24 h, default 1 h), a member of ROLE,
+  and drops it when the agent exits (sessions ended, objects reassigned to
+  the admin, role dropped). A gate killed before it can drop the role
+  leaves one that has already stopped logging in; the next session on the
+  route drops every expired `kepr_e_` role first. It can't be combined with
+  `--grant` or rotation. MySQL is not supported.
 - `--tunnel NAME=HOST:PORT` gives the session a loopback port
   (`KEPR_TUNNEL_<NAME>`) that the gate pipes to that host without injecting
   anything, also under `--isolate-net`. HOST is a fully-qualified name or
@@ -1037,6 +1077,20 @@ directory.
   membership is left alone. A gate killed outright (for example by
   `kepr panic`) can't revoke: the role stays until an administrator
   removes it.
+
+### Kubernetes
+
+`kepr agent add-kube NAME --server https://HOST[:PORT] --token-file FILE
+[--ca-file FILE]` seals a bearer token (and the cluster's CA certificate)
+bound to the API server. The token comes from a file or stdin, never argv.
+In `kepr agent run` the harness gets a `KUBECONFIG` whose server is that
+URL, whose token is the session placeholder, whose authority is the session
+CA, and whose `proxy-url` is the gate. The gate checks the placeholder,
+applies limits and DLP, sends the real token, and verifies the cluster
+against the stored CA only (never the environment's). Limits: the server
+needs a DNS name (an address has no name for the session CA to sign),
+`kubectl exec`, `attach` and `port-forward` are refused with a 501, and
+client-certificate auth is not supported.
 
 ### Recording, journal and daily caps
 
@@ -1230,8 +1284,32 @@ expect = "allow"
 ```
 
 Rule conditions are `names`, `exe`, `parent` (globs), `agent` (inside
-`kepr agent run` or not), `harness`, `hosts` and `max_ttl`; unknown keys
-are errors. `kepr policy test FILE` runs the `[[test]]` cases,
+`kepr agent run` or not), `harness`, `role`, `hosts` and `max_ttl`; unknown
+keys are errors.
+
+Roles name sets of callers; a rule with `role` applies only to a caller who
+holds one of them (no role, no match):
+
+```toml
+[roles.ops]
+members = ["group:ops", "user:alice", "uid:1007", "gid:2000"]
+
+[[rule]]
+effect = "allow"
+ops = ["get"]
+names = ["PROD_*"]
+role = ["ops"]
+
+[[test]]
+op = "get"
+name = "PROD_DB"
+roles = ["ops"]          # the roles the simulated caller holds
+expect = "allow"
+```
+
+Groups come from the caller's process (`/proc/PID/status`) and
+`/etc/group`. An unknown role in a rule, or a malformed member, is an
+error. `kepr policy test FILE` runs the `[[test]]` cases,
 `kepr policy status` shows what the daemon enforces, and
 `kepr policy reload` (or SIGHUP) re-reads the file.
 
@@ -1303,6 +1381,14 @@ kepr approvals serve --desktop
 kepr approvals serve --ntfy URL|kepr:NAME --listen ADDR:PORT [--callback-url URL]
 ```
 
+- `--slack-webhook URL --slack-signing-secret FILE` posts the request with
+  Allow / Deny buttons; point the Slack app's interactivity Request URL at
+  `https://HOST/slack/interact` (behind a TLS reverse proxy that forwards
+  to `--listen`). A click needs Slack's valid `X-Slack-Signature` (HMAC over
+  `v0:TIMESTAMP:BODY`, timestamp within five minutes) and the request's
+  one-time token. `--teams-webhook URL` posts a card whose links open a
+  confirmation page on the listener; opening a link answers nothing, its
+  button does. Webhook URLs may be `kepr:NAME`.
 - Desktop prompts use `notify-send --wait` actions (libnotify 0.7.10 or
   newer). ntfy notifications carry buttons that call back to `--listen`.
 - No answer within 60 s is a deny. With no live approver (none polled in
@@ -1342,6 +1428,15 @@ provider. The listener must be reachable by whoever sends the webhook.
   is at least once; syslog is UDP only; an OTLP URL may be `kepr:NAME`.
   Non-root callers get only their own entries; root on the system daemon
   gets everyone's.
+- `kepr audit anchor --to jsonl:PATH|syslog:udp://HOST[:PORT]` publishes
+  the chain head (`seq`, `hash`, time) whenever it moved; put the target
+  where the daemon's account cannot rewrite it. `kepr audit verify
+  --anchor FILE` has the daemon check the log: it must verify, be at least
+  as long as the newest anchor, and hold the same hash at every anchored
+  `seq`, so a truncated or wholly replaced log fails.
+- The daemon verifies only what was appended since its last start
+  (`audit.log.ckpt`, trusted for seven days; `KEPR_AUDIT_FULL_VERIFY=1`
+  forces a full walk). `kepr audit-verify` always checks the whole file.
 - `kepr alerts run` posts audit events matching `~/.config/kepr/alerts.toml`
   rules to Slack, Teams, Discord or ntfy webhooks, throttled per rule;
   held matches are counted in the next alert, and the first run starts at

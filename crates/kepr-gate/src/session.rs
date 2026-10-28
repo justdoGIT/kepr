@@ -412,7 +412,9 @@ mod tests {
         // SAFETY: waiting for (and if need be killing) our own child.
         while unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } != pid {
             if start.elapsed() > Duration::from_secs(30) {
+                // SAFETY: signalling a child this test spawned.
                 unsafe { libc::kill(pid, libc::SIGKILL) };
+                // SAFETY: waiting for a child this code forked or spawned.
                 unsafe { libc::waitpid(pid, &mut status, 0) };
                 panic!("the confined child hung");
             }

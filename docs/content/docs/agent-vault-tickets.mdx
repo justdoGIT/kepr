@@ -55,7 +55,7 @@ the exact commands that prove it's done.
 | P10: T10.01–T10.12 `kepr mount`, KDBX 4 import, fingerprint unlock, Keychain sealer, `logon` keyring, unit-file credentials, Podman driver, CSI provider, binary-identity bindings, local PKI, SPIFFE SVIDs, native Keychain unseal | shipped |
 | P11: T11.1–T11.24 search, trash, history diff, duplicates, aliases, linked records, custom types, record templates, `delete --all`, `doctor --verify`, aging and policy reports, idle lock, unlock backoff, re-auth, share contacts, profiles, sync maps, `kepr batch`, `kepr serve`, discovery rules, `kepr ssh rotate`, `kepr agent logs`, health ignores, richer `kepr status` | shipped |
 | P12: T12.01–T12.53 plan gaps from the 2026-10-15 audit: response masking, gate syscall filter and Landlock, git and GCP presets, master key in secret memory, vault anti-rollback, recovery key for a sealed master key, the rest of the FIPS seam, clipboard hygiene | shipped |
-| P13: T13.01–T13.23 remaining plan gaps and review follow-ups, in four priority groups | partly shipped: T13.07, T13.09, T13.10, T13.15, T13.19, T13.20; the rest open |
+| P13: T13.01–T13.23 remaining plan gaps and review follow-ups, in four priority groups | shipped except the follow-ups each ticket names: T13.02 MySQL, T13.03 per-provider rotators and verb, T13.04 client-certificate auth, T13.13 delegated admin, T13.22 `s3:` anchors, T13.23 bundle-header and KDBX fuzz targets; T13.05 and T13.12 glue were not built here |
 
 **Where the code differs from the ticket text** (the code is authoritative):
 
@@ -4750,6 +4750,8 @@ Done when: the standard commands pass.
 
 ### T13.21 Presence check for lock and recovery-key enrol on Linux (S) 🔒
 
+**Status: shipped, opt-in** (2026-10-28): `KEPR_PRESENCE=polkit` makes `lock` and `recovery-key enrol` ask through the new `io.kepr.protect` polkit action (`auth_self`, every time). It is not on by default: a headless host or CI has no polkit agent, so a default would lock those out. The macOS keychain dialog still applies on keychain stores.
+
 Goal: on a store sealed without a passphrase, `kepr lock` and `kepr recovery-key enrol` ask the person at the machine through polkit, as T12.53 does through a macOS dialog, so a process of the same user (an agent) cannot add a way into the store silently.
 Depends on: T12.53.
 Files: `src/daemon_seal/presence.rs`, `systemd/polkit/io.kepr.policy`, `install.sh`, `docs/content/docs/reference/features.mdx`.
@@ -4763,6 +4765,8 @@ Done when: the standard commands pass.
 
 ### T13.22 Audit chain anchoring (M) 🔒
 
+**Status: shipped** (2026-10-28): `kepr audit anchor --to jsonl:PATH|syslog:udp://HOST[:PORT]` publishes the chain head when it moved; `kepr audit verify --anchor FILE` has the daemon check the log against the anchors (truncated, replaced and rewritten logs each fail). `s3:` targets are not done.
+
 Goal: replacing the whole audit log is detectable: the chain head is periodically published somewhere the log's writer cannot rewrite.
 Depends on: nothing.
 Files: `src/audit_chain.rs`, `src/cli_policy/forward.rs`, `src/cli_policy/tail.rs`, create `src/cli_policy/anchor.rs`.
@@ -4772,6 +4776,8 @@ Out of scope: Rekor or a public log; signing the anchor.
 Done when: the standard commands pass.
 
 ### T13.23 Fuzz the parsers and audit `unsafe` (M) 🔒
+
+**Status: shipped, partly** (2026-10-28): `tests/unsafe_comments.rs` lints every `unsafe {` block for a `SAFETY:` comment (all 191 have one; the allowlist is empty and may only shrink). Fuzz targets for `ssh_wire`, `mysql_wire`, `recovery_words`, `shamir`, `http_lite` and the gate messages, with `parser_smoke.rs` running the same entry points on stable. Not done: targets for the bundle header and the KDBX reader (root-crate code the `kepr-core` fuzz crate cannot link); `cargo +nightly fuzz` was not available here, so the targets were not run under libFuzzer.
 
 Goal: every parser of untrusted bytes has a fuzz target, and every `unsafe` block has a one-line `SAFETY:` comment that a test lints for.
 Depends on: nothing.
@@ -4797,6 +4803,8 @@ Done when: the standard commands pass.
 
 ### T13.01 Post-quantum key exchange in the gate's TLS (M) 🔒
 
+**Status: shipped** (2026-10-28) as the opt-in `pq` feature: `--features pq` selects aws-lc-rs and offers `X25519MLKEM768` first (the `fips` build does too); a test handshakes against a server that accepts only the hybrid group. `kepr-gate --tls-info` prints what a build offers first; `kepr status` does not show it yet.
+
 Goal: the gate's TLS to upstream hosts offers the hybrid `X25519MLKEM768` group where the provider supports it.
 Depends on: T12.43.
 Files: `crates/kepr-gate/Cargo.toml`, `crates/kepr-gate/src/tls_provider.rs`, `crates/kepr-gate/src/egress.rs`.
@@ -4807,6 +4815,8 @@ Done when: the standard commands pass, plus `cargo test -p kepr-gate --features 
 
 ### T13.02 Dynamic database users (M) 🔒
 
+**Status: PostgreSQL shipped** (2026-10-28): `kepr agent run --db-user NAME=ROLE[:TTL]` (`gate/pg_ephemeral.rs`): the gate makes `kepr_e_<random>` with a SCRAM verifier and `VALID UNTIL`, grants ROLE, logs the agent in as it, drops it at the end, and sweeps expired `kepr_e_` roles at the next session's start. The sweep is by `VALID UNTIL` in the database, not a daemon-side list. MySQL is not done.
+
 Goal: `kepr agent run --db-user NAME` creates a short-lived PostgreSQL or MySQL login for the session and drops it at the end, so no long-lived database password is released at all.
 Depends on: T7.18 (JIT roles).
 Files: `crates/kepr-gate/src/pg_jit.rs`, `crates/kepr-gate/src/mysql_rotate.rs`, `crates/kepr-core/src/gate_protocol.rs`, `src/cli_gatex/grant.rs`.
@@ -4816,6 +4826,8 @@ Out of scope: other engines; connection pooling.
 Done when: the standard commands pass, plus `./tests/agent_e2e.sh`.
 
 ### T13.03 Rotation of sealed keys through provider APIs (L)
+
+**Status: groundwork shipped** (2026-10-28): the `Rotate` trait and the order issue → commit → revoke (`gate/rotate_provider.rs`), `GateRequest::RotateCommit` with `rotate:` routes (the daemon replaces the value, keeps seal and bindings, purges history slots, bumps the generation; no other session may send it), and a fake-provider test harness. No provider implementation and no `kepr rotate --provider` verb yet: one follow-up ticket per provider.
 
 Goal: `kepr leaked KEY --rotate` and `kepr rotate KEY --provider NAME` replace a sealed key through the provider's own API (GitHub fine-grained tokens, Stripe restricted keys, Anthropic and OpenAI admin keys) without the value ever reaching the CLI.
 Depends on: nothing.
@@ -4829,6 +4841,8 @@ Done when: the standard commands pass.
 
 ### T13.04 Kubernetes through the gate (M)
 
+**Status: shipped** (2026-10-28): `kepr agent add-kube NAME --server URL --token-file F --ca-file F` seals a `kube` record; `kepr agent run` writes a `KUBECONFIG` (placeholder token, session CA, the gate as proxy) and the gate serves the API server's CONNECT (`gate/kube.rs`), verifying the cluster against its stored CA. DNS names only (no IP literals); `exec`, `attach` and `port-forward` get a 501; client-certificate auth is a follow-up.
+
 Goal: `kubectl` run inside `kepr agent run` talks to the cluster with a bearer token or client certificate the agent never sees.
 Depends on: nothing.
 Files: `crates/kepr-core/src/binding.rs`, `crates/kepr-gate/src/egress.rs`, `src/cli_agent_run.rs`, create `src/cli_agent_kube.rs`.
@@ -4839,6 +4853,8 @@ Done when: the standard commands pass.
 
 ### T13.05 .NET and PowerShell SDKs (M)
 
+**Status: shipped, not compiled here** (2026-10-28): `sdk/dotnet` (net8.0, xunit against a fake daemon, peer-credential check) and `sdk/powershell` (module over the assembly, Pester tests). This environment has no .NET SDK or PowerShell, so the code has not been built or run; the CI jobs `dotnet-sdk` and `powershell-sdk` are its first test.
+
 Goal: get / set / generate / delete / list from .NET and PowerShell, like the Python, Node, Go, Ruby and Java clients.
 Depends on: nothing.
 Files: create `sdk/dotnet/`, `sdk/powershell/`, `.github/workflows/ci.yml` (jobs `dotnet-sdk`, `powershell-sdk`).
@@ -4848,6 +4864,8 @@ Out of scope: Windows named pipes (the daemon is Unix-socket only).
 Done when: the new CI jobs pass.
 
 ### T13.06 Chef and Puppet lookups (S)
+
+**Status: shipped** (2026-10-28): `integrations/chef` (`kepr_secret`) and `integrations/puppet` (`kepr::secret()` returning `Sensitive[String]`), both over `kepr get NAME --quiet` with a name check, a 65 s limit and errors that never carry output. Ruby tests with a stub `kepr` run in the `ruby-sdk` job.
 
 Goal: `kepr_secret` in Chef and `kepr::secret()` in Puppet.
 Depends on: T13.05 is not needed; uses the CLI.
@@ -4870,6 +4888,8 @@ Out of scope: automating IDE settings.
 Done when: the standard commands pass.
 
 ### T13.08 Approve from Slack and Teams (M) 🔒
+
+**Status: shipped** (2026-10-28): `kepr approvals serve --slack-webhook URL --slack-signing-secret FILE --listen ADDR:PORT` (Slack's signature, five-minute window, then the one-time token) and `--teams-webhook URL` (a card whose links open a confirmation page; a GET never answers). `src/cli_policy/approve_chat.rs`.
 
 Goal: an approval request can be answered from a Slack or Teams message button.
 Depends on: T9.04.
@@ -4905,6 +4925,8 @@ Done when: the standard commands pass.
 
 ### T13.11 Resize a vault image and migrate back (M) 🔒
 
+**Status: shipped** (2026-10-28): `kepr vault resize --size MIB` builds the new image beside the old one, copies every record (write times kept), verifies, renames; a shrink needs 25 % spare. `kepr vault to-files` moves the records back (`daemon_vault/resize.rs`).
+
 Goal: `kepr vault resize SIZE` grows an image; `kepr vault migrate --to-files` returns to the per-file store.
 Depends on: T4.07.
 Files: `src/daemon_vault/admin.rs`, `src/daemon_vault/migrate.rs`, `src/cli_vault/`.
@@ -4914,6 +4936,8 @@ Out of scope: online resize.
 Done when: the standard commands pass, plus `tests/vault_image.rs`.
 
 ### T13.12 JetBrains, iTerm2 and Raycast integrations (M)
+
+**Status: shipped, glue not run** (2026-10-28): `integrations/raycast`, `integrations/iterm2`, `integrations/jetbrains`, each over `kepr ls --json` / `kepr status --json` / `kepr copy`. The parsing is tested in CI (node, python, javac); the Raycast command, the iTerm2 script and the IntelliJ widget need their host applications and were not built or run.
 
 Goal: the VS Code extension's features (hover on `kepr://` references, list and lock state; never values) in the other three tools.
 Depends on: nothing.
@@ -4927,6 +4951,8 @@ Done when: the new CI jobs pass.
 
 ### T13.13 Roles and delegated admin (L) 🔒
 
+**Status: role model shipped** (2026-10-28): `[roles.NAME] members = ["uid:N", "user:NAME", "gid:N", "group:NAME"]` and `role = [...]` in rules, `roles = [...]` in `[[test]]` cases. Delegated admin verbs and the report are separate tickets, as planned.
+
 Goal: `policy.toml` rules can name roles, and a delegated admin can manage a team's credentials without reading them.
 Depends on: T6.11.
 Files: `crates/kepr-core/src/policy.rs`, `src/daemon_policy/enforce.rs`, create `src/daemon_policy/roles.rs`.
@@ -4936,6 +4962,8 @@ Out of scope: nodes and a hosted control plane.
 Done when: the standard commands pass.
 
 ### T13.14 SAML sign-in for device enrolment (L) 🔒
+
+**Status: decided** (2026-10-28): no in-tree SAML. Use an OIDC bridge in front of the SAML IdP; the reasons and the work a direct `--saml` would need are in the SAML guide (`guides/saml-sign-in`). No follow-up ticket until a SAML-only provider is a hard requirement.
 
 Goal: `kepr device enroll --saml` accepts a SAML 2.0 assertion from the identity provider, as `--oidc` does for OIDC.
 Depends on: T6.13.

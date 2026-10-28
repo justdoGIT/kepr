@@ -463,6 +463,7 @@ mod tests {
             // SAFETY: F_GETFD only reads a descriptor's flags.
             let open: Vec<String> = listed
                 .into_iter()
+                // SAFETY: F_GETFD only reads a descriptor's flags.
                 .filter(|&f| unsafe { libc::fcntl(f, libc::F_GETFD) } != -1)
                 .map(|f| f.to_string())
                 .collect();

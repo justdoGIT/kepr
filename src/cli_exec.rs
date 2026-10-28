@@ -376,6 +376,7 @@ mod tests {
         // SAFETY: `fd` was parsed from the `KEPR_FD_OPENAI_KEY` value this
         // test just created via `build_memfd_env`; it is open, owned solely
         // by this test, and not referenced again after this point.
+        // SAFETY: closing a descriptor this code owns and does not use again.
         unsafe { libc::close(fd) };
     }
 

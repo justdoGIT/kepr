@@ -72,6 +72,7 @@ impl FdResolver {
         // exactly this purpose and nothing else in the gate uses it;
         // main() checks it is open before calling this, and this is
         // called once, so ownership is not shared.
+        // SAFETY: fd 3 is the daemon channel, checked open at start and taken over once.
         let stream = unsafe { UnixStream::from_raw_fd(3) };
         stream
             .set_read_timeout(Some(REPLY_TIMEOUT))

@@ -25,6 +25,7 @@ use zeroize::Zeroizing;
 const MAX_START: usize = 64 * 1024;
 
 fn peer_uid(s: &UnixStream) -> Option<u32> {
+    // SAFETY: an all-zero ucred is a valid value of this plain C struct.
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: SO_PEERCRED fills a ucred of the length we pass.
@@ -182,6 +183,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("g.sock");
         let p = path.to_str().unwrap().to_string();
+        // SAFETY: getuid has no preconditions and cannot fail.
         let me = unsafe { libc::getuid() };
         std::thread::spawn(move || serve(&p, me.wrapping_add(1)));
         std::thread::sleep(std::time::Duration::from_millis(200));

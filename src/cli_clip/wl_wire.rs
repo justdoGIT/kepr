@@ -149,6 +149,7 @@ impl Conn {
         // SAFETY: msghdr points at stack buffers that outlive the call;
         // every cmsg is walked with CMSG_FIRSTHDR / CMSG_NXTHDR inside
         // msg_controllen, and each received fd is owned exactly once.
+        // SAFETY: an all-zero value is valid for this plain C struct.
         unsafe {
             let mut msg: libc::msghdr = std::mem::zeroed();
             msg.msg_iov = &mut iov;

@@ -1,37 +1,16 @@
 // unsafe_comments.rs — every `unsafe {` block says why it is sound.
 //
 // A block needs a `SAFETY:` comment on its own line or in the two lines
-// above it. ALLOWLIST holds the files that predate the rule, with the
-// number of blocks still missing a comment; it only shrinks: a file may
-// not gain a bare block, and an entry that is no longer needed must be
-// removed (T13.23).
+// above it, so a one-line comment sits directly above the block. ALLOWLIST
+// is for files that cannot meet this yet, with the number of blocks still
+// missing a comment; it only shrinks, and an entry that is no longer
+// needed must be removed (T13.23). It is empty today.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-const ALLOWLIST: &[(&str, usize)] = &[
-    ("crates/kepr-core/src/auth.rs", 3),
-    ("crates/kepr-core/src/memfd.rs", 8),
-    ("crates/kepr-core/src/seccomp.rs", 6),
-    ("crates/kepr-core/src/secmem.rs", 2),
-    ("crates/kepr-gate/src/service.rs", 2),
-    ("crates/kepr-gate/src/session.rs", 2),
-    ("crates/kepr-gate/src/vault.rs", 1),
-    ("src/audit_chain.rs", 2),
-    ("src/cli_aws/checkout.rs", 2),
-    ("src/cli_clip/wl_wire.rs", 1),
-    ("src/cli_doctor.rs", 4),
-    ("src/cli_eco/tui_term.rs", 1),
-    ("src/cli_exec.rs", 1),
-    ("src/cli_input.rs", 2),
-    ("src/cli_sandbox_seccomp.rs", 4),
-    ("src/cli_sandbox_sys.rs", 1),
-    ("src/cli_ssh_agent.rs", 1),
-    ("src/daemon_memlock.rs", 1),
-    ("src/daemon_singleton.rs", 1),
-    ("src/daemon_socket.rs", 7),
-];
+const ALLOWLIST: &[(&str, usize)] = &[];
 
 fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(rd) = fs::read_dir(dir) else { return };

@@ -482,9 +482,11 @@ mod tests {
         // group bits (e.g. 0o077 → file lands at 0o600).
         // Temporarily clear umask so the test sees the intended
         // mode rather than the umask-masked mode.
+        // SAFETY: the umask call only swaps the process's file-creation mask.
         let saved = unsafe { libc::umask(0) };
         let (chain, dir) = fresh_chain();
         chain.append("set", None, 1000, "alice", "ok").unwrap();
+        // SAFETY: the umask call only swaps the process's file-creation mask.
         unsafe { libc::umask(saved) };
         let mode = fs::metadata(dir.path().join("audit.log"))
             .unwrap()
