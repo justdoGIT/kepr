@@ -42,14 +42,11 @@ pub trait CipherSuite {
     // The HMAC and HKDF methods have no production caller until T12.40-T12.42
     // move the files listed in tests/crypto_seam.rs over; drop the allows then.
     /// HMAC-SHA256 over the concatenation of `parts`.
-    #[allow(dead_code)]
     fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32];
     /// Constant-time check of a full 32-byte tag; any other length is false.
-    #[allow(dead_code)]
     fn hmac_sha256_verify(key: &[u8], parts: &[&[u8]], tag: &[u8]) -> bool;
     /// HKDF-SHA256 (RFC 5869) to 32 bytes; `None` salt is the RFC's zero salt.
     /// `info` is the concatenation of its parts.
-    #[allow(dead_code)]
     fn hkdf_sha256(salt: Option<&[u8]>, ikm: &[u8], info: &[&[u8]]) -> Zeroizing<[u8; 32]>;
     /// Fill `buf` from the system CSPRNG; the error carries no detail.
     fn fill_random(buf: &mut [u8]) -> Result<(), CryptoError>;
@@ -167,17 +164,14 @@ pub fn sha256(parts: &[&[u8]]) -> [u8; 32] {
     Active::sha256(parts)
 }
 
-#[allow(dead_code)]
 pub fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     Active::hmac_sha256(key, parts)
 }
 
-#[allow(dead_code)]
 pub fn hmac_sha256_verify(key: &[u8], parts: &[&[u8]], tag: &[u8]) -> bool {
     Active::hmac_sha256_verify(key, parts, tag)
 }
 
-#[allow(dead_code)]
 pub fn hkdf_sha256(salt: Option<&[u8]>, ikm: &[u8], info: &[&[u8]]) -> Zeroizing<[u8; 32]> {
     Active::hkdf_sha256(salt, ikm, info)
 }

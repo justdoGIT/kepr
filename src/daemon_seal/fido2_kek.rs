@@ -20,8 +20,6 @@
 // and the `hmac-secret` output together (kepr_core::seal_factor), which
 // key_unlock.rs splits before choosing the envelope version.
 
-use hkdf::Hkdf;
-use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use kepr_core::protocol::Response;
@@ -69,11 +67,7 @@ pub fn combine(
     let mut ikm = Zeroizing::new([0u8; 2 * KEY]);
     ikm[..KEY].copy_from_slice(argon);
     ikm[KEY..].copy_from_slice(hmac);
-    let mut kek = Zeroizing::new([0u8; KEY]);
-    Hkdf::<Sha256>::new(Some(argon_salt), ikm.as_ref())
-        .expand(INFO, kek.as_mut())
-        .expect("32 bytes is a valid HKDF-SHA256 length");
-    kek
+    cipher::hkdf_sha256(Some(argon_salt), ikm.as_ref(), &[INFO])
 }
 
 struct Parsed<'a> {
@@ -126,8 +120,8 @@ pub fn wrap_with(
     }
     let mut argon_salt = [0u8; ARGON_SALT];
     let mut nonce = [0u8; NONCE];
-    getrandom::fill(&mut argon_salt).map_err(|e| format!("CSPRNG failure: {e}"))?;
-    getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(&mut argon_salt).map_err(|_| "CSPRNG failure")?;
+    cipher::fill_random(&mut nonce).map_err(|_| "CSPRNG failure")?;
     let mut out = MAGIC.to_vec();
     out.extend_from_slice(&argon_salt);
     out.extend_from_slice(&(factor.credential_id.len() as u16).to_be_bytes());
@@ -271,5 +265,18 @@ mod tests {
         let mut f = factor(1);
         f.credential_id.clear();
         assert!(wrap_with(&[0; KEY], b"pw", &f, cheap_kdf).is_err());
+    }
+
+    // Made by the code before it moved onto the cipher seam (T12.42).
+    #[test]
+    fn the_kek_and_an_envelope_from_the_old_code_are_unchanged() {
+        let kek = combine(&[1; KEY], &[3; KEY], &[2; ARGON_SALT]);
+        assert_eq!(
+            hex::encode(*kek),
+            "bf54bbba25af2b27beed409f90252d2ccfa35d339f89f12a1d41775db1fe277f"
+        );
+        let env = hex::decode("6b6570725f7077320a991bec0905689fdcd6ebac13e92d18740040c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c15a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5ad8d9d72aec1f3726ca4062526c5f106799ab98b73c8c2e370c17a4ecbc21b859b6cc30f79fcd0388275bb0512d3014d775849cc666257b02a468bca4").unwrap();
+        let got = unwrap_with(&env, b"pw", Some(&factor(3)), cheap_kdf).unwrap();
+        assert_eq!(*got, [7u8; KEY]);
     }
 }

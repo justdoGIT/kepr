@@ -320,7 +320,11 @@ pub fn run() -> Result<(), String> {
 
         let st = state.clone();
         tokio::spawn(async move {
-            if let Ok(afd) = tokio::io::unix::AsyncFd::new(owner) {
+            // `owner` is a pidfd this task owns; newer tokio deprecates `new`
+            // for `register`, which older releases in our range lack.
+            #[allow(deprecated)]
+            let afd = tokio::io::unix::AsyncFd::new(owner);
+            if let Ok(afd) = afd {
                 let _ = afd.readable().await;
             }
             // T7.18: take back the roles this session granted.

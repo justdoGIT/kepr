@@ -24,12 +24,9 @@
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use hkdf::Hkdf;
-use hmac::{Hmac, KeyInit, Mac};
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol_syncx::BUNDLE_MAGIC;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
@@ -94,25 +91,19 @@ pub struct Opened {
 
 /// The folder's id: the same for every export of one folder by one key.
 pub fn folder_id(from: &str, folder: &str) -> String {
-    let d = Sha256::digest(
-        [
-            b"kepr-folder-id-v1\0",
-            from.as_bytes(),
-            b"\0",
-            folder.as_bytes(),
-        ]
-        .concat(),
-    );
+    let d = cipher::sha256(&[
+        b"kepr-folder-id-v1\0",
+        from.as_bytes(),
+        b"\0",
+        folder.as_bytes(),
+    ]);
     hex::encode(&d[..16])
 }
 
 /// The exporter's Ed25519 folder key, derived from the share secret.
 fn signing_key(me: &ShareSecret) -> SigningKey {
     let secret = Zeroizing::new(me.x.to_bytes());
-    let mut seed = Zeroizing::new([0u8; 32]);
-    Hkdf::<Sha256>::new(None, secret.as_ref())
-        .expand(b"kepr-folder-signing-v1", seed.as_mut())
-        .expect("32 bytes is a valid HKDF length");
+    let seed = cipher::hkdf_sha256(None, secret.as_ref(), &[b"kepr-folder-signing-v1"]);
     SigningKey::from_bytes(&seed)
 }
 
@@ -127,19 +118,15 @@ fn bind_key(
         return None;
     }
     let info = [&b"kepr-folder-v1"[..], from, to].concat();
-    let mut key = Zeroizing::new([0u8; 32]);
-    Hkdf::<Sha256>::new(None, ss.as_bytes())
-        .expand(&info, key.as_mut())
-        .ok()?;
-    Some(key)
+    Some(cipher::hkdf_sha256(None, ss.as_bytes(), &[&info]))
 }
 
-fn bind_mac(key: &[u8; 32], id: &str, signer: &str, w: &Wrap) -> Hmac<Sha256> {
-    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("any key length");
-    m.update(b"kepr-folder-signer-v1");
+/// The bytes a wrap's bind MAC covers.
+fn bound(id: &str, signer: &str, w: &Wrap) -> Vec<u8> {
+    let mut m = b"kepr-folder-signer-v1".to_vec();
     for part in [id, signer, &w.to, &w.wrap] {
-        m.update(&(part.len() as u32).to_be_bytes());
-        m.update(part.as_bytes());
+        m.extend_from_slice(&(part.len() as u32).to_be_bytes());
+        m.extend_from_slice(part.as_bytes());
     }
     m
 }
@@ -174,10 +161,10 @@ pub fn seal(
         items: Vec::new(),
     };
     let mut key = Zeroizing::new([0u8; 32]);
-    getrandom::fill(key.as_mut()).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(key.as_mut()).map_err(|_| "CSPRNG failure")?;
     for (name, p) in items {
         let mut nonce = [0u8; NONCE_LEN];
-        getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG failure: {e}"))?;
+        cipher::fill_random(&mut nonce).map_err(|_| "CSPRNG failure")?;
         let plain = Zeroizing::new(serde_json::to_vec(p).map_err(|e| e.to_string())?);
         let ct = cipher::seal(key.as_ref(), &nonce, &aad(&m.id, name), &plain)
             .map_err(|_| "folder encryption failed".to_string())?;
@@ -195,7 +182,10 @@ pub fn seal(
         };
         let k = bind_key(&me.x, r.x25519(), &from_x, r.x25519())
             .ok_or("a recipient key is not usable")?;
-        w.bind = B64.encode(bind_mac(&k, &m.id, &m.signer, &w).finalize().into_bytes());
+        w.bind = B64.encode(cipher::hmac_sha256(
+            k.as_ref(),
+            &[&bound(&m.id, &m.signer, &w)],
+        ));
         m.keys.push(w);
     }
     let line = serde_json::to_vec(&m).map_err(|e| e.to_string())?;
@@ -264,9 +254,9 @@ pub fn open(
         .ok_or("not encrypted to your share key")?;
     let k = bind_key(&me.x, from.x25519(), from.x25519(), &my_x).ok_or(FORGED)?;
     let mac = B64.decode(&w.bind).map_err(|_| FORGED)?;
-    bind_mac(&k, &m.id, &m.signer, w)
-        .verify_slice(&mac)
-        .map_err(|_| format!("{FORGED}: not signed by {contact}'s key"))?;
+    if !cipher::hmac_sha256_verify(k.as_ref(), &[&bound(&m.id, &m.signer, w)], &mac) {
+        return Err(format!("{FORGED}: not signed by {contact}'s key"));
+    }
     let key = kem::open(me, &w.wrap).map_err(|_| FORGED)?;
     let mut items = Vec::with_capacity(m.items.len());
     for s in &m.items {
@@ -381,5 +371,30 @@ mod tests {
         let e = open(&b, &f, pin(&a)).unwrap_err();
         assert!(e.contains("not signed by alice"), "{e}");
         assert!(seal(&a, &[], ("team", false, 5), &items()).is_err());
+    }
+
+    fn fixed(x: u8, seed: u8) -> ShareSecret {
+        ShareSecret {
+            x: StaticSecret::from([x; 32]),
+            mlkem_seed: Some(Zeroizing::new([seed; 64])),
+        }
+    }
+
+    // Made by the code before it moved onto the cipher seam (T12.42).
+    #[test]
+    fn a_bundle_from_the_old_code_still_opens() {
+        let (a, b) = (fixed(5, 6), fixed(7, 8));
+        let bytes = include_bytes!("testdata/folder_bundle.bin");
+        let o = open(&b, bytes, pin(&a)).unwrap();
+        assert_eq!((o.folder.as_str(), o.sealed, o.at), ("team/api", true, 5));
+        assert_eq!(o.items[1].1.value.as_str(), "two");
+        assert_eq!(
+            folder_id("kepr-pk2-abc", "team/api"),
+            "350aaffaea949a4e308255551d25043c"
+        );
+        assert_eq!(
+            hex::encode(signing_key(&a).verifying_key().to_bytes()),
+            "312ef4d282b1ea216e0cb3fc3dc6a163ac3af47110a5c5d10b558856a877a6be"
+        );
     }
 }

@@ -15,11 +15,10 @@
 // verifies. Freshness and replay are the caller's checks (`at`).
 
 use base64::Engine;
-use hkdf::Hkdf;
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
+
+use crate::daemon_eco::cipher;
 
 use super::kem::{Recipient, ShareSecret};
 
@@ -48,21 +47,17 @@ fn mac_key(
         return None;
     }
     let info = [&b"kepr-emergency-v1"[..], from_x, to_x].concat();
-    let mut key = Zeroizing::new([0u8; 32]);
-    Hkdf::<Sha256>::new(None, ss.as_bytes())
-        .expand(&info, key.as_mut())
-        .ok()?;
-    Some(key)
+    Some(cipher::hkdf_sha256(None, ss.as_bytes(), &[&info]))
 }
 
-fn tag(key: &[u8; 32], p: &Proof) -> Hmac<Sha256> {
-    let mut m = Hmac::<Sha256>::new_from_slice(key).expect("any key length");
-    m.update(b"kepr-emergency-request-v1");
+/// The bytes the MAC covers.
+fn signed(p: &Proof) -> Vec<u8> {
+    let mut m = b"kepr-emergency-request-v1".to_vec();
     for part in [&p.from, &p.to, &p.nonce] {
-        m.update(&(part.len() as u32).to_be_bytes());
-        m.update(part.as_bytes());
+        m.extend_from_slice(&(part.len() as u32).to_be_bytes());
+        m.extend_from_slice(part.as_bytes());
     }
-    m.update(&p.at.to_be_bytes());
+    m.extend_from_slice(&p.at.to_be_bytes());
     m
 }
 
@@ -70,7 +65,7 @@ fn tag(key: &[u8; 32], p: &Proof) -> Hmac<Sha256> {
 pub fn make(me: &ShareSecret, owner: &Recipient, now: u64) -> Result<String, String> {
     let from = me.recipient();
     let mut nonce = [0u8; 16];
-    getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG failure: {e}"))?;
+    cipher::fill_random(&mut nonce).map_err(|_| "CSPRNG failure")?;
     let mut p = Proof {
         v: 1,
         from: from.text(),
@@ -81,7 +76,7 @@ pub fn make(me: &ShareSecret, owner: &Recipient, now: u64) -> Result<String, Str
     };
     let key = mac_key(&me.x, owner.x25519(), from.x25519(), owner.x25519())
         .ok_or("that is not a usable share key")?;
-    p.mac = B64.encode(tag(&key, &p).finalize().into_bytes());
+    p.mac = B64.encode(cipher::hmac_sha256(key.as_ref(), &[&signed(&p)]));
     let json = serde_json::to_vec(&p).map_err(|e| e.to_string())?;
     Ok(format!("{PREFIX}{}", B64.encode(json)))
 }
@@ -115,7 +110,7 @@ pub fn verify(p: &Proof, owner: &ShareSecret, contact: &Recipient) -> bool {
     let Ok(t) = B64.decode(&p.mac) else {
         return false;
     };
-    tag(&key, p).verify_slice(&t).is_ok()
+    cipher::hmac_sha256_verify(key.as_ref(), &[&signed(p)], &t)
 }
 
 /// The X25519 half of a public key's text, for matching.
@@ -180,5 +175,29 @@ mod tests {
             assert!(parse(t).is_err(), "{t}");
         }
         assert!(parse(&format!("{PREFIX}{}", "A".repeat(MAX_LEN))).is_err());
+    }
+
+    fn fixed(x: u8, seed: u8) -> ShareSecret {
+        ShareSecret {
+            x: StaticSecret::from([x; 32]),
+            mlkem_seed: Some(Zeroizing::new([seed; 64])),
+        }
+    }
+
+    // Made by the code before it moved onto the cipher seam (T12.42).
+    #[test]
+    fn a_request_made_by_the_old_code_still_verifies() {
+        let (contact, owner) = (fixed(5, 6), fixed(7, 8));
+        let p = Proof {
+            v: 1,
+            from: contact.recipient().text(),
+            to: owner.recipient().text(),
+            at: 1_700_000_000,
+            nonce: "93b550af941aa9b40448523a6884fb2a".into(),
+            mac: "2iQUjeQiqwDlxvZvrDx7aZjDHxyQ7tz-22oMUqB7DDs".into(),
+        };
+        assert!(verify(&p, &owner, &contact.recipient()));
+        let late = Proof { at: p.at + 1, ..p };
+        assert!(!verify(&late, &owner, &contact.recipient()));
     }
 }

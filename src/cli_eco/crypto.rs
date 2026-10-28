@@ -4,12 +4,16 @@
 use kepr_core::protocol::{Request, Response};
 use kepr_core::protocol_eco::{EcoRequest, EcoResponse};
 
+/// What FIPS mode does not cover: primitives the validated module lacks.
+const OUTSIDE: &str = "Argon2id, X25519, ML-KEM, Ed25519, P-256";
+
 pub fn crypto_line(info: &EcoResponse) -> String {
     match info {
-        EcoResponse::CryptoInfoOk { provider, fips } => format!(
-            "Crypto: {provider}; FIPS mode {}",
-            if *fips { "on" } else { "off" }
-        ),
+        EcoResponse::CryptoInfoOk {
+            provider,
+            fips: true,
+        } => format!("Crypto: {provider}; FIPS mode on (outside the module: {OUTSIDE})"),
+        EcoResponse::CryptoInfoOk { provider, .. } => format!("Crypto: {provider}; FIPS mode off"),
     }
 }
 
@@ -40,7 +44,7 @@ mod tests {
         };
         assert_eq!(
             line("aws-lc-rs (AWS-LC)", true),
-            "Crypto: aws-lc-rs (AWS-LC); FIPS mode on"
+            "Crypto: aws-lc-rs (AWS-LC); FIPS mode on (outside the module: Argon2id, X25519, ML-KEM, Ed25519, P-256)"
         );
         assert_eq!(
             line("RustCrypto", false),

@@ -17,15 +17,7 @@ const FORBIDDEN: &[&str] = &["aes_gcm::", "hkdf::", "Hkdf::", "hmac::", "Hmac<"]
 const ALLOWED: &[&str] = &["src/daemon_eco/cipher.rs", "src/daemon_eco/crypto_fips.rs"];
 
 /// Files that still use the crates directly. Shrink only.
-const PENDING: &[&str] = &[
-    "src/daemon_sharing/emergency_proof.rs",
-    "src/daemon_seal/fido2_kek.rs",
-    "src/daemon_syncx/device_bundle.rs",
-    "src/daemon_syncx/folder_bundle.rs",
-    "src/daemon_syncx/folder_state.rs",
-    "src/daemon_syncx/quorum_device.rs",
-    "src/daemon_syncx/sync_state.rs",
-];
+const PENDING: &[&str] = &[];
 
 /// The part of a source file before its first `#[cfg(test)]` (the same rule
 /// as tests/file_size_limit.rs).
