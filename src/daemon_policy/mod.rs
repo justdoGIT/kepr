@@ -7,6 +7,7 @@
 // `Request::Policy` via daemon_extra.rs; `enforce` runs before every request in
 // daemon_dispatch.rs, `init` once at start in daemon.rs.
 
+mod anchor;
 mod approvals;
 mod approve;
 mod caller;
@@ -65,6 +66,9 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, r: PolicyRequest) -> Re
     match r {
         PolicyRequest::PolicyStatus { reload } => status(uid, username, reload),
         PolicyRequest::ReportAccess { name } => report::handle_access(uid, username, &name),
+        PolicyRequest::AuditAnchorCheck { anchors } => {
+            anchor::handle_check(uid, username, &anchors)
+        }
         PolicyRequest::AuditTail { after } => events::handle_tail(uid, after.as_deref()),
         PolicyRequest::ApproveVia { name, via } => {
             approve::handle_via(uid, peer_pid, username, &name, via.as_deref())

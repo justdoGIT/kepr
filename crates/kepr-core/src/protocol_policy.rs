@@ -7,6 +7,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// One published chain head (T13.22).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnchorPoint {
+    pub seq: u64,
+    pub hash: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum PolicyRequest {
@@ -25,6 +32,12 @@ pub enum PolicyRequest {
     AuditTail {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         after: Option<String>,
+    },
+    /// T13.22: check published anchors (`seq` and chain hash) against the
+    /// log: it must verify, be at least as long as the last anchor, and
+    /// hold the same hash at every anchored `seq`.
+    AuditAnchorCheck {
+        anchors: Vec<AnchorPoint>,
     },
     /// T9.04: let the registered approver answer consent prompts for
     /// `name` (`via`: desktop | ntfy | any); `None` clears it.

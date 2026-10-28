@@ -7,6 +7,7 @@
 
 mod alerts;
 mod alerts_cmd;
+mod anchor;
 mod anomaly;
 mod anomaly_cmd;
 mod approvals_cmd;
@@ -51,6 +52,8 @@ pub const HELP: &str = "  policy test FILE                     run the [[test]] 
   audit forward --to TARGET [--once]   stream audit events (op, name, uid, result, time; never values)
                                        to jsonl:PATH, syslog:udp://HOST[:PORT] or otlp:URL; resumes
                                        after a restart [--interval SECS] [--state FILE]
+  audit anchor --to jsonl:PATH|syslog:udp://HOST [--once]   publish the audit chain head where the daemon's
+                                       account cannot rewrite it; audit verify --anchor FILE checks the log against them
   alerts check | alerts run [--once]   post audit events matching ~/.config/kepr/alerts.toml rules
                                        to Slack / Teams / Discord / ntfy webhooks, throttled per rule
                                        [--file F] [--interval SECS] [--state FILE]

@@ -69,7 +69,11 @@ fn bare_blocks(text: &str) -> usize {
     let lines: Vec<&str> = text.lines().collect();
     (0..lines.len())
         .filter(|&i| is_unsafe_block(lines[i]))
-        .filter(|&i| !lines[i.saturating_sub(2)..=i].iter().any(|l| l.contains("SAFETY:")))
+        .filter(|&i| {
+            !lines[i.saturating_sub(2)..=i]
+                .iter()
+                .any(|l| l.contains("SAFETY:"))
+        })
         .count()
 }
 
@@ -82,13 +86,21 @@ fn every_unsafe_block_has_a_safety_comment() {
     let allow: BTreeMap<&str, usize> = ALLOWLIST.iter().copied().collect();
     let mut problems = Vec::new();
     for f in files {
-        let rel = f.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = f
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         let n = bare_blocks(&fs::read_to_string(&f).unwrap());
         let allowed = allow.get(rel.as_str()).copied().unwrap_or(0);
         if n > allowed {
-            problems.push(format!("{rel}: {n} unsafe block(s) without SAFETY: (allowed {allowed})"));
+            problems.push(format!(
+                "{rel}: {n} unsafe block(s) without SAFETY: (allowed {allowed})"
+            ));
         } else if n < allowed {
-            problems.push(format!("{rel}: only {n} left; lower its ALLOWLIST entry from {allowed}"));
+            problems.push(format!(
+                "{rel}: only {n} left; lower its ALLOWLIST entry from {allowed}"
+            ));
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));

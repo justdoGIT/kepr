@@ -172,6 +172,9 @@ pub fn pump(src: &dyn tail::Source, sink: &mut dyn Sink, state: &Path) -> Result
 
 pub fn cmd_audit(args: &[String]) -> Response {
     let a = super::plain_args(args);
+    if let Some(r) = a.first().and_then(|s| super::anchor::dispatch(s, args)) {
+        return r;
+    }
     if a.first() != Some(&"forward") {
         return Response::fail(USAGE);
     }
