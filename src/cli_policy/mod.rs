@@ -13,6 +13,7 @@ mod approvals_cmd;
 mod approve_notify;
 mod canary;
 mod canary_skip;
+mod compliance;
 mod forward;
 mod health;
 mod notify;
@@ -38,6 +39,8 @@ pub const VERBS: &[&str] = &[
 pub const HELP: &str = "  policy test FILE                     run the [[test]] cases of a policy.toml (allow / deny per case)
   policy status | policy reload        the policy the daemon enforces (~/.config/kepr/policy.toml or
                                        /etc/kepr/policy.toml); deny by default once the file exists
+  report compliance --framework F      control-by-control evidence for sox, hipaa, pci, nist or gdpr
+                                       (pass / fail / manual), from status, audit chain, policy, health
   report access KEY                    every path KEY can take: gate bindings, shares sent, agent
                                        gates and reads (audit log), aliases, sync devices, policy
   audit forward --to TARGET [--once]   stream audit events (op, name, uid, result, time; never values)

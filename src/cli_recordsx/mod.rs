@@ -10,6 +10,7 @@
 mod attach;
 pub mod generate;
 pub mod health;
+pub mod health_score;
 pub mod notation;
 pub mod record_add;
 mod record_fields;

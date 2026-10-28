@@ -1,0 +1,40 @@
+// kepr in a Jenkins pipeline (plan T8.07 family): install kepr, pull secrets
+// from the cloud store into a build-local kepr daemon, and use them with
+// `kepr exec`; nothing is printed.
+//
+// The shared script is fetched from a pinned tag and checked against a SHA-256
+// kept as a Jenkins credential or job parameter:
+//   curl -fsSL https://raw.githubusercontent.com/justdoGIT/kepr/<tag>/integrations/ci/kepr-ci.sh | sha256sum
+//
+// Jenkins has no built-in OIDC token. Either run on an agent that already has
+// cloud credentials (KEPR_CLOUD = 'none', and the AWS_* / GCP_ACCESS_TOKEN /
+// VAULT_TOKEN variables the sync backends read), or bind an OIDC ID token
+// from your identity plugin to KEPR_ID_TOKEN with `withCredentials` and set
+// KEPR_CLOUD to aws, gcp or vault (see kepr-ci.sh for each one's variables).
+// Needs bash, curl, jq and cosign on the agent.
+
+pipeline {
+  agent any
+  environment {
+    KEPR_CI_TAG    = 'v0.0.0'                       // pin a release tag
+    KEPR_CI_SHA256 = credentials('kepr-ci-sha256')  // secret text credential
+    KEPR_CLOUD     = 'none'
+    KEPR_SECRETS   = '''DB_PASSWORD=aws-sm:prod/db/password
+API_TOKEN=aws-sm:prod/api/token'''
+  }
+  stages {
+    stage('Deploy') {
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+curl -fsSL "https://raw.githubusercontent.com/justdoGIT/kepr/${KEPR_CI_TAG}/integrations/ci/kepr-ci.sh" -o "$WORKSPACE@tmp/kepr-ci.sh"
+echo "${KEPR_CI_SHA256}  $WORKSPACE@tmp/kepr-ci.sh" | sha256sum -c -
+export KEPR_BIN_DIR="$HOME/.local/bin" PATH="$HOME/.local/bin:$PATH"
+bash "$WORKSPACE@tmp/kepr-ci.sh" install
+bash "$WORKSPACE@tmp/kepr-ci.sh" run
+kepr exec --env DB_PASSWORD,API_TOKEN -- ./deploy.sh
+'''
+      }
+    }
+  }
+}

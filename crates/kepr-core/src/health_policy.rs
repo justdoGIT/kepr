@@ -62,6 +62,9 @@ pub struct HealthRules {
     pub classes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_age_days: Option<u32>,
+    /// 2FA check: `login` records must hold a `totp` secret.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_totp: bool,
 }
 
 fn has_class(value: &str, class: &str) -> bool {
@@ -102,6 +105,7 @@ impl HealthRules {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
+        self.require_totp |= other.require_totp;
         for c in &other.classes {
             if !self.classes.contains(c) {
                 self.classes.push(c.clone());
@@ -126,6 +130,23 @@ impl HealthRules {
             out.push(format!("policy: no {} character", missing.join(" / ")));
         }
         out
+    }
+
+    /// The 2FA rule for a credential of `record_type` whose stored JSON
+    /// object is `value`: a `login` without a non-empty `totp` field.
+    pub fn totp_violation(&self, record_type: Option<&str>, value: &str) -> Option<String> {
+        if !self.require_totp || record_type != Some("login") {
+            return None;
+        }
+        let has = serde_json::from_str::<serde_json::Value>(value)
+            .ok()
+            .and_then(|v| {
+                v.get("totp")
+                    .and_then(|t| t.as_str())
+                    .map(|t| !t.is_empty())
+            })
+            .unwrap_or(false);
+        (!has).then(|| "policy: no 2FA (totp) secret stored".to_string())
     }
 
     /// The age rule, for a value unchanged for `age_days`.
@@ -186,6 +207,7 @@ mod tests {
             min_length: min,
             classes: classes.iter().map(|c| c.to_string()).collect(),
             max_age_days: age,
+            require_totp: false,
         }
     }
 
@@ -279,5 +301,24 @@ mod tests {
             ..Default::default()
         };
         assert!(bad_tag.validate().unwrap_err().contains("[tag.\"Prod\"]"));
+    }
+
+    #[test]
+    fn require_totp_flags_logins_without_a_code() {
+        let r = HealthRules {
+            require_totp: true,
+            ..Default::default()
+        };
+        let none = r.totp_violation(Some("login"), r#"{"username":"a"}"#);
+        assert_eq!(none.as_deref(), Some("policy: no 2FA (totp) secret stored"));
+        assert!(r.totp_violation(Some("login"), r#"{"totp":""}"#).is_some());
+        assert!(r
+            .totp_violation(Some("login"), r#"{"totp":"JBSWY3DP"}"#)
+            .is_none());
+        assert!(r.totp_violation(Some("api"), "{}").is_none());
+        assert!(r.totp_violation(None, "plain").is_none());
+        assert!(HealthRules::default()
+            .totp_violation(Some("login"), "{}")
+            .is_none());
     }
 }
