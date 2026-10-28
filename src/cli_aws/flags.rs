@@ -14,7 +14,15 @@ use kepr_core::protocol::Response;
 
 use crate::cli_args::Args;
 
-pub const FLAGS: &[&str] = &["--aws-iam", "--db", "--every", "--scheduled", "--due"];
+pub const FLAGS: &[&str] = &[
+    "--aws-iam",
+    "--db",
+    "--every",
+    "--scheduled",
+    "--due",
+    "--all",
+    "--dry-run",
+];
 
 #[derive(Debug, Default)]
 pub struct AwsFlags {
@@ -28,6 +36,8 @@ pub struct AwsFlags {
     pub scheduled: bool,
     /// `rotate --due`: every due schedule of the caller (T12.50).
     pub due: bool,
+    /// `rotate --all --dry-run`: the plan only (`--all` itself is the store batch's flag).
+    pub dry_run: bool,
 }
 
 impl AwsFlags {
@@ -38,6 +48,7 @@ impl AwsFlags {
             "--db" => self.db = true,
             "--scheduled" => self.scheduled = true,
             "--due" => self.due = true,
+            "--dry-run" => self.dry_run = true,
             "--every" => {
                 let v = raw.get(i + 1).ok_or("--every needs a duration, e.g. 30d")?;
                 self.every = Some(v.clone());
@@ -50,7 +61,12 @@ impl AwsFlags {
 
     /// Does `kepr rotate` belong to this batch?
     pub fn any(&self) -> bool {
-        self.aws_iam || self.db || self.scheduled || self.due || self.every.is_some()
+        self.aws_iam
+            || self.db
+            || self.scheduled
+            || self.due
+            || self.dry_run
+            || self.every.is_some()
     }
 }
 
@@ -73,6 +89,22 @@ pub fn cmd_rotate(a: &Args) -> Response {
         Response::fail(m)
     };
     let f = &a.aws;
+    if a.store.all {
+        let other = a.name.is_some()
+            || a.hook_path.is_some()
+            || f.aws_iam
+            || f.db
+            || f.scheduled
+            || f.due
+            || f.every.is_some();
+        if other {
+            return fail("--all takes no NAME or other rotate flag (except --dry-run)");
+        }
+        return super::rotate_sched::shout(super::rotate_all::cmd(f.dry_run));
+    }
+    if f.dry_run {
+        return fail("--dry-run goes with --all");
+    }
     if f.due {
         // --gen-kind only means something with --hook.
         let hook = a.hook_path.is_some() || a.gen_kind.as_str() != "hex";

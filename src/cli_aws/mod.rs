@@ -28,6 +28,7 @@ pub mod grant;
 pub mod iam;
 pub mod leaked;
 pub mod presets;
+pub mod rotate_all;
 pub mod rotate_iam;
 pub mod rotate_sched;
 pub mod session;
@@ -70,6 +71,7 @@ pub const HELP: &str = "\
   grant KEY --to HARNESS --for 2h      let `kepr agent run HARNESS` sessions use the sealed KEY
                                        for a window; outside every window none can (just-in-time)
   grant KEY --revoke [--to HARNESS]    close the windows now
+  rotate --all [--dry-run]             rotate every key kepr can (schedules, AWS keys, database logins); lists the rest
   grant KEY --jit on|off               ask for grants at all (`kepr grant KEY` shows the state)
   checkout KEY [--for 2h]              take KEY: a second checkout is refused until the hold
                                        runs out, and the printed token is what checks it back in
