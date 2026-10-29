@@ -1,0 +1,17 @@
+# kepr-sync.timer — hourly `kepr sync now`. Persistent: a run missed while
+# the machine was off happens at the next start. A different interval:
+#   systemctl --user edit kepr-sync.timer
+#   [Timer]
+#   OnCalendar=
+#   OnCalendar=*:0/15
+
+[Unit]
+Description=kepr: hourly sync with the enrolled devices
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

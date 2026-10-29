@@ -246,3 +246,53 @@ fn rotate_user_timer_runs_due_rotations_against_the_system_daemon() {
         assert!(service.contains(d), "kepr-rotate.service lost `{d}`");
     }
 }
+
+/// The sync timer: an opt-in user unit that runs `kepr sync now` hourly, a
+/// missed run happening at the next start, with a time limit so an
+/// unreachable remote cannot hang it; install.sh ships both files.
+#[test]
+fn sync_user_timer_runs_kepr_sync_now() {
+    let read = |p: &str| {
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(p))
+            .unwrap_or_else(|e| panic!("read {p}: {e}"))
+    };
+    let timer = read("systemd/user/kepr-sync.timer");
+    for d in [
+        "OnCalendar=hourly",
+        "RandomizedDelaySec=5m",
+        "Persistent=true",
+        "WantedBy=timers.target",
+    ] {
+        assert!(timer.contains(d), "kepr-sync.timer lost `{d}`");
+    }
+    let service = read("systemd/user/kepr-sync.service");
+    for d in [
+        "Type=oneshot",
+        "ExecStart=/usr/local/bin/kepr sync now",
+        "TimeoutStartSec=10min",
+        "NoNewPrivileges=yes",
+    ] {
+        assert!(service.contains(d), "kepr-sync.service lost `{d}`");
+    }
+    // Not forced onto the system daemon: that is the user's choice (the
+    // header says how), a user-mode store would otherwise be unreachable.
+    assert!(
+        !service
+            .lines()
+            .any(|l| l.trim_start().starts_with("Environment=KEPR_SYSTEM_MODE")),
+        "kepr-sync.service must not set KEPR_SYSTEM_MODE itself"
+    );
+    let install = read("install.sh");
+    assert!(
+        install.contains("systemd/user/kepr-sync.service systemd/user/kepr-sync.timer"),
+        "install.sh does not install the sync units"
+    );
+    assert!(
+        !install.lines().any(|l| {
+            let l = l.trim_start();
+            (l.starts_with("systemctl") || l.starts_with("sudo systemctl"))
+                && l.contains("kepr-sync")
+        }),
+        "the sync timer is opt-in: install.sh only tells the user how"
+    );
+}

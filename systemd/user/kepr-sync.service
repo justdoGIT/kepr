@@ -1,0 +1,24 @@
+# kepr-sync.service — `kepr sync now`: merge what the paired devices left on
+# the sync remotes, then leave this device's own bundle there.
+#
+# Needs, per user: a remote (kepr sync remote add URL), devices enrolled
+# both ways (kepr device add / enroll), and an unlocked store. A run that
+# cannot sync (locked store, remote unreachable) fails and says why in the
+# journal; the next timer run tries again.
+#
+# Enable per user: systemctl --user enable --now kepr-sync.timer
+#
+# Talking to the system daemon (KEPR_SYSTEM_MODE=1 in your shell)? User
+# units don't read /etc/profile.d, so add it here:
+#   systemctl --user edit kepr-sync.service
+#   [Service]
+#   Environment=KEPR_SYSTEM_MODE=1
+
+[Unit]
+Description=kepr: sync with the enrolled devices
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kepr sync now
+TimeoutStartSec=10min
+NoNewPrivileges=yes

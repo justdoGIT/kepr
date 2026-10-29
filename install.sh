@@ -110,6 +110,8 @@ if $SYSTEM_MODE; then
     # rotators, so each user's own timer runs `kepr rotate --due`.
     sudo install -d -m 0755 /usr/lib/systemd/user
     sudo install -m 0644 systemd/user/kepr-rotate.service systemd/user/kepr-rotate.timer /usr/lib/systemd/user/
+    # Multi-device sync on a schedule: opt-in per user, like the rotation timer.
+    sudo install -m 0644 systemd/user/kepr-sync.service systemd/user/kepr-sync.timer /usr/lib/systemd/user/
     sudo systemctl enable kepr.service
     sudo systemctl restart kepr.service
     sleep 1
@@ -121,6 +123,7 @@ if $SYSTEM_MODE; then
         sudo chmod 0644 /etc/profile.d/kepr.sh
         ok "KEPR_SYSTEM_MODE=1 for login shells → /etc/profile.d/kepr.sh"
         info "Scheduled rotations (kepr rotate NAME --every DUR) need, per user: systemctl --user enable --now kepr-rotate.timer"
+        info "Paired devices (kepr device, kepr sync remote add) stay in step with, per user: systemctl --user enable --now kepr-sync.timer"
     else
         echo "kepr.service failed to start:" >&2
         sudo journalctl -u kepr.service -n 20 --no-pager >&2

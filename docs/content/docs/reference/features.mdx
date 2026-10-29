@@ -484,7 +484,9 @@ encrypted to every enrolled device with a per-device sender MAC.
   trash.
 - Sealed, SSH, share-key and gated credentials never sync, and a merge
   never replaces or deletes them.
-- Sync is manual: there is no background schedule.
+- Sync runs when you ask. For a schedule, `systemctl --user enable --now
+  kepr-sync.timer` runs `kepr sync now` hourly (see
+  [Use kepr on several machines](/docs/guides/multi-machine)).
 - `s3:` signs with the `AWS_*` variables (`KEPR_S3_ENDPOINT` points at
   another S3-compatible endpoint); `git:` uses the git CLI with a clone
   under `~/.cache/kepr/sync`.
