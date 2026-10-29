@@ -10,7 +10,7 @@ use crate::{cli_mode, cli_ui, client};
 
 pub const VERBS: &[&str] = &["vault"];
 
-pub const HELP: &str = "  vault init [--size MIB]              create the vault image (fixed size, default 64 MiB)\n  vault migrate                        move per-file credentials into the image (KEPR_STORE=image)\n  vault verify                         check every used slot of the image and its Merkle root\n  vault status                         active store, image size and fill, files left to move\n";
+pub const HELP: &str = "  vault init [--size MIB]              create the vault image (fixed size, default 64 MiB)\n  vault migrate                        move per-file credentials into the image (KEPR_STORE=image)\n  vault verify                         check every used slot of the image and its Merkle root\n  vault status                         active store, image size and fill, files left to move\n  vault resize --size MIB              rebuild the image at another size (shrink keeps 25 % spare)\n  vault to-files                       move the image's records back into per-file storage\n";
 
 pub fn dispatch(_verb: &str, args: &[String]) -> Response {
     let req = match parse(args) {
@@ -40,7 +40,14 @@ fn parse(args: &[String]) -> Result<VaultRequest, String> {
         ["migrate"] => Ok(VaultRequest::VaultMigrate),
         ["verify"] => Ok(VaultRequest::VaultVerify),
         ["status"] => Ok(VaultRequest::VaultStatus),
-        _ => Err("usage: kepr vault init [--size MIB] | migrate | verify | status".into()),
+        ["resize", "--size", n] => {
+            parse_mib(n).map(|size_mib| VaultRequest::VaultResize { size_mib })
+        }
+        ["to-files"] => Ok(VaultRequest::VaultToFiles),
+        _ => Err(
+            "usage: kepr vault init [--size MIB] | migrate | verify | status | resize --size MIB | to-files"
+                .into(),
+        ),
     }
 }
 
@@ -84,6 +91,23 @@ fn show(v: &VaultResponse) {
                 cli_ui::warn(&format!(
                     "{skipped} left in per-file storage (already in the image, or unreadable)"
                 ));
+            }
+        }
+        VaultResponse::VaultResizeOk {
+            old_mib,
+            new_mib,
+            records,
+        } => cli_ui::ok(&format!(
+            "vault image rebuilt: {old_mib} MiB -> {new_mib} MiB, {records} record(s) copied and checked"
+        )),
+        VaultResponse::VaultToFilesOk { moved, left } => {
+            cli_ui::ok(&format!("{moved} record(s) moved to per-file storage"));
+            if *left > 0 {
+                cli_ui::warn(&format!(
+                    "{left} left in the image (a file with another value exists, or unreadable)"
+                ));
+            } else {
+                cli_ui::info("restart the daemon without KEPR_STORE=image to use them");
             }
         }
         VaultResponse::VaultVerifyOk { records, slots } => match (records, slots) {

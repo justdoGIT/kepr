@@ -3,10 +3,15 @@ title: "Overview"
 description: "Process model, trust boundary, on-disk layout, and the module split between the CLI and the daemon."
 ---
 
+> This page describes the original two-process core. The system today also
+> has the agent gate, the vault image, sealed master keys and a FIPS build:
+> see the [system map](/docs/architecture/system-map).
+
 ## Process model
 
-Two binaries built from one crate (`Cargo.toml` declares both `[[bin]]`
-targets):
+The core is two binaries built from one crate (`Cargo.toml` declares more
+`[[bin]]` targets, and the workspace adds `kepr-gate`, `kepr-relay` and
+`kepr-eso-provider`):
 
 | Binary           | UID     | Responsibilities                                              |
 | ---------------- | ------- | ------------------------------------------------------------- |
@@ -33,7 +38,7 @@ flowchart LR
     CLI -- "framed JSON\n/run/kepr/kepr.sock\n0660 root:kepr" --> D
     D -- "SO_PEERCRED uid" --> D
     D --> C
-    C -- "fork+exec backend\n--with-key=host" --> S
+    C -- "in-process AES-256-GCM\nunder the master key" --> S
     D -- "structured fields\nKEPR_NAME/KEPR_UID/\nKEPR_RESULT/KEPR_USER" --> J
 ```
 
@@ -55,9 +60,11 @@ makes the `kepr-<uid>-<name>` scheme tamper-proof from the wire side.
 /usr/local/sbin/kepr-daemon         0700 root:root
 ```
 
-The encryption backend persists its host-derived key under
-`/var/lib/systemd/`; the systemd unit allow-lists that path
-(`ReadWritePaths=`) so first-run key seeding survives `ProtectSystem=strict`.
+The master key lives in `/var/lib/kepr/` (sealed by the host key, a TPM2, a
+key service or the keychain, or wrapped by a passphrase); the systemd unit
+allow-lists that path (`ReadWritePaths=`) so it survives
+`ProtectSystem=strict`. Credentials are encrypted in the daemon process, not
+by a helper binary.
 
 ## Module split
 

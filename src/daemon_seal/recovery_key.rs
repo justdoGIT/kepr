@@ -148,6 +148,7 @@ fn enrol_at(
 
 pub fn handle_enrol(
     uid: u32,
+    peer_pid: i32,
     username: &str,
     words: &ZeroString,
     current: Option<&ZeroString>,
@@ -157,7 +158,7 @@ pub fn handle_enrol(
     // T12.53: on a keychain-sealed store the owner approves at the machine.
     let r = fence
         .check(uid)
-        .and_then(|()| super::presence::require(super::presence::ENROL))
+        .and_then(|()| super::presence::require(super::presence::ENROL, peer_pid))
         .and_then(|()| {
             enrol_at(
                 uid,
@@ -681,7 +682,7 @@ mod tests {
         // Another user's gate: the master key is every user's.
         track_gate(-3_999_031, 3_999_031, Some(Handle::Conn(conn)));
         let fence = Fence::now();
-        let r = handle_enrol(0, "root", &words(1), None);
+        let r = handle_enrol(0, 0, "root", &words(1), None);
         track_gate(-3_999_031, 3_999_031, None);
         assert!(fence.gates_running);
         assert_eq!(fence.check(0).unwrap_err(), GATES);

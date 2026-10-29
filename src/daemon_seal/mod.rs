@@ -113,7 +113,7 @@ pub fn image_counter_from_env() -> Result<Option<Arc<dyn EpochCounter>>, String>
     }))
 }
 
-pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: SealRequest) -> Response {
+pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: SealRequest) -> Response {
     match request {
         SealRequest::RecoveryWordsCreate { password } => {
             recovery::handle_create(uid, username, password.as_bytes())
@@ -124,7 +124,7 @@ pub fn dispatch(uid: u32, _peer_pid: i32, username: &str, request: SealRequest) 
         } => recovery::handle_restore(uid, username, &words, new_password.as_bytes()),
         SealRequest::Fido2UnlockParams => fido2_kek::handle_params(uid, username),
         SealRequest::RecoveryKeyEnrol { words, current } => {
-            recovery_key::handle_enrol(uid, username, &words, current.as_ref())
+            recovery_key::handle_enrol(uid, peer_pid, username, &words, current.as_ref())
         }
         SealRequest::RecoveryKeyUnlock { words } => {
             recovery_key::handle_unlock(uid, username, &words)

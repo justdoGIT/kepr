@@ -104,7 +104,7 @@ impl CliActivity {
                 Ok(vars) => cli_envdump::cmd_env(&vars),
                 Err(e) => Response::fail(e),
             },
-            "rotate" if args.aws.any() => crate::cli_aws::flags::cmd_rotate(args), // batch: aws
+            "rotate" if args.aws.any() || args.store.all => crate::cli_aws::flags::cmd_rotate(args), // batch: aws
             "rotate" => match (&args.name, &args.hook_path) {
                 (Some(n), Some(h)) => cli_rotate::cmd_rotate(n, args.gen_kind, h),
                 (None, _) => Response::fail("rotate requires NAME"),

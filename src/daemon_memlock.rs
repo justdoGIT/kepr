@@ -25,6 +25,7 @@ extern "C" {
 /// Argon2id working memory can land in a systemd-coredump or be read via
 /// ptrace by a process that gains the right capability.
 pub fn disable_core_dumps() {
+    // SAFETY: prctl(PR_SET_DUMPABLE) takes plain integers.
     let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
     if ret != 0 {
         eprintln!(

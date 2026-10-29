@@ -30,6 +30,9 @@ func (c *Client) FetchFD(name string) (f *os.File, n int, err error) {
 		return nil, 0, &Error{fmt.Sprintf("cannot reach the credential service at %s (%v)", c.Path, err)}
 	}
 	defer conn.Close()
+	if err := checkPeer(conn); err != nil {
+		return nil, 0, err
+	}
 	_ = conn.SetDeadline(time.Now().Add(c.Timeout))
 	frame := make([]byte, 4+len(payload))
 	binary.BigEndian.PutUint32(frame, uint32(len(payload)))

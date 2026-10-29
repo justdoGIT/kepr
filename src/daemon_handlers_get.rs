@@ -191,6 +191,14 @@ pub fn handle_get(
         }
     }
 
+    // T13.28 (batch: desktop): a Secret Service item is a JSON document that
+    // programs reach through the Secret Service; `kepr secret` reads it, with
+    // the front end's policy and audit. (Export and backup still see it:
+    // they use `precheck_meta`, not this.)
+    if crate::daemon_desktop::is_item(uid, &upper) {
+        return Response::fail("Secret Service item: read it with `kepr secret lookup`");
+    }
+
     // T11.15: a received share's view window starts at its first read.
     if crate::daemon_sharing::view::start(uid, &upper).is_err() {
         return Response::fail("credential unavailable");

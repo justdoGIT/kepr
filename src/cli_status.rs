@@ -112,6 +112,14 @@ pub fn status_lines(s: &StatusInfo) -> Vec<String> {
         };
         out.push(format!("Recovery key: {state}"));
     }
+    if let Some(n) = s.login_failures {
+        let max = kepr_core::login_unlock::MAX_FAILURES;
+        out.push(if u32::from(n) >= max {
+            format!("Login unlock: stopped after {n} failed attempts; `kepr unlock` resumes it")
+        } else {
+            format!("Login unlock: {n} failed attempt(s) in a row (is the passphrase your login password?)")
+        });
+    }
     out
 }
 
@@ -130,6 +138,7 @@ mod tests {
             escrow: Some(true),
             fips: Some(false),
             recovery_key: Some(true),
+            login_failures: Some(1),
         };
         assert_eq!(
             status_lines(&s),
@@ -140,7 +149,16 @@ mod tests {
                 "Agent gates: 2 running",
                 "Escrow: on",
                 "Recovery key: enrolled",
+                "Login unlock: 1 failed attempt(s) in a row (is the passphrase your login password?)",
             ]
+        );
+        let closed = StatusInfo {
+            login_failures: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(
+            status_lines(&closed),
+            ["Login unlock: stopped after 5 failed attempts; `kepr unlock` resumes it"]
         );
         let none = StatusInfo {
             recovery_key: Some(false),

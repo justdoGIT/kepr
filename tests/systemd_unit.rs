@@ -209,6 +209,28 @@ fn sealer_dropins_leave_the_base_unit_closed() {
     ));
     assert!(kms.contains("EnvironmentFile=-/etc/kepr/kms.env"));
     assert!(!kms.contains("PrivateDevices=no"));
+    // T13.19: executable bindings need CAP_SYS_PTRACE; only the opt-in
+    // drop-in adds it, and it adds nothing else.
+    let ptrace = dropin("ptrace.conf.example");
+    assert!(ptrace.contains(
+        "[Service]\nCapabilityBoundingSet=CAP_IPC_LOCK CAP_CHOWN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE\n"
+    ));
+    let base =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("systemd/kepr.service"))
+            .expect("read kepr.service");
+    assert!(
+        !base.contains("CAP_SYS_PTRACE"),
+        "the base unit must not grant it"
+    );
+    for l in ptrace
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+    {
+        assert!(
+            l == "[Service]" || l.starts_with("CapabilityBoundingSet="),
+            "unexpected setting {l}"
+        );
+    }
     // PKCS#11: network and USB stay commented out; the PIN is a file.
     let p11 = dropin("pkcs11.conf.example");
     assert!(p11.contains("Environment=KEPR_PKCS11_PIN_FILE=/etc/kepr/pkcs11.pin"));

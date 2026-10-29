@@ -45,6 +45,7 @@ COMMANDS:
                                        run claude|codex|grok-cli|aider|gemini|omp|grok|opencode
                                        sandboxed, with placeholders; a local gate injects the real
                                        key on the wire
+  agent add-kube KEY --server https://HOST[:PORT] [--token-file FILE|--stdin] [--ca-file FILE]  kubectl via the gate (token never seen by the agent)
   agent add-db KEY --url postgres|mysql|redis[s]://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
                                        sealed database login; agents get DATABASE_URL / MYSQL_* / REDIS_URL to a local gate port
   agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new
@@ -52,6 +53,8 @@ COMMANDS:
                                        kepr's plugin for it (once; opencode: config only)
   agent install claude|codex           install kepr's guidance for the model (Claude Code skill,
                                        a block in Codex's AGENTS.md)
+  agent install cursor|copilot         the same as project files in the current directory
+                                       (.cursor/rules/kepr.mdc, .github/copilot-instructions.md)
   agent doctor [--port N] [--json]     check omp / Grok Build still route through the gate and
                                        kepr's plugin is current; non-zero exit on any problem
   agent shim HARNESS [--dir DIR] [--remove]

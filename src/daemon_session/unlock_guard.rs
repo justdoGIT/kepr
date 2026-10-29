@@ -18,6 +18,15 @@
 //
 // Attempts are serialised (one Argon2id derivation at a time), so
 // parallel connections can't sidestep the backoff.
+//
+// T13.25: the password typed at login (`LoginUnlock`, the PAM password
+// hook) has a budget of its own in `login-guard.json`: the same backoff,
+// never the wipe, and after `login_unlock::MAX_FAILURES` failures in a row
+// the login path refuses without trying until a passphrase check succeeds.
+// So a login password that is not the passphrase never counts against
+// `kepr unlock` or the wipe, and the login path adds at most that many
+// guesses to what `KEPR_WIPE_AFTER` allows. A success on either path
+// clears both counters.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -98,6 +107,13 @@ impl Paths {
             envelope: crate::protected_master_key_path(),
         }
     }
+
+    fn login() -> Self {
+        Self {
+            state: crate::state_dir().join("login-guard.json"),
+            envelope: crate::protected_master_key_path(),
+        }
+    }
 }
 
 /// Outcome of a wrong passphrase, for the caller's message and audit.
@@ -109,6 +125,8 @@ pub enum Refusal {
     Wrong { wiped: bool },
     /// The key was wiped earlier.
     Wiped,
+    /// T13.25: the login path stopped after too many failures.
+    Closed,
     /// Anything else (unreadable file, I/O): not counted.
     Other(String),
 }
@@ -121,6 +139,9 @@ impl Refusal {
                 "invalid password or protected master-key envelope".into()
             }
             Refusal::Wrong { wiped: true } | Refusal::Wiped => WIPED_MSG.into(),
+            Refusal::Closed => "login unlock stopped after too many failed attempts; \
+                                unlock with `kepr unlock`"
+                .into(),
             Refusal::Other(e) => e.clone(),
         }
     }
@@ -158,12 +179,36 @@ pub fn unwrap_at(
     unwrap: Unwrap,
 ) -> Result<Zeroizing<[u8; 32]>, Refusal> {
     let _serial = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    attempt(paths, (now, wipe_after, None), password, unwrap)
+}
+
+/// T13.25: the login path's check: never wipes, and refuses without
+/// trying once `cap` failures in a row are on record.
+pub fn unwrap_login_at(
+    paths: &Paths,
+    (now, cap): (u64, u32),
+    password: &[u8],
+    unwrap: Unwrap,
+) -> Result<Zeroizing<[u8; 32]>, Refusal> {
+    let _serial = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    attempt(paths, (now, None, Some(cap)), password, unwrap)
+}
+
+fn attempt(
+    paths: &Paths,
+    (now, wipe_after, cap): (u64, Option<u32>, Option<u32>),
+    password: &[u8],
+    unwrap: Unwrap,
+) -> Result<Zeroizing<[u8; 32]>, Refusal> {
     let envelope = std::fs::read(&paths.envelope)
         .map_err(|_| Refusal::Other("credential store is not password protected".into()))?;
     if envelope.starts_with(key_unlock::WIPED) {
         return Err(Refusal::Wiped);
     }
     let mut state = load(&paths.state);
+    if cap.is_some_and(|n| state.failures >= n) {
+        return Err(Refusal::Closed);
+    }
     state.check(now).map_err(Refusal::Wait)?;
     match unwrap(&envelope, password) {
         Ok(key) => {
@@ -183,10 +228,17 @@ pub fn unwrap_at(
     }
 }
 
-/// A new envelope was installed (`kepr lock`, recovery restore): earlier
-/// failures were against another passphrase, so forget them.
+/// A new envelope was installed (`kepr lock`, `kepr passwd`, recovery
+/// restore): earlier failures were against another passphrase, so forget
+/// them, on both paths.
 pub fn reset() {
     let _ = std::fs::remove_file(Paths::daemon().state);
+    let _ = std::fs::remove_file(Paths::login().state);
+}
+
+/// T13.25: failed login unlocks in a row, for `kepr status`.
+pub fn login_failures() -> u32 {
+    load(&Paths::login().state).failures
 }
 
 /// `unwrap_at`, then `on_wipe` exactly when this attempt wiped the key.
@@ -212,7 +264,7 @@ pub fn unwrap_guarded(
     uid: u32,
     username: &str,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
-    unwrap_then(
+    let r = unwrap_then(
         &Paths::daemon(),
         (crate::expiry::now_unix(), wipe_after_from_env()),
         password,
@@ -221,7 +273,29 @@ pub fn unwrap_guarded(
             let _ = crate::crypto::lock_backend();
             crate::daemon_session::audit_op("unlock-wipe", None, uid, username, Ok(()));
         },
-    )
+    );
+    if r.is_ok() {
+        let _ = std::fs::remove_file(Paths::login().state); // reopens the login path
+    }
+    r
+}
+
+/// T13.25: the login path's passphrase check (`LoginUnlock`, the PAM
+/// password hook): real clock, state dir, `login_unlock::MAX_FAILURES`.
+pub fn unwrap_login(password: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+    let r = unwrap_login_at(
+        &Paths::login(),
+        (
+            crate::expiry::now_unix(),
+            kepr_core::login_unlock::MAX_FAILURES,
+        ),
+        password,
+        key_unlock::unwrap,
+    );
+    if r.is_ok() {
+        let _ = std::fs::remove_file(Paths::daemon().state);
+    }
+    r.map_err(|e| e.message())
 }
 
 #[cfg(test)]
@@ -364,6 +438,62 @@ mod tests {
             let _ = unwrap_then(&p, (i * 1000, None), b"x", fake, || hooks += 1);
         }
         assert_eq!(hooks, 1, "no wipe (and no audit) unless configured");
+    }
+
+    /// The login path (T13.25) over the same envelope, its own state file.
+    fn login_paths(p: &Paths, dir: &tempfile::TempDir) -> Paths {
+        Paths {
+            state: dir.path().join("login-guard.json"),
+            envelope: p.envelope.clone(),
+        }
+    }
+
+    fn login_at(p: &Paths, now: u64, pw: &[u8]) -> Result<[u8; 32], Refusal> {
+        unwrap_login_at(p, (now, 3), pw, fake).map(|k| *k)
+    }
+
+    #[test]
+    fn the_login_path_never_wipes_and_stops_at_its_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = paths(&dir, b"right");
+        let login = login_paths(&main, &dir);
+        for i in 0..3u64 {
+            assert_eq!(
+                login_at(&login, i * 1000, b"x"),
+                Err(Refusal::Wrong { wiped: false })
+            );
+        }
+        // Closed now: even the right password is not tried.
+        assert_eq!(login_at(&login, 9000, b"right"), Err(Refusal::Closed));
+        assert!(Refusal::Closed.message().contains("kepr unlock"));
+        assert_eq!(std::fs::read(&login.envelope).unwrap(), b"right");
+        // It backs off like the manual path in between.
+        let dir = tempfile::tempdir().unwrap();
+        let login = login_paths(&paths(&dir, b"right"), &dir);
+        let _ = login_at(&login, 100, b"x");
+        assert_eq!(login_at(&login, 100, b"right"), Err(Refusal::Wait(1)));
+    }
+
+    #[test]
+    fn the_two_budgets_are_kept_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = paths(&dir, b"right");
+        let login = login_paths(&main, &dir);
+        let _ = login_at(&login, 0, b"x");
+        let _ = login_at(&login, 1000, b"x");
+        assert_eq!(load(&login.state).failures, 2);
+        assert_eq!(
+            load(&main.state).failures,
+            0,
+            "logins don't count for unlock"
+        );
+        // Wrong `kepr unlock`s with the wipe on don't close the login path
+        // and logins can't push them over the wipe threshold.
+        let _ = try_at(&main, 0, Some(2), b"x");
+        assert_eq!(load(&login.state).failures, 2);
+        assert_eq!(login_at(&login, 5000, b"right").unwrap(), [5u8; 32]);
+        assert_eq!(load(&login.state), GuardState::default());
+        assert_eq!(std::fs::read(&main.envelope).unwrap(), b"right");
     }
 
     #[test]

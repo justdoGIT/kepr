@@ -4,7 +4,7 @@
 //
 //   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin|--from-clipboard] [--requires-consent]
 //   kepr agent run HARNESS [--port N] [--no-sandbox|--strict-sandbox] [--isolate-net] [-- ARGV...]
-//   kepr agent install omp|grok|opencode|claude|codex [--port N]
+//   kepr agent install omp|grok|opencode|claude|codex|cursor|copilot [--port N]
 //   kepr agent doctor [--port N] [--json]
 //   kepr agent shim HARNESS [--dir DIR] [--remove]
 //   kepr agent adopt [FILE...] [--yes] [--remove]
@@ -21,7 +21,7 @@ use kepr_core::sigv4_req::AwsKey;
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok|opencode|claude|codex | doctor [--port N] [--json] | shim HARNESS [--dir DIR] [--remove] | ls | revoke NAME";
+const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok|opencode|claude|codex|cursor|copilot | doctor [--port N] [--json] | shim HARNESS [--dir DIR] [--remove] | ls | revoke NAME";
 
 #[derive(Debug, Default, PartialEq)]
 pub struct AgentArgs {
@@ -303,6 +303,7 @@ fn cmd_revoke(a: &AgentArgs) -> Response {
 pub fn main(raw: &[String]) -> Response {
     match raw.first().map(String::as_str) {
         Some("add-db") => return crate::cli_agent_db::cmd_add_db(&raw[1..]),
+        Some("add-kube") => return crate::cli_agent_kube::cmd_add_kube(&raw[1..]), // T13.04
         Some("rotate-db") => return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]),
         Some("doctor") => return crate::cli_agent_doctor::cmd_doctor(&raw[1..]),
         Some("shim") => return crate::cli_agent_shim::cmd_shim(&raw[1..]),

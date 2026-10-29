@@ -55,12 +55,14 @@ mod tests {
         // SAFETY: the child only calls async-signal-safe functions
         // (prctl via install(), syscall, _exit) before exiting.
         let prog = program();
+        // SAFETY: test only; the child calls nothing but async-signal-safe functions before _exit.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
             let code = match install(&prog) {
                 Ok(()) => {
                     let r =
+                        // SAFETY: test only; ptrace with plain integer arguments, expected to be refused by the filter.
                         unsafe { libc::syscall(libc::SYS_ptrace, libc::PTRACE_TRACEME, 0, 0, 0) };
                     let e = std::io::Error::last_os_error().raw_os_error();
                     if r == -1 && e == Some(libc::EPERM) {
@@ -71,9 +73,11 @@ mod tests {
                 }
                 Err(_) => 2,
             };
+            // SAFETY: _exit ends the forked test child without running destructors.
             unsafe { libc::_exit(code) };
         }
         let mut status = 0;
+        // SAFETY: waiting for a child this code forked or spawned.
         unsafe { libc::waitpid(pid, &mut status, 0) };
         assert!(libc::WIFEXITED(status));
         assert_eq!(libc::WEXITSTATUS(status), 0);

@@ -18,6 +18,7 @@ pub mod fdpass;
 pub mod framing;
 pub mod gate_limits;
 pub mod gate_protocol;
+pub mod gate_target;
 pub mod generate;
 pub mod keyring;
 pub mod leak;
@@ -56,6 +57,8 @@ pub mod protocol_sharing_types;
 pub mod protocol_syncx;
 // batch: policy
 pub mod policy;
+pub mod policy_glob;
+pub mod policy_roles;
 pub mod protocol_policy;
 // batch: gate
 pub mod gate_journal;
@@ -77,8 +80,11 @@ pub mod x509_build;
 // batch: session
 pub mod fdfetch;
 pub mod http_lite;
+pub mod login_unlock;
 pub mod profile;
 pub mod protocol_session;
+// batch: desktop
+pub mod protocol_desktop;
 // batch: gate-sec (P12)
 pub mod landlock;
 pub mod seccomp;

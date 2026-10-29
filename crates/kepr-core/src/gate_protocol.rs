@@ -48,6 +48,14 @@ pub enum GateRequest {
     /// T9.08: canary fingerprints of key-shaped strings in a request;
     /// answered with `CanaryChecked` (the daemon raises the alarm).
     Canary { id: u64, fingerprints: Vec<String> },
+    /// T13.03: a rotator inside a `rotate:` session stores the new value of
+    /// the credential it rotated (the daemon keeps the seal and bindings),
+    /// answered with `Rotated`. Refused for any other session.
+    RotateCommit {
+        id: u64,
+        name: String,
+        value: ZeroString,
+    },
 }
 
 /// Daemon → gate.
@@ -64,6 +72,10 @@ pub enum GateResponse {
         generation: u64,
     },
     Recorded {
+        id: u64,
+    },
+    /// T13.03: the new value is stored; gates re-fetch.
+    Rotated {
         id: u64,
     },
     /// T9.06: the credential's totals today, this report included.
@@ -89,6 +101,7 @@ impl GateResponse {
             Self::ResolveOk { id, .. }
             | Self::Generation { id, .. }
             | Self::Recorded { id }
+            | Self::Rotated { id }
             | Self::UsageToday { id, .. }
             | Self::CanaryChecked { id, .. }
             | Self::Err { id, .. } => *id,
@@ -110,105 +123,18 @@ pub struct GateRoute {
     pub target: Option<DbTarget>,
 }
 
-/// The database a `db:` route logs in to.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DbTarget {
-    pub host: String,
-    pub port: u16,
-    /// Set only by `kepr agent rotate-db`: this route may run the
-    /// `kepr_rotate` login. An agent's own session never has it, so the
-    /// agent can't change the database password.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub rotate: bool,
-    /// Which protocol the gate speaks on this route's port (T7.01).
-    #[serde(default, skip_serializing_if = "TargetKind::is_postgres")]
-    pub kind: TargetKind,
-    /// T7.18 (PostgreSQL): a role granted to this route's login for the
-    /// session, by the gate, with another sealed record's admin login.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grant: Option<RoleGrant>,
-}
-
-/// `kepr agent run --grant NAME=ROLE:ADMIN` (T7.18).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoleGrant {
-    /// The PostgreSQL role, as named in the database (case kept).
-    pub role: String,
-    /// The sealed database record (NAME) whose login may grant `role`.
-    pub admin: String,
-}
-
-impl RoleGrant {
-    /// Role: 1-63 bytes (PostgreSQL truncates longer names), no NUL or
-    /// backslash. Admin: a credential NAME other than the route's own.
-    fn validate(&self, cred: &str, kind: TargetKind) -> Result<(), String> {
-        let role_ok = (1..=63).contains(&self.role.len()) && !self.role.contains(['\0', '\\']);
-        let admin_ok = (1..=128).contains(&self.admin.len())
-            && self
-                .admin
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            && !self.admin.eq_ignore_ascii_case(cred);
-        match (kind, role_ok, admin_ok) {
-            (TargetKind::Postgres, true, true) => Ok(()),
-            (TargetKind::Postgres, false, _) => Err("--grant: invalid role name".into()),
-            (TargetKind::Postgres, _, false) => {
-                Err("--grant: the admin must be another sealed database login".into())
-            }
-            _ => Err("--grant: role elevation is for PostgreSQL logins only".into()),
-        }
-    }
-}
-
-/// The protocol of a database route (Postgres for routes written before
-/// the field existed), or `Tcp` for a raw tunnel (T7.03).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TargetKind {
-    #[default]
-    Postgres,
-    Redis,
-    Mysql,
-    /// A raw TCP tunnel: bytes are piped, no credential is involved.
-    Tcp,
-}
-
-impl TargetKind {
-    pub fn is_postgres(&self) -> bool {
-        *self == Self::Postgres
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Postgres => "postgres",
-            Self::Redis => "redis",
-            Self::Mysql => "mysql",
-            Self::Tcp => "tcp",
-        }
-    }
-
-    /// From a record's binding kind (`Inject::db_kind`).
-    pub fn parse(s: &str) -> Option<Self> {
-        [Self::Postgres, Self::Redis, Self::Mysql]
-            .into_iter()
-            .find(|k| k.name() == s)
-    }
-
-    /// The binding inject a sealed login of this kind carries (`None` for
-    /// a tunnel, which has no login).
-    pub fn inject(self) -> Option<Inject> {
-        match self {
-            Self::Postgres => Some(Inject::Postgres),
-            Self::Redis => Some(Inject::Redis),
-            Self::Mysql => Some(Inject::Mysql),
-            Self::Tcp => None,
-        }
-    }
-}
+pub use crate::gate_target::{
+    DbTarget, Ephemeral, RoleGrant, TargetKind, EPHEMERAL_DEFAULT_TTL, EPHEMERAL_TTL,
+};
 
 /// Route key for a database credential.
 pub fn db_route_key(cred: &str) -> String {
     format!("db:{cred}")
+}
+
+/// Route key for a Kubernetes API server login (T13.04).
+pub fn kube_route_key(cred: &str) -> String {
+    format!("kube:{cred}")
 }
 
 /// Route key for a raw TCP tunnel named `name` (T7.03).
@@ -221,12 +147,28 @@ pub fn aws_route_key(cred: &str) -> String {
     format!("aws:{cred}")
 }
 
+/// Route key for a provider-side rotation of `cred` (T13.03): the session
+/// exists to rotate that sealed key, and only such a session may send
+/// `RotateCommit`. An agent's own session never has one.
+pub fn rotate_route_key(cred: &str) -> String {
+    format!("rotate:{cred}")
+}
+
 impl GateRoute {
     pub fn is_tunnel(&self) -> bool {
         self.target
             .as_ref()
             .is_some_and(|t| t.kind == TargetKind::Tcp)
     }
+}
+
+/// The credentials a session may rotate (T13.03): its `rotate:` routes.
+pub fn rotatable_creds(routes: &[GateRoute]) -> std::collections::HashSet<String> {
+    routes
+        .iter()
+        .filter(|r| r.provider == rotate_route_key(&r.cred))
+        .map(|r| r.cred.to_uppercase())
+        .collect()
 }
 
 /// The credential NAMEs a session's gate may ask the daemon for: every
@@ -304,16 +246,26 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
         let db_ok = r.target.as_ref().is_some_and(|t| {
             let key = match t.kind {
                 TargetKind::Tcp => tunnel_route_key(&r.cred),
+                TargetKind::Kube => kube_route_key(&r.cred),
                 _ => db_route_key(&r.cred),
             };
             r.provider == key && t.port != 0 && crate::binding::validate_host(&t.host).is_ok()
         });
         let aws_ok = r.target.is_none() && r.provider == aws_route_key(&r.cred);
+        let rotate_ok = r.target.is_none() && r.provider == rotate_route_key(&r.cred);
         if !db_ok
             && !aws_ok
+            && !rotate_ok
             && (r.target.is_some() || crate::providers::lookup(&r.provider).is_none())
         {
             return Err(format!("unknown provider {}", r.provider));
+        }
+        if let Some((t, e)) = r
+            .target
+            .as_ref()
+            .and_then(|t| Some((t, t.ephemeral.as_ref()?)))
+        {
+            e.validate(t.kind, t)?;
         }
         if let Some((t, g)) = r.target.as_ref().and_then(|t| Some((t, t.grant.as_ref()?))) {
             g.validate(&r.cred, t.kind)?;
@@ -338,6 +290,33 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotation_messages_and_routes() {
+        let r = GateRequest::RotateCommit {
+            id: 4,
+            name: "GH".into(),
+            value: ZeroString::from("new"),
+        };
+        let wire = serde_json::to_string(&r).unwrap();
+        assert!(wire.contains("rotatecommit"));
+        assert!(matches!(
+            serde_json::from_str::<GateRequest>(&wire).unwrap(),
+            GateRequest::RotateCommit { id: 4, .. }
+        ));
+        let ok = serde_json::to_string(&GateResponse::Rotated { id: 4 }).unwrap();
+        assert_eq!(serde_json::from_str::<GateResponse>(&ok).unwrap().id(), 4);
+        let route = |provider: &str| GateRoute {
+            provider: provider.into(),
+            cred: "GH".into(),
+            slot: 0,
+            target: None,
+        };
+        assert!(validate_routes(&[route("rotate:GH")]).is_ok());
+        assert!(validate_routes(&[route("rotate:OTHER")]).is_err());
+        assert_eq!(rotatable_creds(&[route("rotate:GH")]).len(), 1);
+        assert!(rotatable_creds(&[route("anthropic")]).is_empty());
+    }
 
     #[test]
     fn gate_messages_round_trip() {

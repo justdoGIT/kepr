@@ -39,6 +39,7 @@ impl PeerAuthenticator for LinuxPeerAuthenticator {
             // exact size, so the kernel writes at most `size_of::<UCred>()`
             // bytes into `cred` — no buffer overrun regardless of which
             // architecture's `SO_PEERCRED` numeric value is in effect.
+            // SAFETY: SO_PEERCRED fills a ucred of exactly the length passed.
             let ret = unsafe {
                 libc::getsockopt(
                     fd,
@@ -82,6 +83,7 @@ impl PeerAuthenticator for MacOSPeerAuthenticator {
             extern "C" {
                 fn getpeereid(s: i32, euid: *mut u32, egid: *mut u32) -> i32;
             }
+            // SAFETY: getpeereid fills two u32 outputs for an open socket.
             let ret = unsafe { getpeereid(fd, &mut uid, &mut gid) };
             if ret == 0 {
                 Ok(PeerIdentity {
@@ -163,6 +165,7 @@ mod tests {
         let identity = auth
             .authenticate(s1.as_raw_fd())
             .expect("authenticate socket");
+        // SAFETY: getuid has no preconditions and cannot fail.
         assert_eq!(identity.uid, unsafe { libc::getuid() });
         assert_eq!(identity.pid, std::process::id() as i32);
     }

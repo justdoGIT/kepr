@@ -10,6 +10,8 @@
 mod atomic_file;
 mod audit;
 mod audit_chain;
+mod audit_checkpoint;
+mod audit_verify;
 mod cred_meta;
 mod crypto;
 mod crypto_inproc;
@@ -76,6 +78,8 @@ mod daemon_eco;
 mod daemon_platform;
 // batch: session
 mod daemon_session;
+// batch: desktop
+mod daemon_desktop;
 // end of batches
 
 use std::fs;
@@ -202,10 +206,15 @@ fn sweep_legacy_credstore() {
             Ok(()) => !INPROC_MAGICS
                 .iter()
                 .any(|m| m.len() == HEAD_LEN && head == **m),
-            // Treat unreadable / too-short files as legacy too — they
-            // cannot decrypt under either backend, so removal is the
-            // honest answer.
-            Err(_) => true,
+            // Too short to hold a magic: cannot decrypt under either
+            // backend, so removal is the honest answer. Any other error
+            // (EMFILE, EIO, EACCES) is transient or not about the format:
+            // leave the file alone rather than delete a credential.
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => true,
+            Err(e) => {
+                eprintln!("[kepr-daemon] cannot read {name_str} to check its format: {e}");
+                false
+            }
         };
         if is_legacy {
             match fs::remove_file(&path) {
@@ -276,6 +285,7 @@ fn main() {
     if user {
         daemon_sleepwatch::spawn(effective_uid());
         daemon_session::idle::spawn(effective_uid());
+        daemon_session::unlock_wait::start(); // T13.25: a login unlock is coming
     }
 
     let chain = audit_chain::AuditChain::open(audit_chain_path()).unwrap_or_else(|e| {

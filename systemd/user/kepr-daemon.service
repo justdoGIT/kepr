@@ -1,0 +1,32 @@
+# kepr-daemon.service — this user's kepr daemon, started with the session.
+#
+# Without it the daemon starts on first use (any `kepr` command). Running it
+# from the user manager means it is already there when a login hands it the
+# password (`kepr login-unlock on`, pam_kepr.so): `--login` makes requests
+# that arrive before that unlock wait for it (a few seconds at most) instead
+# of failing as locked. It does nothing else differently.
+#
+# Enable per user: systemctl --user enable --now kepr-daemon.service
+# (`kepr login-unlock on` does this). Not for the system-wide daemon
+# (kepr.service), which has its own unit.
+
+[Unit]
+Description=kepr: credential daemon for this user
+Documentation=https://github.com/justdogit/kepr
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kepr-daemon --user --login
+Restart=on-failure
+RestartSec=2
+# Hooks (kepr rotate) and agent sessions are this user's own processes, so
+# nothing that would break their programs is set here (no MemoryDenyWriteExecute,
+# no filesystem sandbox): the daemon's own protection is the process it is.
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+LimitCORE=0
+UMask=0077
+
+[Install]
+WantedBy=default.target

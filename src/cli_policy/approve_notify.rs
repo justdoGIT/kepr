@@ -103,6 +103,9 @@ pub struct Callbacks {
     open: HashMap<String, (Zeroizing<String>, Instant)>,
 }
 
+const CONFIRM_ALLOW: &str = "<!doctype html><meta charset=utf-8><title>kepr</title><form method=post action=\"\"><button>Allow this access</button></form>";
+const CONFIRM_DENY: &str = "<!doctype html><meta charset=utf-8><title>kepr</title><form method=post action=\"\"><button>Deny this access</button></form>";
+
 /// What the callback answers, and the verdict to pass on.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Reply {
@@ -137,9 +140,11 @@ impl Callbacks {
         self.open.contains_key(id)
     }
 
-    /// `POST /approve/ID/TOKEN/allow|deny`.
+    /// `POST /approve/ID/TOKEN/allow|deny`. A `GET` of the same URL (a
+    /// chat link, or a link previewer) answers nothing: it returns a page
+    /// whose button POSTs back.
     pub fn handle(&mut self, method: &str, path: &str, now: Instant) -> Reply {
-        if method != "POST" {
+        if method != "POST" && method != "GET" {
             return reply(405, "use POST");
         }
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
@@ -151,17 +156,37 @@ impl Callbacks {
             "deny" => false,
             _ => return reply(404, "not found"),
         };
-        let Some((want, deadline)) = self.open.get(*id) else {
-            return reply(404, "unknown or already answered");
+        if method == "GET" {
+            return match self.check(id, token, now) {
+                Err(r) => r,
+                Ok(()) if allow => reply(200, CONFIRM_ALLOW),
+                Ok(()) => reply(200, CONFIRM_DENY),
+            };
+        }
+        self.answer(id, token, allow, now)
+    }
+
+    fn check(&mut self, id: &str, token: &str, now: Instant) -> Result<(), Reply> {
+        let Some((want, deadline)) = self.open.get(id) else {
+            return Err(reply(404, "unknown or already answered"));
         };
         if !ct_eq(want, token) {
-            return reply(403, "wrong token");
+            return Err(reply(403, "wrong token"));
         }
         if now >= *deadline {
-            self.open.remove(*id);
-            return reply(410, "expired: the request was denied");
+            self.open.remove(id);
+            return Err(reply(410, "expired: the request was denied"));
         }
-        self.open.remove(*id);
+        Ok(())
+    }
+
+    /// A verdict for request `id` (from a callback URL or a signed chat
+    /// click): accepted once, with its token, before its deadline.
+    pub fn answer(&mut self, id: &str, token: &str, allow: bool, now: Instant) -> Reply {
+        if let Err(r) = self.check(id, token, now) {
+            return r;
+        }
+        self.open.remove(id);
         Reply {
             status: 200,
             text: if allow { "allowed" } else { "denied" },
@@ -226,8 +251,16 @@ mod tests {
         let mut cb = Callbacks::default();
         cb.add("a1b2", "f00dfeed", now + Duration::from_secs(60));
         assert_eq!(
-            cb.handle("GET", "/approve/a1b2/f00dfeed/allow", now).status,
+            cb.handle("PUT", "/approve/a1b2/f00dfeed/allow", now).status,
             405
+        );
+        // A GET shows a page and answers nothing.
+        let page = cb.handle("GET", "/approve/a1b2/f00dfeed/allow", now);
+        assert_eq!((page.status, page.verdict), (200, None));
+        assert!(page.text.starts_with("<!doctype html>"));
+        assert_eq!(
+            cb.handle("GET", "/approve/a1b2/nope/allow", now).status,
+            403
         );
         assert_eq!(
             cb.handle("POST", "/approve/a1b2/deadbeef/allow", now)

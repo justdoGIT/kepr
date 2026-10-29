@@ -3,6 +3,7 @@
   "defaultOpen": true,
   "pages": [
     "overview",
+    "system-map",
     "ram-delivery",
     "crypto-spec",
     "design-patterns",

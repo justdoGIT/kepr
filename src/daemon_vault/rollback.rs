@@ -282,6 +282,37 @@ mod tests {
         f.write_all_at(&slot[..], 0).unwrap();
     }
 
+    /// `vault resize` builds a second image whose commits raise the same
+    /// counter; the renamed copy must open under it, and so must a restart.
+    #[test]
+    fn a_resized_image_is_the_current_one_under_the_counter() {
+        let d = tempfile::tempdir().unwrap();
+        let c = Arc::new(FakeCounter::default());
+        let b = backend(d.path(), "v.json", Some(&c));
+        for i in 0..6 {
+            b.encrypt(UID, &format!("K{i}"), format!("v{i}").as_bytes())
+                .unwrap();
+        }
+        let before = c.get().unwrap();
+        b.resize(2).unwrap();
+        let after = c.get().unwrap();
+        assert!(after > before, "the copy's commits raised the counter");
+        assert_eq!(
+            anchor(&b),
+            Some((0x0180_0A12, after)),
+            "the new header carries the counter's value"
+        );
+        assert_eq!(b.decrypt(UID, "K3").unwrap().as_str(), "v3");
+        b.encrypt(UID, "AFTER", b"a").unwrap();
+        // A restart: a new backend over the file and the same counter.
+        let again = backend(d.path(), "v.json", Some(&c));
+        assert_eq!(again.decrypt(UID, "AFTER").unwrap().as_str(), "a");
+        assert_eq!(again.decrypt(UID, "K0").unwrap().as_str(), "v0");
+        // And the state file alone (a fresh one) does not matter to it.
+        let fresh_state = backend(d.path(), "other-state.json", Some(&c));
+        assert_eq!(fresh_state.decrypt(UID, "K5").unwrap().as_str(), "v5");
+    }
+
     #[test]
     fn v1_headers_still_decode_and_v2_round_trips_the_anchor() {
         let v1 = Header {

@@ -86,6 +86,19 @@ def _recv_exact(sock, n):
     return bytes(buf)
 
 
+def _check_peer(sock):
+    """Refuse a socket whose server is not the daemon we expect: root's in
+    system mode, otherwise our own user's (SO_PEERCRED, Linux)."""
+    opt = getattr(socket, "SO_PEERCRED", None)
+    if opt is None:
+        return
+    cred = sock.getsockopt(socket.SOL_SOCKET, opt, struct.calcsize("3i"))
+    _pid, uid, _gid = struct.unpack("3i", cred)
+    want = 0 if os.environ.get("KEPR_SYSTEM_MODE") else os.geteuid()
+    if uid != want:
+        raise KeprError("the socket is not served by the expected credential daemon")
+
+
 def _upper(name):
     if not isinstance(name, str) or not name:
         raise KeprError("credential name must be a non-empty string")
@@ -111,6 +124,7 @@ class Client:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
                 s.settimeout(self.timeout)
                 s.connect(self.path)
+                _check_peer(s)
                 s.sendall(struct.pack(">I", len(payload)) + payload)
                 (n,) = struct.unpack(">I", _recv_exact(s, 4))
                 if n > MAX_MSG_BYTES:
@@ -197,6 +211,7 @@ class Client:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
                 s.settimeout(self.timeout)
                 s.connect(self.path)
+                _check_peer(s)
                 s.sendall(struct.pack(">I", len(req)) + req)
                 (n,) = struct.unpack(">I", _recv_exact(s, 4))
                 if n > MAX_MSG_BYTES:

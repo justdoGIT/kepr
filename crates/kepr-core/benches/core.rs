@@ -145,6 +145,7 @@ mod policy {
                 exe: Some("/home/alice/bin/deploy"),
                 parent: Some("/bin/bash"),
                 harness: None,
+                roles: &[],
                 hosts: &hosts,
                 ttl: None,
             };

@@ -31,11 +31,11 @@ mod import;
 pub mod json_file;
 mod map;
 mod quorum;
-mod s3;
+pub(crate) mod s3;
 mod sync_now;
 #[cfg(test)]
-mod testserver;
-mod transport;
+pub(crate) mod testserver;
+pub(crate) mod transport;
 
 use kepr_core::protocol::Response;
 

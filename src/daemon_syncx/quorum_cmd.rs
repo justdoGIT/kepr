@@ -633,6 +633,7 @@ mod tests {
             rec: crate::daemon_gatex::recording::Recorder::new(a, "0123456789abcdef", false),
             harness: None,
             deadlines: Default::default(),
+            rotatable: Default::default(),
         };
         let host = "api.example.com";
         crate::daemon_gate::resolve_for_gate(&owner, "QG_SEALED", host, 443).unwrap();

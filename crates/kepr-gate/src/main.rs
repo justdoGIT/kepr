@@ -18,12 +18,14 @@ mod gcp_token;
 mod git_http;
 mod github_app;
 mod journal;
+mod kube;
 mod limits;
 mod mask;
 mod mysql;
 mod mysql_auth;
 mod mysql_rotate;
 mod pg;
+mod pg_ephemeral;
 mod pg_jit;
 mod pg_rotate;
 mod pg_tls;
@@ -33,6 +35,7 @@ mod recording;
 mod redis;
 mod reply;
 mod rewrite;
+mod rotate_provider;
 mod routes;
 mod scram;
 mod secret_cell;
@@ -46,6 +49,11 @@ mod vault;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // T13.01: what this build offers first to upstream hosts (no session).
+    if std::env::args().nth(1).as_deref() == Some("--tls-info") {
+        println!("Gate TLS: {}", tls_provider::first_group());
+        return ExitCode::SUCCESS;
+    }
     if let Err(e) = session::harden() {
         eprintln!("kepr-gate: {e}");
         return ExitCode::from(70);

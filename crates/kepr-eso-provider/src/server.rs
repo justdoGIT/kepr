@@ -315,6 +315,7 @@ mod tests {
             method: "GET".into(),
             path: "/v1/secrets/KEY".into(),
             authorization: Some("Bearer secret".into()),
+            headers: Vec::new(),
             body: Vec::new(),
         };
         assert!(authorized(&request, Some("secret")));

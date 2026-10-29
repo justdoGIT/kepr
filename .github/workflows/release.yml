@@ -80,15 +80,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          # Exact, and the MSRV CI already tests (ci.yml): a re-run of a
-          # tag builds with the same compiler.
-          toolchain: 1.87.0
+          # Exact: a re-run of a tag builds with the same compiler. 1.88,
+          # not the 1.87 MSRV of the root crates (ci.yml): kepr-gate's
+          # certificate crates (rcgen, time 0.3.47+, the fix for
+          # RUSTSEC-2026-0009) need it, and the gate ships in the packages.
+          toolchain: 1.88.0
 
       # T12.38: no build cache (a cache another run wrote could change what
       # this build compiles). Sources come from Cargo.lock only, fetched
       # here, before the build loses the network.
       - name: Fetch locked sources
-        run: cargo fetch --locked
+        run: |
+          cargo fetch --locked
+          cargo fetch --locked --manifest-path crates/kepr-pam/Cargo.toml
 
       # The build runs in a network namespace with no interfaces. The probe
       # must fail, which proves there is no network; --frozen keeps cargo on
@@ -100,7 +104,7 @@ jobs:
       - name: cargo build --release (no network)
         run: |
           set -euo pipefail
-          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all env PATH="$PATH" HOME="$HOME" CARGO_NET_OFFLINE=true sh -c '! curl -fsS --max-time 5 https://index.crates.io/config.json && ! sudo -n true && cargo build --release --frozen --bins && cargo build --release --frozen -p kepr-gate'
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all env PATH="$PATH" HOME="$HOME" CARGO_NET_OFFLINE=true sh -c '! curl -fsS --max-time 5 https://index.crates.io/config.json && ! sudo -n true && cargo build --release --frozen --bins && cargo build --release --frozen -p kepr-gate && cargo build --release --frozen --manifest-path crates/kepr-pam/Cargo.toml --target-dir target/pam'
 
       # Build scripts could write anywhere the runner user can: the checked
       # out tree, or a cargo config in the home directory that the
@@ -119,7 +123,8 @@ jobs:
             if [ -e "$c" ]; then echo "::error::cargo config appeared: $c"; exit 1; fi
           done
           sha256sum target/release/kepr target/release/kepr-daemon target/release/kepr-gate \
-            target/release/docker-credential-kepr target/release/git-credential-kepr > "$RUNNER_TEMP/binaries.sha256"
+            target/release/docker-credential-kepr target/release/git-credential-kepr \
+            target/pam/release/libpam_kepr.so > "$RUNNER_TEMP/binaries.sha256"
 
       # Exact versions, the newest that build on the pinned toolchain
       # (cargo-deb 3.7+ and cargo-generate-rpm 0.21 need Rust 1.88).
@@ -151,6 +156,12 @@ jobs:
           cp systemd/kepr-gate.service             "dist/${STAGE}/"
           cp systemd/polkit/io.kepr.policy         "dist/${STAGE}/"
           cp completions/kepr.bash      "dist/${STAGE}/"
+          # Unlock at login and the desktop Secret Service (T13.27, T13.28):
+          # the PAM module, its Debian profile and the user units.
+          cp target/pam/release/libpam_kepr.so "dist/${STAGE}/pam_kepr.so"
+          mkdir -p "dist/${STAGE}/packaging/pam-configs" "dist/${STAGE}/systemd/user"
+          cp packaging/pam-configs/kepr "dist/${STAGE}/packaging/pam-configs/kepr"
+          cp systemd/user/*.service systemd/user/*.timer "dist/${STAGE}/systemd/user/"
           # install.sh loads the agent sandbox's AppArmor profile from here.
           mkdir -p "dist/${STAGE}/packaging/apparmor"
           cp packaging/apparmor/kepr    "dist/${STAGE}/packaging/apparmor/kepr"

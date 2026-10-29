@@ -76,6 +76,9 @@ func (c *Client) Request(req map[string]any) (Reply, error) {
 		return nil, &Error{fmt.Sprintf("cannot reach the credential service at %s (%v); start it with `kepr-daemon --user`", c.Path, err)}
 	}
 	defer conn.Close()
+	if err := checkPeer(conn); err != nil {
+		return nil, err
+	}
 	_ = conn.SetDeadline(time.Now().Add(c.Timeout))
 	frame := make([]byte, 4+len(payload))
 	binary.BigEndian.PutUint32(frame, uint32(len(payload)))

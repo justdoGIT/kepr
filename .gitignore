@@ -23,3 +23,8 @@ docs/public/Kepr_gemini.png
 # Python
 __pycache__/
 *.pyc
+
+# .NET / PowerShell SDK build output
+sdk/dotnet/**/bin/
+sdk/dotnet/**/obj/
+sdk/powershell/Kepr/lib/

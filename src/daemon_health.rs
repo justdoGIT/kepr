@@ -120,7 +120,9 @@ pub fn handle_health(
         let meta = expiry::read_meta(&expiry::meta_path_for(&path))
             .and_then(Result::ok)
             .unwrap_or_default();
-        if meta.ssh.is_some() || meta.share_key.is_some() {
+        // SSH and share keys are never analysed; neither are Secret
+        // Service items (T13.28), whose value is a JSON document.
+        if meta.ssh.is_some() || meta.share_key.is_some() || meta.desktop_item == Some(true) {
             continue;
         }
         let mut issues = Vec::new();

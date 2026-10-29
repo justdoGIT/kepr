@@ -3,6 +3,7 @@
 // subcommands added by the batch. No top-level verbs of its own; the help
 // lines below are appended to `kepr --help`.
 
+pub mod dbuser;
 pub mod grant;
 pub mod logs;
 pub mod mcp_pg;
@@ -20,6 +21,7 @@ pub const VERBS: &[&str] = &[];
 pub const HELP: &str = concat!(
     "  agent run HARNESS --tunnel NAME=HOST:PORT  loopback port piped to an internal host (no credential)\n",
     "  agent run HARNESS --grant NAME=ROLE:ADMIN  PostgreSQL role held only for the session (ADMIN grants it)\n",
+    "  agent run HARNESS --db-user NAME=ROLE[:TTL]  PostgreSQL login made for the session, dropped at the end\n",
     "  agent run HARNESS --record      keep what the agent sends and receives, encrypted (never keys)\n",
     "  agent replay [SESSION]          list recorded sessions, or print one\n",
     "  agent replay SESSION --typescript FILE --timing FILE  its PostgreSQL traffic for scriptreplay\n",
@@ -48,12 +50,14 @@ pub struct SessionOpts {
     pub tunnels: Vec<String>,
     /// `--grant NAME=ROLE:ADMIN` (T7.18), as given.
     pub grants: Vec<String>,
+    /// `--db-user NAME=ROLE[:TTL]` (T13.02), as given.
+    pub db_users: Vec<String>,
     /// `--record` (T7.09).
     pub record: bool,
 }
 
 impl SessionOpts {
-    pub const FLAGS: &'static [&'static str] = &["--tunnel", "--grant", "--record"];
+    pub const FLAGS: &'static [&'static str] = &["--tunnel", "--grant", "--db-user", "--record"];
 
     /// Take the flag at `raw[i]` (one of FLAGS); returns the index of
     /// the last argument consumed.
@@ -66,6 +70,7 @@ impl SessionOpts {
         match raw[i].as_str() {
             "--tunnel" => self.tunnels.push(value("NAME=HOST:PORT")?),
             "--grant" => self.grants.push(value("NAME=ROLE:ADMIN")?),
+            "--db-user" => self.db_users.push(value("NAME=ROLE[:TTL]")?),
             "--record" => {
                 self.record = true;
                 return Ok(i);

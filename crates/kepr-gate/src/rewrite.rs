@@ -176,7 +176,9 @@ pub fn upstream_headers(
         | Inject::Mysql
         | Inject::Sigv4
         | Inject::GithubApp { .. }
-        | Inject::GcpToken { .. } => return Err("not an HTTP credential".into()),
+        | Inject::GcpToken { .. }
+        // A kube login is a record; kube.rs takes the token out of it.
+        | Inject::KubeToken => return Err("not an HTTP credential".into()),
     }
     Ok(out)
 }

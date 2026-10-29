@@ -36,6 +36,7 @@ fn get_termios() -> Termios {
         c_ispeed: 0,
         c_ospeed: 0,
     };
+    // SAFETY: fd 0 and a valid termios struct for the call to fill.
     unsafe {
         tcgetattr(0, &mut t);
     }
@@ -43,6 +44,7 @@ fn get_termios() -> Termios {
 }
 
 fn set_termios(t: &Termios) {
+    // SAFETY: fd 0 and a valid termios struct.
     unsafe {
         tcsetattr(0, 0, t);
     }

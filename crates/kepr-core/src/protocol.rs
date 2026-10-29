@@ -317,6 +317,9 @@ pub enum Request {
     // batch: session
     #[serde(untagged)]
     Session(crate::protocol_session::SessionRequest),
+    // batch: desktop
+    #[serde(untagged)]
+    Desktop(crate::protocol_desktop::DesktopRequest),
     // end of batches
 }
 

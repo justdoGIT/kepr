@@ -152,6 +152,11 @@ pub fn save_current(uid: u32, name: &str) {
 pub fn purge(uid: u32, name: &str) {
     crate::daemon_recordsx::purge_attachments(uid, name);
     crate::daemon_syncx::quorum_forget(uid, name); // T7.12
+    purge_slots(uid, name);
+}
+
+/// Drop the history slots only (T13.03: a rotated key's old values).
+pub fn purge_slots(uid: u32, name: &str) {
     for s in 0..DEPTH {
         let slot = slot_name(name, s);
         if crate::store::cred_exists(uid, &slot) {

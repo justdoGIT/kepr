@@ -169,6 +169,15 @@ const BUILTINS: &[Builtin] = &[
             ("url", "url", false),
         ],
     ),
+    // T13.04: a Kubernetes API server login; `kepr agent add-kube` seals it.
+    (
+        "kube",
+        &[
+            ("server", "url", false),
+            ("token", "secret", true),
+            ("ca_pem", "multiline", false),
+        ],
+    ),
     ("note", &[("text", "multiline", true)]),
     ("custom", &[]),
 ];
@@ -211,7 +220,7 @@ mod tests {
         let names: Vec<&str> = all.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(
             names,
-            ["login", "card", "database", "server", "api", "note", "custom"]
+            ["login", "card", "database", "server", "api", "kube", "note", "custom"]
         );
         for t in &all {
             t.validate().unwrap();

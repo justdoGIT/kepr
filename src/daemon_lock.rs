@@ -22,7 +22,7 @@ use kepr_core::protocol::Response;
 
 use crate::{master_key_path, protected_master_key_path};
 
-fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
+pub(crate) fn write_protected_master_key(envelope: &[u8]) -> Result<(), String> {
     crate::atomic_file::write(&protected_master_key_path(), envelope, 0o600)
         .map_err(|e| format!("cannot write protected master-key file: {e}"))?;
     crate::daemon_session::unlock_guard::reset(); // T11.13: a new passphrase
@@ -42,7 +42,7 @@ pub fn install_protected_key(envelope: &[u8]) -> Result<(), String> {
     }
 }
 
-fn handle_lock(password: &[u8]) -> Response {
+fn handle_lock(peer_pid: i32, password: &[u8]) -> Response {
     if password.is_empty() {
         return Response::fail("password cannot be empty");
     }
@@ -50,7 +50,9 @@ fn handle_lock(password: &[u8]) -> Response {
         return Response::fail("credential store is already password protected");
     }
     // T12.53: on a keychain-sealed store the owner approves at the machine.
-    if let Err(e) = crate::daemon_seal::presence::require(crate::daemon_seal::presence::LOCK) {
+    if let Err(e) =
+        crate::daemon_seal::presence::require(crate::daemon_seal::presence::LOCK, peer_pid)
+    {
         return Response::fail(e);
     }
     let key = match crypto::snapshot_key() {
@@ -78,13 +80,20 @@ fn handle_unlock(uid: u32, username: &str, password: &[u8]) -> Response {
     if password.is_empty() {
         return Response::fail("password cannot be empty");
     }
+    // T13.25: requests arriving meanwhile wait for this unlock.
+    let _busy = crate::daemon_session::unlock_wait::Unlocking::begin();
     // T11.13: backoff, failure counter and the opt-in wipe.
     let key = match crate::daemon_session::unlock_guard::unwrap_guarded(password, uid, username) {
         Ok(key) => key,
         Err(e) => return Response::fail(e),
     };
     match crypto::unlock_backend(&key) {
-        Ok(()) => Response::UnlockedOk,
+        Ok(()) => {
+            // T13.20: an old envelope gets its cost written into it.
+            crate::key_unlock::upgrade_at(&protected_master_key_path(), password, &key);
+            crate::daemon_session::login::unlocked(); // T13.25: undoes a panic
+            Response::UnlockedOk
+        }
         Err(e) => Response::fail(e),
     }
 }
@@ -106,11 +115,11 @@ fn require_root_in_system_mode(uid: u32, op: &'static str, username: &str) -> Op
     None
 }
 
-pub fn handle_lock_gated(uid: u32, username: &str, password: &[u8]) -> Response {
+pub fn handle_lock_gated(uid: u32, peer_pid: i32, username: &str, password: &[u8]) -> Response {
     if let Some(denied) = require_root_in_system_mode(uid, "lock", username) {
         return denied;
     }
-    let response = handle_lock(password);
+    let response = handle_lock(peer_pid, password);
     audit::log(&AuditEvent {
         op: "lock",
         name: None,
@@ -157,7 +166,7 @@ mod tests {
 
     #[test]
     fn handle_lock_rejects_empty_password() {
-        match handle_lock(b"") {
+        match handle_lock(0, b"") {
             Response::Err { error } => assert!(error.contains("empty")),
             other => panic!("expected Err, got {other:?}"),
         }

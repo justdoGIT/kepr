@@ -90,6 +90,12 @@ const GROUPS: &[Group] = &[
         crate::cli_session::HELP,
         crate::cli_session::dispatch,
     ),
+    // batch: desktop
+    (
+        crate::cli_desktop::VERBS,
+        crate::cli_desktop::HELP,
+        crate::cli_desktop::dispatch,
+    ),
     // end of batches
 ];
 

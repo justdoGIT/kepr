@@ -37,6 +37,7 @@ pub fn memfd_secret_available() -> bool {
         // or -1; we close any fd it returns.
         let fd = unsafe { libc::syscall(libc::SYS_memfd_secret, 0) };
         if fd >= 0 {
+            // SAFETY: closing a descriptor this code owns and does not use again.
             unsafe { libc::close(fd as i32) };
             return true;
         }
@@ -145,6 +146,7 @@ impl SecretRegion {
             // SAFETY: memfd_secret/ftruncate/mmap/close on an fd we own;
             // MAP_FIXED only targets `data`, which lies inside the
             // reservation this SecretRegion owns.
+            // SAFETY: memfd_secret takes plain integer flags; any fd it returns is closed here.
             unsafe {
                 let fd = libc::syscall(libc::SYS_memfd_secret, 0) as i32;
                 if fd < 0 {

@@ -18,16 +18,27 @@ When `kepr lock` is executed, Kepr wraps the random 32-byte AES credential maste
 - **Memory Cost (`m_cost`)**: 64 MiB (65,536 KiB)
 - **Time Cost (`t_cost`)**: 3 passes
 - **Parallelism (`p_cost`)**: 1 thread
-- **Salt**: 16 bytes CSPRNG (`getrandom`)
+- **Salt**: 16 bytes CSPRNG
 - **Key Length**: 32 bytes (256 bits)
 
 ### Envelope Format (`master.key.argon2id`)
+
+Current format, `kepr_pw3` (T13.20). The cost is stored in the header, and
+the header is the AES-GCM associated data, so it cannot be lowered unseen:
+
 ```
-┌─────────────────┬──────────────────┬──────────────────┬─────────────────────────────┐
-│ Header (9 bytes)│ Salt (16 bytes)  │ Nonce (12 bytes) │ AES-256-GCM Ciphertext      │
-│ "kepr_pw1\n"    │ CSPRNG Salt      │ CSPRNG Nonce     │ Key + 16-byte Tag           │
-└─────────────────┴──────────────────┴──────────────────┴─────────────────────────────┘
+┌──────────────┬──────────┬──────────┬───────┬────────┬────────┬─────────────────────┐
+│ "kepr_pw3\n"  │ m_kib    │ t        │ p     │ Salt   │ Nonce  │ AES-256-GCM         │
+│ (9 bytes)    │ u32 BE   │ u32 BE   │ u8    │ 16 B   │ 12 B   │ Key + 16-byte Tag   │
+└──────────────┴──────────┴──────────┴───────┴────────┴────────┴─────────────────────┘
 ```
+
+A stored cost outside 8 MiB to 1 GiB, 1 to 10 passes and 1 to 8 lanes is
+refused before any hashing, so a tampered file cannot make the daemon
+allocate gigabytes. Older stores hold `kepr_pw1` (the same layout without the
+cost fields and with empty associated data, at the fixed cost above); it still
+opens and is rewritten as `kepr_pw3` after the next successful `kepr unlock`.
+A FIDO2-protected store uses `kepr_pw2` (see the plan, T4.09).
 
 ---
 

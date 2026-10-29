@@ -50,7 +50,7 @@ valuable to catch early.
 
 ## Development Setup
 
-Requirements: Rust 1.87 or newer, Cargo.
+Requirements: Rust 1.87 or newer, Cargo (1.88 for `kepr-gate`).
 
 ```bash
 # Clone the repository

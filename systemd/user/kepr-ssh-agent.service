@@ -1,0 +1,31 @@
+# kepr-ssh-agent.service — an ssh-agent whose keys live in kepr, running
+# with the session (`kepr ssh-agent`, agent vault P2.4).
+#
+# ssh and git find it through SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/kepr-ssh-agent.sock;
+# `kepr login-unlock on --ssh-agent` enables this unit and writes
+# ~/.config/environment.d/50-kepr-ssh-agent.conf so the session manager sets
+# that variable for everything it starts. The agent holds no key: every sign
+# request goes to the daemon, which refuses it while kepr is locked (and the
+# agent then says so in the journal and in a desktop notice).
+#
+# Enable per user: systemctl --user enable --now kepr-ssh-agent.service
+
+[Unit]
+Description=kepr: ssh-agent backed by the kepr store
+Documentation=https://github.com/justdogit/kepr
+After=kepr-daemon.service
+Wants=kepr-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kepr ssh-agent --foreground --socket %t/kepr-ssh-agent.sock
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+UMask=0077
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target
