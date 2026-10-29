@@ -12,6 +12,9 @@
 // names the action and defaults to Deny; no answer in 60 s, no dialog
 // (no GUI session) or any error is a refusal. Other sealers are
 // unchanged: their own fences (owner, no gate, polkit) stay as they were.
+//
+// T13.21: on Linux the same two requests can ask through polkit
+// (`io.kepr.protect`), opt in with KEPR_PRESENCE=polkit.
 
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -22,15 +25,16 @@ const REFUSED: &str = "this needs approval at the machine, and it was not given"
 
 /// Asks the person at the machine.
 pub trait Presence {
-    /// `Ok` only when they approved `action`.
-    fn confirm(&self, action: &str) -> Result<(), String>;
+    /// `Ok` only when they approved `action`. `peer_pid` is the process
+    /// that asked (the polkit subject).
+    fn confirm(&self, action: &str, peer_pid: i32) -> Result<(), String>;
 }
 
 /// The macOS dialog, through `osascript`.
 pub struct MacDialog;
 
 impl Presence for MacDialog {
-    fn confirm(&self, action: &str) -> Result<(), String> {
+    fn confirm(&self, action: &str, _peer_pid: i32) -> Result<(), String> {
         if !cfg!(target_os = "macos") {
             return Err(REFUSED.into());
         }
@@ -60,22 +64,73 @@ fn approved(success: bool, stdout: &str) -> bool {
     success && stdout.contains("button returned:Allow") && stdout.contains("gave up:false")
 }
 
-/// Does the environment seal the master key in the macOS keychain?
-pub fn required() -> bool {
-    std::env::var("KEPR_MASTER_KEY_SEAL").is_ok_and(|s| s == "keychain")
+/// Linux (T13.21): polkit asks the person at the machine, every time
+/// (`io.kepr.protect` is `auth_self`, never `auth_self_keep`), for the
+/// process that sent the request.
+pub struct PolkitPresence;
+
+impl Presence for PolkitPresence {
+    fn confirm(&self, _action: &str, peer_pid: i32) -> Result<(), String> {
+        if peer_pid > 0 && crate::daemon_polkit::authorized(peer_pid, PROTECT_ACTION_ID) {
+            Ok(())
+        } else {
+            Err(REFUSED.into())
+        }
+    }
+}
+
+/// Must match the `<action id=` in `systemd/polkit/io.kepr.policy`.
+pub const PROTECT_ACTION_ID: &str = "io.kepr.protect";
+
+/// Which check this environment asks for.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Kind {
+    None,
+    MacDialog,
+    Polkit,
+}
+
+/// The macOS dialog when the key is sealed in the keychain; polkit when
+/// `KEPR_PRESENCE=polkit` (opt-in: it needs a polkit agent in the user's
+/// session, which headless hosts and CI do not have, so it is never
+/// switched on by default). `KEPR_MASTER_KEY_SEAL=keychain` always asks.
+pub fn kind_for(seal: Option<&str>, presence: Option<&str>) -> Kind {
+    if seal == Some("keychain") {
+        Kind::MacDialog
+    } else if presence == Some("polkit") {
+        Kind::Polkit
+    } else {
+        Kind::None
+    }
+}
+
+fn kind() -> Kind {
+    kind_for(
+        std::env::var("KEPR_MASTER_KEY_SEAL").ok().as_deref(),
+        std::env::var("KEPR_PRESENCE").ok().as_deref(),
+    )
 }
 
 /// The check for `action` on a store where `required` says so.
-pub fn require_with(required: bool, p: &dyn Presence, action: &str) -> Result<(), String> {
+pub fn require_with(
+    required: bool,
+    p: &dyn Presence,
+    action: &str,
+    peer_pid: i32,
+) -> Result<(), String> {
     if required {
-        p.confirm(action).map_err(|_| REFUSED.to_string())
+        p.confirm(action, peer_pid).map_err(|_| REFUSED.to_string())
     } else {
         Ok(())
     }
 }
 
-pub fn require(action: &str) -> Result<(), String> {
-    require_with(required(), &MacDialog, action)
+pub fn require(action: &str, peer_pid: i32) -> Result<(), String> {
+    match kind() {
+        Kind::None => Ok(()),
+        Kind::MacDialog => require_with(true, &MacDialog, action, peer_pid),
+        Kind::Polkit => require_with(true, &PolkitPresence, action, peer_pid),
+    }
 }
 
 pub const LOCK: &str = "protect the master key with a passphrase";
@@ -92,7 +147,7 @@ mod tests {
     }
 
     impl Presence for Fake {
-        fn confirm(&self, action: &str) -> Result<(), String> {
+        fn confirm(&self, action: &str, _pid: i32) -> Result<(), String> {
             self.asked.borrow_mut().push(action.into());
             if self.answer {
                 Ok(())
@@ -112,17 +167,43 @@ mod tests {
     #[test]
     fn other_sealers_are_never_asked() {
         let f = fake(false);
-        assert!(require_with(false, &f, LOCK).is_ok());
+        assert!(require_with(false, &f, LOCK, 1).is_ok());
         assert!(f.asked.borrow().is_empty());
     }
 
     #[test]
     fn a_keychain_store_asks_and_obeys_the_answer() {
         let yes = fake(true);
-        assert!(require_with(true, &yes, ENROL).is_ok());
+        assert!(require_with(true, &yes, ENROL, 1).is_ok());
         assert_eq!(*yes.asked.borrow(), [ENROL]);
         let no = fake(false);
-        assert_eq!(require_with(true, &no, LOCK).unwrap_err(), REFUSED);
+        assert_eq!(require_with(true, &no, LOCK, 1).unwrap_err(), REFUSED);
+    }
+
+    #[test]
+    fn the_check_follows_the_environment() {
+        assert_eq!(kind_for(None, None), Kind::None);
+        assert_eq!(kind_for(Some("keychain"), None), Kind::MacDialog);
+        assert_eq!(kind_for(Some("keychain"), Some("polkit")), Kind::MacDialog);
+        assert_eq!(kind_for(None, Some("polkit")), Kind::Polkit);
+        assert_eq!(kind_for(Some("host"), Some("off")), Kind::None);
+    }
+
+    #[test]
+    fn polkit_refuses_without_a_peer() {
+        assert_eq!(PolkitPresence.confirm(LOCK, 0).unwrap_err(), REFUSED);
+        assert_eq!(PolkitPresence.confirm(LOCK, -1).unwrap_err(), REFUSED);
+    }
+
+    #[test]
+    fn the_polkit_action_is_in_the_shipped_policy() {
+        let xml = include_str!("../../systemd/polkit/io.kepr.policy");
+        let at = xml
+            .find(&format!("<action id=\"{PROTECT_ACTION_ID}\""))
+            .expect("action missing");
+        let block = &xml[at..xml[at..].find("</action>").map_or(xml.len(), |e| at + e)];
+        assert!(block.contains("<allow_active>auth_self</allow_active>"));
+        assert!(!xml.contains("auth_self_keep</allow"));
     }
 
     #[test]
@@ -137,7 +218,7 @@ mod tests {
     #[test]
     fn without_macos_the_dialog_refuses() {
         if !cfg!(target_os = "macos") {
-            assert_eq!(MacDialog.confirm(LOCK).unwrap_err(), REFUSED);
+            assert_eq!(MacDialog.confirm(LOCK, 1).unwrap_err(), REFUSED);
         }
     }
 }

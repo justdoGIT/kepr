@@ -226,6 +226,7 @@ mod tests {
             method: method.into(),
             path: path.into(),
             authorization: auth.map(String::from),
+            headers: vec![],
             body: vec![],
         }
     }

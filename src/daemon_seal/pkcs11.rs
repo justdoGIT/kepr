@@ -90,6 +90,7 @@ impl<R: Runner> Pkcs11<R> {
         let Some(path) = &self.pin_file else {
             return Ok(None);
         };
+        super::tpm_config::check_pin_file_mode("KEPR_PKCS11_PIN_FILE", path)?;
         let raw = Zeroizing::new(
             std::fs::read(path).map_err(|_| "cannot read KEPR_PKCS11_PIN_FILE".to_string())?,
         );
@@ -201,6 +202,8 @@ mod tests {
     fn pin_file(dir: &tempfile::TempDir) -> PathBuf {
         let p = dir.path().join("pin");
         std::fs::write(&p, "0001password\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
         p
     }
 
@@ -258,6 +261,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("pin");
         std::fs::write(&p, "9999").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
         let s = Pkcs11::new(&format!("{MODULE}:k1"), Some(p), token()).unwrap();
         assert_eq!(
             KekSealer::unseal(&s, &[0u8; 256]).unwrap_err(),
@@ -303,5 +308,20 @@ mod tests {
         ] {
             assert!(parse_spec(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_pin_file_other_users_can_read_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = pin_file(&dir);
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let spec = format!("{MODULE}:kepr master");
+        let s = KmsSealer(Pkcs11::new(&spec, Some(p), token()).unwrap());
+        let e = s.seal(&KEY).unwrap_err();
+        assert!(
+            e.contains("KEPR_PKCS11_PIN_FILE") && e.contains("chmod 600"),
+            "{e}"
+        );
     }
 }

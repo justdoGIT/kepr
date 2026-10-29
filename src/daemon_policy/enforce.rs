@@ -133,6 +133,12 @@ fn governed(
             }
             (get_op(), names, vec![], None)
         }
+        // T13.28: a Secret Service secret read is a read of that item's
+        // credential, so a policy that denies `get` of `SSI_*` covers it.
+        Request::Desktop(kepr_core::protocol_desktop::DesktopRequest::SsItemSecret { id }) => {
+            let name = format!("SSI_{}", id.to_uppercase());
+            (get_op(), vec![name], vec![], None)
+        }
         Request::Set {
             name,
             ttl_secs,
@@ -191,6 +197,7 @@ fn decide(
         Loaded::Broken(_) => Decision::Deny(None, "the policy file has errors".into()),
         Loaded::Active(policy) => {
             let c = inspect();
+            let roles = super::roles::held(policy, uid, username, peer_pid);
             names
                 .iter()
                 .map(|name| {
@@ -200,6 +207,7 @@ fn decide(
                         exe: c.exe.as_deref(),
                         parent: c.parent.as_deref(),
                         harness: c.harness.as_deref(),
+                        roles: &roles,
                         hosts: &hosts,
                         ttl,
                     })
@@ -244,6 +252,20 @@ mod tests {
         let p = parse("[[rule]]\neffect = \"allow\"\nops = [\"*\"]\n").unwrap();
         assert_eq!(p.rules.len(), 1);
         assert!(parse("").unwrap().rules.is_empty());
+    }
+
+    #[test]
+    fn roles_parse_from_toml_and_run_in_policy_tests() {
+        let p = parse(
+            "[roles.ops]\nmembers = [\"group:ops\"]\n\
+             [[rule]]\neffect = \"allow\"\nops = [\"get\"]\nrole = [\"ops\"]\n\
+             [[test]]\nop = \"get\"\nname = \"A\"\nroles = [\"ops\"]\nexpect = \"allow\"\n\
+             [[test]]\nop = \"get\"\nname = \"A\"\nexpect = \"deny\"\n",
+        )
+        .unwrap();
+        assert!(p.run_tests().0);
+        assert!(parse("[[rule]]\neffect = \"allow\"\nops = [\"get\"]\nrole = [\"x\"]\n").is_err());
+        assert!(parse("[roles.a]\nmembers = [\"alice\"]\n").is_err());
     }
 
     #[test]

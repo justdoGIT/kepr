@@ -29,8 +29,10 @@ pub fn create_sealed_memfd(name: &str, secret: &[u8]) -> Result<RawFd, String> {
     // SAFETY: `fd` is the open, sealed memfd from above; `fcntl`
     // (F_GETFD/F_SETFD) only reads/writes the descriptor's own flag
     // word and cannot invalidate it.
+    // SAFETY: fcntl on an open descriptor only reads or writes its flag word.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags >= 0 {
+        // SAFETY: fcntl on an open descriptor only reads or writes its flag word.
         unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
     }
     Ok(fd)
@@ -57,6 +59,7 @@ pub fn create_sealed_memfd_cloexec(name: &str, secret: &[u8]) -> Result<OwnedFd,
         // flags are the two documented bit constants above. The syscall
         // returns either a valid new fd (>= 0) or -1 with `errno` set — no
         // aliasing or lifetime hazards are introduced by making the call.
+        // SAFETY: memfd_create gets a valid NUL-terminated name and two documented flag bits.
         let fd = unsafe {
             libc::syscall(
                 libc::SYS_memfd_create,
@@ -78,6 +81,7 @@ pub fn create_sealed_memfd_cloexec(name: &str, secret: &[u8]) -> Result<OwnedFd,
             // `secret.as_ptr()` is valid for `secret.len()` bytes for the
             // duration of this call (borrowed from the caller's slice).
             let written =
+                // SAFETY: `secret` is valid for its length for the whole call.
                 unsafe { libc::write(fd, secret.as_ptr() as *const libc::c_void, secret.len()) };
             if written < 0 || (written as usize) != secret.len() {
                 let err = std::io::Error::last_os_error();
@@ -85,6 +89,7 @@ pub fn create_sealed_memfd_cloexec(name: &str, secret: &[u8]) -> Result<OwnedFd,
                 // point (never duplicated or handed to another owner);
                 // closing it once here and returning is the error-cleanup
                 // path, so no double-close or use-after-close follows.
+                // SAFETY: closing a descriptor this code owns and does not use again.
                 unsafe { libc::close(fd) };
                 return Err(format!("memfd write failed: {err}"));
             }
@@ -108,6 +113,7 @@ pub fn create_sealed_memfd_cloexec(name: &str, secret: &[u8]) -> Result<OwnedFd,
         // SAFETY: `fd` is the open memfd from above; `fcntl(F_ADD_SEALS)`
         // only mutates kernel-side seal state for this inode, no memory
         // hazard on our side.
+        // SAFETY: fcntl(F_ADD_SEALS) only changes kernel-side seal state.
         let seal_res = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) };
         if seal_res < 0 {
             let err = std::io::Error::last_os_error();
@@ -148,10 +154,12 @@ mod tests {
         assert_eq!(read_bytes, secret);
 
         // Verify seals by attempting to write (must fail with EPERM / EBADF)
+        // SAFETY: test only; `fd` is open and owned here, forgotten below so it is not closed twice.
         let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
         let write_res = file.write_all(b"override");
         assert!(write_res.is_err(), "write to sealed memfd must fail");
         std::mem::forget(file); // Don't close raw fd twice
+                                // SAFETY: closing a descriptor this code owns and does not use again.
         unsafe { libc::close(fd) };
     }
 }

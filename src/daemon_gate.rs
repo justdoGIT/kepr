@@ -75,6 +75,9 @@ pub struct GateOwner {
     /// When values this gate was given stop being allowed: its
     /// generation moves then (daemon_gate_deadline.rs).
     pub deadlines: crate::daemon_gate_deadline::Deadlines,
+    /// T13.03: credentials this session exists to rotate (`rotate:`
+    /// routes); only these may be committed by the gate.
+    pub rotatable: std::collections::HashSet<String>,
 }
 
 /// Bumped on every set, delete and expiry sweep; gates compare it
@@ -222,6 +225,9 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
                 &name,
                 (requests, tokens),
             ),
+            Ok(GateRequest::RotateCommit { id, name, value }) => {
+                crate::daemon_gatex::rotate::commit(&owner, id, &name, &value)
+            }
             Err(_) => GateResponse::Err {
                 id: 0,
                 error: "malformed request".into(),
@@ -293,6 +299,7 @@ fn start(
         rec,
         harness: harness.filter(|h| kepr_core::protocol_aws::valid_harness(h)), // T7.10
         deadlines: Default::default(),
+        rotatable: kepr_core::gate_protocol::rotatable_creds(routes),
     };
     track_gate(key, uid, Some(handle));
     std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));

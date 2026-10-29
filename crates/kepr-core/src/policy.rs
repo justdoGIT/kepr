@@ -28,11 +28,31 @@
 //! expect = "allow"
 //! ```
 //!
+//! Roles (T13.13) name sets of callers; a rule with `role` applies only
+//! to a caller in one of them (no role, no match):
+//!
+//! ```toml
+//! [roles.ops]
+//! members = ["group:ops", "user:alice", "uid:1007", "gid:2000"]
+//!
+//! [[rule]]
+//! effect = "allow"
+//! ops = ["get"]
+//! names = ["PROD_*"]
+//! role = ["ops"]
+//! ```
+//!
 //! The caller provides the TOML parser (`toml::from_str::<PolicyFile>`);
 //! this crate stays free of it. Unknown keys are errors, so a typo in a
 //! condition can't silently widen a rule.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
+
+use crate::policy_glob::any_glob;
+pub use crate::policy_glob::glob;
+pub use crate::policy_roles::{Identity, Role};
 
 /// Operations a policy governs; anything else is not policed.
 pub const OPS: &[&str] = &["get", "exec", "export", "share", "set", "seal"];
@@ -47,6 +67,8 @@ pub enum Effect {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyFile {
+    #[serde(default)]
+    pub roles: BTreeMap<String, Role>,
     #[serde(default, rename = "rule")]
     pub rules: Vec<Rule>,
     #[serde(default, rename = "test")]
@@ -74,6 +96,9 @@ pub struct Rule {
     /// Globs over the agent harness name (implies `agent = true`).
     #[serde(default)]
     pub harness: Vec<String>,
+    /// The caller must hold one of these roles (T13.13). Empty = any.
+    #[serde(default)]
+    pub role: Vec<String>,
     /// `seal`: every bound host must match one of these globs.
     #[serde(default)]
     pub hosts: Vec<String>,
@@ -93,6 +118,9 @@ pub struct TestCase {
     pub parent: Option<String>,
     #[serde(default)]
     pub harness: Option<String>,
+    /// Roles the simulated caller holds (T13.13).
+    #[serde(default)]
+    pub roles: Vec<String>,
     #[serde(default)]
     pub hosts: Vec<String>,
     #[serde(default)]
@@ -110,6 +138,8 @@ pub struct Ctx<'a> {
     pub parent: Option<&'a str>,
     /// `Some(harness)` when the caller runs inside an agent session.
     pub harness: Option<&'a str>,
+    /// The roles the caller holds (`PolicyFile::roles_of`).
+    pub roles: &'a [String],
     pub hosts: &'a [String],
     pub ttl: Option<u64>,
 }
@@ -126,49 +156,6 @@ impl Decision {
     pub fn allowed(&self) -> bool {
         matches!(self, Decision::Allow(_))
     }
-}
-
-/// `*` matches any run of characters (including `/`), `?` one character.
-pub fn glob(pattern: &str, text: &str) -> bool {
-    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
-    let (mut pi, mut ti) = (0, 0);
-    let mut back: Option<(usize, usize)> = None;
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            back = Some((pi, ti));
-            pi += 1;
-        } else if let Some((bp, bt)) = back {
-            pi = bp + 1;
-            ti = bt + 1;
-            back = Some((bp, bt + 1));
-        } else {
-            return false;
-        }
-    }
-    p[pi..].iter().all(|c| *c == '*')
-}
-
-fn any_glob(globs: &[String], value: Option<&str>, fold: bool) -> bool {
-    if globs.is_empty() {
-        return true;
-    }
-    let Some(v) = value else { return false };
-    let v = if fold {
-        v.to_ascii_uppercase()
-    } else {
-        v.into()
-    };
-    globs.iter().any(|g| {
-        let g = if fold {
-            g.to_ascii_uppercase()
-        } else {
-            g.clone()
-        };
-        glob(&g, &v)
-    })
 }
 
 impl Rule {
@@ -188,6 +175,7 @@ impl Rule {
             && any_glob(&self.parent, ctx.parent, false)
             && agent_ok
             && any_glob(&self.harness, ctx.harness, false)
+            && (self.role.is_empty() || self.role.iter().any(|r| ctx.roles.contains(r)))
     }
 
     /// An allow rule's limits; `Err` names the one that failed.
@@ -232,16 +220,30 @@ impl Rule {
 impl PolicyFile {
     /// Reject rules that would never mean what they say.
     pub fn validate(&self) -> Result<(), String> {
-        self.rules
-            .iter()
-            .enumerate()
-            .try_for_each(|(i, r)| r.validate(i + 1))?;
+        for (name, role) in &self.roles {
+            role.validate(name)?;
+        }
+        for (i, r) in self.rules.iter().enumerate() {
+            r.validate(i + 1)?;
+            if let Some(unknown) = r.role.iter().find(|n| !self.roles.contains_key(*n)) {
+                return Err(format!("rule {}: unknown role `{unknown}`", i + 1));
+            }
+        }
         for (i, t) in self.tests.iter().enumerate() {
             if !OPS.contains(&t.op.as_str()) {
                 return Err(format!("test {}: unknown op `{}`", i + 1, t.op));
             }
         }
         Ok(())
+    }
+
+    /// The roles `id` holds.
+    pub fn roles_of(&self, id: &Identity) -> Vec<String> {
+        self.roles
+            .iter()
+            .filter(|(_, r)| r.has(id))
+            .map(|(n, _)| n.clone())
+            .collect()
     }
 
     /// First matching rule decides; none matching = deny.
@@ -274,6 +276,7 @@ impl PolicyFile {
                 ("exe", &r.exe),
                 ("parent", &r.parent),
                 ("harness", &r.harness),
+                ("role", &r.role),
             ] {
                 if !v.is_empty() {
                     cond.push(format!("{k}={}", v.join("|")));
@@ -309,6 +312,7 @@ impl PolicyFile {
                 exe: t.exe.as_deref(),
                 parent: t.parent.as_deref(),
                 harness: t.harness.as_deref(),
+                roles: &t.roles,
                 hosts: &t.hosts,
                 ttl: t.ttl,
             };
@@ -357,6 +361,7 @@ mod tests {
             parent: vec![],
             agent: None,
             harness: vec![],
+            role: vec![],
             hosts: vec![],
             max_ttl: None,
         }
@@ -392,6 +397,7 @@ mod tests {
                 rule(Effect::Allow, &["*"], &["*"]),
             ],
             tests: vec![],
+            ..Default::default()
         };
         assert_eq!(
             p.check(&ctx("get", "PROD_DB")),
@@ -408,6 +414,7 @@ mod tests {
         let p = PolicyFile {
             rules: vec![r],
             tests: vec![],
+            ..Default::default()
         };
         let mut c = ctx("get", "GH_TOKEN");
         assert!(!p.check(&c).allowed(), "unknown parent never matches");
@@ -423,6 +430,7 @@ mod tests {
         let p = PolicyFile {
             rules: vec![agent_only, human],
             tests: vec![],
+            ..Default::default()
         };
         let mut c = ctx("get", "X");
         assert_eq!(p.check(&c), Decision::Allow(2));
@@ -440,6 +448,7 @@ mod tests {
         let p = PolicyFile {
             rules: vec![r],
             tests: vec![],
+            ..Default::default()
         };
         let hosts = vec!["API.ANTHROPIC.COM".to_string()];
         let mut c = Ctx {
@@ -460,16 +469,101 @@ mod tests {
         assert!(matches!(p.check(&c), Decision::Deny(_, w) if w.contains("evil.example")));
     }
 
+    fn identity<'a>(
+        uid: u32,
+        user: &'a str,
+        gids: &'a [u32],
+        groups: &'a [String],
+    ) -> Identity<'a> {
+        Identity {
+            uid,
+            user,
+            gids,
+            groups,
+        }
+    }
+
+    fn role_policy() -> PolicyFile {
+        let mut r = rule(Effect::Allow, &["get"], &["PROD_*"]);
+        r.role = vec!["ops".into()];
+        let mut p = PolicyFile {
+            rules: vec![r],
+            ..Default::default()
+        };
+        p.roles.insert(
+            "ops".into(),
+            Role {
+                members: vec!["group:ops".into(), "user:alice".into(), "uid:1007".into()],
+            },
+        );
+        p.roles.insert(
+            "dev".into(),
+            Role {
+                members: vec!["gid:2000".into()],
+            },
+        );
+        p
+    }
+
+    #[test]
+    fn roles_come_from_uid_user_gid_and_group() {
+        let p = role_policy();
+        let ops = vec!["ops".to_string()];
+        assert_eq!(p.roles_of(&identity(1, "bob", &[], &ops)), ["ops"]);
+        assert_eq!(p.roles_of(&identity(1, "alice", &[], &[])), ["ops"]);
+        assert_eq!(p.roles_of(&identity(1007, "x", &[], &[])), ["ops"]);
+        assert_eq!(p.roles_of(&identity(1, "x", &[2000], &[])), ["dev"]);
+        // A user in two roles holds both.
+        assert_eq!(
+            p.roles_of(&identity(1007, "x", &[2000], &[])),
+            ["dev", "ops"]
+        );
+        assert!(p.roles_of(&identity(1, "bob", &[5], &[])).is_empty());
+    }
+
+    #[test]
+    fn a_role_rule_needs_the_role() {
+        let p = role_policy();
+        let mut c = ctx("get", "PROD_DB");
+        assert!(!p.check(&c).allowed(), "no role, no match");
+        let dev = vec!["dev".to_string()];
+        c.roles = &dev;
+        assert!(!p.check(&c).allowed(), "another role");
+        let both = vec!["dev".to_string(), "ops".to_string()];
+        c.roles = &both;
+        assert_eq!(p.check(&c), Decision::Allow(1));
+    }
+
+    #[test]
+    fn roles_are_validated() {
+        let mut p = role_policy();
+        assert!(p.validate().is_ok());
+        p.rules[0].role = vec!["nobody".into()];
+        assert!(p.validate().unwrap_err().contains("unknown role `nobody`"));
+        let mut p = role_policy();
+        p.roles.insert(
+            "bad".into(),
+            Role {
+                members: vec!["alice".into()],
+            },
+        );
+        assert!(p.validate().unwrap_err().contains("role `bad`"));
+        p.roles.insert("bad".into(), Role { members: vec![] });
+        assert!(p.validate().unwrap_err().contains("empty"));
+    }
+
     #[test]
     fn validation_rejects_unknown_ops() {
         let p = PolicyFile {
             rules: vec![rule(Effect::Allow, &["read"], &[])],
             tests: vec![],
+            ..Default::default()
         };
         assert!(p.validate().unwrap_err().contains("unknown op `read`"));
         let p = PolicyFile {
             rules: vec![rule(Effect::Allow, &[], &[])],
             tests: vec![],
+            ..Default::default()
         };
         assert!(p.validate().is_err());
     }
@@ -485,6 +579,7 @@ mod tests {
                     exe: Some("/bin/x".into()),
                     parent: None,
                     harness: None,
+                    roles: vec![],
                     hosts: vec![],
                     ttl: None,
                     expect: Effect::Allow,
@@ -495,11 +590,13 @@ mod tests {
                     exe: None,
                     parent: None,
                     harness: None,
+                    roles: vec![],
                     hosts: vec![],
                     ttl: None,
                     expect: Effect::Allow,
                 },
             ],
+            ..Default::default()
         };
         let (ok, lines) = p.run_tests();
         assert!(!ok);
@@ -522,6 +619,7 @@ mod tests {
                 rule(Effect::Allow, &["get"], &["GH_X"]),
             ],
             tests: vec![],
+            ..Default::default()
         };
         assert_eq!(
             p.paths("get", "GH_X"),

@@ -29,6 +29,7 @@ impl RawTerm {
         t.c_iflag &= !(libc::IXON | libc::ICRNL);
         t.c_cc[libc::VMIN] = 1;
         t.c_cc[libc::VTIME] = 0;
+        // SAFETY: fd 0 and a valid termios struct.
         if unsafe { libc::tcsetattr(0, libc::TCSAFLUSH, &t) } != 0 {
             return Err("cannot switch the terminal to raw mode".into());
         }

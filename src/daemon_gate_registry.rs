@@ -124,6 +124,9 @@ pub fn handle_leaked(uid: u32, username: &str, name: &str) -> Response {
 pub fn handle_panic(uid: u32, username: &str) -> Response {
     crate::daemon_platform::fingerprint::forget(); // T10.03: a hard stop
     let (gates_stopped, locked) = panic_now(uid);
+    if locked {
+        crate::daemon_session::login::panicked(); // T13.25: no login undoes it
+    }
     audit::log(&AuditEvent {
         op: "panic",
         name: None,

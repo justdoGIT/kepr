@@ -167,6 +167,11 @@ namespaces (when the kernel allows it):
   daemon socket are covered by empty read-only directories;
 - only the session's own processes are visible, so other processes'
   `/proc/PID/root` can't be used to reach the host filesystem;
+- the desktop's session bus socket is covered with `/dev/null`, and GNOME
+  Keyring's and gcr's sockets in `$XDG_RUNTIME_DIR` are hidden, so the agent
+  cannot ask a Secret Service (GNOME Keyring, KWallet, or kepr's own) for
+  your passwords. `KEPR_SANDBOX_DBUS=allow` keeps the bus reachable; see
+  [Replace GNOME Keyring](/docs/guides/replace-gnome-keyring);
 - the harness has no capabilities, `no_new_privs`, and a seccomp filter
   that denies `ptrace`, `process_vm_readv/writev`, `bpf`,
   `perf_event_open`, kexec and module loading (debuggers don't work inside

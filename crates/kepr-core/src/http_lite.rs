@@ -21,7 +21,19 @@ pub struct HttpRequest {
     pub method: String,
     pub path: String,
     pub authorization: Option<String>,
+    /// Every header, names lower-cased (at most 64, each bounded).
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl HttpRequest {
+    /// The first header called `name` (lower-case).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 /// Read one line, but never more than MAX_HEADER_BYTES + 1 bytes: a
@@ -110,6 +122,7 @@ pub fn parse_request_within<S: TimedStream>(
     let mut header_count: usize = 0;
     let mut content_length: usize = 0;
     let mut authorization = None;
+    let mut headers = Vec::new();
     loop {
         let mut line = String::new();
         read_bounded_line(&mut reader, &mut line).map_err(|e| format!("read header: {e}"))?;
@@ -125,6 +138,7 @@ pub fn parse_request_within<S: TimedStream>(
         }
         header_count += 1;
         if let Some((name, value)) = trimmed.split_once(':') {
+            headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
             if name.eq_ignore_ascii_case("content-length") {
                 content_length = value
                     .trim()
@@ -154,6 +168,7 @@ pub fn parse_request_within<S: TimedStream>(
         method,
         path,
         authorization,
+        headers,
         body,
     })
 }

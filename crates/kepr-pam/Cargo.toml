@@ -1,0 +1,20 @@
+[package]
+name = "kepr-pam"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "pam_kepr.so: unlock the kepr store with the login password"
+publish = false
+
+[lib]
+name = "pam_kepr"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2"
+
+# Not a member of the main workspace: building it needs libpam headers only
+# at runtime (the host process provides the pam_* symbols), but the test
+# binary links nothing, so keep it out of `cargo build --workspace`.
+#   cargo build --release --manifest-path crates/kepr-pam/Cargo.toml
+[workspace]

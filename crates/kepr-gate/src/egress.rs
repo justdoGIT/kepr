@@ -70,6 +70,8 @@ enum To {
     Domain(&'static str, String),
     /// T12.07: github.com, smart-HTTP only (git_http.rs).
     Git,
+    /// T13.04: a Kubernetes API server: (route key, host, port).
+    Kube(String, String, u16),
 }
 
 /// Accept the agent's TLS with a session-CA leaf for `host` and serve the
@@ -101,6 +103,7 @@ fn intercept(
                     To::Aws(h) => crate::aws_egress::handle(st, h, r).await,
                     To::Domain(p, h) => proxy_request_to(st, p, Some(h), &path, r).await,
                     To::Git => crate::git_http::handle(st, &path, r).await,
+                    To::Kube(key, h, p) => crate::kube::handle(st, (key, h, p), r).await,
                 }
             }
         });
@@ -129,6 +132,11 @@ pub async fn connect(state: Arc<State>, req: Request<Incoming>) -> Response<Body
     }
     if let Some(pname) = domain_bound(&state, &host, port).await {
         let to = To::Domain(pname, host.clone());
+        return intercept(state, req, (&host, &target), start, to);
+    }
+    // T13.04: a Kubernetes API server of this session.
+    if let Some(key) = crate::kube::bound(&state, &host, port) {
+        let to = To::Kube(key, host.clone(), port);
         return intercept(state, req, (&host, &target), start, to);
     }
     // T2.02: an AWS host one of the session's AWS keys is bound to.

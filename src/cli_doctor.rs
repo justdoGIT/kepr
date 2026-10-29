@@ -150,6 +150,7 @@ impl Diagnostic for GroupCheck {
         "kepr group membership"
     }
     fn evaluate(&self) -> Result<String, String> {
+        // SAFETY: getuid has no preconditions and cannot fail.
         let uid = unsafe { libc::getuid() };
         if uid == 0 {
             // Root can connect to any Unix socket regardless of
@@ -162,6 +163,7 @@ impl Diagnostic for GroupCheck {
         // The returned struct points into a static buffer owned by
         // libc; we copy out the gid before any further libc call
         // could overwrite it.
+        // SAFETY: `target` is a valid NUL-terminated string; the static result is read before any other libc call.
         let gid = unsafe {
             let g = libc::getgrnam(target.as_ptr());
             if g.is_null() {
@@ -171,11 +173,13 @@ impl Diagnostic for GroupCheck {
         };
         // getgroups returns the supplementary group set; first call
         // sizes it, second populates.
+        // SAFETY: a null buffer with size 0 only asks for the count.
         let mut count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
         if count < 0 {
             return Err("getgroups(2) failed — cannot determine membership".to_string());
         }
         let mut buf = vec![0 as libc::gid_t; count as usize];
+        // SAFETY: the buffer holds `count` gids, as getgroups(2) requires.
         count = unsafe { libc::getgroups(count, buf.as_mut_ptr()) };
         if count < 0 {
             return Err("getgroups(2) failed on second call".to_string());

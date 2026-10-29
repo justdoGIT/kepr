@@ -68,6 +68,16 @@ impl ImageBackend {
         self
     }
 
+    /// A backend over another file with the same key source, rollback
+    /// state and counter (the copy `resize` builds).
+    pub(super) fn sibling(&self, path: PathBuf) -> Self {
+        let b = Self::new(path, self.kek, self.versions.clone());
+        match &self.counter {
+            Some(c) => b.with_counter(Arc::clone(c)),
+            None => b,
+        }
+    }
+
     pub(super) fn counter(&self) -> Option<&dyn EpochCounter> {
         self.counter.as_deref()
     }

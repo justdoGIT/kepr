@@ -77,7 +77,7 @@ The same provenance covers `kepr_${V}_amd64.deb` and
 `kepr-$V-1.x86_64.rpm`. It proves the file was built by this repository's
 `release.yml` from that tag.
 
-How that build runs: the `build` job pins the compiler (Rust 1.87.0) and
+How that build runs: the `build` job pins the compiler (Rust 1.88.0) and
 uses no build cache. It fetches the sources `Cargo.lock` names
 (`cargo fetch --locked`), then compiles inside a network namespace with no
 interfaces (`unshare --net`, `cargo build --frozen`); the step first checks

@@ -70,6 +70,12 @@ fn dotenv_value(v: &str) -> String {
             '"' => out.push_str("\\\""),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            // A shell that sources the file expands these inside double
+            // quotes, so `it's $(id)` would run `id`.
+            '$' | '`' => {
+                out.push('\\');
+                out.push(c);
+            }
             c => out.push(c),
         }
     }
@@ -538,5 +544,13 @@ mod tests {
             &render("x.JSON", &pairs[..1])[..],
             b"{\n  \"A\": \"plain-1.2\"\n}\n"
         );
+    }
+
+    #[test]
+    fn a_value_with_a_quote_and_a_command_substitution_is_not_executable_by_a_shell() {
+        let v = dotenv_value("it's $(touch /tmp/x) `id` ${HOME}");
+        assert_eq!(v, "\"it's \\$(touch /tmp/x) \\`id\\` \\${HOME}\"");
+        // Without a quote the value is single-quoted, where nothing expands.
+        assert_eq!(dotenv_value("a $(id) b"), "'a $(id) b'");
     }
 }

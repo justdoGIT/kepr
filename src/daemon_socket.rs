@@ -16,6 +16,7 @@ extern "C" {
 }
 
 pub fn effective_uid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
     unsafe { geteuid() }
 }
 
@@ -32,6 +33,7 @@ pub fn effective_uid() -> u32 {
 /// `root:kepr` is the only remaining transition before kepr-group
 /// processes can connect.
 pub fn tighten_umask_for_socket() {
+    // SAFETY: the umask call only swaps the process's file-creation mask.
     unsafe {
         umask(0o117);
     }
@@ -41,6 +43,7 @@ pub fn tighten_umask_for_socket() {
 /// sidecars, audit log, state files) is private, so use a 0077 umask
 /// rather than leaving the socket's group-friendly 0117 in force.
 pub fn private_umask_after_bind() {
+    // SAFETY: the umask call only swaps the process's file-creation mask.
     unsafe {
         umask(0o077);
     }
@@ -62,6 +65,7 @@ pub fn set_socket_permissions() {
     let user = std::env::var_os("KEPR_USER_MODE").is_some();
     if !user {
         if let Ok(path) = CString::new(socket.as_os_str().as_encoded_bytes()) {
+            // SAFETY: `path` is a valid NUL-terminated string that outlives the call.
             unsafe {
                 chown(path.as_ptr(), 0, group_gid("kepr").unwrap_or(0));
             }
@@ -121,7 +125,9 @@ mod tests {
     fn current_umask() -> u32 {
         // umask(2) atomically swaps and returns the previous mask. Set-and-
         // restore is the standard idiom to read it without changing it.
+        // SAFETY: the umask call only swaps the process's file-creation mask.
         let prev = unsafe { umask(0) };
+        // SAFETY: the umask call only swaps the process's file-creation mask.
         unsafe {
             umask(prev);
         }
@@ -135,6 +141,7 @@ mod tests {
         let after = current_umask();
         // Restore before any assertion so a panic doesn't leak a tightened
         // mask into sibling tests sharing the test process.
+        // SAFETY: the umask call only swaps the process's file-creation mask.
         let _ = unsafe { umask(saved) };
         assert_eq!(
             after, 0o117,

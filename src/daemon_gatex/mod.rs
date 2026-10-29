@@ -5,6 +5,7 @@
 pub mod logs;
 pub mod recfile;
 pub mod recording;
+pub mod rotate;
 pub mod spawn;
 
 use kepr_core::protocol::Response;

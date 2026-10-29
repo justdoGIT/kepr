@@ -89,16 +89,11 @@ pub fn handle_init(uid: u32, username: &str, days: Option<u32>, force: bool) -> 
             health_ignore: Some(vec!["old".into()]),
             ..Default::default()
         };
-        // Sealed before the key exists, as for any sealed credential.
-        expiry::write_meta(&meta_path(uid), &meta)?;
         let b64 =
             Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(new.key.as_slice()));
-        if let Err(e) = crypto::default_backend().encrypt(uid, CA_NAME, b64.as_bytes()) {
-            if !existed {
-                expiry::delete_meta(&meta_path(uid));
-            }
-            return Err(e);
-        }
+        install_ca(&meta_path(uid), &meta, || {
+            crypto::default_backend().encrypt(uid, CA_NAME, b64.as_bytes())
+        })?;
         crate::daemon_cache::invalidate(uid);
         crate::daemon_gate::bump_generation();
         Ok(new.ca)
@@ -108,6 +103,30 @@ pub fn handle_init(uid: u32, username: &str, days: Option<u32>, force: bool) -> 
         Ok(ca) => Response::Platform(PlatformResponse::PkiCaOk { ca }),
         Err(e) => Response::fail(e),
     }
+}
+
+/// Write the CA's meta, then its key through `store_key`. Sealed before
+/// the key exists, as for any sealed credential. When the key can't be
+/// stored the earlier state comes back: no meta at all for a first CA, and
+/// the old meta for `--force` (the old key is still there, and a new
+/// certificate over it would sign certificates that don't verify).
+fn install_ca(
+    meta_file: &std::path::Path,
+    meta: &CredMeta,
+    store_key: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let old = expiry::read_meta(meta_file).and_then(Result::ok);
+    expiry::write_meta(meta_file, meta)?;
+    if let Err(e) = store_key() {
+        match old {
+            Some(old) => {
+                let _ = expiry::write_meta(meta_file, &old);
+            }
+            None => expiry::delete_meta(meta_file),
+        }
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Validity of a new leaf: `days`, never past the CA.
@@ -395,5 +414,33 @@ mod tests {
         };
         assert!(health_issues(&plain, now).is_empty());
         assert!(health_issues(&CredMeta::default(), now).is_empty());
+    }
+
+    #[test]
+    fn a_failed_key_write_puts_the_previous_ca_record_back() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("ca.meta");
+        let old = CredMeta {
+            sealed: Some(true),
+            tags: Some(vec!["old".into()]),
+            ..Default::default()
+        };
+        let new = CredMeta {
+            sealed: Some(true),
+            tags: Some(vec!["new".into()]),
+            ..Default::default()
+        };
+        expiry::write_meta(&f, &old).unwrap();
+        let err = install_ca(&f, &new, || Err("disk full".into())).unwrap_err();
+        assert_eq!(err, "disk full");
+        let back = expiry::read_meta(&f).unwrap().unwrap();
+        assert_eq!(back.tags, old.tags, "the old CA record is back");
+        // A first CA leaves nothing behind.
+        let g = d.path().join("first.meta");
+        assert!(install_ca(&g, &new, || Err("no".into())).is_err());
+        assert!(!g.exists());
+        // Success keeps the new record.
+        install_ca(&g, &new, || Ok(())).unwrap();
+        assert_eq!(expiry::read_meta(&g).unwrap().unwrap().tags, new.tags);
     }
 }

@@ -19,6 +19,36 @@ pub struct Request {
 /// Why a request couldn't be read: (status, reason).
 pub type Refusal = (u16, &'static str);
 
+/// A reader with one deadline for the whole request. The socket's own read
+/// timeout restarts with every byte, so a client sending one byte every few
+/// seconds would otherwise hold a connection (of 64) for as long as it likes.
+pub struct Deadline<'a> {
+    stream: &'a std::net::TcpStream,
+    until: std::time::Instant,
+}
+
+impl<'a> Deadline<'a> {
+    pub fn new(stream: &'a std::net::TcpStream, limit: std::time::Duration) -> Self {
+        Self {
+            stream,
+            until: std::time::Instant::now() + limit,
+        }
+    }
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self
+            .until
+            .saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        (&mut &*self.stream).read(buf)
+    }
+}
+
 /// Read one request; `max_body` bounds the body.
 pub fn read_request<R: Read>(stream: R, max_body: usize) -> Result<Request, Refusal> {
     let mut r = BufReader::new(stream.take((MAX_HEAD + max_body + 1) as u64));
@@ -131,5 +161,39 @@ mod tests {
         respond(&mut out, 410, b"", false);
         let s = String::from_utf8(out).unwrap();
         assert!(s.starts_with("HTTP/1.1 410 Gone\r\n") && s.contains("Connection: close"));
+    }
+
+    #[test]
+    fn a_client_that_trickles_bytes_is_cut_off_at_the_deadline() {
+        use std::net::{TcpListener, TcpStream};
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let drip = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            // One byte every 100 ms: each read is "in time", the request never ends.
+            for b in b"PUT /b/x HTTP/1.1\r\nX: "
+                .iter()
+                .chain(std::iter::repeat_n(&b'a', 200))
+            {
+                if c.write_all(&[*b]).is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
+        let (server, _) = l.accept().unwrap();
+        let start = std::time::Instant::now();
+        let r = read_request(
+            Deadline::new(&server, std::time::Duration::from_millis(600)),
+            16,
+        );
+        assert!(r.is_err());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
+        drop(server);
+        let _ = drip.join();
     }
 }

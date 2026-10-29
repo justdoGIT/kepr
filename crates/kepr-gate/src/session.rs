@@ -210,7 +210,8 @@ pub fn run() -> Result<(), String> {
                 placeholder::make(&key, &cfg.session_id, r.slot),
             );
         }
-        if let Some(target) = &r.target {
+        // A Kubernetes API server (T13.04) is served by the egress proxy.
+        if let Some(target) = r.target.as_ref().filter(|_| !crate::kube::is_kube(r)) {
             db_routes.push(Arc::new(crate::db::DbRoute::new(
                 r.provider.clone(),
                 r.cred.clone(),
@@ -234,6 +235,7 @@ pub fn run() -> Result<(), String> {
         .iter()
         .filter_map(|r| kepr_core::providers::lookup(&r.provider))
         .map(|p| p.host.to_string())
+        .chain(crate::kube::hosts(&cfg.routes)) // T13.04
         .collect();
     // T2.02: AWS keys may be bound to any *.amazonaws.com host; the
     // egress proxy asks the daemon per host (aws_egress.rs).
@@ -266,6 +268,7 @@ pub fn run() -> Result<(), String> {
         .with_limits(cfg.limits)
         .with_egress(ca, cfg.tunnel)
         .with_tunnels(&cfg.routes)
+        .with_kube(&cfg.routes)
         .with_recorder(recorder.clone())
         .validated()?,
     );
@@ -329,6 +332,8 @@ pub fn run() -> Result<(), String> {
             }
             // T7.18: take back the roles this session granted.
             crate::pg_jit::revoke_all(&st, &jit_routes).await;
+            // T13.02: and drop the logins it made.
+            crate::pg_ephemeral::drop_all(&st, &jit_routes).await;
             // Connections the agent closed as it exited are still winding
             // down: let them journal (and record) their last lines.
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -407,7 +412,9 @@ mod tests {
         // SAFETY: waiting for (and if need be killing) our own child.
         while unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } != pid {
             if start.elapsed() > Duration::from_secs(30) {
+                // SAFETY: signalling a child this test spawned.
                 unsafe { libc::kill(pid, libc::SIGKILL) };
+                // SAFETY: waiting for a child this code forked or spawned.
                 unsafe { libc::waitpid(pid, &mut status, 0) };
                 panic!("the confined child hung");
             }

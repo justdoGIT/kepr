@@ -21,6 +21,8 @@ pub struct DbRoute {
     pub target: DbTarget,
     /// T7.18: the role this session granted on the route, if any.
     pub jit: crate::pg_jit::Held,
+    /// T13.02: the session's ephemeral login role, if any.
+    pub eph: crate::pg_ephemeral::Held,
 }
 
 impl DbRoute {
@@ -31,6 +33,7 @@ impl DbRoute {
             slot,
             target,
             jit: Default::default(),
+            eph: Default::default(),
         }
     }
 }
@@ -60,6 +63,8 @@ pub async fn serve_conn(state: Arc<State>, route: Arc<DbRoute>, client: TcpStrea
         TargetKind::Redis => crate::redis::serve_conn(state, route, client).await,
         TargetKind::Mysql => crate::mysql::serve_conn(state, route, client).await,
         TargetKind::Tcp => crate::tunnel::serve_conn(state, route, client).await,
+        // Served by the egress proxy (kube.rs), never on a listener.
+        TargetKind::Kube => {}
     }
 }
 

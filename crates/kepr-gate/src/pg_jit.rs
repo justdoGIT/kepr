@@ -74,7 +74,7 @@ pub fn statements(role: &str, grantee: &str) -> Option<[String; 3]> {
 }
 
 /// The `M` field of an ErrorResponse body.
-fn error_text(body: &[u8]) -> String {
+pub(crate) fn error_text(body: &[u8]) -> String {
     body.split(|b| *b == 0)
         .find_map(|f| f.strip_prefix(b"M"))
         .map(|m| String::from_utf8_lossy(m).into_owned())
@@ -82,7 +82,7 @@ fn error_text(body: &[u8]) -> String {
 }
 
 /// Read until ReadyForQuery: the number of DataRows, or the server's error.
-async fn until_ready(up: &mut Box<dyn Io>) -> Result<usize, String> {
+pub(crate) async fn until_ready(up: &mut Box<dyn Io>) -> Result<usize, String> {
     let (mut rows, mut error) = (0, None);
     loop {
         let (kind, body) = read_msg(up).await.map_err(|e| e.to_string())?;
@@ -95,7 +95,7 @@ async fn until_ready(up: &mut Box<dyn Io>) -> Result<usize, String> {
     }
 }
 
-async fn query(up: &mut Box<dyn Io>, sql: &str) -> Result<usize, String> {
+pub(crate) async fn query(up: &mut Box<dyn Io>, sql: &str) -> Result<usize, String> {
     let mut q = sql.as_bytes().to_vec();
     q.push(0);
     up.write_all(&message(b'Q', &q))

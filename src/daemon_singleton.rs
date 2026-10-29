@@ -75,6 +75,7 @@ fn try_acquire(state_dir: &Path) -> Result<File, LockError> {
         .mode(0o600)
         .open(&path)
         .map_err(LockError::Open)?;
+    // SAFETY: flock on a descriptor `file` owns for the whole call.
     let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if ret != 0 {
         return Err(LockError::Held);

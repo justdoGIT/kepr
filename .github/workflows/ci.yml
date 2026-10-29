@@ -35,6 +35,8 @@ jobs:
       go: ${{ github.event_name != 'pull_request' || steps.some.outputs.go == 'true' }}
       ruby: ${{ github.event_name != 'pull_request' || steps.some.outputs.ruby == 'true' }}
       java: ${{ github.event_name != 'pull_request' || steps.some.outputs.java == 'true' }}
+      dotnet: ${{ github.event_name != 'pull_request' || steps.some.outputs.dotnet == 'true' }}
+      integrations: ${{ github.event_name != 'pull_request' || steps.some.outputs.integrations == 'true' }}
       templates: ${{ github.event_name != 'pull_request' || steps.some.outputs.templates == 'true' }}
       csi: ${{ github.event_name != 'pull_request' || steps.some.outputs.csi == 'true' }}
       terraform: ${{ github.event_name != 'pull_request' || steps.some.outputs.terraform == 'true' }}
@@ -72,9 +74,21 @@ jobs:
               - '.github/workflows/ci.yml'
             ruby:
               - 'sdk/ruby/**'
+              - 'integrations/chef/**'
+              - 'integrations/puppet/**'
               - '.github/workflows/ci.yml'
             java:
               - 'sdk/java/**'
+              - '.github/workflows/ci.yml'
+            integrations:
+              - 'integrations/raycast/**'
+              - 'integrations/iterm2/**'
+              - 'integrations/jetbrains/**'
+              - 'sdk/java/**'
+              - '.github/workflows/ci.yml'
+            dotnet:
+              - 'sdk/dotnet/**'
+              - 'sdk/powershell/**'
               - '.github/workflows/ci.yml'
             templates:
               - 'integrations/ci/**'
@@ -125,6 +139,9 @@ jobs:
       - name: cargo test --release
         run: cargo test --release --all-targets
 
+      - name: pam_kepr (own workspace)
+        run: cargo test --manifest-path crates/kepr-pam/Cargo.toml
+
       - name: cargo build --release
         run: cargo build --release --bins
 
@@ -157,6 +174,9 @@ jobs:
 
       - name: gate tests, validated module
         run: cargo test -p kepr-gate --features fips,rustls/fips -- --include-ignored
+
+      - name: gate tests, post-quantum TLS group (T13.01)
+        run: cargo test -p kepr-gate --features pq
 
       - name: release build
         run: |
@@ -207,6 +227,65 @@ jobs:
             exit 0
           fi
           ruby test/test_kepr.rb
+          ruby ../../integrations/chef/test/test_lookup.rb
+          ruby ../../integrations/puppet/test/test_lookup.rb
+
+  editor-integrations:
+    name: Raycast, iTerm2, JetBrains parsing
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.integrations == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Raycast (node)
+        run: node --test integrations/raycast/test/*.test.js
+      - name: iTerm2 (python)
+        run: python3 -m unittest discover -s integrations/iterm2/test
+      - name: JetBrains (java)
+        # GitHub-hosted images ship a JDK; a self-hosted runner without one says so and skips.
+        run: |
+          if ! command -v javac >/dev/null; then
+            echo "::warning title=JetBrains tests skipped::javac is not installed on this runner"
+            exit 0
+          fi
+          bash integrations/jetbrains/test.sh
+
+  dotnet-sdk:
+    name: .NET SDK
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: dotnet test
+        # GitHub-hosted images ship the .NET SDK; a self-hosted runner without it says so and skips.
+        run: |
+          if ! command -v dotnet >/dev/null; then
+            echo "::warning title=.NET SDK tests skipped::dotnet is not installed on this runner"
+            exit 0
+          fi
+          dotnet test sdk/dotnet/tests
+
+  powershell-sdk:
+    name: PowerShell module
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: build the assembly and run Pester
+        run: |
+          if ! command -v dotnet >/dev/null || ! command -v pwsh >/dev/null; then
+            echo "::warning title=PowerShell module tests skipped::dotnet or pwsh is not installed on this runner"
+            exit 0
+          fi
+          dotnet build sdk/dotnet/src -c Release -o sdk/powershell/Kepr/lib
+          pwsh -NoProfile -Command '
+            if (-not (Get-Module -ListAvailable Pester | Where-Object Version -ge 5.0.0)) {
+              Install-Module Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser
+            }
+            $r = Invoke-Pester -Path sdk/powershell/tests -PassThru -Output Detailed
+            if ($r.FailedCount -gt 0) { exit 1 }'
 
   go-sdk:
     name: Go SDK

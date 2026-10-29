@@ -35,7 +35,7 @@
 // `serde_json::from_str` per line.
 
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -47,7 +47,8 @@ use serde::{Deserialize, Serialize};
 /// first entry in any chain. Distinct from any real SHA-256 output
 /// (the probability of SHA-256 collision against this is negligible),
 /// so verifiers can distinguish "genesis" from "tampered prev_hash".
-const ZERO_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+pub(crate) const ZERO_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// On-disk record. One per line, JSON-encoded. The `hash` and
 /// `prev_hash` fields are derivable from the rest, but storing them
@@ -73,15 +74,15 @@ pub struct ChainEntry {
 /// metadata). serde-json's struct serialisation preserves field
 /// order across Rust versions, so the byte-stream is stable.
 #[derive(Serialize)]
-struct CanonicalEvent<'a> {
-    seq: u64,
-    timestamp_unix: u64,
-    op: &'a str,
+pub(crate) struct CanonicalEvent<'a> {
+    pub(crate) seq: u64,
+    pub(crate) timestamp_unix: u64,
+    pub(crate) op: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<&'a str>,
-    uid: u32,
-    username: &'a str,
-    result: &'a str,
+    pub(crate) name: Option<&'a str>,
+    pub(crate) uid: u32,
+    pub(crate) username: &'a str,
+    pub(crate) result: &'a str,
 }
 
 /// Live chain handle. `state` holds the in-memory head + next seq.
@@ -105,14 +106,7 @@ struct ChainState {
     next_seq: u64,
 }
 
-/// Summary of a verification pass. `entries` is the count of
-/// chain entries successfully validated; `last_hash` is the head
-/// (matches the chain's authoritative head if the file is intact).
-#[derive(Debug, PartialEq, Eq)]
-pub struct VerifyReport {
-    pub entries: usize,
-    pub last_hash: String,
-}
+pub use crate::audit_verify::VerifyReport;
 
 impl AuditChain {
     /// Open the chain at `path`. If the file exists, walks it to
@@ -122,17 +116,17 @@ impl AuditChain {
     /// should refuse to start rather than silently begin a fresh
     /// chain on top of corruption.
     ///
-    /// NOTE: full-chain verification on every daemon start is O(N)
-    /// in the number of audit entries. A chain with millions of
-    /// entries may cause significant startup delay. TODO(#future):
-    /// defer verification to a background thread, or cache the last
-    /// verified head hash in a sibling checkpoint file.
+    /// Start-up verifies only what was appended since the last start
+    /// (`audit_checkpoint`); `kepr audit-verify` and
+    /// `KEPR_AUDIT_FULL_VERIFY=1` walk the whole file.
     pub fn open(path: PathBuf) -> Result<Self, String> {
         let state = match fs::metadata(&path) {
             Ok(_) => {
                 // Existing file — verify and recover state from it.
                 drop_torn_tail(&path)?;
-                let report = Self::verify(&path)?;
+                let start = crate::audit_checkpoint::usable(&path);
+                let report = Self::verify_from(&path, start.as_ref())?;
+                crate::audit_checkpoint::save(&path, &report, start.as_ref());
                 ChainState {
                     last_hash: report.last_hash,
                     next_seq: report.entries as u64 + 1,
@@ -236,75 +230,9 @@ impl AuditChain {
         state.next_seq += 1;
         Ok(())
     }
-
-    /// Walk the chain at `path`, verifying each H_n =
-    /// SHA-256(H_{n-1} || canonical_event_bytes_n). Returns the
-    /// number of validated entries plus the final head; any
-    /// tamper (edit, delete, reorder, insert) fails the hash
-    /// recomputation OR the prev_hash continuity and surfaces
-    /// here with a line number.
-    ///
-    /// Public so a future `kepr audit verify` CLI command and ops
-    /// scripts can call it directly. Cheap to read-only invoke
-    /// even on a multi-megabyte chain — a single sequential pass
-    /// with one SHA-256 per entry.
-    pub fn verify(path: &Path) -> Result<VerifyReport, String> {
-        let f = fs::File::open(path).map_err(|e| format!("open chain for verify: {e}"))?;
-        let reader = BufReader::new(f);
-        let mut entries = 0usize;
-        let mut prev_hash = ZERO_HASH.to_string();
-        let mut expected_seq = 1u64;
-        for (idx, line) in reader.lines().enumerate() {
-            let line = line.map_err(|e| format!("read chain line {}: {e}", idx + 1))?;
-            if line.is_empty() {
-                continue; // tolerant of stray trailing newline
-            }
-            let entry: ChainEntry = serde_json::from_str(&line)
-                .map_err(|e| format!("parse chain line {}: {e}", idx + 1))?;
-            if entry.seq != expected_seq {
-                return Err(format!(
-                    "chain line {}: seq {} != expected {expected_seq} (reordered or dropped entry)",
-                    idx + 1,
-                    entry.seq
-                ));
-            }
-            if entry.prev_hash != prev_hash {
-                return Err(format!(
-                    "chain line {}: prev_hash mismatch (expected {prev_hash}, found {})",
-                    idx + 1,
-                    entry.prev_hash
-                ));
-            }
-            let canonical = CanonicalEvent {
-                seq: entry.seq,
-                timestamp_unix: entry.timestamp_unix,
-                op: &entry.op,
-                name: entry.name.as_deref(),
-                uid: entry.uid,
-                username: &entry.username,
-                result: &entry.result,
-            };
-            let canonical_bytes = serde_json::to_vec(&canonical)
-                .map_err(|e| format!("canonicalise line {}: {e}", idx + 1))?;
-            let computed = compute_hash(&prev_hash, &canonical_bytes)?;
-            if computed != entry.hash {
-                return Err(format!(
-                    "chain line {}: hash mismatch — entry has been edited",
-                    idx + 1
-                ));
-            }
-            prev_hash = entry.hash;
-            entries += 1;
-            expected_seq += 1;
-        }
-        Ok(VerifyReport {
-            entries,
-            last_hash: prev_hash,
-        })
-    }
 }
 
-fn compute_hash(prev_hash_hex: &str, canonical_bytes: &[u8]) -> Result<String, String> {
+pub(crate) fn compute_hash(prev_hash_hex: &str, canonical_bytes: &[u8]) -> Result<String, String> {
     let prev_bytes = hex_decode(prev_hash_hex)?;
     // SHA-256 through the crypto seam (aws-lc-rs under the `fips` feature).
     let digest = crate::daemon_eco::cipher::sha256(&[&prev_bytes, canonical_bytes]);
@@ -554,9 +482,11 @@ mod tests {
         // group bits (e.g. 0o077 → file lands at 0o600).
         // Temporarily clear umask so the test sees the intended
         // mode rather than the umask-masked mode.
+        // SAFETY: the umask call only swaps the process's file-creation mask.
         let saved = unsafe { libc::umask(0) };
         let (chain, dir) = fresh_chain();
         chain.append("set", None, 1000, "alice", "ok").unwrap();
+        // SAFETY: the umask call only swaps the process's file-creation mask.
         unsafe { libc::umask(saved) };
         let mode = fs::metadata(dir.path().join("audit.log"))
             .unwrap()

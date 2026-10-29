@@ -52,6 +52,11 @@ pub enum Inject {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         impersonate: Option<String>,
     },
+    /// T13.04: a Kubernetes API server login (a `kube` record: server, bearer
+    /// token, the cluster's CA). The gate puts the token in
+    /// `Authorization: Bearer` toward the bound host:port and trusts the
+    /// cluster CA for that connection only.
+    KubeToken,
 }
 
 impl Inject {
@@ -95,6 +100,29 @@ fn valid_token(s: &str) -> bool {
     (1..=64).contains(&s.len())
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// `https://HOST[:PORT][/…]` → (host, port); https only, 443 by default.
+pub fn kube_server(url: &str) -> Result<(String, u16), String> {
+    let rest = url
+        .strip_prefix("https://")
+        .ok_or("the server must be an https:// URL")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err("the server URL must not carry credentials".into());
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) => (
+            h,
+            p.parse::<u16>()
+                .map_err(|_| "invalid port in the server URL")?,
+        ),
+        None => (authority, 443),
+    };
+    if host.is_empty() {
+        return Err("the server URL has no host".into());
+    }
+    Ok((host.to_ascii_lowercase(), port))
 }
 
 /// Validate a host name: 1..=253 chars of `[a-z0-9.-]`, at least one
@@ -152,6 +180,10 @@ pub fn validate_binding(b: &Binding) -> Result<(), String> {
             scopes,
             impersonate,
         } => crate::gcp_token::validate(&b.host, b.port, scopes, impersonate.as_deref()),
+        // The session CA signs for names; an address has none to sign.
+        Inject::KubeToken if b.host.bytes().all(|c| c.is_ascii_digit() || c == b'.') => {
+            Err("a Kubernetes API server must be given by DNS name, not IP address".into())
+        }
         _ => Ok(()),
     }
 }
@@ -322,6 +354,17 @@ mod tests {
             serde_json::from_str::<Binding>(&j).unwrap().inject,
             app(7, 9)
         );
+    }
+
+    #[test]
+    fn a_kube_login_needs_a_dns_name() {
+        let k = |h: &str, p| b(h, p, Inject::KubeToken);
+        assert!(validate_binding(&k("api.cluster.example.com", 6443)).is_ok());
+        assert!(validate_binding(&k("k8s.internal", 443)).is_ok());
+        assert!(validate_binding(&k("10.0.0.1", 6443)).is_err());
+        assert!(validate_binding(&k("api.cluster.example.com", 0)).is_err());
+        let j = serde_json::to_string(&k("k8s.internal", 6443)).unwrap();
+        assert!(j.contains(r#""kind":"kube_token""#), "{j}");
     }
 
     #[test]

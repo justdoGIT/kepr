@@ -207,6 +207,9 @@ pub enum Response {
     // batch: session
     #[serde(untagged)]
     Session(crate::protocol_session::SessionResponse),
+    // batch: desktop
+    #[serde(untagged)]
+    Desktop(crate::protocol_desktop::DesktopResponse),
     // end of batches
 }
 

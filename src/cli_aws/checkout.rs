@@ -145,6 +145,7 @@ fn now() -> u64 {
 /// `kepr list`: who holds it.
 pub fn list_tail(c: &CredInfo) -> String {
     let now = now();
+    // SAFETY: getuid has no preconditions and cannot fail.
     let me = unsafe { libc::getuid() };
     match (c.held_until, c.held_by_uid) {
         (Some(until), _) if until <= now => String::new(),
@@ -204,6 +205,7 @@ mod tests {
         assert_eq!(list_tail(&c), "");
         c.held_by_uid = Some(1000);
         c.held_until = Some(now() + 7200);
+        // SAFETY: getuid has no preconditions and cannot fail.
         let me = unsafe { libc::getuid() };
         let who = if me == 1000 { "" } else { " by uid 1000" };
         assert_eq!(list_tail(&c), format!("  (checked out{who}, 2h left)"));

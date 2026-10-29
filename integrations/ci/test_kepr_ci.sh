@@ -120,6 +120,14 @@ grep -q 'gcp-federated' "$T/argv" && fail "gcp: bearer token in argv" || ok "gcp
 
 if run_lib KEPR_CLOUD=azure >/dev/null 2>&1; then fail "unknown cloud accepted"; else ok "unknown cloud refused"; fi
 
+# ── input hardening ──
+if run_lib KEPR_CLOUD=vault VAULT_ADDR=http://evil.example KEPR_VAULT_ROLE=r KEPR_ID_TOKEN=t KEPR_SECRETS=A=vault:x >/dev/null 2>&1; then fail "plain-http VAULT_ADDR accepted"; else ok "VAULT_ADDR must be https"; fi
+if run_lib KEPR_CLOUD=vault VAULT_ADDR=https://v.example KEPR_VAULT_ROLE=r KEPR_VAULT_AUTH_PATH='../x?y' KEPR_ID_TOKEN=t KEPR_SECRETS=A=vault:x >/dev/null 2>&1; then fail "odd auth path accepted"; else ok "vault auth path is a plain path"; fi
+if run_lib KEPR_CLOUD=gcp KEPR_GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/x KEPR_GCP_SERVICE_ACCOUNT='a@b/../c' KEPR_ID_TOKEN=t KEPR_SECRETS=A=gcp-sm:x >/dev/null 2>&1; then fail "odd service account accepted"; else ok "service account must be an email"; fi
+if run_lib KEPR_CLOUD=gcp KEPR_GCP_WIF_PROVIDER='x/../y' KEPR_ID_TOKEN=t KEPR_SECRETS=A=gcp-sm:x >/dev/null 2>&1; then fail "odd WIF provider accepted"; else ok "WIF provider path is checked"; fi
+: >"$T/env"
+if run_lib GITHUB_ENV="$T/env" KEPR_EXPORT=true KEPR_SECRETS='LD_PRELOAD=vault:x' >/dev/null 2>&1 || [ -s "$T/env" ]; then fail "LD_PRELOAD exported"; else ok "code-running variable names are not exported"; fi
+
 # ── the GitLab template embeds this exact script ──
 embedded="$(sed -n '/<<'"'"'KEPR_CI_EOF'"'"'$/,/^ *KEPR_CI_EOF$/p' "$GITLAB" | sed '1d;$d' | sed 's/^      //')"
 if [ "$embedded" = "$(cat "$LIB")" ]; then

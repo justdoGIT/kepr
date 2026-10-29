@@ -99,6 +99,7 @@ fn label(kind: TargetKind) -> &'static str {
         TargetKind::Redis => "Redis",
         TargetKind::Mysql => "MySQL",
         TargetKind::Tcp => "TCP",
+        TargetKind::Kube => "Kubernetes",
     }
 }
 
@@ -239,7 +240,7 @@ fn standard(kind: TargetKind, url: &str, ph: &str, port: u16) -> Vec<(String, St
             put("MYSQL_TCP_PORT", port.to_string());
             put("MYSQL_PWD", ph.into());
         }
-        TargetKind::Tcp => {}
+        TargetKind::Tcp | TargetKind::Kube => {}
     }
     out
 }
@@ -270,7 +271,7 @@ pub fn env(
             TargetKind::Mysql => {
                 format!("mysql://kepr:{ph}@127.0.0.1:{port}/kepr?ssl-mode=DISABLED")
             }
-            TargetKind::Tcp => continue,
+            TargetKind::Tcp | TargetKind::Kube => continue,
         };
         out.push((format!("KEPR_DB_{name}_URL"), url.clone()));
         if dbs.iter().filter(|d| d.1 == *kind).count() == 1 {

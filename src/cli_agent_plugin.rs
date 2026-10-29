@@ -57,6 +57,10 @@ pub fn guidance_path(
     match harness {
         "claude" => Some(base("CLAUDE_CONFIG_DIR", ".claude").join("skills/kepr/SKILL.md")),
         "codex" => Some(base("CODEX_HOME", ".codex").join("AGENTS.md")),
+        // T13.07: both tools read project files, so for these two `home` is
+        // the project directory (the current one).
+        "cursor" => Some(home.join(".cursor/rules/kepr.mdc")),
+        "copilot" => Some(home.join(".github/copilot-instructions.md")),
         _ => None,
     }
 }
@@ -100,6 +104,37 @@ fn skill_body() -> &'static str {
         .map_or(SKILL, |(_, body)| body.trim_start())
 }
 
+/// Cursor's project rule: always applied, kepr's guidance as the body.
+fn cursor_rule() -> String {
+    format!(
+        "---\ndescription: Secrets are already wired in by kepr; never ask for or print them\nalwaysApply: true\n---\n{}",
+        skill_body()
+    )
+}
+
+/// Fail if `path`, or any directory between `root` and it, is a symlink: a
+/// repository can plant `.github/copilot-instructions.md -> ~/.bashrc`, and
+/// writing guidance through it would overwrite a file outside the project.
+pub fn refuse_links(root: &Path, path: &Path) -> Result<(), String> {
+    let below = path.strip_prefix(root).unwrap_or(path);
+    let mut at = root.to_path_buf();
+    for part in below.components() {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(format!(
+                    "{} is a symbolic link; kepr will not write project files through one",
+                    at.display()
+                ))
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("{}: {e}", at.display())),
+        }
+    }
+    Ok(())
+}
+
 /// Write the guidance for `harness` through `cli_agent_install::apply`
 /// (timestamped 0600 backup, idempotent). None: no guidance for it.
 pub fn install_guidance(
@@ -110,8 +145,16 @@ pub fn install_guidance(
     let Some(path) = guidance_path(harness, home, env) else {
         return Ok(None);
     };
+    // Project files come from a checkout that may not be ours; the other
+    // harnesses' files are the user's own (dotfile managers link those).
+    if matches!(harness, "cursor" | "copilot") {
+        refuse_links(home, &path)?;
+    }
     let changed = match harness {
-        "codex" => crate::cli_agent_install::apply(&path, |t| upsert_block(t, skill_body())),
+        "codex" | "copilot" => {
+            crate::cli_agent_install::apply(&path, |t| upsert_block(t, skill_body()))
+        }
+        "cursor" => crate::cli_agent_install::apply(&path, |_| cursor_rule()),
         _ => crate::cli_agent_install::apply(&path, |_| SKILL.to_string()),
     }?;
     Ok(Some((path, changed)))
@@ -361,5 +404,76 @@ mod tests {
         assert!(!write_plugin(&dir, GROK).unwrap());
         assert!(dir.join(".grok-plugin/plugin.json").is_file());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_guidance_is_never_written_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let none = |_: &str| None;
+        let proj = tempfile::tempdir().unwrap();
+        let victim = tempfile::tempdir().unwrap();
+        let target = victim.path().join("bashrc");
+        std::fs::write(&target, "export A=1\n").unwrap();
+        // The file itself is a link out of the project.
+        std::fs::create_dir_all(proj.path().join(".github")).unwrap();
+        symlink(&target, proj.path().join(".github/copilot-instructions.md")).unwrap();
+        let e = install_guidance("copilot", proj.path(), &none).unwrap_err();
+        assert!(e.contains("symbolic link"), "{e}");
+        // A directory on the way is a link out of the project.
+        symlink(victim.path(), proj.path().join(".cursor")).unwrap();
+        let e = install_guidance("cursor", proj.path(), &none).unwrap_err();
+        assert!(e.contains("symbolic link"), "{e}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "export A=1\n");
+        assert_eq!(std::fs::read_dir(victim.path()).unwrap().count(), 1);
+        // The user's own files may be links (dotfile managers do that).
+        let home = tempfile::tempdir().unwrap();
+        let real = victim.path().join("AGENTS.md");
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        symlink(&real, home.path().join(".codex/AGENTS.md")).unwrap();
+        assert!(install_guidance("codex", home.path(), &none).is_ok());
+    }
+
+    #[test]
+    fn cursor_and_copilot_guidance_goes_in_the_project() {
+        let none = |_: &str| None;
+        let proj = Path::new("/p");
+        assert_eq!(
+            guidance_path("cursor", proj, &none).unwrap(),
+            Path::new("/p/.cursor/rules/kepr.mdc")
+        );
+        assert_eq!(
+            guidance_path("copilot", proj, &none).unwrap(),
+            Path::new("/p/.github/copilot-instructions.md")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let (path, changed) = install_guidance("cursor", dir.path(), &none)
+            .unwrap()
+            .unwrap();
+        assert!(changed);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("---\ndescription:") && text.contains("alwaysApply: true\n---\n"));
+        assert!(text.contains(skill_body().lines().next().unwrap()));
+        // Again: nothing changes.
+        assert!(
+            !install_guidance("cursor", dir.path(), &none)
+                .unwrap()
+                .unwrap()
+                .1
+        );
+        // Copilot: the user's own instructions are kept around kepr's block.
+        let c = dir.path().join(".github/copilot-instructions.md");
+        std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+        std::fs::write(&c, "Use tabs.\n").unwrap();
+        install_guidance("copilot", dir.path(), &none)
+            .unwrap()
+            .unwrap();
+        let t = std::fs::read_to_string(&c).unwrap();
+        assert!(t.starts_with("Use tabs.\n") && t.contains(BEGIN) && t.contains(END));
+        assert!(
+            !install_guidance("copilot", dir.path(), &none)
+                .unwrap()
+                .unwrap()
+                .1
+        );
     }
 }

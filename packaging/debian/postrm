@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+# Take the profile out of the PAM stacks before the module goes away.
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    if command -v pam-auth-update >/dev/null 2>&1; then
+        pam-auth-update --package --remove kepr || true
+    fi
+fi
+exit 0

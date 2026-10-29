@@ -36,7 +36,14 @@ fn unescape(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let Some(end) = rest.find(';') else { break };
+        // An entity is a few characters; searching further makes a text of
+        // many `&` with one far `;` quadratic.
+        let window = rest.len().min(12);
+        let Some(end) = rest.as_bytes()[..window].iter().position(|b| *b == b';') else {
+            out.push('&');
+            rest = &rest[1..];
+            continue;
+        };
         let ent = &rest[1..end];
         let c = match ent {
             "lt" => Some('<'),
@@ -354,5 +361,19 @@ mod tests {
             assert!(e.iter().all(|e| e.value.as_str() != "new-pw"));
         }
         assert!(entries(b"<KeePassFile><Root>", &key).is_err());
+    }
+
+    #[test]
+    fn many_ampersands_and_one_far_semicolon_is_not_quadratic() {
+        let text = format!("{};", "&".repeat(300_000));
+        let t = std::time::Instant::now();
+        let out = unescape(&text);
+        assert_eq!(out.len(), text.len());
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            t.elapsed()
+        );
+        assert_eq!(unescape("a &amp; b &#65;&lt;"), "a & b A<");
     }
 }

@@ -313,6 +313,7 @@ mod tests {
             rec: crate::daemon_gatex::recording::Recorder::new(uid, "0123456789abcdef", false),
             harness: harness.map(str::to_string),
             deadlines: Default::default(),
+            rotatable: Default::default(),
         };
         let resolve = |h: Option<&str>| {
             crate::daemon_gate::resolve_for_gate(&owner(h), "JIT", "api.example.com", 443)
@@ -407,6 +408,7 @@ mod tests {
             rec: crate::daemon_gatex::recording::Recorder::new(uid, "0123456789abcdef", false),
             harness: Some("claude".into()),
             deadlines: Default::default(),
+            rotatable: Default::default(),
         };
         crate::daemon_gate::resolve_for_gate(&owner, "JIT_END", "api.example.com", 443).unwrap();
         assert_eq!(owner.deadlines.passed(until - 1), 0, "still granted");

@@ -274,6 +274,7 @@ mod tests {
     /// `in_child` with `check` choosing the exit code (0 = passed);
     /// 64 when the filter could not be installed.
     fn in_child_code(prog: &[libc::sock_filter], check: impl Fn() -> i32) -> i32 {
+        // SAFETY: test only; the child calls nothing but async-signal-safe functions before _exit.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
@@ -281,9 +282,11 @@ mod tests {
                 Ok(()) => check(),
                 Err(_) => 64,
             };
+            // SAFETY: _exit ends the forked test child without running destructors.
             unsafe { libc::_exit(code) };
         }
         let mut status = 0;
+        // SAFETY: waiting for a child this code forked or spawned.
         unsafe { libc::waitpid(pid, &mut status, 0) };
         assert!(libc::WIFEXITED(status));
         libc::WEXITSTATUS(status)
@@ -297,6 +300,7 @@ mod tests {
     fn filter_blocks_ptrace_in_a_child() {
         let prog = program(&sandbox_denied());
         let code = in_child(&prog, || {
+            // SAFETY: test only; ptrace with plain integer arguments, expected to be refused by the filter.
             let r = unsafe { libc::syscall(libc::SYS_ptrace, libc::PTRACE_TRACEME, 0, 0, 0) };
             fails_with(r, libc::EPERM)
         });
@@ -311,8 +315,10 @@ mod tests {
         let argv = [path.as_ptr(), std::ptr::null()];
         let envp = [std::ptr::null::<libc::c_char>()];
         let code = in_child(&prog, || {
+            // SAFETY: test only; a valid NUL-terminated path and argv / envp arrays that end in null.
             let r = unsafe { libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
             let exec = fails_with(r as libc::c_long, libc::EPERM);
+            // SAFETY: test only; ptrace with plain integer arguments, expected to be refused by the filter.
             let r = unsafe { libc::syscall(libc::SYS_ptrace, libc::PTRACE_TRACEME, 0, 0, 0) };
             exec && fails_with(r, libc::EPERM)
         });

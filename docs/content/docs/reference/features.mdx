@@ -102,10 +102,11 @@ verbs print their usage line when called without arguments.
 | `policy` | `test FILE` · `status` · `reload` | Run a policy file's test cases; show or reload what the daemon enforces. |
 | `report access` | `KEY` | Every path KEY can take: bindings, shares, gate releases, reads, aliases, devices, policy. |
 | `quorum` | `set KEY N\|off` · `request KEY [--for DUR]` · `approve ID [--with APPROVAL]` · `sign REQUEST` · `ls` | M-of-N approvals before each use window. |
-| `approvals` | `set KEY --via desktop\|ntfy\|any` · `set KEY --off` · `serve [--desktop] [--ntfy URL --listen ADDR:PORT [--callback-url URL]]` | Answer consent prompts from a notification. |
+| `approvals` | `set KEY --via desktop\|ntfy\|any` · `set KEY --off` · `serve [--desktop] [--ntfy URL] [--slack-webhook URL --slack-signing-secret FILE] [--teams-webhook URL] [--listen ADDR:PORT [--callback-url URL]]` | Answer consent prompts from a notification, Slack or Teams. |
 | `canary` | `plant [--for PROVIDER] [--name NAME] [--in FILE\|DIR]` · `ls` · `rm NAME` · `listen --listen ADDR:PORT` | Decoy keys that raise an alarm when used. |
 | `exe` | `KEY [--allow PATH]... [--clear]` | Show, replace or drop the programs allowed to read KEY. |
 | `audit forward` | `--to jsonl:PATH\|syslog:udp://HOST[:PORT]\|otlp:URL [--once] [--interval SECS] [--state FILE]` | Stream audit events (never values) to a SIEM. |
+| `audit anchor` / `audit verify` | `anchor --to jsonl:PATH\|syslog:udp://HOST[:PORT]\|s3:BUCKET[/PREFIX] [--once] [--interval SECS]` · `verify --anchor FILE` | Publish the audit chain head elsewhere; check the log against published heads. |
 | `alerts` | `check [--file F]` · `run [--once] [--file F] [--interval SECS] [--state FILE]` | Post matching audit events to webhooks. |
 | `anomaly` | `check [--rules F]` · `run [--journal daemon\|FILE\|-] [--rules F] [--once] [--interval SECS] [--state F]` | Watch the gate journal for unusual traffic. |
 | `usage` | `[--days N]` · `--report [--days N] [--unused-days N] [--prices FILE]` | Uses per key; `--report`: agent traffic, cost and unused bindings. |
@@ -117,6 +118,7 @@ verbs print their usage line when called without arguments.
 | Verb | Args | What it does |
 | ---- | ---- | ------------ |
 | `rotate` | `KEY --hook PATH [--gen-kind K]` · `KEY --aws-iam` · `KEY --db` | Rotate now: through a hook, the AWS IAM API or the database. |
+| `rotate` | `--all [--dry-run]` | Rotate every key kepr can in one run (schedules, sealed AWS keys, sealed database logins); the rest are listed as manual. A failure leaves that key unchanged and the run continues; exit status is non-zero if any failed. |
 | `rotate` | `KEY --every DUR (--hook CMD\|--aws-iam\|--db)` · `KEY --every off` · `KEY --scheduled` | Rotate on a schedule; `--scheduled` runs a due rotation now. |
 | `grant` | `KEY [--to HARNESS --for DUR\|--revoke [--to HARNESS]\|--jit on\|off]` | Just-in-time windows for a sealed key; no flags shows the state. |
 | `checkout` | `KEY [--for DUR]` | Take a hold on KEY; a second checkout is refused. |
@@ -752,7 +754,21 @@ kepr vault init --size 64M     # MiB, 1-4096 (default 64), filled with random no
 kepr vault migrate             # move per-file credentials in (each one read back first)
 kepr vault verify              # check every used slot and the Merkle root
 kepr vault status              # active store, size and fill, rollback guard, files left to move
+kepr vault resize --size 128M  # rebuild at another size (a shrink keeps 25 % spare)
+kepr vault to-files            # move the records back into per-file credentials
 ```
+
+`resize` builds the new image beside the old one, copies every record (its
+write time is kept, so health ages stay right), checks the copy record by
+record and by the Merkle root, and only then renames it over the old
+image. A failure before the rename removes the copy and leaves the old
+image as it was; with a TPM2 counter, a failed rename leaves the copy as
+the current image and the error says where it is. No agent session may run
+(`kepr panic` first), and only the store's owner (root for the shared
+store) may run it. `to-files` writes each record as a per-file credential
+and `.meta`, reads it back, and only then removes it from the image; a
+record whose file already holds another value stays. Restart the daemon
+without `KEPR_STORE=image` afterwards.
 
 What the image protects:
 
@@ -933,6 +949,13 @@ session or any error changes nothing. Without that, any process of your user,
 an agent included, could add a way into the store that the keychain does
 not guard. Stores sealed any other way are not asked.
 
+On Linux the same two requests can ask through polkit: set
+`KEPR_PRESENCE=polkit` for the daemon and `kepr lock` and `kepr
+recovery-key enrol` need the person at the machine to authenticate
+(`io.kepr.protect`, `auth_self`, asked every time, 60 seconds). It is off
+by default because a headless host or CI has no polkit agent and would be
+locked out of both commands.
+
 <Warning>
   The words and the `master.key.recovery` file together open the store.
   Keep the words offline, never next to the machine. Sealing again binds
@@ -940,6 +963,120 @@ not guard. Stores sealed any other way are not asked.
   firmware update from a tampered boot: only run `kepr recovery-key unlock`
   on a machine you trust.
 </Warning>
+
+### Unlock at login (PAM)
+
+Logging in with your password can unlock the store, when the store
+passphrase is that password. The full picture, including why kepr does not
+type your sudo password and which program gets which key, is the
+[Unlock at login](/docs/guides/login-unlock) guide. The pieces:
+
+* `pam_kepr.so` (`crates/kepr-pam`, its own workspace:
+  `cargo build --release --manifest-path crates/kepr-pam/Cargo.toml`;
+  `./install.sh --login` builds and installs it with the Debian
+  `pam-auth-update` profile `packaging/pam-configs/kepr`). Always
+  `optional`, always `PAM_IGNORE`: it never decides or delays a login, does
+  nothing for root, and runs only a `kepr` that root owns and group / others
+  cannot write (`kepr=/path`; default `/usr/bin/kepr`, then
+  `/usr/local/bin/kepr`). It remembers the authentication token together
+  with the user it was checked for and hands it over only to that user's
+  session, so `sudo -u` and `su` never pass one user's password to
+  another's kepr.
+* `kepr login-unlock on [--ssh-agent] | off | status`: the per-user opt-in
+  (`~/.config/kepr/login-unlock`; nothing is handed to kepr without it),
+  enabling the `kepr-daemon.service` user unit (and with `--ssh-agent`
+  `kepr-ssh-agent.service` plus `SSH_AUTH_SOCK` in
+  `~/.config/environment.d/`), and reporting what is still missing.
+* `kepr pam-unlock` / `kepr pam-passwd` / `kepr passwd`: the helpers the
+  module runs as you, and the manual change. Passwords come on stdin only.
+  The daemon's `LoginUnlock` has its own failure budget (the same back-off,
+  never the wipe, closed after five failures in a row until a passphrase
+  check succeeds; `kepr status` shows it), does not undo `kepr panic`, and
+  works in user mode only. `ChangePassphrase` re-wraps the master key under
+  a new passphrase after checking the old one (same guard as `kepr unlock`;
+  refused for stores that also need a security key). In the `password`
+  stack the module keeps the store passphrase equal to a changed login
+  password, including an expired password changed at login.
+* While an unlock is running, and for a few seconds after a daemon started
+  by the user unit (`kepr-daemon --user --login`, login unlock on), requests
+  that need the key (`get`, `set`, ssh sign / list, `exec`, `StartGate`)
+  wait instead of failing as locked; `status`, `unlock` and the rest answer
+  at once.
+* Module options: `unlock` (also at `pam_setcred`, which a screen locker
+  calls after a good password), `unlock=auth` (for lockers that call
+  nothing else; only where a wrong password never reaches the module),
+  `hint`, `debug`, `kepr=/path`.
+* A locked store makes `kepr ssh-agent` refuse signatures; it now says so in
+  its journal and with a desktop notice (once a minute).
+
+`tests/pam_e2e.sh` runs the module against a real PAM stack (root,
+`pamtester`, libpam via `tests/pam_harness.py`); `tests/login_cli.rs` runs
+the helpers and the daemon without PAM; `tests/login_assets.rs` pins the
+units, the profile and the installer; `tests/desktop_packaging.rs` pins what
+the .deb, .rpm and tarball ship (the module, the profile, the user units).
+Not built: unlocking stores that also need a security key at login, and the
+Windows side (see the guide).
+
+### Secret Service (desktop keyring)
+
+`kepr secret-service run` serves `org.freedesktop.secrets` on the session
+bus from kepr's store, so libsecret programs, browsers, NetworkManager and
+git helpers keep their passwords in kepr instead of GNOME Keyring or
+KWallet. The guide is [Replace GNOME Keyring](/docs/guides/replace-gnome-keyring).
+
+| Command | Does |
+| --- | --- |
+| `secret-service run [--replace]` | The service (foreground; the `kepr-secret-service.service` user unit or the bus starts it). SIGHUP re-reads the policy. |
+| `secret-service takeover [--now] [--no-import]` | Imports the current provider's items, writes `~/.local/share/dbus-1/services/org.freedesktop.secrets.service`, masks GNOME Keyring's user units and its secrets autostart entry. `--now` also stops a running GNOME Keyring / KWallet and starts kepr. |
+| `secret-service restore` | Undoes exactly what `takeover` recorded in `~/.config/kepr/secret-service-takeover.json`. |
+| `secret-service import [--dry-run] [--overwrite]` | Copies the current provider's items (collections by id or label; its default collection into kepr's `login`). Existing items are kept unless `--overwrite`; a dry run reads no secret. |
+| `secret-service status` | Who owns the name, whether takeover is on, the policy file, and what could still start GNOME Keyring first (units, `pam_gnome_keyring.so`). |
+| `secret-service log [-n N]` | The call log (program, operation, item id and label, result). |
+| `secret-service policy [check EXE [read\|write\|search]]` | Shows the rule file (or an example) / the verdict for a program. |
+| `secret store\|lookup\|search\|clear\|ls` | `secret-tool` verbs against the same items, without libsecret. `store` reads the secret on stdin; `search` shows labels and attributes only (`--secrets` adds the values). |
+
+* **Protocol.** Secret Service 0.2 over a hand-written D-Bus implementation
+  (`src/cli_desktop/dbus/`: signatures, marshalling, messages, SASL
+  EXTERNAL, a threaded connection; no async runtime). Sessions: `plain` and
+  `dh-ietf1024-sha256-aes128-cbc-pkcs7`. Collections `login` (the `default`
+  alias) and any an application creates; the memory-only `session`
+  collection; `Unlock` prompts.
+* **Storage.** In the daemon (`daemon_desktop/`, `Request::Desktop`): each
+  item is one JSON document in one encrypted credential `SSI_<26 base32
+  characters>`, folder `secret-service`, `.meta` `desktop_item`. Attributes
+  are matched inside the daemon; a secret leaves only through
+  `SsItemSecret` (policy-checked as a `get`, audited `ss-secret`). `kepr
+  get` refuses them, `kepr ls` folds them (`--folder secret-service` lists
+  them), `kepr health` skips them; export, sync and the vault image carry
+  them. Limits: 32 KiB per secret, 10,000 items, 64 collections.
+* **Lock.** The service answers with the cached labels and attributes while
+  kepr is locked (never a secret), says `IsLocked` for a secret, and offers
+  a prompt that shows the passphrase dialog (`$KEPR_ASKPASS`, pinentry,
+  zenity, kdialog). The first call at a cold start waits up to 20 s for the
+  dialog; a refusal is not asked again for 10 s. Lock changes are announced
+  once a second (`PropertiesChanged` on every collection and item).
+* **Policy** (`~/.config/kepr/secret-service.toml`): `default`, then
+  `[[rule]]` with `exe` (glob), `op` (`search`, `read`, `write`, `all`),
+  `sandboxed`, `action`; first match wins; a broken file refuses everything.
+* **Log** (`$XDG_STATE_HOME/kepr/secret-service.log`, 0600, rotated at
+  1 MiB): the program (from `/proc` of the pid the bus names), operation,
+  item id, label, result; never an attribute value or a secret.
+* **Agents.** `kepr agent run` covers the session bus socket with
+  `/dev/null` and hides `$XDG_RUNTIME_DIR/keyring` and `/gcr`;
+  `KEPR_SANDBOX_DBUS=allow` keeps them (`src/cli_sandbox_bus.rs`).
+
+`tests/secret_service_e2e.sh` runs it against a real `dbus-daemon`;
+`tests/desktop_packaging.rs` pins the user unit. Not built: the legacy
+`org.gnome.keyring` / `org.kde.kwalletd` APIs, a certificate / PKCS#11 store,
+the Flatpak portal backend.
+
+### Post-quantum TLS in the gate
+
+`cargo build --release -p kepr-gate --features pq` makes the gate's own TLS
+to upstream hosts offer the hybrid key exchange `X25519MLKEM768` first (the
+`fips` build does too); a server without it gets X25519 as before. The
+session CA's local keys are not affected. `kepr-gate --tls-info` prints
+what a build offers first.
 
 ### FIPS build
 
@@ -1027,6 +1164,16 @@ directory.
   logins, with `ALTER USER CURRENT_USER() IDENTIFIED BY`. Unlike
   PostgreSQL's SCRAM verifier, the new password travels in the SQL text
   (over TLS unless `sslmode=disable`); backslash and NUL are refused.
+- `--db-user NAME=ROLE[:TTL]` (PostgreSQL) logs the agent in as a role the
+  gate makes for the session. NAME's sealed record is an admin login that
+  may `CREATE ROLE`; the agent never uses it. The gate creates
+  `kepr_e_<random>` with a random password (sent as a SCRAM verifier),
+  `VALID UNTIL` now + TTL (60 s to 24 h, default 1 h), a member of ROLE,
+  and drops it when the agent exits (sessions ended, objects reassigned to
+  the admin, role dropped). A gate killed before it can drop the role
+  leaves one that has already stopped logging in; the next session on the
+  route drops every expired `kepr_e_` role first. It can't be combined with
+  `--grant` or rotation. MySQL is not supported.
 - `--tunnel NAME=HOST:PORT` gives the session a loopback port
   (`KEPR_TUNNEL_<NAME>`) that the gate pipes to that host without injecting
   anything, also under `--isolate-net`. HOST is a fully-qualified name or
@@ -1037,6 +1184,20 @@ directory.
   membership is left alone. A gate killed outright (for example by
   `kepr panic`) can't revoke: the role stays until an administrator
   removes it.
+
+### Kubernetes
+
+`kepr agent add-kube NAME --server https://HOST[:PORT] --token-file FILE
+[--ca-file FILE]` seals a bearer token (and the cluster's CA certificate)
+bound to the API server. The token comes from a file or stdin, never argv.
+In `kepr agent run` the harness gets a `KUBECONFIG` whose server is that
+URL, whose token is the session placeholder, whose authority is the session
+CA, and whose `proxy-url` is the gate. The gate checks the placeholder,
+applies limits and DLP, sends the real token, and verifies the cluster
+against the stored CA only (never the environment's). Limits: the server
+needs a DNS name (an address has no name for the session CA to sign),
+`kubectl exec`, `attach` and `port-forward` are refused with a 501, and
+client-certificate auth is not supported.
 
 ### Recording, journal and daily caps
 
@@ -1230,8 +1391,32 @@ expect = "allow"
 ```
 
 Rule conditions are `names`, `exe`, `parent` (globs), `agent` (inside
-`kepr agent run` or not), `harness`, `hosts` and `max_ttl`; unknown keys
-are errors. `kepr policy test FILE` runs the `[[test]]` cases,
+`kepr agent run` or not), `harness`, `role`, `hosts` and `max_ttl`; unknown
+keys are errors.
+
+Roles name sets of callers; a rule with `role` applies only to a caller who
+holds one of them (no role, no match):
+
+```toml
+[roles.ops]
+members = ["group:ops", "user:alice", "uid:1007", "gid:2000"]
+
+[[rule]]
+effect = "allow"
+ops = ["get"]
+names = ["PROD_*"]
+role = ["ops"]
+
+[[test]]
+op = "get"
+name = "PROD_DB"
+roles = ["ops"]          # the roles the simulated caller holds
+expect = "allow"
+```
+
+Groups come from the caller's process (`/proc/PID/status`) and
+`/etc/group`. An unknown role in a rule, or a malformed member, is an
+error. `kepr policy test FILE` runs the `[[test]]` cases,
 `kepr policy status` shows what the daemon enforces, and
 `kepr policy reload` (or SIGHUP) re-reads the file.
 
@@ -1303,6 +1488,14 @@ kepr approvals serve --desktop
 kepr approvals serve --ntfy URL|kepr:NAME --listen ADDR:PORT [--callback-url URL]
 ```
 
+- `--slack-webhook URL --slack-signing-secret FILE` posts the request with
+  Allow / Deny buttons; point the Slack app's interactivity Request URL at
+  `https://HOST/slack/interact` (behind a TLS reverse proxy that forwards
+  to `--listen`). A click needs Slack's valid `X-Slack-Signature` (HMAC over
+  `v0:TIMESTAMP:BODY`, timestamp within five minutes) and the request's
+  one-time token. `--teams-webhook URL` posts a card whose links open a
+  confirmation page on the listener; opening a link answers nothing, its
+  button does. Webhook URLs may be `kepr:NAME`.
 - Desktop prompts use `notify-send --wait` actions (libnotify 0.7.10 or
   newer). ntfy notifications carry buttons that call back to `--listen`.
 - No answer within 60 s is a deny. With no live approver (none polled in
@@ -1342,6 +1535,15 @@ provider. The listener must be reachable by whoever sends the webhook.
   is at least once; syslog is UDP only; an OTLP URL may be `kepr:NAME`.
   Non-root callers get only their own entries; root on the system daemon
   gets everyone's.
+- `kepr audit anchor --to jsonl:PATH|syslog:udp://HOST[:PORT]|s3:BUCKET[/PREFIX]`
+  publishes the chain head (`seq`, `hash`, time) whenever it moved; put the target
+  where the daemon's account cannot rewrite it. `kepr audit verify
+  --anchor FILE` has the daemon check the log: it must verify, be at least
+  as long as the newest anchor, and hold the same hash at every anchored
+  `seq`, so a truncated or wholly replaced log fails.
+- The daemon verifies only what was appended since its last start
+  (`audit.log.ckpt`, trusted for seven days; `KEPR_AUDIT_FULL_VERIFY=1`
+  forces a full walk). `kepr audit-verify` always checks the whole file.
 - `kepr alerts run` posts audit events matching `~/.config/kepr/alerts.toml`
   rules to Slack, Teams, Discord or ntfy webhooks, throttled per rule;
   held matches are counted in the next alert, and the first run starts at
@@ -1699,6 +1901,8 @@ own credentials.
 | `KEPR_AUTO_MANIFEST=1` | Look for `.kepr.toml` in and above the working directory. |
 | `KEPR_STAGE=S` | Default `--stage` for `exec` / `env` when a manifest is used. |
 | `KEPR_LANDLOCK` | `strict`: also fence hidden paths under `$HOME` in the agent sandbox; `0`: no Landlock rules. |
+| `KEPR_SANDBOX_DBUS` | `allow`: leave the session bus reachable inside the agent sandbox (it is covered with `/dev/null` otherwise). |
+| `KEPR_ASKPASS` | `kepr secret-service`: a program that prints the store passphrase, used for the unlock dialog before pinentry, zenity and kdialog. |
 | `KEPR_FIDO2_DEVICE` | Security key for `lock --fido2` / `unlock` (default: the first one listed). |
 | `KEPR_HOLD_TOKEN` | Token for `kepr checkin` when `--token` isn't given. |
 | `KEPR_SERVE_TOKEN_FILE` | Bearer-token file for `kepr serve` (required). |

@@ -1,0 +1,19 @@
+# kepr.service drop-in: allow executable bindings (`kepr set KEY --exe PATH`,
+# T10.09) under the system daemon (T13.19).
+#
+# Reading another user's /proc/PID/exe needs CAP_SYS_PTRACE (the base unit's
+# ProtectProc=invisible hides their processes without it). The base unit does
+# not grant it: it lets a root process read the memory of any process it can
+# reach. Install this only if you use executable bindings, and know that the
+# daemon then holds that capability.
+#
+# Install:
+#   sudo mkdir -p /etc/systemd/system/kepr.service.d
+#   sudo cp ptrace.conf.example /etc/systemd/system/kepr.service.d/ptrace.conf
+#   sudo systemctl daemon-reload && sudo systemctl restart kepr.service
+#
+# The system-call filter still excludes ptrace(2) itself; this only lets the
+# daemon read the link.
+
+[Service]
+CapabilityBoundingSet=CAP_IPC_LOCK CAP_CHOWN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE

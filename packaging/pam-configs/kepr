@@ -1,0 +1,13 @@
+Name: kepr (unlock the kepr credential store with your login password)
+Default: no
+Priority: 0
+Auth-Type: Additional
+Auth:
+	optional	pam_kepr.so unlock
+Password-Type: Additional
+Password:
+	optional	pam_kepr.so
+Session-Type: Additional
+Session-Interactive-Only: yes
+Session:
+	optional	pam_kepr.so hint

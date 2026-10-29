@@ -1,13 +1,13 @@
 // protocol_session.rs — wire types of the `session` ticket batch:
 // re-authentication before reveal (T11.14), `kepr status` details
 // (T11.24), `kepr batch` (T11.18), `kepr ssh rotate` (T11.21), fetch as
-// an fd (T3.06). Wrapped by
-// `Request::Session` / `Response::Session`, which are
+// an fd (T3.06), unlock at login and passphrase change (T13.25). Wrapped
+// by `Request::Session` / `Response::Session`, which are
 // `#[serde(untagged)]` and tried after every tagged variant, so the
 // `cmd` / `kind` names here must not repeat one in protocol.rs.
 //
-// The only secret here is the store passphrase of `Reauth`, carried as a
-// `ZeroString` like `Request::Unlock`'s.
+// The only secrets here are store passphrases (`Reauth`, `LoginUnlock`,
+// `ChangePassphrase`), carried as `ZeroString` like `Request::Unlock`'s.
 
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,22 @@ pub enum SessionRequest {
     /// T3.06: `name` under `Get`'s policy, answered with `FdOk` and then
     /// a sealed read-only memfd (SCM_RIGHTS) instead of the value.
     FetchFd { name: String },
+    /// T13.25: `Unlock` with the password typed at login (`kepr
+    /// pam-unlock`). User mode only; an unlocked store answers
+    /// `UnlockedOk` without trying it; failures count against a budget of
+    /// their own that never wipes and closes after
+    /// `login_unlock::MAX_FAILURES`; a store locked by `kepr panic` stays
+    /// locked.
+    LoginUnlock { password: ZeroString },
+    /// T13.25: wrap the master key under `new` after checking `old`
+    /// (`kepr passwd`; `login`: from the PAM password hook, on the login
+    /// budget). Answers `PassphraseChanged`.
+    ChangePassphrase {
+        old: ZeroString,
+        new: ZeroString,
+        #[serde(default)]
+        login: bool,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,6 +71,16 @@ pub enum SessionResponse {
     BatchOk { ran: u32 },
     /// T3.06: the memfd holding `len` bytes follows on the socket.
     FdOk { len: u64 },
+    /// T13.25: the store passphrase is now the new one.
+    PassphraseChanged,
+    /// T13.25 (CLI only, for `--json`): `kepr login-unlock status`. A unit
+    /// is `None` when systemd doesn't know it.
+    LoginUnlockInfo {
+        on: bool,
+        daemon_unit: Option<bool>,
+        ssh_agent_unit: Option<bool>,
+        pam_services: Vec<String>,
+    },
 }
 
 /// T11.24: what `kepr status` shows beyond the lock state, flattened into
@@ -92,12 +118,28 @@ pub struct StatusInfo {
     /// `None` on a passphrase store that has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_key: Option<bool>,
+    /// T13.25: failed login unlocks in a row (none = zero). A `u8`: the
+    /// count stops at `login_unlock::MAX_FAILURES`, and a wider field would
+    /// push `Response` past clippy's `result_large_err` limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_failures: Option<u8>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::{Request, Response};
+
+    /// `Response` rides in `Result<_, Response>` all over the CLI; at 128
+    /// bytes clippy's `result_large_err` fires on every one of them.
+    #[test]
+    fn response_stays_small_enough_to_be_a_result_error() {
+        assert!(
+            std::mem::size_of::<Response>() < 128,
+            "Response is {} bytes: box or narrow the field that grew it",
+            std::mem::size_of::<Response>()
+        );
+    }
 
     #[test]
     fn status_info_rides_in_status_ok_and_old_daemons_still_parse() {
@@ -110,6 +152,7 @@ mod tests {
             escrow: Some(false),
             fips: Some(false),
             recovery_key: Some(true),
+            login_failures: Some(2),
         };
         let r = Response::StatusOk {
             locked: false,
@@ -129,6 +172,7 @@ mod tests {
             "escrow",
             "fips",
             "recovery_key",
+            "login_failures",
         ] {
             assert!(v.get(k).is_some(), "{k} missing from {v}");
         }
@@ -163,6 +207,14 @@ mod tests {
             }),
             Request::Session(SessionRequest::GetQuiet { name: "K".into() }),
             Request::Session(SessionRequest::FetchFd { name: "K".into() }),
+            Request::Session(SessionRequest::LoginUnlock {
+                password: ZeroString::from_string("pw".into()),
+            }),
+            Request::Session(SessionRequest::ChangePassphrase {
+                old: ZeroString::from_string("a".into()),
+                new: ZeroString::from_string("b".into()),
+                login: true,
+            }),
         ];
         for r in reqs {
             let wire = serde_json::to_string(&r).unwrap();
@@ -180,6 +232,17 @@ mod tests {
             serde_json::from_str::<Request>(wire).unwrap(),
             Request::Session(SessionRequest::ReauthFlag { on: false, .. })
         ));
+        // `login` defaults to the ordinary (manual) path.
+        let wire = r#"{"cmd":"change_passphrase","old":"a","new":"b"}"#;
+        assert!(matches!(
+            serde_json::from_str::<Request>(wire).unwrap(),
+            Request::Session(SessionRequest::ChangePassphrase { login: false, .. })
+        ));
+        // The core `unlock` is still the core variant.
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"cmd":"unlock","password":"x"}"#).unwrap(),
+            Request::Unlock { .. }
+        ));
     }
 
     #[test]
@@ -195,6 +258,13 @@ mod tests {
             }),
             Response::Session(SessionResponse::BatchOk { ran: 3 }),
             Response::Session(SessionResponse::FdOk { len: 12 }),
+            Response::Session(SessionResponse::PassphraseChanged),
+            Response::Session(SessionResponse::LoginUnlockInfo {
+                on: true,
+                daemon_unit: Some(true),
+                ssh_agent_unit: None,
+                pam_services: vec!["login".into()],
+            }),
         ];
         for r in resps {
             let wire = serde_json::to_string(&r).unwrap();

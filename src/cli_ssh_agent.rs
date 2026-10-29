@@ -48,6 +48,7 @@ pub fn default_socket() -> Result<PathBuf, String> {
 /// The connecting process runs as us (SO_PEERCRED).
 pub(crate) fn same_user(s: &UnixStream) -> bool {
     use std::os::fd::AsRawFd;
+    // SAFETY: an all-zero ucred is a valid value of this plain C struct.
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: getsockopt writes at most `len` bytes into `cred`.
@@ -62,6 +63,43 @@ pub(crate) fn same_user(s: &UnixStream) -> bool {
     } == 0;
     // SAFETY: geteuid has no preconditions.
     ok && cred.uid == unsafe { libc::geteuid() }
+}
+
+/// T13.25: a locked store refuses every signature, and ssh then shows only
+/// "Permission denied (publickey)". The agent says why where the user can
+/// see it: its stderr (the journal under the user unit) and a desktop
+/// notice, at most once a minute.
+const NOTE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+pub(crate) fn note_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|t| now.duration_since(t) >= NOTE_EVERY)
+}
+
+const LOCKED_NOTE: &str = "kepr is locked, so ssh cannot use its keys; run `kepr unlock` \
+                           (logging in with your password does it when login unlock is on)";
+
+fn note_locked() {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let now = std::time::Instant::now();
+    {
+        let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+        if !note_due(*last, now) {
+            return;
+        }
+        *last = Some(now);
+    }
+    eprintln!("kepr ssh-agent: {LOCKED_NOTE}");
+    if let Ok(mut c) = Command::new("notify-send")
+        .args(["-a", "kepr", "-t", "8000", "kepr is locked", LOCKED_NOTE])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = c.wait();
+        });
+    }
 }
 
 /// Backend the agent asks; production goes to the daemon.
@@ -87,7 +125,15 @@ impl Keys for Daemon {
             Response::SshSignOk { signature_b64 } => {
                 ssh_wire::unb64(&signature_b64).ok_or_else(|| "bad signature".into())
             }
-            other => Err(other.err_msg().unwrap_or("unexpected reply").to_string()),
+            other => {
+                if matches!(
+                    client::send_request(&Request::Status),
+                    Ok(Response::StatusOk { locked: true, .. })
+                ) {
+                    note_locked();
+                }
+                Err(other.err_msg().unwrap_or("unexpected reply").to_string())
+            }
         }
     }
 }
@@ -260,6 +306,16 @@ mod tests {
             assert_eq!((name, data), ("K", &b"tbs"[..]));
             Ok(ssh_wire::ed25519_signature_blob(&[9; 64]))
         }
+    }
+
+    #[test]
+    fn the_locked_note_comes_at_most_once_a_minute() {
+        use std::time::{Duration, Instant};
+        let t = Instant::now();
+        assert!(note_due(None, t));
+        assert!(!note_due(Some(t), t + Duration::from_secs(59)));
+        assert!(note_due(Some(t), t + Duration::from_secs(60)));
+        assert!(LOCKED_NOTE.contains("kepr unlock"));
     }
 
     #[test]

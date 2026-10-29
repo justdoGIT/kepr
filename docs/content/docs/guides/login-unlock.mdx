@@ -1,0 +1,154 @@
+---
+title: "Unlock at login"
+description: "Make your login password open kepr, keep ssh and git working at the right moment, and why kepr should not type your sudo password."
+---
+
+The goal: log in once, and kepr's keys are there for the programs that need
+them, when they need them, without a second prompt and without kepr being
+something a login can depend on.
+
+## The short answers
+
+**Should the kepr master lock be a password, and should logging in unlock
+it?** Yes, with your *login* password as the store passphrase. Your login
+password is already the secret the operating system checks. Logging in
+proves it, so handing that same proof to kepr adds no new secret and no
+new prompt. It is the pattern of the macOS login keychain and GNOME
+Keyring. What you must not do is make the login depend on kepr: it is the
+other way round.
+
+**Should kepr then provide the sudo password?** No, and this is deliberate.
+Anything running as you (a browser extension, an npm postinstall script, an
+AI agent) can ask kepr for the same thing you can. A kepr that hands out
+the sudo password turns "a process of mine went wrong" into "root". Use
+something that is not a stored secret:
+
+| Where | For sudo |
+| --- | --- |
+| Linux | `pam_u2f` (touch a security key), or `pam_fprintd` (fingerprint), or the typed password with sudo's own timeout |
+| macOS | Touch ID for sudo: `auth sufficient pam_tid.so` in `/etc/pam.d/sudo_local` |
+| Windows | UAC with Windows Hello |
+
+If you still want a stored sudo password, store it as an ordinary
+credential with `--requires-consent`, so every read asks you through
+polkit. kepr has no way to answer a `sudo` prompt for you, and will not get
+one.
+
+## How it works
+
+```text
+you type the password ─▶ PAM checks it (the OS is the root of trust)
+                          └─ pam_kepr.so (optional, after the check)
+                               └─ runs  kepr pam-unlock  as you, detached,
+                                  password on stdin (never argv or env)
+                                    └─ your daemon: LoginUnlock ─▶ store open
+screen lock / suspend ─▶ kepr locks      screen unlock (setcred) ─▶ opens again
+```
+
+* `kepr login-unlock on` is the opt-in: a file, `~/.config/kepr/login-unlock`.
+  Without it the module hands nothing to kepr.
+* The daemon gets a **separate failure budget** for the login path. A login
+  password that is not your kepr passphrase (you changed one and not the
+  other) is counted there, never against `kepr unlock` or `KEPR_WIPE_AFTER`,
+  and after five in a row the login path stops trying until `kepr unlock`
+  works once (`kepr status` says so). A login can never wipe your store.
+* `kepr panic` is not undone by a login. Only `kepr unlock` does.
+* Only the user who authenticated gets the password: `sudo -u bob` or `su`
+  open a session for someone else, and their kepr is not offered it.
+* Root is left alone.
+
+## Set up
+
+Debian, Ubuntu and derivatives:
+
+```bash
+./install.sh --login           # builds, installs units, pam_kepr.so and the pam-auth-update profile
+kepr lock                      # passphrase = your login password
+kepr login-unlock on --ssh-agent
+kepr login-unlock status       # shows anything still missing
+```
+
+Log out and in once. Elsewhere, add the module by hand to the services you
+log in through (the display manager, `login`, `sshd`), **after** the line
+that checks the password and always as `optional`:
+
+```text
+auth      optional  pam_kepr.so unlock
+password  optional  pam_kepr.so
+session   optional  pam_kepr.so hint
+```
+
+`optional` matters: if the module is missing or broken, PAM skips it and the
+login goes on. Options: `unlock` (also unlock when an application establishes
+credentials, which screen lockers do after a good password), `unlock=auth`
+(for lockers that call nothing else; only where a wrong password never
+reaches the module), `hint` (say why kepr stays locked when a login had no
+password), `kepr=/path` (default `/usr/bin/kepr`, then `/usr/local/bin/kepr`;
+it must be owned by root and not group- or world-writable), `debug`.
+
+The daemon starts with the session from the `kepr-daemon.service` user unit
+(`systemctl --user enable kepr-daemon.service`, done by `login-unlock on`).
+Started that way it expects the login's unlock and holds early requests for a
+few seconds, so the first `git pull` of a session does not race it.
+
+## When something is not as expected
+
+| Situation | What happens |
+| --- | --- |
+| **kepr is locked and ssh needs a key** | `ssh` offers the key and signing is refused, which ssh shows only as `Permission denied (publickey)`. The kepr ssh-agent therefore writes why to its journal and sends a desktop notice (at most once a minute). Run `kepr unlock` (after an idle or sleep lock, `kepr unlock --fingerprint` works too). |
+| **Login without a typed password** (ssh key, fingerprint, autologin) | PAM has no password to hand over, so kepr stays locked. With `hint`, the session says so where the application shows PAM messages (a text login does; `sshd` does not in the session phase). Unlock once with `kepr unlock`. |
+| **Login password ≠ kepr passphrase** | Nothing breaks; kepr stays locked and `kepr status` shows the failed-login count. `kepr passwd` makes them equal again. |
+| **You change your login password** | With the module in the `password` stack, `passwd` moves the kepr passphrase too (`kepr: the store passphrase follows the new login password`). An expired password changed at login is handled in the same login. If kepr is not running at that moment, the next login moves it. Root resetting your password cannot (it does not know the old one): run `kepr passwd`. |
+| **The daemon is not running** | The login is not held up and is not failed. The helper waits up to 20 s in the background for it to appear. |
+| **kepr is locked by the idle timer or a screen lock** | The screen-lock option (`unlock`) opens it again when you unlock the screen. Without it: `kepr unlock`. |
+| **A store that also needs a security key** | Not supported at login; use `kepr unlock`. |
+| **Shared system-wide store** | Not applicable; root unlocks it, and `login-unlock on` says so. |
+
+Passwords reach only a root-owned `kepr`, on stdin, in a process made
+undumpable, started with an empty environment. `tests/pam_e2e.sh` runs the
+module against a real PAM stack as root (`pamtester`, libpam) and
+`tests/login_cli.rs` runs the same helpers without PAM.
+
+## What gets each kind of key, and when
+
+| Key | How it reaches the program | When |
+| --- | --- | --- |
+| SSH keys | `kepr ssh-agent` (sign only; the key never leaves the daemon) on `SSH_AUTH_SOCK` | After unlock. `login-unlock on --ssh-agent` runs the agent with the session and exports the socket for everything the session starts. |
+| git and docker logins | `git-credential-kepr`, `docker-credential-kepr` | Per request, after unlock |
+| API keys for a command | `kepr exec --env NAME`, `kepr://` references, `kepr exec --pull` | When the command starts |
+| Files that must exist | `kepr mount DIR` (read-only FUSE, fetched per open) | Per open |
+| AI agents, databases, cloud APIs | `kepr agent run`: sealed keys the agent never sees, swapped in by the gate | Per session |
+| Services and containers | `kepr systemd-cred`, the Podman driver, the CSI and External Secrets providers, `kepr keyring add` | At unit, pod or boot time |
+| Certificates and workload identity | `kepr pki`, SPIFFE SVIDs | On issue |
+| Programs that only speak Secret Service (browsers, GNOME and KDE apps) | `kepr secret-service`: kepr is the session's keyring (see [Replace GNOME Keyring](/docs/guides/replace-gnome-keyring)) | Per request, after unlock; a locked kepr shows a passphrase dialog |
+
+## What stays outside kepr
+
+A password manager cannot hold the key that opens it, so these stay out, by
+design:
+
+* your login password (and with it the kepr passphrase), the root of trust
+* the disk-encryption passphrase, needed before any user is logged in (use a
+  TPM2 or FIDO2 enrolment for that instead)
+* the recovery kit, recovery words and escrow shares: offline, by definition
+* the SSH *host* keys in `/etc/ssh`, root's
+* firmware and TPM-resident secrets
+
+## macOS
+
+The store's master key can live in the **login keychain**
+(`KEPR_MASTER_KEY_SEAL=keychain`, trusted only by the daemon binary), which
+macOS opens with your login. That is the macOS answer to this page, and it
+needs no PAM module. Run the daemon with the shipped LaunchAgent
+(`systemd/io.kepr.daemon.plist`) and point `SSH_AUTH_SOCK` at the
+`kepr ssh-agent` socket. Third-party PAM modules do not run in the login
+window, so a passphrase store would not unlock there.
+
+## Windows
+
+Not built. The plan: seal the master key with DPAPI, which Windows opens at
+sign-in, serve the daemon on a named pipe whose ACL and peer SID check play
+the part of `SO_PEERCRED`, put the ssh-agent on its own pipe (the OpenSSH
+agent service already owns the standard one), and use Windows Hello for
+confirmation. A credential provider (replacing the sign-in screen) is
+deliberately not on the list.
