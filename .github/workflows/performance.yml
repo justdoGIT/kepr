@@ -44,11 +44,14 @@ jobs:
           persist-credentials: false
 
       - name: Use the cluster toolchain (devsetup-stable)
-        if: env.DEVSETUP_RUST_BIN != ''
-        # A separate CARGO_HOME, as in ci.yml: the runner's shared one holds rustup proxies.
+        # The runner hook writes these values to GITHUB_ENV before the job.
+        # Check in the shell: the env expression is evaluated before that
+        # hook-generated environment is loaded into subsequent steps.
         run: |
-          echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
-          echo "CARGO_HOME=$RUNNER_TOOL_CACHE/cargo-$DEVSETUP_RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+          if [ -n "${DEVSETUP_RUST_BIN:-}" ]; then
+            echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+            echo "CARGO_HOME=$RUNNER_TOOL_CACHE/cargo-${DEVSETUP_RUST_TOOLCHAIN:-devsetup-stable}" >> "$GITHUB_ENV"
+          fi
 
       - name: Run the benchmarks
         env:
