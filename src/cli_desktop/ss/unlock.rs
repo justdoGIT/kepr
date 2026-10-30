@@ -201,17 +201,28 @@ fn wait(mut child: Child, cancel: &AtomicBool) -> Result<(bool, Zeroizing<Vec<u8
 }
 
 fn spawn(program: &Path, args: &[&str], stdin: Option<&str>) -> Result<Child, String> {
-    let mut c = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("{}: {e}", program.display()))?;
+        .stderr(Stdio::null());
+    // ETXTBSY: a program that was just written (a package upgrade replacing the dialog helper) is busy until
+    // every write handle to it is closed, and another thread's fork can hold a copy of one for the instant before
+    // its own exec. That window is a few milliseconds; waiting it out beats failing the unlock prompt.
+    let mut busy = 0;
+    let mut c = loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && busy < 20 => {
+                busy += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other => break other.map_err(|e| format!("{}: {e}", program.display()))?,
+        }
+    };
     if let (Some(text), Some(mut si)) = (stdin, c.stdin.take()) {
         let _ = si.write_all(text.as_bytes());
     }
@@ -375,6 +386,29 @@ mod tests {
             description: "desc\nline two",
             error: None,
         }
+    }
+
+    #[test]
+    fn a_program_still_open_for_writing_is_waited_for_not_failed() {
+        let d = tmp("busy");
+        let p = script(&d, "d", "printf 'ok\\n'");
+        // An open write handle makes exec fail with ETXTBSY until it is closed.
+        let writer = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            drop(writer);
+        });
+        let dlg = Dialog {
+            program: p,
+            kind: Kind::Askpass,
+        };
+        let got = dlg
+            .passphrase(&ask(), &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.as_str(), "ok");
+        closer.join().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
