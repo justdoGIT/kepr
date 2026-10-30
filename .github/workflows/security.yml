@@ -44,6 +44,9 @@ jobs:
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Use the cluster toolchain (devsetup-stable)
+        if: env.DEVSETUP_RUST_BIN != ''
+        run: echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
       # Prebuilt and checksum-verified: `cargo install cargo-deny` compiled it from source on every run, and
       # EmbarkStudios/cargo-deny-action is a Docker action, which a self-hosted runner without Docker cannot run.
       - name: Install cargo-deny
@@ -64,7 +67,7 @@ jobs:
 
   npm-audit:
     name: npm audit (docs)
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: docs
@@ -119,7 +122,7 @@ jobs:
 
   sbom:
     name: SBOM (SPDX)
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write

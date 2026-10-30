@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   agent-review:
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 10
     # Not for drafts (reviewed when marked ready) and not for Dependabot, which
     # cannot read the OpenRouter secret, so its run could only fail.
