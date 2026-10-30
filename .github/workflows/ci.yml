@@ -20,9 +20,11 @@ jobs:
   # always run everything. A draft PR runs nothing until it is ready for review.
   changes:
     name: Changed paths
-    # CI_RUNS_ON (repo variable, JSON) selects the runner for every job here, e.g. ["self-hosted","hp"];
-    # unset means GitHub-hosted. The same variable is used by security.yml and pr-reviewer.yml.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # CI_RUNS_ON (repo variable, JSON) selects the runner for the jobs that compile Rust or need system tools, e.g.
+    # ["self-hosted","hp"]; CI_RUNS_ON_LIGHT selects it for the jobs that do not (path filter, Go/Python SDKs, docs),
+    # e.g. ["self-hosted","light"], and falls back to CI_RUNS_ON. Both unset means GitHub-hosted. The same variables
+    # are used by security.yml and pr-reviewer.yml.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     if: github.event.pull_request.draft != true
     permissions:
@@ -121,12 +123,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
+        # The cluster runner already carries the pinned devsetup-stable toolchain (manifest/toolchains.yaml in
+        # dev-setup) and exports its bin directory as DEVSETUP_RUST_BIN; `stable` uses it there. The MSRV (1.87.0)
+        # and beta jobs, and GitHub-hosted runners, install their own.
+        if: matrix.toolchain != 'stable' || env.DEVSETUP_RUST_BIN == ''
         # Pinned to a specific commit (stable branch) to prevent supply-chain
         # drift. Dependabot keeps this current.
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
+      - name: Use the cluster toolchain (devsetup-stable)
+        if: matrix.toolchain == 'stable' && env.DEVSETUP_RUST_BIN != ''
+        # A separate CARGO_HOME: cargo looks for `cargo-clippy` and the like in $CARGO_HOME/bin before PATH, and the
+        # runner's shared one holds rustup proxies from the MSRV job, which run the rustup `stable` toolchain instead.
+        run: |
+          echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+          echo "CARGO_HOME=$RUNNER_TOOL_CACHE/cargo-$DEVSETUP_RUST_TOOLCHAIN" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
@@ -157,9 +170,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
+        if: env.DEVSETUP_RUST_BIN == ''
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: stable
+      - name: Use the cluster toolchain (devsetup-stable)
+        if: env.DEVSETUP_RUST_BIN != ''
+        run: |
+          echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+          echo "CARGO_HOME=$RUNNER_TOOL_CACHE/cargo-$DEVSETUP_RUST_TOOLCHAIN" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
@@ -185,7 +204,7 @@ jobs:
 
   python-sdk:
     name: Python SDK
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.python == 'true'
     steps:
@@ -289,7 +308,7 @@ jobs:
 
   go-sdk:
     name: Go SDK
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.go == 'true'
     steps:
@@ -303,7 +322,7 @@ jobs:
 
   ci-templates:
     name: GitHub Action + GitLab template
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.templates == 'true'
     steps:
@@ -330,7 +349,7 @@ jobs:
   # batch: platform
   csi-provider:
     name: Secrets Store CSI provider
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.csi == 'true'
     steps:
@@ -344,7 +363,7 @@ jobs:
 
   terraform-provider:
     name: Terraform provider
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.terraform == 'true'
     steps:
@@ -358,7 +377,7 @@ jobs:
 
   docs:
     name: Docs (Fumadocs)
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.docs == 'true'
     defaults:
