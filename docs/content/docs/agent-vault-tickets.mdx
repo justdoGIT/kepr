@@ -2341,12 +2341,12 @@ plaintext body; import reports omitted items.
 
 *Shipped in c91c3b9; differs: see status.*
 
-Goal: `kepr sync remote add dir:PATH|git:URL|s3:BUCKET/PREFIX`, `kepr sync
+Goal: `kepr sync remote add dir:PATH|git:URL|s3:BUCKET/PREFIX|rsync:PATH|rsync:HOST:/PATH`, `kepr sync
 now`: each device pushes a bundle encrypted to every enrolled device's key
 (T6.03) and merges others' bundles last-writer-wins per credential.
 Depends on: T6.09, T6.03.
-Files: create `src/sync_devices.rs`, `src/sync_transport.rs` (dir, git via
-`git` CLI, S3 via SigV4 from T2.01).
+Files: `src/cli_syncx/sync_now.rs`, `src/cli_syncx/transport.rs`,
+`src/cli_syncx/rsync.rs` (local or SSH), `src/cli_syncx/s3.rs`.
 Merge: each credential carries `updated_at` and `origin`; ties broken by
 device id; deletes are tombstones kept 30 days.
 Tests: two simulated devices converge; delete propagates; a bundle from an
