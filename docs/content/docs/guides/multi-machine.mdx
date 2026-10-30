@@ -1,0 +1,168 @@
+---
+title: "Use kepr on several machines"
+description: "Keep your own machines in step, give a key to someone else's kepr, and serve a home cluster, using the pieces kepr already has and no new network service."
+---
+
+kepr keeps each machine's store on that machine. There is no server that
+every machine talks to: that keeps one stolen node from being a stolen
+cluster, and it means nothing listens on your network. Moving credentials
+between machines is done with two things that are already there, **device
+sync** (your own machines) and **sharing** (somebody else's kepr).
+
+| You want to | Use |
+| --- | --- |
+| Have the same credentials on your laptop, desktop and a few servers | [Device sync](#keep-your-own-machines-in-step) |
+| Give one key to another person or another kepr, once | [`kepr share`](#give-a-key-to-another-kepr) |
+| Give a team member a whole folder, and update it later | [`kepr folder share`](#give-a-key-to-another-kepr) |
+| Move everything to a new machine in one go | `kepr export --encrypted` and `kepr import` (see the features reference) |
+| Let pods in a Kubernetes cluster read credentials | [External Secrets Operator](/docs/guides/kubernetes-eso) |
+| Push to AWS, Google or Vault secret managers | [Cloud sync](/docs/guides/cloud-sync) |
+
+## Keep your own machines in step
+
+Every machine has its own kepr and its own master key. Sync copies
+credentials between them through a **remote**, a place all machines can
+reach. The remote only ever holds encrypted bundles, so a shared directory,
+private git repository, S3 bucket, or rsync target can carry them without
+being trusted with the credentials.
+
+### 1. Pick a remote
+
+| Remote | Use it when |
+| --- | --- |
+| `dir:/mnt/shared/kepr` | the machines share a directory (NFS, a synced folder, a USB drive) |
+| `git:git@host:me/kepr-sync.git` | you have a private git repository; kepr uses your `git` and keeps a clone under `~/.cache/kepr/sync` |
+| `s3:BUCKET/PREFIX` | you have an S3 bucket or compatible service (`AWS_*` variables sign the requests; `KEPR_S3_ENDPOINT` points at another endpoint) |
+| `rsync:HOST:/PATH` | send bundles over SSH using the rsync CLI |
+
+`rsync:HOST:/PATH` uses rsync's single-colon remote-shell transport (SSH
+by default). Install `rsync` on both machines, create the destination
+directory first, and configure SSH key/host authentication. Local paths
+such as `rsync:/mnt/shared/kepr` also work. `rsync://` and `HOST::MODULE`
+daemon URLs are not supported.
+
+### 2. Pair the machines, in both directions
+
+A device only receives bundles encrypted to it, so each machine must know
+each other machine's key. Pairing goes by a short-lived token and a file,
+and each run pins one direction:
+
+```bash
+# on desktop: make a single-use token for the laptop (valid 15 minutes)
+kepr device add laptop
+
+# on laptop: answer it with an enrolment request
+kepr device enroll KD1-… -o laptop.req
+
+# copy laptop.req to the desktop, then on desktop: check it and pin the laptop
+kepr device enroll --from laptop.req
+```
+
+That lets the desktop send to the laptop. Run the same three steps with the
+roles swapped so the laptop can send to the desktop. `kepr device ls` shows
+who is paired. Up to 32 devices can be paired.
+
+### 3. Add the remote and sync
+
+On each machine:
+
+kepr sync remote add dir:/mnt/shared/kepr
+# Or use rsync over SSH:
+# kepr sync remote add rsync:user@host:/srv/kepr-sync
+kepr sync now
+
+`kepr sync now` reads the other devices' bundles from the remote, applies
+them (the newest change to a credential wins), and then leaves this
+machine's own bundle. Deleted credentials travel as tombstones for 30 days
+and land in the receiving machine's trash.
+
+### 4. Do it on a schedule
+
+Run `kepr sync now` yourself whenever you like, or let a systemd user timer
+do it hourly:
+
+```bash
+systemctl --user enable --now kepr-sync.timer
+systemctl --user list-timers kepr-sync.timer    # next run
+journalctl --user -u kepr-sync.service          # what the last runs did
+```
+
+The timer is installed with kepr (`install.sh`) but never switched on for
+you. Things to know:
+
+* **It needs an unlocked store.** With a passphrase-protected store that is
+  still locked (`kepr unlock`), the run fails and says so in the journal;
+  the next run tries again.
+* **A server with nobody logged in** needs `loginctl enable-linger USER`,
+  or the user's systemd, and with it the timer, stops when the last
+  session ends.
+* **Using the system daemon** (`KEPR_SYSTEM_MODE=1` in your shell)? User
+  units don't read `/etc/profile.d`, so add `Environment=KEPR_SYSTEM_MODE=1`
+  with `systemctl --user edit kepr-sync.service`.
+* **For `rsync:HOST:/PATH`**, the timer uses the user's SSH config and
+  identity files. If the key is available only through an agent, configure
+  `SSH_AUTH_SOCK` for `kepr-sync.service` with
+  `systemctl --user edit kepr-sync.service`.
+* **Another interval:** `systemctl --user edit kepr-sync.timer`, then
+  `OnCalendar=` followed by your own line, for example `OnCalendar=*:0/15`.
+* **A `git:` remote gets a commit per run**, because every bundle is
+  freshly encrypted. Hourly is fine for a laptop; for many machines use a
+  longer interval, or a `dir:`, `rsync:` or `s3:` remote.
+
+### What does not travel
+
+Sync carries the value and the details of each credential (type, tags,
+folder, expiry), not its history or attachments. **Sealed** agent keys, SSH
+keys, share keys and credentials that need consent or a security key are
+never synced, and a merge never replaces or deletes them. Add those on each
+machine with `kepr agent add`, `kepr ssh import` and the like.
+
+## A home cluster
+
+For a handful of nodes, run kepr on each one and give them all the same
+remote: pair every node with every other (the six directions for three
+nodes), add the remote, enable the timer. A credential set on any node
+appears on the others within the interval. Each node still has its own
+master key, audit log and lock.
+
+Pairing is pairwise, so this is the right size for a few machines, not for
+dozens. If you have many nodes, or the readers are pods and not people,
+keep the credentials in **one** kepr and let the cluster read them there:
+[`kepr-eso-provider`](/docs/guides/kubernetes-eso) serves them to the
+External Secrets Operator or the Secrets Store CSI driver with a bearer
+token. Put TLS in front of it (a reverse proxy or your service mesh)
+before it listens beyond loopback.
+
+## Give a key to another kepr
+
+To hand one credential to somebody else, or to a machine that is not one of
+yours, use sharing. Nothing needs to be paired in advance; the receiver's
+public key is enough.
+
+```bash
+kepr share key                                       # bob: print his public key (kepr-pk2-…)
+kepr share contact add bob kepr-pk2-…                # alice: pin it once
+kepr share send DB_PASS --to bob --ttl 3600 -o db.share
+kepr share receive db.share                          # bob: stored as DB_PASS (or --as NAME)
+```
+
+The envelope is encrypted to Bob's key, expires, and works once. Send the
+file any way you like. Without a way to pass a file, make a one-time link
+(`kepr share send DB_PASS --once`), which can go through the optional
+`kepr-relay` or into a file.
+
+For a whole folder, `kepr folder share FOLDER --to bob -o team.bundle`
+signs and encrypts a bundle for up to 64 recipients; they run
+`kepr folder import team.bundle`, and importing a newer bundle later
+updates only what changed. The details are in the
+[features reference](/docs/reference/features).
+
+## If something goes wrong
+
+| What you see | Why, and what to do |
+| --- | --- |
+| `no sync remotes: kepr sync remote add URL` | This machine has no remote yet. |
+| `no devices enrolled: pair them first` | Run `kepr device add` and `enroll` between the machines (both directions). |
+| `ignored NAME.bundle on …` | That device is not paired here, or its bundle was not encrypted to this machine. Pair it in the missing direction. |
+| The timer's run failed | `journalctl --user -u kepr-sync.service` names the cause; a locked store (`kepr unlock`) and an unreachable remote are the usual two. |
+| A credential did not arrive | It is sealed, an SSH or share key, or needs consent or a security key; those never sync. |

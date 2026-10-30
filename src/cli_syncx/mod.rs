@@ -12,8 +12,7 @@
 //   sync_now    T6.10  kepr sync remote add|ls|rm, kepr sync now
 //   folder      T6.02  kepr folder share FOLDER --to …; kepr folder import FILE
 //   quorum      T7.12  kepr quorum set|request|approve|sign|ls
-//   transport,  T6.10  where device bundles live: dir:, git:, s3:
-//   s3
+//   transport,  T6.10  where device bundles live: dir:, git:, s3:, rsync:
 //
 // Sync is client-side: the daemon never sees a cloud token and the
 // cloud never sees kepr's master key. Sealed, SSH and share-key
@@ -32,6 +31,7 @@ pub mod json_file;
 mod map;
 mod quorum;
 pub(crate) mod s3;
+mod rsync;
 mod sync_now;
 #[cfg(test)]
 pub(crate) mod testserver;
@@ -65,8 +65,9 @@ pub const HELP: &str = "\
   import BUNDLE [--prefix P] [--overwrite] [--yes]
                                        open a bundle: create / update / unchanged per credential
   sync remote add|rm URL | sync remote ls
-                                       where devices meet: dir:PATH, git:URL (git CLI) or
-                                       s3:BUCKET[/PREFIX] (AWS_* env; KEPR_S3_ENDPOINT)
+                                       where devices meet: dir:PATH, git:URL,
+                                       s3:BUCKET[/PREFIX], rsync:PATH or
+                                       rsync:HOST:/PATH (rsync CLI; SSH for remote hosts)
   sync now [--remote URL]              merge the other enrolled devices' bundles (newest change
                                        wins), then push this device's, encrypted to them
   folder share FOLDER --to NAME|KEY [--to …] -o FILE [--sealed]
