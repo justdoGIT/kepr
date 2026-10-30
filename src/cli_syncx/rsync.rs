@@ -59,9 +59,7 @@ impl Rsync {
 }
 
 fn run(mut command: Command) -> Result<Output, String> {
-    let output = command
-        .output()
-        .map_err(|e| format!("rsync: {e}"))?;
+    let output = command.output().map_err(|e| format!("rsync: {e}"))?;
     if output.status.success() {
         Ok(output)
     } else {
@@ -169,7 +167,9 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
 impl Remote for Rsync {
     fn list(&self) -> Result<Vec<String>, String> {
         let mut command = Command::new("rsync");
-        command.args(["--list-only", "--"]).arg(self.directory_arg());
+        command
+            .args(["--list-only", "--"])
+            .arg(self.directory_arg());
         let output = run(command)?;
         // `--list-only` uses an ls-like display, not `--out-format`.
         // Bundle names have a fixed ASCII shape with no whitespace, so
@@ -277,9 +277,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("big");
         let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg(format!("head -c {} /dev/zero > '{}'", MAX_BUNDLE_BYTES + 4096, out.display()));
+        command.arg("-c").arg(format!(
+            "head -c {} /dev/zero > '{}'",
+            MAX_BUNDLE_BYTES + 4096,
+            out.display()
+        ));
         cap_file_size(&mut command);
         assert!(run(command).is_err());
         assert!(fs::metadata(&out).unwrap().len() <= MAX_BUNDLE_BYTES as u64);

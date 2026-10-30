@@ -30,8 +30,8 @@ mod import;
 pub mod json_file;
 mod map;
 mod quorum;
-pub(crate) mod s3;
 mod rsync;
+pub(crate) mod s3;
 mod sync_now;
 #[cfg(test)]
 pub(crate) mod testserver;

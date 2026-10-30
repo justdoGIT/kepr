@@ -35,8 +35,7 @@ pub fn bundle_name(n: &str) -> bool {
     })
 }
 
-const SCHEMES: &str =
-    "dir:PATH, git:URL, s3:BUCKET[/PREFIX] or rsync:PATH or rsync:HOST:/PATH";
+const SCHEMES: &str = "dir:PATH, git:URL, s3:BUCKET[/PREFIX] or rsync:PATH or rsync:HOST:/PATH";
 
 /// Check a remote's form without touching it.
 pub fn check(url: &str) -> Result<(), String> {
