@@ -1,0 +1,82 @@
+name: Performance
+
+# Divan benchmarks (crates/kepr-core/benches) measured on the cluster runner and
+# gated against a baseline taken on the same runner. This is the GitHub twin of
+# the shared Forgejo `reusable-performance.yml` in justdoGIT/ci-templates and
+# runs the same script, installed pinned on the runner by dev-setup
+# (scripts/install-gh-runner-support.sh) because ci-templates is a private
+# Forgejo repository a job cannot fetch.
+#
+# CodSpeed's hosted tracking stays in codspeed.yml, run by hand: it needs a
+# GitHub-hosted runner.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      seed_baseline:
+        description: Write perf-baseline.json on this runner and upload it for review.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  performance:
+    name: Benchmarks (cluster runner)
+    # CI_BENCH_RUNS_ON (repo variable, JSON), e.g. ["self-hosted","hp"]. Unset: skipped, because the gate needs the
+    # runner that holds the baseline and the installed script.
+    if: vars.CI_BENCH_RUNS_ON != '' && github.event.pull_request.draft != true
+    runs-on: ${{ fromJSON(vars.CI_BENCH_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use the cluster toolchain (devsetup-stable)
+        if: env.DEVSETUP_RUST_BIN != ''
+        # A separate CARGO_HOME, as in ci.yml: the runner's shared one holds rustup proxies.
+        run: |
+          echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+          echo "CARGO_HOME=$RUNNER_TOOL_CACHE/cargo-$DEVSETUP_RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Run the benchmarks
+        env:
+          # A baseline only gates on the runner that took it, so the id is the runner's name.
+          PERF_HOST_ID: ${{ runner.name }}
+          SEED_BASELINE: ${{ inputs.seed_baseline }}
+        run: |
+          set -euo pipefail
+          script=/usr/local/libexec/gh-runner/perf-drift.py
+          [ -r "$script" ] || { echo "$script is not installed on this runner" >&2; exit 1; }
+          mkdir -p performance-results
+          args=()
+          [ "$SEED_BASELINE" = "true" ] && args+=(--baseline)
+          # From the crate directory: the root package is the workspace's default member, so `cargo bench --bench core`
+          # at the root finds no such target. The baseline lives at crates/kepr-core/perf-baseline.json.
+          python3 "$script" "${args[@]}" crates/kepr-core 2>&1 | tee performance-results/cargo.log
+          if [ "$SEED_BASELINE" = "true" ]; then
+            while IFS= read -r -d '' f; do
+              mkdir -p "performance-results/baselines/$(dirname "${f#./}")"
+              cp "$f" "performance-results/baselines/${f#./}"
+            done < <(find . -path ./target -prune -o -path ./performance-results -prune -o -name perf-baseline.json -print0)
+          fi
+
+      - name: Retain the output
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: performance-${{ github.run_number }}
+          path: performance-results/
+          if-no-files-found: error
+          retention-days: 90
