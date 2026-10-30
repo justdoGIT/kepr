@@ -1,12 +1,11 @@
 // cli_syncx/transport.rs — T6.10 where sync bundles live: one file per
 // device, `<device id>.bundle`, each written only by its own device.
-//
+
 //   dir:PATH              a directory (a network drive, a synced folder)
-//   git:URL               a git repository, through the `git` CLI: a clone
-//                         under ~/.cache/kepr/sync, pull before, commit and
-//                         push after
+//   git:URL               a git repository, through the `git` CLI
 //   s3:BUCKET[/PREFIX]    an S3 bucket (s3.rs)
-//
+//   rsync:DEST            a local directory or HOST:/PATH over SSH
+
 // The bundles are encrypted to the enrolled devices; a remote only ever
 // holds ciphertext. Transport is CLI-side: the daemon never touches the
 // network or files outside its store.
@@ -16,6 +15,8 @@ use std::process::{Command, Stdio};
 
 use kepr_core::protocol_syncx::MAX_BUNDLE_BYTES;
 use sha2::{Digest, Sha256};
+
+use super::rsync::Rsync;
 
 pub trait Remote {
     /// The bundle files on the remote (`<8 hex>.bundle`).
@@ -34,7 +35,7 @@ pub fn bundle_name(n: &str) -> bool {
     })
 }
 
-const SCHEMES: &str = "dir:PATH, git:URL or s3:BUCKET[/PREFIX]";
+const SCHEMES: &str = "dir:PATH, git:URL, s3:BUCKET[/PREFIX] or rsync:PATH or rsync:HOST:/PATH";
 
 /// Check a remote's form without touching it.
 pub fn check(url: &str) -> Result<(), String> {
@@ -42,6 +43,7 @@ pub fn check(url: &str) -> Result<(), String> {
         Some(("dir", p)) if !p.is_empty() => Ok(()),
         Some(("git", u)) if !u.is_empty() && !u.starts_with('-') => Ok(()),
         Some(("s3", b)) => super::s3::S3::parse(b).map(drop),
+        Some(("rsync", target)) => super::rsync::check_target(target),
         _ => Err(format!("unsupported remote {url:?}: use {SCHEMES}")),
     }
 }
@@ -52,6 +54,7 @@ pub fn open(url: &str) -> Result<Box<dyn Remote>, String> {
         Some(("dir", p)) => Dir::open(Path::new(p)).map(|d| Box::new(d) as Box<dyn Remote>),
         Some(("git", u)) => Git::open(u, &cache_root()).map(|g| Box::new(g) as Box<dyn Remote>),
         Some(("s3", b)) => super::s3::S3::from_env(b).map(|s| Box::new(s) as Box<dyn Remote>),
+        Some(("rsync", target)) => Rsync::open(target).map(|r| Box::new(r) as Box<dyn Remote>),
         _ => Err(format!("unsupported remote {url:?}: use {SCHEMES}")),
     }
 }
@@ -208,7 +211,19 @@ mod tests {
             assert!(!bundle_name(bad), "{bad}");
         }
         assert!(check("dir:/x").is_ok() && check("git:https://h/r.git").is_ok());
-        for bad in ["dir:", "git:", "git:--upload-pack=x", "ftp:x", "nothing"] {
+        assert!(check("rsync:/tmp/kepr").is_ok());
+        assert!(check("rsync:user@host:/srv/kepr").is_ok());
+        for bad in [
+            "dir:",
+            "git:",
+            "git:--upload-pack=x",
+            "rsync:",
+            "rsync:-e",
+            "rsync://host/module",
+            "rsync:host::module",
+            "ftp:x",
+            "nothing",
+        ] {
             assert!(check(bad).is_err(), "{bad}");
         }
     }

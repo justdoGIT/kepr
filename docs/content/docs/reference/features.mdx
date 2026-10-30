@@ -88,7 +88,7 @@ verbs print their usage line when called without arguments.
 | `share report` | — | Sent shares: to whom, when, expiry, opened. |
 | `folder` | `share FOLDER --to NAME\|KEY [--to …] -o FILE [--sealed]` · `import FILE [--overwrite] [--yes]` | Signed bundle of a folder for chosen share keys. |
 | `device` | `add LABEL [--oidc ISSUER]` · `enroll TOKEN [-o FILE]` · `enroll --from FILE` · `ls` · `rm ID\|LABEL` | Enrol your other machines; `enroll` also takes `--oidc ISSUER --client-id ID [--subject WHO]`. |
-| `sync remote` | `add URL` · `rm URL` · `ls` | Where devices meet: `dir:PATH`, `git:URL` or `s3:BUCKET[/PREFIX]`. |
+| `sync remote` | `add URL` · `rm URL` · `ls` | Where devices meet: `dir:PATH`, `git:URL`, `s3:BUCKET[/PREFIX]`, `rsync:PATH` or `rsync:HOST:/PATH` (rsync CLI; SSH for remote hosts). |
 | `sync now` | `[--remote URL]` | Merge the other devices' bundles, then push this device's. |
 | `sync push` | `--map FILE [--dry-run]` | Push many credentials to cloud secret stores. |
 | `sync import` | `--from SRC [--prefix P] [--name-prefix N] [--seal] [--overwrite] [--yes]` | Import a cloud store's secrets. |
@@ -473,7 +473,9 @@ kepr device rm laptop
 ### Multi-device sync
 
 ```bash
-kepr sync remote add dir:/mnt/usb/kepr       # or git:URL, s3:BUCKET[/PREFIX]
+kepr sync remote add dir:/mnt/usb/kepr
+# Or use rsync over SSH:
+kepr sync remote add rsync:user@host:/srv/kepr-sync
 kepr sync now
 ```
 
@@ -486,7 +488,9 @@ encrypted to every enrolled device with a per-device sender MAC.
   trash.
 - Sealed, SSH, share-key and gated credentials never sync, and a merge
   never replaces or deletes them.
-- Sync is manual: there is no background schedule.
+- Sync runs when you ask. For a schedule, `systemctl --user enable --now
+  kepr-sync.timer` runs `kepr sync now` hourly (see
+  [Use kepr on several machines](/docs/guides/multi-machine)).
 - `s3:` signs with the `AWS_*` variables (`KEPR_S3_ENDPOINT` points at
   another S3-compatible endpoint); `git:` uses the git CLI with a clone
   under `~/.cache/kepr/sync`.

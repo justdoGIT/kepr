@@ -4,6 +4,7 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [unreleased]
+- Add rsync-backed device sync and an opt-in hourly systemd user timer.
 
 Populated automatically by `git-cliff` on each tagged release via
 `.github/workflows/release.yml`.

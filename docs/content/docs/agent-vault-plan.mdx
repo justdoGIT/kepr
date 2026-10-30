@@ -187,7 +187,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | Import from 30+ managers (1Password, Bitwarden, LastPass, KeePass, Chrome…), vault export | ✅ `kepr import`: password-manager CSV (1Password, Bitwarden, KeePassXC, LastPass, Chrome, Edge, Firefox), Bitwarden and Vault JSON, Doppler, Infisical, `.env`, KeePass KDBX 4; `kepr export --encrypted` | P10.2 · T10.02, T6.09 |
 | Login: master password, biometrics, passkey, Vault DNA (smartwatch) | ✅ Argon2id passphrase (`kepr lock`), FIDO2 `hmac-secret` second factor (`kepr lock --fido2`), TPM2 PIN, fingerprint quick unlock (`kepr unlock --fingerprint`), polkit. No smartwatch | P4.3, P4.4, P10.3 · T4.08, T4.09, T10.03 |
 | Forcefield memory protection (Windows) | ✅ the Linux equivalent: non-dumpable daemon and gate, no core dumps, `mlockall` in the daemon, zeroized buffers; the master key, the gate's session key and its value cache sit split in two in `memfd_secret` pages (locked memory where the kernel lacks them) between guard pages, and the master key is relocated every 60 s | P3 · T3.01–T3.03, T12.02, T12.21, T12.22 |
-| Multi-device sync | ✅ `kepr sync remote add dir:\|git:\|s3:…` and `kepr sync now`: end-to-end encrypted, last writer wins, run by hand | P6.5 · T6.10 |
+| Multi-device sync | ✅ `kepr sync remote add dir:PATH | git:URL | s3:BUCKET/PREFIX | rsync:PATH | rsync:HOST:/PATH` and `kepr sync now`: end-to-end encrypted, last writer wins, run by hand or on a systemd user timer | P6.5 · T6.10 |
 | Desktop, mobile, watch apps | 🟡 `kepr ui` terminal UI, `kepr shell`, VS Code extension; approvals from desktop or ntfy phone notifications. Missing: GUI, mobile and watch apps | P8 · T8.01, T8.02, T8.08, T9.04 |
 | enterprisechat | ⛔ out of scope | ⛔ unrelated product |
 
