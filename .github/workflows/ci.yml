@@ -135,7 +135,11 @@ jobs:
           components: rustfmt, clippy
       - name: Use the cluster toolchain (devsetup-stable)
         if: matrix.toolchain == 'stable' && env.DEVSETUP_RUST_BIN != ''
-        run: echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+        # A separate CARGO_HOME: cargo looks for `cargo-clippy` and the like in $CARGO_HOME/bin before PATH, and the
+        # runner's shared one holds rustup proxies from the MSRV job, which run the rustup `stable` toolchain instead.
+        run: |
+          echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+          echo "CARGO_HOME=$RUNNER_TOOL_CACHE/cargo-$DEVSETUP_RUST_TOOLCHAIN" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
@@ -172,7 +176,9 @@ jobs:
           toolchain: stable
       - name: Use the cluster toolchain (devsetup-stable)
         if: env.DEVSETUP_RUST_BIN != ''
-        run: echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+        run: |
+          echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+          echo "CARGO_HOME=$RUNNER_TOOL_CACHE/cargo-$DEVSETUP_RUST_TOOLCHAIN" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 

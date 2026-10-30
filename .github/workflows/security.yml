@@ -46,7 +46,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Use the cluster toolchain (devsetup-stable)
         if: env.DEVSETUP_RUST_BIN != ''
-        run: echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+        run: |
+          echo "$DEVSETUP_RUST_BIN" >> "$GITHUB_PATH"
+          echo "CARGO_HOME=$RUNNER_TOOL_CACHE/cargo-$DEVSETUP_RUST_TOOLCHAIN" >> "$GITHUB_ENV"
       # Prebuilt and checksum-verified: `cargo install cargo-deny` compiled it from source on every run, and
       # EmbarkStudios/cargo-deny-action is a Docker action, which a self-hosted runner without Docker cannot run.
       - name: Install cargo-deny
