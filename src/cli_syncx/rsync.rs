@@ -65,13 +65,41 @@ fn run(mut command: Command) -> Result<Output, String> {
     if output.status.success() {
         Ok(output)
     } else {
-        let detail = String::from_utf8_lossy(&output.stderr);
+        // The remote controls stderr: strip control bytes (ANSI/OSC
+        // escapes) and bound it before it reaches a terminal or journal.
+        let detail: String = String::from_utf8_lossy(&output.stderr)
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(200)
+            .collect();
         let detail = detail.trim();
         if detail.is_empty() {
             Err(format!("rsync exited with {}", output.status))
         } else {
             Err(format!("rsync failed: {detail}"))
         }
+    }
+}
+
+/// Stop the child writing more than one bundle to disk, whatever the peer
+/// streams: `--max-size` is the sender's rule, and a hostile peer ignores it.
+fn cap_file_size(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    let cap = MAX_BUNDLE_BYTES as libc::rlim_t;
+    // SAFETY: the closure only calls setrlimit, which is async-signal-safe,
+    // and captures a plain integer, so it is sound between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            let limit = libc::rlimit {
+                rlim_cur: cap,
+                rlim_max: cap,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
     }
 }
 
@@ -149,6 +177,10 @@ impl Remote for Rsync {
         // timestamps, or locale-specific formatting.
         let mut names: Vec<String> = String::from_utf8_lossy(&output.stdout)
             .lines()
+            // Only a regular file (`-rw-…`) can be a bundle: a directory,
+            // symlink or fifo planted in the remote would be listed, then
+            // skipped by `get`, silently dropping that device's merge.
+            .filter(|line| line.starts_with('-'))
             .filter_map(|line| line.split_whitespace().last())
             .filter(|name| bundle_name(name))
             .map(str::to_string)
@@ -169,6 +201,8 @@ impl Remote for Rsync {
             .args(["--quiet", "--max-size=16777216", "--"])
             .arg(self.item_arg(name))
             .arg(&path);
+        // `--max-size` is enforced by the peer, which can ignore it.
+        cap_file_size(&mut command);
         run(command)?;
         read_capped(&path)
     }
@@ -210,5 +244,44 @@ mod tests {
         assert_eq!(remote.list().unwrap(), ["0a1b2c3d.bundle"]);
         assert_eq!(remote.get("0a1b2c3d.bundle").unwrap(), b"encrypted bundle");
         assert!(remote.get("../notes.txt").is_err());
+    }
+
+    #[test]
+    fn only_regular_files_are_listed_as_bundles() {
+        if Command::new("rsync").arg("--version").output().is_err() {
+            eprintln!("rsync not installed; skipping local rsync transport test");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("0a1b2c3d.bundle")).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", dir.path().join("1a2b3c4d.bundle")).unwrap();
+        let mut remote = Rsync::open(dir.path().to_str().unwrap()).unwrap();
+        remote.put("2a3b4c5d.bundle", b"encrypted bundle").unwrap();
+        assert_eq!(remote.list().unwrap(), ["2a3b4c5d.bundle"]);
+    }
+
+    #[test]
+    fn rsync_stderr_cannot_carry_terminal_escapes() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            r"printf '\033]52;c;AAAA\007\033[2Jfake ok' >&2; exit 1",
+        ]);
+        let err = run(command).unwrap_err();
+        assert!(!err.chars().any(|c| c.is_control()), "{err:?}");
+        assert!(err.contains("fake ok"));
+    }
+
+    #[test]
+    fn a_peer_cannot_stream_past_the_bundle_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("big");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("head -c {} /dev/zero > '{}'", MAX_BUNDLE_BYTES + 4096, out.display()));
+        cap_file_size(&mut command);
+        assert!(run(command).is_err());
+        assert!(fs::metadata(&out).unwrap().len() <= MAX_BUNDLE_BYTES as u64);
     }
 }
