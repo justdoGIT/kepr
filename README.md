@@ -44,6 +44,7 @@ It eliminates plaintext `.env` files, shell history exposures, and `/proc/<pid>/
 - **Master Key Security**: Argon2id passphrase protection (`kepr lock` / `kepr unlock`) with in-process AES-256-GCM encryption and zeroized buffers.
 - **Universal Integrations**: `git-credential-kepr` (Git HTTP auth), `docker-credential-kepr` (Docker login), `.envrc` (`direnv`), and `kepr-eso-provider` (Kubernetes External Secrets Operator).
 - **FIDO2 Hardware Auth**: Require hardware key touch for high-value credentials.
+- **SSH Key Management (`kepr ssh` / `kepr ssh-agent`)**: Ed25519 signing keys and Git authentication keys (e.g. `SSH_KEY_ID_ED25519`) are stored encrypted in the kepr credential backend. Private keys never touch disk in plaintext and are accessed sign-only via `kepr ssh-agent` or loaded dynamically by authorized processes.
 
 ---
 
