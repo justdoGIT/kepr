@@ -75,7 +75,7 @@ impl CliActivity {
         Ok(Self(canonical.to_string()))
     }
 
-    /// Canonical verb string — by construction one of the five built-in
+    /// Canonical verb string — by construction one of the known built-in
     /// commands.
     pub fn as_str(&self) -> &str {
         &self.0
