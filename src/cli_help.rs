@@ -1,155 +1,230 @@
-// cli_help.rs — `kepr --help` text.
+// cli_help.rs — plain `kepr help` and command-specific help.
 //
-// Split out of cli_args.rs (Phase 4 OSS-launch cleanup): the parser and
-// the help string are two different concerns that happened to share a
-// file, and the help text alone is long enough to push argv parsing
-// over the 350-LOC ceiling. No logic lives here beyond printing.
+// The request parser and help output live here so the argument parser
+// can short-circuit help before attempting a daemon connection.
 
 use crate::cli_args::VERSION;
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum HelpRequest {
+    General,
+    Command(String),
+}
+
+pub fn help_request(args: &[String]) -> Option<HelpRequest> {
+    match args {
+        [first, ..] if first == "help" => match args.get(1) {
+            Some(topic) if !topic.starts_with('-') => Some(HelpRequest::Command(topic.clone())),
+            _ => Some(HelpRequest::General),
+        },
+        [first, ..] if first == "--help" || first == "-h" => Some(HelpRequest::General),
+        [command, flag, ..] if flag == "help" || flag == "--help" || flag == "-h" => {
+            Some(HelpRequest::Command(command.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn command_help_text(command: &str) -> Option<&'static str> {
+    Some(match command {
+"set" => concat!(
+    "USAGE:\n  kepr set KEY [stdin | value VALUE | generate] ",
+    "[gen-kind KIND] [ttl SECS] [requires-consent] [requires-fido2]\n\n",
+    "Store a credential. `stdin` reads from stdin; `value` supplies a value; ",
+    "`generate` creates one.",
+),
+"get" => "USAGE:\n  kepr get KEY [quiet] [export]\n\nDecrypt and print KEY. `quiet` prints only the value; `export` prints a shell assignment.",
+"list" | "ls" => "USAGE:\n  kepr list\n\nList stored credential names. Alias: ls.",
+"delete" | "rm" => "USAGE:\n  kepr delete KEY [force]\n\nDelete KEY. Alias: rm.",
+"check" => "USAGE:\n  kepr check\n\nVerify that stored credentials can be decrypted.",
+"lock" => "USAGE:\n  kepr lock\n\nLock the password-protected credential store.",
+"unlock" => "USAGE:\n  kepr unlock\n\nUnlock the password-protected credential store with the masked password prompt.",
+"status" => "USAGE:\n  kepr status\n\nShow whether the credential store is locked and password-protected.",
+"exec" => "USAGE:\n  kepr exec [env CSV | memfd CSV | manifest PATH] [--] COMMAND [ARGS...]\n\nRun COMMAND with selected credentials provided through the environment or sealed memfds. The `--` separator is optional.",
+"doctor" => "USAGE:\n  kepr doctor\n\nCheck common Kepr setup requirements.",
+"env" => "USAGE:\n  kepr env [env CSV | manifest PATH]\n\nPrint shell export statements for the selected credentials.",
+"rotate" => "USAGE:\n  kepr rotate KEY hook PATH [gen-kind KIND]\n\nGenerate a replacement value, validate it with PATH, and commit only when the hook succeeds.",
+"audit-verify" => "USAGE:\n  kepr audit-verify\n\nVerify the append-only audit hash chain.",
+"sync-push" => "USAGE:\n  kepr sync-push KEY url SCHEME:PATH\n\nPush KEY to a supported remote secret store.",
+"sync-pull" => "USAGE:\n  kepr sync-pull KEY url SCHEME:PATH\n\nFetch a remote secret and store it as KEY.",
+"fido2-register" => "USAGE:\n  kepr fido2-register LABEL CRED_ID COSE_KEY\n\nRegister a FIDO2 credential for assertions.",
+"fido2-list" => "USAGE:\n  kepr fido2-list\n\nList registered FIDO2 credentials.",
+"protect-agent" => "USAGE:\n  kepr protect-agent NAME [--] COMMAND [ARGS...]\n\nRun an agent command with Kepr-managed credentials. The `--` separator is optional.",
+        _ => return None,
+    })
+}
+
+pub fn print_help_for(topic: Option<&str>) -> Result<(), String> {
+    match topic {
+        None => print_help(),
+        Some(command) => {
+            let text = command_help_text(command)
+                .ok_or_else(|| format!("unknown command for help: {command}"))?;
+            println!(
+                "{text}\n\nOptions accept bare names or their `--`-prefixed forms (for example, `quiet` and `--quiet`)."
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn print_help() {
-    let more = crate::cli_more::help();
     print!(
         r#"kepr {VERSION} — credential manager
 
 USAGE:
-  kepr [--json] [--color] COMMAND [args]
+  kepr [GLOBAL_FLAGS] COMMAND [ARGS...]
+  kepr help [COMMAND]
+  kepr COMMAND help
 
 COMMANDS:
-  set KEY [--stdin|--value V|--generate] [--gen-kind hex|base62|pass|uuid|words] [--ttl SECS] [--requires-consent] [--requires-fido2]
-  get KEY [--quiet] [--export]
+  help [COMMAND]                       show general or command-specific help
+  set KEY [stdin|value V|generate] [gen-kind KIND] [ttl SECS] [requires-consent] [requires-fido2]
+  get KEY [quiet] [export]
   list                                 (alias: ls)
-  delete KEY [--force]                 (alias: rm)
+  delete KEY [force]                   (alias: rm)
   lock | unlock | status               password-protect or inspect the store
-  exec [--env CSV|--memfd CSV|--manifest PATH] [--mask] -- CMD ARGS  run CMD with creds in env/memfd
-                                       (--mask prints stored values in CMD's output as ****)
+  exec [env CSV|memfd CSV|manifest PATH] [--] COMMAND ARGS
   doctor                               diagnose common setup issues
-  env [--env CSV|--manifest PATH]      emit `export VAR='value'` lines for eval
-  rotate KEY --hook PATH [--gen-kind hex|base62|pass|uuid|words]   atomic rotation
-  rotate --due                         run your due scheduled rotations (under the system daemon,
-                                       from the kepr-rotate.timer user timer)
+  env [env CSV|manifest PATH]          emit `export VAR='value'` lines for eval
+  rotate KEY hook PATH [gen-kind KIND] atomic rotation
   audit-verify                         verify the hash-chained audit log
-  sync-push KEY --url SCHEME:PATH      push KEY's value to a remote (vault:|aws-sm:|gcp-sm:)
-  sync-pull KEY --url SCHEME:PATH      pull from a remote and set KEY locally
-  fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key for assertions
-  fido2-list                             list registered FIDO2 keys
-  agent add KEY [--for PROVIDER] [--stdin|--from-clipboard] [--requires-consent]
-                                       store a write-only key (paste once); --from-clipboard reads
-                                       it once and clears the clipboard (a clipboard manager may
-                                       keep its own copy)
-                                       --for github also binds github.com (git over HTTPS); add an
-                                       existing sealed GitHub key again to gain that binding
-  agent run HARNESS [--isolate-net|--no-sandbox|--strict-sandbox]
-            [--max-requests N] [--max-tokens N] [--rate N/min] [-- ARGV]
-            [--max-requests-day N] [--max-tokens-day N]  per key per day, across sessions
-                                       run claude|codex|grok-cli|aider|gemini|omp|grok|opencode
-                                       sandboxed, with placeholders; a local gate injects the real
-                                       key on the wire
-  agent add-kube KEY --server https://HOST[:PORT] [--token-file FILE|--stdin] [--ca-file FILE]  kubectl via the gate (token never seen by the agent)
-  agent add-db KEY --url postgres|mysql|redis[s]://USER@HOST[:PORT]/DB [--sslmode verify-full|disable] [--ca FILE]
-                                       sealed database login; agents get DATABASE_URL / MYSQL_* / REDIS_URL to a local gate port
-  agent rotate-db KEY [--abort]        set a new random database password; nobody sees old or new
-  agent install omp|grok|opencode      point the harness's config file at the gate and install
-                                       kepr's plugin for it (once; opencode: config only)
-  agent install claude|codex           install kepr's guidance for the model (Claude Code skill,
-                                       a block in Codex's AGENTS.md)
-  agent install cursor|copilot         the same as project files in the current directory
-                                       (.cursor/rules/kepr.mdc, .github/copilot-instructions.md)
-  agent doctor [--port N] [--json]     check omp / Grok Build still route through the gate and
-                                       kepr's plugin is current; non-zero exit on any problem
-  agent shim HARNESS [--dir DIR] [--remove]
-                                       launcher so typing `claude` (etc.) runs it through
-                                       `kepr agent run`; put DIR (~/.local/share/kepr/shims) first on PATH
-  hook pre-tool|prompt|redact          harness-hook policy (JSON on stdin; used by the plugins)
-  agent adopt [FILE...] [--yes] [--remove]  move keys from .env / shell rc / shell history /
-                                       harness config files into kepr (JSON / YAML files are
-                                       never rewritten)
-  agent ls | agent revoke KEY          list / delete sealed keys
-  mcp                                  MCP server (stdio): list keys, call provider APIs, no values
-  panic                                stop all agent gates; lock the store if passphrase-protected
-  recovery-kit create [--threshold K] [--shares N] [--out-dir DIR]
-                                       split the master key into K-of-N shares (needs the passphrase)
-  recovery-kit restore                 rebuild a lost master key from K shares, under a new passphrase
-  leaked KEY [--yes] [--rotate]        key exposed: stop agent sessions, delete it + history, log an
-                                       incident, show where to revoke it at the provider; --rotate:
-                                       replace an AWS IAM key through the IAM API instead
-  totp KEY                             current 2FA code from a stored TOTP seed / otpauth:// URI
-  inject -i TEMPLATE [-o OUT [--allow-disk]]  fill kepr:// references: NAME, NAME/field[i][sub],
-                                       NAME/custom_field/LABEL, NAME/file/FILE (\/ \[ and \<space> escape);
-                                       OUT is new, 0600, on tmpfs / ramfs unless --allow-disk
-  scan [PATH...] [--staged]            find leaked API keys / private keys (pre-commit friendly)
-  copy KEY [--clear SECS]              copy to the clipboard, cleared after SECS (default 20)
-  record add KEY --type T [--field k=v|k=-|k[]=v]... [--custom LABEL=v]...  typed record
-                                       (login, card, database, server, api, note, custom)
-  record show KEY [--reveal] | record get KEY FIELD | record types
-  share key | share send KEY --to PUBKEY [--ttl SECS] [-o FILE] | share receive [FILE] [--as KEY]
-                                       give one credential to another kepr user (encrypted, single-use)
-  history KEY                          previous values kept (last 5), no values shown
-  restore KEY --version N              make version N current again (undoable)
-  usage [--days N]                     uses / refusals / last use per key; flags never-used keys
-  health [--max-age DAYS] [--breach]   weak / reused / old keys; --breach checks breach lists (k-anonymity)
-  discover [--seal] [--overwrite] [--yes]  find plain-text creds in aws/git/netrc/npm/pypi/docker/gh/kube
-                                       configs and import them (source files are left alone)
-  import FILE [--format auto|csv|json|env] [--prefix P] [--seal] [--overwrite] [--yes]
-                                       from 1Password/Bitwarden/KeePassXC/LastPass/browser CSV,
-                                       Bitwarden/Keeper/Doppler/Infisical JSON or .env
-  ssh generate KEY [--type ed25519|ecdsa] [--comment C] | ssh import KEY FILE | ssh list
-                                       SSH keys (Ed25519, ECDSA P-256) that stay in the daemon (sign-only)
-  ssh-agent [--foreground] [--socket PATH]  ssh-agent for those keys: eval "$(kepr ssh-agent)"
-{MORE}
-GLOBAL FLAGS:
-  --json       machine-readable output; no stderr on clean errors
-  --color      enable ANSI colours (default is plain text)
-  --no-color   force plain text (overrides CLICOLOR_FORCE=1)
+  sync-push KEY url SCHEME:PATH        push KEY's value to a remote
+  sync-pull KEY url SCHEME:PATH        pull KEY's value from a remote
+  fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key
+  fido2-list                           list registered FIDO2 keys
+  protect-agent NAME [--] COMMAND ARGS  run CMD with Kepr-managed creds
+
+GLOBAL OPTIONS (bare names or `--`-prefixed names are accepted):
+  json / --json       machine-readable output; no stderr on clean errors
+  color / --color     enable ANSI colours (default is plain text)
+  no-color / --no-color force plain text (overrides CLICOLOR_FORCE=1)
+  version / --version print the version
+  help / --help       print general help; use COMMAND help for command help
 
 ENVIRONMENT:
-  NO_COLOR           any value disables colours (overrides --color)
-  CLICOLOR_FORCE=1   enables colours without --color
+  NO_COLOR           any value disables colours (overrides color)
+  CLICOLOR_FORCE=1   enables colours without color
 
 EXAMPLES:
+  kepr help                            # general command reference
+  kepr list help                       # command-specific help; no daemon connection
+  kepr unlock help
   kepr set OPENAI_API_KEY              # interactive, masked input
-  kepr set BOB_TOKEN --generate        # auto-generate
-  printf '%s\n' secret | kepr set MY_KEY --stdin  # no argv exposure
-  kepr set TMP_TOKEN --generate --ttl 3600   # expires in 1h
-  kepr lock                             # Argon2id-protect the master key
-  kepr unlock                           # unlock with the masked password prompt
-  kepr status                           # show locked/protection state
-  kepr set API_KEY --value secret --requires-fido2   # FIDO2 touch required on every get
+  kepr set BOB_TOKEN generate          # auto-generate
+  printf '%s\n' secret | kepr set MY_KEY stdin
+  kepr set TMP_TOKEN generate ttl 3600 # expires in 1h
+  kepr lock                            # Argon2id-protect the master key
+  kepr unlock                          # unlock with the masked password prompt
+  kepr status                          # show locked/protection state
+  kepr set API_KEY requires-fido2  # interactive, masked input
   kepr get OPENAI_API_KEY              # decrypt and print
-  kepr get OPENAI_API_KEY --export     # print as: export VAR=value
-  kepr get OPENAI_API_KEY --quiet      # raw value only
-  kepr --json get OPENAI_API_KEY       # json output for scripts
+  kepr get OPENAI_API_KEY export       # print as: export VAR=value
+  kepr get OPENAI_API_KEY quiet        # raw value only
+  kepr json get OPENAI_API_KEY         # json output for scripts
   kepr ls                              # alias for list
-  kepr rm BOB_TOKEN --force            # delete without prompt
+  kepr rm BOB_TOKEN force              # delete without prompt
   kepr check                           # verify all decrypt ok
-  kepr exec --memfd OPENAI_API_KEY -- python train.py # RAM-sealed memfd delivery
-  kepr exec --env OPENAI_API_KEY -- python train.py  # provision creds in env
+  kepr exec memfd OPENAI_API_KEY python train.py
+  kepr exec env OPENAI_API_KEY python train.py
   kepr doctor                          # ✓/✗ list of setup checks
-  kepr agent add ANTHROPIC_API_KEY     # paste once; can never be read back
-  kepr agent run claude                # Claude Code sees only a placeholder
-  kepr rotate STRIPE_KEY --hook ./bin/refresh-stripe.sh
-                                       # generate, validate via hook, commit on hook exit 0
-  kepr sync-push DB_PASS --url vault:secret/team/db_pass
-                                       # VAULT_ADDR + VAULT_TOKEN env vars supply auth
-  kepr sync-push DB_PASS --url aws-sm:prod/db/password
-                                       # AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION
-  kepr sync-push DB_PASS --url gcp-sm:projects/myproj/secrets/db_pass
-                                       # GCP_ACCESS_TOKEN env var (gcloud auth print-access-token)
-  eval "$(kepr env --env DB_PASS,DB_USER)"  # source creds into the current shell
-  kepr exec -- python train.py         # uses .kepr.toml in/above PWD
+  kepr rotate STRIPE_KEY hook ./bin/refresh-stripe.sh
+  kepr sync-push DB_PASS url vault:secret/team/db_pass
+  kepr sync-push DB_PASS url aws-sm:prod/db/password
+  kepr sync-push DB_PASS url gcp-sm:projects/myproj/secrets/db_pass
+  eval "$(kepr env env DB_PASS,DB_USER)"
+  kepr exec python train.py            # .kepr.toml discovery
 
 MANIFEST:
   Place a `.kepr.toml` in the project root:
     [env]
     required = ["DB_PASS", "DB_USER", "OPENAI_API_KEY"]
-  Then `kepr exec -- python train.py` and `kepr env` need no flags.
-  --env CSV overrides the manifest; --manifest path pins a different file.
-  [env.map] VAR = "kepr://KEY/field" adds references; [env.STAGE] tables add per-stage sets,
-  picked with --stage STAGE or $KEPR_STAGE.
+  Then `kepr exec python train.py` and `kepr env` need no options.
+  `env CSV` overrides the manifest; `manifest PATH` pins a different file.
+
+  Every bare option also accepts a `--` prefix (for example, `json` and `--json`).
+  For `exec` and `protect-agent`, the optional `--` separates Kepr options from the child command.
 
   View audit log: journalctl -t kepr-daemon
     journalctl -t kepr-daemon KEPR_OP=get
-"#,
-        MORE = more
+"#
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    #[test]
+    fn recognizes_plain_general_and_command_help_forms() {
+        assert_eq!(help_request(&words(&["help"])), Some(HelpRequest::General));
+        assert_eq!(
+            help_request(&words(&["help", "list"])),
+            Some(HelpRequest::Command("list".to_string()))
+        );
+        assert_eq!(
+            help_request(&words(&["list", "help"])),
+            Some(HelpRequest::Command("list".to_string()))
+        );
+        assert_eq!(
+            help_request(&words(&["unlock", "--help"])),
+            Some(HelpRequest::Command("unlock".to_string()))
+        );
+        assert_eq!(help_request(&words(&["get"])), None);
+    }
+
+    #[test]
+    fn every_supported_command_and_alias_has_help() {
+        for command in [
+            "set",
+            "get",
+            "list",
+            "ls",
+            "delete",
+            "rm",
+            "check",
+            "lock",
+            "unlock",
+            "status",
+            "exec",
+            "doctor",
+            "env",
+            "rotate",
+            "audit-verify",
+            "sync-push",
+            "sync-pull",
+            "fido2-register",
+            "fido2-list",
+            "protect-agent",
+        ] {
+            assert!(
+                command_help_text(command).is_some(),
+                "missing help for {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_usage_prefers_bare_option_names() {
+        assert!(command_help_text("set")
+            .unwrap()
+            .contains("[stdin | value VALUE"));
+        assert!(command_help_text("get")
+            .unwrap()
+            .contains("[quiet] [export]"));
+        assert!(command_help_text("delete").unwrap().contains("[force]"));
+        assert!(command_help_text("rotate")
+            .unwrap()
+            .contains("KEY hook PATH"));
+        assert!(command_help_text("sync-pull")
+            .unwrap()
+            .contains("KEY url SCHEME:PATH"));
+        assert!(command_help_text("exec")
+            .unwrap()
+            .contains("env CSV | memfd CSV"));
+    }
 }
