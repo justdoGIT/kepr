@@ -24,6 +24,74 @@ pub struct CliMode {
 
 static CLI_MODE: OnceLock<CliMode> = OnceLock::new();
 
+fn option_name(token: &str) -> &str {
+    if token == "--" {
+        token
+    } else {
+        token.strip_prefix("--").unwrap_or(token)
+    }
+}
+
+fn command_needs_name(command: &str) -> bool {
+    matches!(
+        command,
+        "set"
+            | "get"
+            | "delete"
+            | "rotate"
+            | "sync-push"
+            | "sync-pull"
+            | "fido2-register"
+            | "protect-agent"
+    )
+}
+
+fn mode_flags(argv: &[String]) -> (bool, bool, bool) {
+    let mut json = argv.iter().any(|arg| arg == "--json");
+    let mut color = argv.iter().any(|arg| arg == "--color");
+    let mut no_color = argv.iter().any(|arg| arg == "--no-color");
+    let mut i = 1;
+    while i < argv.len() {
+        match option_name(&argv[i]) {
+            "json" => json = true,
+            "color" => color = true,
+            "no-color" => no_color = true,
+            "version" => {}
+            _ => break,
+        }
+        i += 1;
+    }
+
+    let Some(command) = argv.get(i).map(String::as_str) else {
+        return (json, color, no_color);
+    };
+    i += 1;
+    if command_needs_name(command) && i < argv.len() && !argv[i].starts_with('-') {
+        i += 1;
+    }
+    while i < argv.len() {
+        let token = argv[i].as_str();
+        if token == "--" {
+            break;
+        }
+        match option_name(token) {
+            "json" => json = true,
+            "color" => color = true,
+            "no-color" => no_color = true,
+            "value" | "gen-kind" | "ttl" | "env" | "memfd" | "manifest" | "url" | "hook" | "-v" => {
+                i = (i + 2).min(argv.len());
+                continue;
+            }
+            "generate" | "quiet" | "export" | "force" | "stdin" | "requires-consent"
+            | "requires-fido2" | "version" | "help" | "-g" | "-q" | "-e" | "-f" => {}
+            _ if token.starts_with('-') => {}
+            _ if matches!(command, "exec" | "protect-agent") => break,
+            _ => {}
+        }
+        i += 1;
+    }
+    (json, color, no_color)
+}
 /// Compute the mode from argv + environment and install it.
 /// Idempotent: the OnceLock ignores repeat set() calls.
 ///
@@ -34,14 +102,12 @@ static CLI_MODE: OnceLock<CliMode> = OnceLock::new();
 ///   4. --color flag              → on
 ///   5. default                   → off
 pub fn init_from_argv(argv: &[String]) {
-    let json = argv.iter().any(|a| a == "--json");
+    let (json, color_flag, no_color_flag) = mode_flags(argv);
 
     let no_color_env = std::env::var_os("NO_COLOR").is_some();
-    let no_color_flag = argv.iter().any(|a| a == "--no-color");
     let force_env = std::env::var_os("CLICOLOR_FORCE")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(false);
-    let color_flag = argv.iter().any(|a| a == "--color");
 
     let color = !(no_color_env || no_color_flag) && (force_env || color_flag);
 
@@ -68,9 +134,7 @@ mod tests {
     // so tests remain order-independent.
     fn compute(argv: &[&str], no_color_env: bool, force_env: Option<&str>) -> CliMode {
         let owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-        let json = owned.iter().any(|a| a == "--json");
-        let nc_flag = owned.iter().any(|a| a == "--no-color");
-        let c_flag = owned.iter().any(|a| a == "--color");
+        let (json, c_flag, nc_flag) = mode_flags(&owned);
         let force = force_env
             .map(|v| v != "0" && !v.is_empty())
             .unwrap_or(false);
@@ -114,5 +178,23 @@ mod tests {
         let m = compute(&["kepr", "--json", "list"], false, None);
         assert!(m.json);
         assert!(!m.color);
+    }
+
+    #[test]
+    fn bare_global_flags_match_double_hyphen_flags() {
+        let bare = compute(&["kepr", "json", "color", "list"], false, None);
+        let dashed = compute(&["kepr", "--json", "--color", "list"], false, None);
+        assert_eq!(bare.json, dashed.json);
+        assert_eq!(bare.color, dashed.color);
+
+        let no_color = compute(&["kepr", "color", "no-color", "list"], false, Some("1"));
+        assert!(!no_color.color);
+    }
+
+    #[test]
+    fn bare_json_does_not_capture_a_key_or_value() {
+        assert!(!compute(&["kepr", "get", "json"], false, None).json);
+        assert!(!compute(&["kepr", "set", "KEY", "value", "json"], false, None).json);
+        assert!(compute(&["kepr", "get", "KEY", "json"], false, None).json);
     }
 }
