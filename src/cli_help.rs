@@ -50,6 +50,16 @@ fn command_help_text(command: &str) -> Option<&'static str> {
 "fido2-register" => "USAGE:\n  kepr fido2-register LABEL CRED_ID COSE_KEY\n\nRegister a FIDO2 credential for assertions.",
 "fido2-list" => "USAGE:\n  kepr fido2-list\n\nList registered FIDO2 credentials.",
 "protect-agent" => "USAGE:\n  kepr protect-agent NAME [--] COMMAND [ARGS...]\n\nRun an agent command with Kepr-managed credentials. The `--` separator is optional.",
+"agent" => concat!(
+    "USAGE:\n  kepr agent add NAME [--for PROVIDER] [--stdin]\n",
+    "  kepr agent add-cloudflare\n",
+    "  kepr agent run HARNESS [--port N] [-- ARGV...]\n",
+    "  kepr agent install HARNESS\n  kepr agent doctor [--json]\n\n",
+    "add-cloudflare seals the existing CLOUDFLARE_AI_GATEWAY_API_KEY together ",
+    "with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_GATEWAY_ID inside the daemon. ",
+    "No credential values are returned. Protected applications receive session ",
+    "placeholders and a local gate URL, not the real API key.\n",
+),
         _ => return None,
     })
 }
@@ -94,6 +104,10 @@ COMMANDS:
   fido2-register LABEL CRED_ID COSE_KEY register a FIDO2 key
   fido2-list                           list registered FIDO2 keys
   protect-agent NAME [--] COMMAND ARGS  run CMD with Kepr-managed creds
+  agent add-cloudflare                 seal existing Cloudflare login inside the daemon
+  agent run HARNESS [-- ARGV...]        run an agent with gate-held credentials
+  agent install HARNESS | agent doctor install or check protected harness integration
+{more_help}
 
 GLOBAL OPTIONS (bare names or `--`-prefixed names are accepted):
   json / --json       machine-readable output; no stderr on clean errors
@@ -147,7 +161,8 @@ MANIFEST:
 
   View audit log: journalctl -t kepr-daemon
     journalctl -t kepr-daemon KEPR_OP=get
-"#
+"#,
+        more_help = crate::cli_more::help(),
     );
 }
 
