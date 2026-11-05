@@ -220,6 +220,8 @@ fn a_login_unlocks_kepr_and_the_passphrase_follows_the_login_password() {
     d.pam_unlock("pw-two\0");
     std::thread::sleep(Duration::from_millis(800));
     assert!(d.locked(), "the old passphrase still works");
+    // The old passphrase starts a one-second login back-off.
+    std::thread::sleep(Duration::from_millis(1300));
     // A password changed during the login (expired): unlock, then change.
     d.pam_unlock("pw-three\0pw-four\0");
     assert!(d.wait_unlocked());
@@ -272,4 +274,44 @@ fn requests_right_after_a_login_start_wait_for_its_unlock() {
     let t = Instant::now();
     assert!(!d.run(&["get", "K"], "").status.success());
     assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+}
+
+#[test]
+fn a_fetched_credential_arrives_as_a_sealed_descriptor() {
+    use kepr_core::framing::{read_frame, write_frame};
+    use kepr_core::protocol::{Request, Response, MAX_MSG_BYTES};
+    use kepr_core::protocol_session::{SessionRequest, SessionResponse};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::net::UnixStream;
+
+    let d = Daemon::new();
+    assert!(d
+        .run(&["set", "FD_LOGIN", "--value", "fixture-fd-value"], "")
+        .status
+        .success());
+    let mut stream = UnixStream::connect(d.home.path().join("run/kepr/kepr.sock")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let request = Request::Session(SessionRequest::FetchFd {
+        name: "FD_LOGIN".into(),
+    });
+    write_frame(&mut stream, &serde_json::to_vec(&request).unwrap()).unwrap();
+    let reply = read_frame(&mut stream, MAX_MSG_BYTES).unwrap();
+    assert!(matches!(
+        serde_json::from_slice::<Response>(&reply).unwrap(),
+        Response::Session(SessionResponse::FdOk { len: 16 })
+    ));
+    let raw = kepr_core::fdpass::recv_fd(&stream)
+        .unwrap()
+        .expect("daemon must send the fd");
+    // SAFETY: recv_fd transferred ownership of this descriptor.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    assert_eq!(
+        kepr_core::fdfetch::read_value(&fd).unwrap().as_slice(),
+        b"fixture-fd-value"
+    );
+    // SAFETY: F_GET_SEALS reads flags without changing descriptor ownership.
+    let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+    assert_ne!(seals & libc::F_SEAL_WRITE, 0);
 }

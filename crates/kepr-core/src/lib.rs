@@ -14,10 +14,12 @@
 pub mod auth;
 pub mod binding;
 pub mod canary;
+pub mod cloudflare;
 pub mod fdpass;
 pub mod framing;
 pub mod gate_limits;
 pub mod gate_protocol;
+pub mod gate_startup;
 pub mod gate_target;
 pub mod generate;
 pub mod keyring;

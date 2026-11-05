@@ -49,13 +49,21 @@ impl Drop for Agent {
 }
 
 pub fn start_agent(keys: Arc<dyn Keys + Send + Sync>) -> Result<Agent, String> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR");
+    start_agent_in(keys, runtime.as_deref().map(Path::new))
+}
+
+fn start_agent_in(
+    keys: Arc<dyn Keys + Send + Sync>,
+    runtime: Option<&Path>,
+) -> Result<Agent, String> {
     let mut rnd = [0u8; 8];
     getrandom::fill(&mut rnd).map_err(|e| format!("CSPRNG failure: {e}"))?;
     // The per-user runtime dir, unless the socket path would not fit a
     // sockaddr_un (108 bytes); then a fresh 0700 directory in /tmp.
     let name = format!("kepr-mcp-{}", hex::encode(rnd));
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(|d| PathBuf::from(d).join(&name))
+    let dir = runtime
+        .map(|d| d.join(&name))
         .filter(|d| d.as_os_str().len() + "/agent.sock".len() < 100)
         .unwrap_or_else(|| std::env::temp_dir().join(&name));
     std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
@@ -229,7 +237,8 @@ mod tests {
 
     #[test]
     fn the_agent_socket_is_private_and_answers_from_the_daemon_keys() {
-        let agent = start_agent(Arc::new(FakeKeys)).unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let agent = start_agent_in(Arc::new(FakeKeys), Some(runtime.path())).unwrap();
         let dir = agent.sock.parent().unwrap().to_path_buf();
         assert_eq!(
             std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,

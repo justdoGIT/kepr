@@ -12,18 +12,17 @@ use std::path::{Path, PathBuf};
 
 use kepr_core::protocol::Response;
 
-use crate::cli_agent_adapters::INSTALL_PORT;
 use crate::cli_agent_install::{upsert_grok, upsert_omp};
-use crate::cli_agent_plugin::{plugin_for, plugin_state, PluginState};
+use crate::cli_agent_plugin::{plugin_state, PluginState};
 use crate::cli_ui;
 
 const USAGE: &str = "usage: kepr agent doctor [--port N] [--json]";
 
-type Upsert = fn(&str, u16) -> String;
+type Upsert = fn(&str, Option<u16>) -> String;
 
 /// (harness, config file under HOME, kepr's edit of it)
 const HARNESSES: &[(&str, &str, Upsert)] = &[
-    ("omp", ".omp/agent/models.yml", upsert_omp),
+    ("omp", ".config/omp/agent/models.yml", upsert_omp),
     ("grok", ".grok/config.toml", upsert_grok),
 ];
 
@@ -35,18 +34,19 @@ pub enum Check {
 
 /// Configured iff kepr's own edit would leave the file as it is (the
 /// edits end a file with one newline, so a missing one isn't drift).
-fn check_config(text: Option<&str>, port: u16, upsert: Upsert) -> Check {
+fn check_config(text: Option<&str>, port: Option<u16>, upsert: Upsert) -> Check {
     let Some(text) = text else {
         return Check::NotInstalled;
     };
+    let target = port.map_or_else(|| "the session gate".to_string(), |p| format!("port {p}"));
     if upsert(text, port).trim_end() == text.trim_end() {
-        Check::Ok(format!("routes through the gate on port {port}"))
+        Check::Ok(format!("routes through {target}"))
     } else {
-        Check::Problem(format!("does not route through the gate on port {port}"))
+        Check::Problem(format!("does not route through {target}"))
     }
 }
 
-fn read_config(path: &Path, port: u16, upsert: Upsert) -> Check {
+fn read_config(path: &Path, port: Option<u16>, upsert: Upsert) -> Check {
     match std::fs::read_to_string(path) {
         Ok(t) => check_config(Some(&t), port, upsert),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Check::NotInstalled,
@@ -56,7 +56,7 @@ fn read_config(path: &Path, port: u16, upsert: Upsert) -> Check {
 
 pub struct Report {
     pub harness: &'static str,
-    port: u16,
+    port: Option<u16>,
     config_path: PathBuf,
     config: Check,
     plugin_dir: PathBuf,
@@ -73,8 +73,8 @@ impl Report {
 
     fn fix(&self) -> String {
         match self.port {
-            INSTALL_PORT => format!("kepr agent install {}", self.harness),
-            p => format!("kepr agent install {} --port {p}", self.harness),
+            Some(p) => format!("kepr agent install {} --port {p}", self.harness),
+            None => format!("kepr agent install {}", self.harness),
         }
     }
 
@@ -125,18 +125,48 @@ impl Report {
     }
 }
 
-pub fn reports(home: &Path, port: u16, grok_lists: &dyn Fn() -> Option<bool>) -> Vec<Report> {
+pub fn reports(
+    home: &Path,
+    port: Option<u16>,
+    grok_lists: &dyn Fn() -> Option<bool>,
+) -> Vec<Report> {
+    reports_at(
+        home,
+        port,
+        std::env::var_os("PI_CODING_AGENT_DIR"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        grok_lists,
+    )
+}
+
+fn reports_at(
+    home: &Path,
+    port: Option<u16>,
+    agent_dir: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    grok_lists: &dyn Fn() -> Option<bool>,
+) -> Vec<Report> {
     HARNESSES
         .iter()
         .filter_map(|&(harness, rel, upsert)| {
-            let (dir, files) = plugin_for(harness)?;
+            let (plugin_dir, files) = crate::cli_agent_plugin::plugin_path(
+                harness,
+                home,
+                agent_dir.clone(),
+                xdg.clone(),
+            )?;
+            let config_path = if harness == "omp" {
+                crate::cli_agent_install::omp_config(home, agent_dir.clone(), xdg.clone())
+            } else {
+                home.join(rel)
+            };
             let mut r = Report {
                 harness,
                 port,
-                config_path: home.join(rel),
-                config: read_config(&home.join(rel), port, upsert),
-                plugin_dir: home.join(dir),
-                plugin: plugin_state(&home.join(dir), files),
+                config: read_config(&config_path, port, upsert),
+                config_path,
+                plugin: plugin_state(&plugin_dir, files),
+                plugin_dir,
                 registered: None,
             };
             if harness == "grok" && r.installed() {
@@ -163,17 +193,18 @@ pub fn results(reports: &[Report]) -> HashMap<String, String> {
         .collect()
 }
 
-fn parse(raw: &[String]) -> Result<(u16, bool), String> {
-    let (mut port, mut json) = (INSTALL_PORT, false);
+fn parse(raw: &[String]) -> Result<(Option<u16>, bool), String> {
+    let (mut port, mut json) = (None, false);
     let mut it = raw.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--port" => {
-                port = it
-                    .next()
-                    .and_then(|p| p.parse().ok())
-                    .filter(|p| *p > 0)
-                    .ok_or("--port must be 1-65535")?;
+                port = Some(
+                    it.next()
+                        .and_then(|p| p.parse().ok())
+                        .filter(|p| *p > 0)
+                        .ok_or("--port must be 1-65535")?,
+                );
             }
             "--json" => json = true,
             other => return Err(format!("unexpected argument: {other}\n{USAGE}")),
@@ -216,33 +247,49 @@ mod tests {
 
     #[test]
     fn configs_route_through_the_gate_or_not() {
-        for upsert in [upsert_omp as fn(&str, u16) -> String, upsert_grok] {
-            let good = upsert("", 7878);
-            assert!(is_ok(&check_config(Some(&good), 7878, upsert)));
-            assert!(is_problem(&check_config(Some(&good), 9000, upsert)));
-            let moved = good.replace("127.0.0.1:7878", "127.0.0.1:7879");
-            assert!(is_problem(&check_config(Some(&moved), 7878, upsert)));
-            let elsewhere = good.replace("http://127.0.0.1:7878", "https://api.example");
-            assert!(is_problem(&check_config(Some(&elsewhere), 7878, upsert)));
-            assert!(is_problem(&check_config(Some("other = 1\n"), 7878, upsert)));
+        for upsert in [upsert_omp as fn(&str, Option<u16>) -> String, upsert_grok] {
+            let dynamic = upsert("", None);
+            assert!(is_ok(&check_config(Some(&dynamic), None, upsert)));
+            assert!(is_problem(&check_config(
+                Some(&dynamic),
+                Some(9000),
+                upsert
+            )));
+            let fixed = upsert("", Some(7879));
+            assert!(is_ok(&check_config(Some(&fixed), Some(7879), upsert)));
+            assert!(is_problem(&check_config(Some(&fixed), None, upsert)));
             assert!(matches!(
-                check_config(None, 7878, upsert),
+                check_config(None, None, upsert),
                 Check::NotInstalled
             ));
         }
     }
 
     #[test]
+    fn dynamic_omp_configuration_preserves_user_provider_routes() {
+        assert!(is_ok(&check_config(
+            Some("providers: {}\n"),
+            None,
+            upsert_omp
+        )));
+        assert!(is_problem(&check_config(
+            Some("other = 1\n"),
+            None,
+            upsert_grok
+        )));
+    }
+
+    #[test]
     fn problems_carry_the_fix_and_never_file_contents() {
         let home = std::env::temp_dir().join(format!("kepr-adoc-{}", std::process::id()));
-        let omp = home.join(".omp/agent/models.yml");
+        let omp = home.join(".config/omp/agent/models.yml");
         std::fs::create_dir_all(omp.parent().unwrap()).unwrap();
         std::fs::write(
             &omp,
             "providers:\n  mine:\n    apiKey: sk-ant-api03-SECRET\n",
         )
         .unwrap();
-        let r = reports(&home, 7878, &|| None);
+        let r = reports_at(&home, None, None, None, &|| None);
         let omp_r = r.iter().find(|r| r.harness == "omp").unwrap();
         let p = omp_r.problems();
         assert!(
@@ -259,23 +306,25 @@ mod tests {
     #[test]
     fn healthy_harness_and_one_json_entry_each() {
         let home = std::env::temp_dir().join(format!("kepr-adoc2-{}", std::process::id()));
-        let omp = home.join(".omp/agent/models.yml");
-        crate::cli_agent_install::apply(&omp, |t| upsert_omp(t, 7878)).unwrap();
-        crate::cli_agent_plugin::install("omp", &home).unwrap();
+        let omp = home.join(".config/omp/agent/models.yml");
+        crate::cli_agent_install::apply(&omp, |t| upsert_omp(t, None)).unwrap();
+        let (plugin, files) =
+            crate::cli_agent_plugin::plugin_path("omp", &home, None, None).unwrap();
+        crate::cli_agent_plugin::write_plugin(&plugin, files).unwrap();
         let grok = home.join(".grok/config.toml");
-        crate::cli_agent_install::apply(&grok, |t| upsert_grok(t, 7878)).unwrap();
-        let (dir, files) = crate::cli_agent_plugin::plugin_for("grok").unwrap();
-        crate::cli_agent_plugin::write_plugin(&home.join(dir), files).unwrap();
+        crate::cli_agent_install::apply(&grok, |t| upsert_grok(t, None)).unwrap();
+        let (dir, files) = crate::cli_agent_plugin::plugin_path("grok", &home, None, None).unwrap();
+        crate::cli_agent_plugin::write_plugin(&dir, files).unwrap();
         // grok lists no kepr plugin: a problem; grok not on PATH: a note.
-        let r = reports(&home, 7878, &|| Some(false));
+        let r = reports_at(&home, None, None, None, &|| Some(false));
         let res = results(&r);
         assert_eq!(res.len(), 2);
         assert_eq!(res["omp"], "ok");
         assert!(res["grok"].starts_with("problem: ") && res["grok"].contains("grok plugin"));
-        let r = reports(&home, 7878, &|| None);
+        let r = reports_at(&home, None, None, None, &|| None);
         assert_eq!(results(&r)["grok"], "ok");
         assert!(r.iter().all(|r| r.problems().is_empty()));
-        let none = reports(&home.join("nobody"), 7878, &|| None);
+        let none = reports_at(&home.join("nobody"), None, None, None, &|| None);
         let res = results(&none);
         assert_eq!(
             (res["omp"].as_str(), res["grok"].as_str()),
@@ -286,9 +335,9 @@ mod tests {
 
     #[test]
     fn parses_port_and_json() {
-        assert_eq!(parse(&[]).unwrap(), (7878, false));
+        assert_eq!(parse(&[]).unwrap(), (None, false));
         let a: Vec<String> = ["--port", "9000", "--json"].map(String::from).into();
-        assert_eq!(parse(&a).unwrap(), (9000, true));
+        assert_eq!(parse(&a).unwrap(), (Some(9000), true));
         assert!(parse(&["--port".to_string()]).is_err());
         assert!(parse(&["x".to_string()]).is_err());
     }

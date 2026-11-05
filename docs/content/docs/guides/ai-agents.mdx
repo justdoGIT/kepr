@@ -34,8 +34,40 @@ kepr agent add MISTRAL_API_KEY --for mistral
 kepr agent add DEEPSEEK_API_KEY --for deepseek
 ```
 
-Supported providers: anthropic, openai, xai, google, mistral, deepseek,
-groq, openrouter.
+Supported model providers include anthropic, openai, xai, google, mistral,
+deepseek, groq, openrouter, agentrouter, and Cloudflare AI Gateway.
+
+### Cloudflare AI Gateway
+
+Cloudflare needs a token, an account ID, and a gateway ID. If the three
+entries already exist in kepr as `CLOUDFLARE_AI_GATEWAY_API_KEY`,
+`CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_GATEWAY_ID`, convert them without
+printing or exporting any value:
+
+```bash
+kepr agent add-cloudflare
+kepr agent install omp
+kepr agent run omp -- omp --model cloudflare-ai-gateway/reflection-ai/beam-1.0-501b-a23b
+```
+
+`add-cloudflare` validates all three entries inside the daemon, then replaces
+the token entry with a sealed structured login bound only to
+`gateway.ai.cloudflare.com:443`. The account and gateway source entries are
+left unchanged. Missing, malformed, expired, or incompatible protected
+entries are refused without a partial conversion; the command never returns
+their values. Existing policies are preserved or conversion fails closed.
+
+The OMP plugin directs Cloudflare requests to the session gate. OMP sees
+only `KEPR_PH_CLOUDFLARE`; the gate supplies the account/gateway URL and the
+`cf-aig-authorization` header. Do not export the real API token, bind it to
+OpenAI, or use `!kepr get` as the protected session's credential source.
+Normal use does not need Cloudflare account/gateway environment variables.
+Cloudflare token permissions, configured gateway provider credentials, and
+upstream model availability still apply.
+
+The gateway uses Cloudflare's [documented native and OpenAI-compatible
+endpoints](https://developers.cloudflare.com/ai-gateway/usage/chat-completion/).
+
 
 ## Already have keys in `.env` or your shell profile?
 
@@ -78,11 +110,11 @@ such as `curl -H "Authorization: Bearer …"`, are left to `kepr scan
 | Harness | Command | Key it uses |
 | --- | --- | --- |
 | Claude Code | `kepr agent run claude` (optional once: `kepr agent install claude`) | `ANTHROPIC_API_KEY` |
-| OpenAI Codex CLI | `kepr agent run codex` (optional once: `kepr agent install codex`) | `OPENAI_API_KEY` |
+| OpenAI Codex CLI | `kepr agent run codex` (optional once: `kepr agent install codex`) | Selected provider: `OPENAI_API_KEY` or `AGENTROUTER_API_KEY` |
 | grok-cli | `kepr agent run grok-cli` | `XAI_API_KEY` |
 | Aider (OpenAI path) | `kepr agent run aider` | `OPENAI_API_KEY` |
 | Gemini CLI | `kepr agent run gemini` | `GEMINI_API_KEY` |
-| oh-my-pi | `kepr agent install omp` once, then `kepr agent run omp` | `ANTHROPIC_API_KEY` |
+| oh-my-pi | `kepr agent install omp` once, then `kepr agent run omp` | Sealed Anthropic or Cloudflare AI Gateway login |
 | Grok Build | `kepr agent install grok` once, then `kepr agent run grok` | `XAI_API_KEY` |
 | opencode (Anthropic) | `kepr agent install opencode` once, then `kepr agent run opencode` | `ANTHROPIC_API_KEY` |
 
@@ -94,8 +126,23 @@ omp and Grok Build (below). Running it twice changes nothing. The opencode
 config gets only a base URL and `{env:KEPR_PH_ANTHROPIC}`; a file with
 comments or another non-JSON shape is left alone, with a message.
 
-Claude Code and Codex need no config edit: `kepr agent run` points them at
-the gate through the environment. `kepr agent install claude` adds kepr's
+Claude Code and Codex need no persistent config edit. Codex reads its selected
+API provider from `CODEX_HOME/config.toml` and receives CLI overrides pointing
+that provider at the gate. OpenAI and AgentRouter are supported; AgentRouter
+uses `env_key = "AGENTROUTER_API_KEY"` and an HTTPS URL under
+`https://agentrouter.org/`. Seal its key privately, then launch:
+
+```bash
+kepr agent add AGENTROUTER_API_KEY --for agentrouter
+kepr agent run codex
+```
+
+Codex uses ephemeral authentication storage inside the protected session.
+Cached `auth.json` files and their symlink targets are masked, while the
+original login remains available outside the session. Providers using inline
+credentials or another authentication helper are refused.
+
+`kepr agent install claude` adds kepr's
 guidance for the model as a Claude Code skill
 (`~/.claude/skills/kepr/SKILL.md`, or under `$CLAUDE_CONFIG_DIR`), and
 `kepr agent install codex` adds it as a marked block in Codex's global
@@ -112,7 +159,7 @@ itself keep secrets out of the conversation. Both plugins ask
 
 | What it does | omp | Grok Build |
 | --- | --- | --- |
-| Sends provider calls through the gate with the placeholder (no config edit needed) | yes (`anthropic`, `openai`, `xai`) | via `config.toml` |
+| Sends provider calls through the gate with the placeholder (no config edit needed) | yes (`anthropic`, `openai`, `xai`, `cloudflare-ai-gateway`) | via session base URL |
 | Refuses tool calls that would print a stored value (`kepr get`, `env`, `exec`, `totp`, `inject`, `copy`, `record`, `recovery-kit`, `share`, `sync-push`) | yes | yes |
 | Refuses tool calls that contain a real key (a command, or file content) | yes | yes |
 | Refuses a prompt with a pasted key, before it reaches the model | interactive sessions | yes |
@@ -172,6 +219,8 @@ namespaces (when the kernel allows it):
   cannot ask a Secret Service (GNOME Keyring, KWallet, or kepr's own) for
   your passwords. `KEPR_SANDBOX_DBUS=allow` keeps the bus reachable; see
   [Replace GNOME Keyring](/docs/guides/replace-gnome-keyring);
+- cached Codex credentials under `CODEX_HOME` and the standard Codex
+  directories are covered with `/dev/null`, including symlink targets;
 - the harness has no capabilities, `no_new_privs`, and a seccomp filter
   that denies `ptrace`, `process_vm_readv/writev`, `bpf`,
   `perf_event_open`, kexec and module loading (debuggers don't work inside
@@ -189,7 +238,8 @@ kepr agent run claude --no-sandbox    # opt out
 ```
 
 If the kernel refuses unprivileged user namespaces (Ubuntu 24.04+ restricts
-them through AppArmor), kepr warns and runs unsandboxed; `install.sh`
+them through AppArmor), Codex refuses to launch. Codex also rejects
+`--no-sandbox`. Other harnesses warn and run unsandboxed by default; `install.sh`
 installs an AppArmor profile that allows it for `/usr/local/bin/kepr`.
 `kepr doctor` shows what your kernel supports.
 
