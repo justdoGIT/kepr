@@ -7,7 +7,7 @@
 // (cli_agent_plugin::install_guidance, T12.15).
 //
 // Config shapes follow the harnesses' docs as of 2026-10:
-//   omp:  ~/.omp/agent/models.yml  providers.<id>.{baseUrl,api,apiKey}
+//   omp:  ~/.config/omp/agent/models.yml (or PI_CODING_AGENT_DIR)
 //   grok: ~/.grok/config.toml      [model.<key>] {model,base_url,env_key}
 //   opencode: ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json
 //         provider.anthropic.options.{baseURL,apiKey} (serde_json, T12.13)
@@ -17,7 +17,6 @@ use std::path::PathBuf;
 
 use kepr_core::protocol::Response;
 
-use crate::cli_agent_adapters::INSTALL_PORT;
 use crate::cli_ui;
 
 const OMP_ID: &str = "  kepr-anthropic:";
@@ -29,10 +28,11 @@ fn omp_block(port: u16) -> String {
     )
 }
 
-fn grok_block(port: u16) -> String {
-    format!(
-        "{GROK_HEADER}\nmodel = \"grok-4\"\nbase_url = \"http://127.0.0.1:{port}/xai/v1\"\nenv_key = \"KEPR_PH_XAI\"\n"
-    )
+fn grok_block(port: Option<u16>) -> String {
+    let base_url = port.map_or_else(String::new, |p| {
+        format!("base_url = \"http://127.0.0.1:{p}/xai/v1\"\n")
+    });
+    format!("{GROK_HEADER}\nmodel = \"grok-4\"\n{base_url}env_key = \"KEPR_PH_XAI\"\n")
 }
 
 fn lines_of(text: &str) -> Vec<String> {
@@ -45,42 +45,59 @@ fn join(lines: &[String]) -> String {
     s
 }
 
-/// Insert or replace the `kepr-anthropic` provider under `providers:`.
-pub fn upsert_omp(text: &str, port: u16) -> String {
+pub fn upsert_omp(text: &str, port: Option<u16>) -> String {
     let mut lines = lines_of(text);
-    let block = lines_of(&omp_block(port));
-    let Some(prov) = lines.iter().position(|l| l.trim_end() == "providers:") else {
-        if !lines.is_empty() && !lines.last().is_some_and(|l| l.is_empty()) {
+    let block = port.map(|port| lines_of(&omp_block(port)));
+    let Some(prov) = lines
+        .iter()
+        .position(|line| matches!(line.trim_end(), "providers:" | "providers: {}"))
+    else {
+        let Some(block) = block else {
+            return if text.trim().is_empty() {
+                "providers: {}\n".into()
+            } else {
+                text.to_string()
+            };
+        };
+        if !lines.is_empty() && !lines.last().is_some_and(|line| line.is_empty()) {
             lines.push(String::new());
         }
         lines.push("providers:".into());
         lines.extend(block);
         return join(&lines);
     };
-    match lines
+    let own = lines
         .iter()
         .skip(prov + 1)
-        .position(|l| l.trim_end() == OMP_ID)
-    {
-        Some(off) => {
-            let start = prov + 1 + off;
-            let mut end = start + 1;
-            while end < lines.len()
-                && (lines[end].starts_with("    ") || lines[end].trim().is_empty())
-            {
-                end += 1;
-            }
-            lines.splice(start..end, block);
+        .position(|line| line.trim_end() == OMP_ID);
+    if let Some(offset) = own {
+        let start = prov + 1 + offset;
+        let mut end = start + 1;
+        while end < lines.len() && (lines[end].starts_with("    ") || lines[end].trim().is_empty())
+        {
+            end += 1;
         }
-        None => {
-            lines.splice(prov + 1..prov + 1, block);
-        }
+        lines.splice(start..end, block.unwrap_or_default());
+    } else if let Some(block) = block {
+        lines.splice(prov + 1..prov + 1, block);
+    } else {
+        return text.to_string();
     }
+    let has_entries = lines
+        .iter()
+        .skip(prov + 1)
+        .take_while(|line| line.starts_with(' ') || line.trim().is_empty())
+        .any(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'));
+    lines[prov] = if has_entries {
+        "providers:"
+    } else {
+        "providers: {}"
+    }
+    .into();
     join(&lines)
 }
 
-/// Insert or replace the `[model.kepr-grok]` table.
-pub fn upsert_grok(text: &str, port: u16) -> String {
+pub fn upsert_grok(text: &str, port: Option<u16>) -> String {
     let mut lines = lines_of(text);
     let block = lines_of(&grok_block(port));
     match lines.iter().position(|l| l.trim() == GROK_HEADER) {
@@ -104,7 +121,7 @@ pub fn upsert_grok(text: &str, port: u16) -> String {
 /// Point opencode's `anthropic` provider at the gate (T12.13). Plain JSON
 /// only: a root that isn't an object, a non-object on the way, or JSONC
 /// comments are refused rather than rewritten. Every other key is kept.
-pub fn upsert_opencode(text: &str, port: u16) -> Result<String, String> {
+pub fn upsert_opencode(text: &str, port: Option<u16>) -> Result<String, String> {
     use serde_json::{Map, Value};
     let bad = |what: &str| format!("opencode.json: {what} is not a JSON object; edit it by hand");
     let mut root: Value = match text.trim() {
@@ -122,7 +139,10 @@ pub fn upsert_opencode(text: &str, port: u16) -> Result<String, String> {
             .as_object_mut()
             .ok_or_else(|| bad(key))?;
     }
-    let base = format!("http://127.0.0.1:{port}/anthropic/v1");
+    let base = port.map_or_else(
+        || "{env:KEPR_GATE_URL}/anthropic/v1".to_string(),
+        |p| format!("http://127.0.0.1:{p}/anthropic/v1"),
+    );
     at.insert("baseURL".into(), base.into());
     at.insert("apiKey".into(), "{env:KEPR_PH_ANTHROPIC}".into());
     let mut out = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
@@ -132,6 +152,31 @@ pub fn upsert_opencode(text: &str, port: u16) -> Result<String, String> {
 
 /// `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json`; a relative
 /// XDG_CONFIG_HOME is ignored, as the XDG spec says.
+/// OMP prefers an explicit agent directory; otherwise use the XDG
+/// `omp/agent` location (its default is ~/.config/omp/agent).
+pub(crate) fn omp_agent_dir(
+    home: &std::path::Path,
+    agent_dir: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+) -> PathBuf {
+    agent_dir
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            xdg.map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .unwrap_or_else(|| home.join(".config"))
+                .join("omp/agent")
+        })
+}
+
+pub(crate) fn omp_config(
+    home: &std::path::Path,
+    agent_dir: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+) -> PathBuf {
+    omp_agent_dir(home, agent_dir, xdg).join("models.yml")
+}
 fn opencode_config(home: &std::path::Path, xdg: Option<std::ffi::OsString>) -> PathBuf {
     xdg.map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -141,7 +186,7 @@ fn opencode_config(home: &std::path::Path, xdg: Option<std::ffi::OsString>) -> P
 
 /// Check first, then write through `apply`: a file opencode can read but
 /// kepr can't is left as it is, with no backup.
-fn install_opencode(path: &std::path::Path, port: u16) -> Result<bool, String> {
+fn install_opencode(path: &std::path::Path, port: Option<u16>) -> Result<bool, String> {
     match std::fs::read_to_string(path) {
         Ok(t) => {
             upsert_opencode(&t, port)?;
@@ -214,14 +259,18 @@ fn guidance(harness: &str, home: &std::path::Path) -> Response {
 }
 
 pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
-    let port = port.unwrap_or(INSTALL_PORT);
+    let port_text = port.map_or_else(|| "dynamic session".to_string(), |p| format!("port {p}"));
     let home = match home() {
         Ok(h) => h,
         Err(e) => return Response::fail(e),
     };
     let (path, result) = match harness {
         "omp" => {
-            let p = home.join(".omp/agent/models.yml");
+            let p = omp_config(
+                &home,
+                std::env::var_os("PI_CODING_AGENT_DIR"),
+                std::env::var_os("XDG_CONFIG_HOME"),
+            );
             let r = apply(&p, |t| upsert_omp(t, port));
             (p, r)
         }
@@ -270,7 +319,7 @@ pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
                 "already configured"
             };
             cli_ui::ok(&format!(
-                "{harness} {what}: {} → kepr gate on port {port}",
+                "{harness} {what}: {} → kepr gate ({port_text})",
                 path.display()
             ));
             match crate::cli_agent_plugin::install(harness, &home) {
@@ -290,132 +339,5 @@ pub fn cmd_install(harness: &str, port: Option<u16>) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn omp_insert_replace_idempotent() {
-        let fresh = upsert_omp("", 7878);
-        assert!(fresh.starts_with("providers:\n  kepr-anthropic:\n"));
-        assert_eq!(upsert_omp(&fresh, 7878), fresh);
-        let user = "providers:\n  mine:\n    baseUrl: https://x\n    apiKey: MINE\n";
-        let added = upsert_omp(user, 7878);
-        assert!(added.contains("  mine:\n    baseUrl: https://x"));
-        assert!(added.contains("apiKey: KEPR_PH_ANTHROPIC"));
-        let moved = upsert_omp(&added, 9000);
-        assert!(moved.contains("127.0.0.1:9000/anthropic") && !moved.contains(":7878/"));
-        assert!(moved.contains("  mine:"));
-        assert_eq!(moved.matches(OMP_ID).count(), 1);
-    }
-
-    #[test]
-    fn grok_insert_replace_idempotent() {
-        let user = "[models]\ndefault = \"grok-4\"\n\n[model.other]\nbase_url = \"x\"\n";
-        let added = upsert_grok(user, 7878);
-        assert!(added.contains("[model.other]\nbase_url = \"x\""));
-        assert!(added.contains("env_key = \"KEPR_PH_XAI\""));
-        assert_eq!(upsert_grok(&added, 7878), added);
-        let moved = upsert_grok(&added, 9000);
-        assert!(moved.contains(":9000/xai/v1") && !moved.contains(":7878/"));
-        assert_eq!(moved.matches(GROK_HEADER).count(), 1);
-    }
-
-    #[test]
-    fn opencode_config_path_ignores_a_relative_xdg_dir() {
-        let home = std::path::Path::new("/h");
-        let want = |p: &str| PathBuf::from(p).join("opencode/opencode.json");
-        assert_eq!(opencode_config(home, None), want("/h/.config"));
-        assert_eq!(opencode_config(home, Some("/x".into())), want("/x"));
-        assert_eq!(
-            opencode_config(home, Some("rel".into())),
-            want("/h/.config")
-        );
-        assert_eq!(opencode_config(home, Some("".into())), want("/h/.config"));
-    }
-
-    #[test]
-    fn opencode_fresh_config() {
-        let want = r#"{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "anthropic": {
-      "options": {
-        "apiKey": "{env:KEPR_PH_ANTHROPIC}",
-        "baseURL": "http://127.0.0.1:7878/anthropic/v1"
-      }
-    }
-  }
-}
-"#;
-        let fresh = upsert_opencode("", 7878).unwrap();
-        assert_eq!(fresh, want);
-        assert_eq!(upsert_opencode(" \n", 7878).unwrap(), want);
-        assert_eq!(upsert_opencode(&fresh, 7878).unwrap(), fresh);
-        assert!(!fresh.contains("sk-"));
-    }
-
-    #[test]
-    fn opencode_keeps_user_keys() {
-        let user = r#"{"$schema": "https://example.test/mine.json", "model": "anthropic/claude-sonnet-4-5",
-          "provider": {"openai": {"options": {"baseURL": "https://proxy.example/v1"}},
-                       "anthropic": {"models": {"x": {}}, "options": {"apiKey": "sk-ant-api03-old", "timeout": 5}}}}"#;
-        let out = upsert_opencode(user, 9000).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["$schema"], "https://example.test/mine.json");
-        assert_eq!(v["model"], "anthropic/claude-sonnet-4-5");
-        assert_eq!(
-            v["provider"]["openai"]["options"]["baseURL"],
-            "https://proxy.example/v1"
-        );
-        let a = &v["provider"]["anthropic"];
-        assert_eq!(a["models"]["x"], serde_json::json!({}));
-        assert_eq!(a["options"]["timeout"], 5);
-        assert_eq!(
-            a["options"]["baseURL"],
-            "http://127.0.0.1:9000/anthropic/v1"
-        );
-        assert_eq!(a["options"]["apiKey"], "{env:KEPR_PH_ANTHROPIC}");
-        assert!(!out.contains("sk-"));
-        assert_eq!(upsert_opencode(&out, 9000).unwrap(), out);
-    }
-
-    #[test]
-    fn opencode_refuses_a_non_object_and_leaves_the_file() {
-        for bad in ["[1, 2]", "{\"provider\": 3}", "{\"a\": 1, // note\n}"] {
-            assert!(upsert_opencode(bad, 7878).is_err(), "{bad}");
-        }
-        let dir = std::env::temp_dir().join(format!("kepr-oc-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("opencode.json");
-        std::fs::write(&path, "[1, 2]\n").unwrap();
-        assert!(install_opencode(&path, 7878).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[1, 2]\n");
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no backup");
-        std::fs::remove_file(&path).unwrap();
-        assert!(install_opencode(&path, 7878).unwrap());
-        assert!(!install_opencode(&path, 7878).unwrap());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn apply_writes_backup_and_is_idempotent() {
-        let dir = std::env::temp_dir().join(format!("kepr-install-{}", std::process::id()));
-        let path = dir.join("cfg.toml");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&path, "[a]\n").unwrap();
-        assert!(apply(&path, |t| upsert_grok(t, 7878)).unwrap());
-        assert!(!apply(&path, |t| upsert_grok(t, 7878)).unwrap());
-        let backups = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter(|e| {
-                e.as_ref()
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .contains("kepr-backup")
-            })
-            .count();
-        assert_eq!(backups, 1);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-}
+#[path = "cli_agent_install_tests.rs"]
+mod tests;

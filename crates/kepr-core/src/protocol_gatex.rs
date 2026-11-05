@@ -33,6 +33,8 @@ pub enum GatexRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last: Option<u32>,
     },
+    /// Convert the standard Cloudflare AI Gateway token entry in place.
+    CloudflareImport,
 }
 
 /// Where a `kepr agent logs` reader is: journal file generation and byte
