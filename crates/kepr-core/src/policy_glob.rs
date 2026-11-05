@@ -35,9 +35,7 @@ fn glob_bytes_fold(p: &[u8], t: &[u8]) -> bool {
     let (mut pi, mut ti) = (0, 0);
     let mut back: Option<(usize, usize)> = None;
     while ti < t.len() {
-        if pi < p.len()
-            && (p[pi] == b'?' || p[pi].eq_ignore_ascii_case(&t[ti]))
-        {
+        if pi < p.len() && (p[pi] == b'?' || p[pi].eq_ignore_ascii_case(&t[ti])) {
             pi += 1;
             ti += 1;
         } else if pi < p.len() && p[pi] == b'*' {
@@ -80,7 +78,9 @@ pub(crate) fn any_glob(globs: &[String], value: Option<&str>, fold: bool) -> boo
     if globs.is_empty() {
         return true;
     }
-    let Some(v) = value else { return false };
+    let Some(v) = value else {
+        return false;
+    };
     if fold {
         if v.is_ascii() && globs.iter().all(|g| g.is_ascii()) {
             let v_bytes = v.as_bytes();
