@@ -225,13 +225,17 @@ pub async fn proxy_request_to(
     }
 
     let conn = state.recorder.http_request(pname, &method, rest, &bytes);
-    let built = forward::upstream_request(
-        &log,
-        &parts,
-        &inject,
-        value.as_str(),
-        Full::new(bytes.clone()),
-    );
+    let built = if inject == kepr_core::binding::Inject::CloudflareGateway {
+        crate::cloudflare::upstream_request(&log, &parts, value.as_str(), bytes.clone())
+    } else {
+        forward::upstream_request(
+            &log,
+            &parts,
+            &inject,
+            value.as_str(),
+            Full::new(bytes.clone()),
+        )
+    };
     let own = crate::mask::forms(value.as_str()); // T12.01, even if the cache empties
     drop(value);
     let Some(up) = built else {

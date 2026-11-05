@@ -178,7 +178,8 @@ pub fn upstream_headers(
         | Inject::GithubApp { .. }
         | Inject::GcpToken { .. }
         // A kube login is a record; kube.rs takes the token out of it.
-        | Inject::KubeToken => return Err("not an HTTP credential".into()),
+        | Inject::KubeToken
+        | Inject::CloudflareGateway => return Err("not an HTTP credential".into()),
     }
     Ok(out)
 }

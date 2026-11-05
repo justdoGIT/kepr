@@ -10,10 +10,9 @@ use kepr_core::protocol::{socket_path, Request, Response, MAX_MSG_BYTES, TIMEOUT
 use zeroize::Zeroizing;
 
 /// May a value be sent to the process on the other end? In user mode only
-/// the caller's own daemon, in system mode only root's. The socket path can
-/// sit in a directory another user controls (`/tmp` when neither
-/// `XDG_RUNTIME_DIR` nor `HOME` is set), and the daemon checks the client's
-/// uid, never the other way round.
+/// the caller's own daemon, in system mode only root's. An explicitly
+/// configured runtime directory may be controlled by another user, so the
+/// client authenticates the daemon as well as the daemon checking the client.
 fn trusted_peer(peer_uid: u32, own_uid: u32, system_mode: bool) -> bool {
     peer_uid == if system_mode { 0 } else { own_uid }
 }

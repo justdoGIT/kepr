@@ -5,7 +5,7 @@
 //
 // Install locations follow each harness's rules (checked against omp
 // 18.6 and grok 1.0.46):
-//   omp:  ~/.omp/agent/extensions/kepr/, auto-discovered
+//   omp:  ~/.config/omp/agent/extensions/kepr/, auto-discovered
 //         (package.json `omp.extensions`)
 //   grok: source in ~/.local/share/kepr/plugins/grok/kepr/, registered
 //         with `grok plugin install DIR --trust` (grok keeps its own
@@ -163,10 +163,24 @@ pub fn install_guidance(
 /// (directory under HOME, files) for a harness with a plugin.
 pub fn plugin_for(harness: &str) -> Option<(&'static str, Files)> {
     match harness {
-        "omp" => Some((".omp/agent/extensions/kepr", OMP)),
+        "omp" => Some((".config/omp/agent/extensions/kepr", OMP)),
         "grok" => Some((".local/share/kepr/plugins/grok/kepr", GROK)),
         _ => None,
     }
+}
+pub fn plugin_path(
+    harness: &str,
+    home: &Path,
+    agent_dir: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+) -> Option<(PathBuf, Files)> {
+    let (rel, files) = plugin_for(harness)?;
+    let path = if harness == "omp" {
+        crate::cli_agent_install::omp_agent_dir(home, agent_dir, xdg).join("extensions/kepr")
+    } else {
+        home.join(rel)
+    };
+    Some((path, files))
 }
 
 /// Write the plugin into `dir`; true when any file changed. The
@@ -188,10 +202,14 @@ pub fn write_plugin(dir: &Path, files: Files) -> Result<bool, String> {
 }
 
 pub fn install(harness: &str, home: &Path) -> Result<Option<(PathBuf, bool)>, String> {
-    let Some((rel, files)) = plugin_for(harness) else {
+    let Some((dir, files)) = plugin_path(
+        harness,
+        home,
+        std::env::var_os("PI_CODING_AGENT_DIR"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+    ) else {
         return Ok(None);
     };
-    let dir = home.join(rel);
     let changed = write_plugin(&dir, files)?;
     if harness == "grok" {
         register_with_grok(&dir, changed)?;

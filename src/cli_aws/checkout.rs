@@ -181,6 +181,24 @@ mod tests {
 
     #[test]
     fn the_token_comes_from_the_flag_the_env_or_the_saved_file() {
+        const CHILD: &str = "KEPR_TEST_CHECKOUT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let state = tempfile::tempdir().unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "cli_aws::checkout::tests::the_token_comes_from_the_flag_the_env_or_the_saved_file"])
+                .env(CHILD, "1")
+                .env("XDG_STATE_HOME", state.path())
+                .env_remove("KEPR_HOLD_TOKEN")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
         let name = format!("HOLD_TEST_{}", std::process::id());
         assert_eq!(token_for(&name, Some("flag")), Ok("flag".into()));
         let e = token_for(&name, None).unwrap_err();

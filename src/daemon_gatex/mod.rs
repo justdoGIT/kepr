@@ -11,7 +11,7 @@ pub mod spawn;
 use kepr_core::protocol::Response;
 use kepr_core::protocol_gatex::GatexRequest;
 
-pub fn dispatch(uid: u32, _peer_pid: i32, _username: &str, request: GatexRequest) -> Response {
+pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: GatexRequest) -> Response {
     match request {
         GatexRequest::AgentRecordings => recording::handle_list(uid),
         GatexRequest::AgentReplay {
@@ -24,5 +24,8 @@ pub fn dispatch(uid: u32, _peer_pid: i32, _username: &str, request: GatexRequest
             from,
             last,
         } => logs::handle_logs(uid, session, from, last),
+        GatexRequest::CloudflareImport => {
+            crate::daemon_cloudflare::handle_import(uid, peer_pid, username)
+        }
     }
 }
