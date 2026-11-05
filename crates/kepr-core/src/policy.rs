@@ -385,6 +385,7 @@ mod tests {
         assert!(!glob("GITHUB_*", "GITLAB_TOKEN"));
         assert!(glob("*_KEY*", "OPENAI_KEY_2"));
         assert!(!glob("api.*.com", "api.x.ai"));
+        assert!(any_glob(&["github_?oken".into()], Some("GITHUB_TOKEN"), true));
     }
 
     #[test]

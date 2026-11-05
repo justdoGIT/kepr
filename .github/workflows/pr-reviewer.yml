@@ -150,7 +150,14 @@ jobs:
           )
           # Query live free models from OpenRouter dynamically
           while IFS= read -r live_m; do
-            if [[ -n "$live_m" && ! " ${MODEL_CANDIDATES[*]} " =~ " ${live_m} " ]]; then
+            already_listed=false
+            for candidate in "${MODEL_CANDIDATES[@]}"; do
+              if [[ "$candidate" == "$live_m" ]]; then
+                already_listed=true
+                break
+              fi
+            done
+            if [[ -n "$live_m" && "$already_listed" == false ]]; then
               MODEL_CANDIDATES+=("$live_m")
             fi
           done < <(curl -s --max-time 5 https://openrouter.ai/api/v1/models | jq -r '.data[] | select(.id | endswith(":free")) | .id' 2>/dev/null || true)
@@ -211,8 +218,8 @@ jobs:
 
           {
             printf '%s\n\n' "$SKILL_CONTENT"
-            printf '%s\n' '---'
-            printf '%s %s lines):\n' 'PR DIFF (read-only audit,' "$DIFF_LINES"
+            printf "%s\n" "---"
+            printf "%s %s lines):\n" "PR DIFF (read-only audit," "$DIFF_LINES"
             cat "$FILTERED_DIFF"
           } > "$PROMPT_FILE"
 
@@ -306,7 +313,7 @@ jobs:
             printf '|----------|------|------|-------------|\n'
             while IFS='|' read -r _ path line severity desc; do
               [[ -n "$path" ]] || continue
-              printf '| %s | `%s` | %s | %s |\n' "$severity" "$path" "$line" "$desc"
+              printf "| %s | \`%s\` | %s | %s |\n" "$severity" "$path" "$line" "$desc"
             done < <(grep '^FINDING|' "$REVIEW_FILE")
           } > "$SUMMARY_TMP"
           post_comment "$(cat "$SUMMARY_TMP")"

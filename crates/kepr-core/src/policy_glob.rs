@@ -36,7 +36,7 @@ fn glob_bytes_fold(p: &[u8], t: &[u8]) -> bool {
     let mut back: Option<(usize, usize)> = None;
     while ti < t.len() {
         if pi < p.len()
-            && (p[pi] == b'?' || p[pi].to_ascii_uppercase() == t[ti].to_ascii_uppercase())
+            && (p[pi] == b'?' || p[pi].eq_ignore_ascii_case(&t[ti]))
         {
             pi += 1;
             ti += 1;
