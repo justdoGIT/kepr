@@ -123,6 +123,16 @@ fn decide_sandbox(mode: SandboxMode, isolate_net: bool) -> Result<bool, String> 
     }
 }
 
+fn harness_sandbox(harness: &str, mode: SandboxMode) -> Result<SandboxMode, String> {
+    match (harness, mode) {
+        ("codex", SandboxMode::Off) => {
+            Err("Codex protection requires the sandbox; omit --no-sandbox".into())
+        }
+        ("codex", _) => Ok(SandboxMode::Required),
+        _ => Ok(mode),
+    }
+}
+
 pub fn cmd_run(
     harness: &str,
     port: Option<u16>,
@@ -136,12 +146,24 @@ pub fn cmd_run(
         Ok(a) => a,
         Err(e) => return Response::fail(e),
     };
-    let sandbox = match decide_sandbox(mode, isolate_net) {
+    let sandbox = match harness_sandbox(harness, mode).and_then(|m| decide_sandbox(m, isolate_net))
+    {
         Ok(s) => s,
         Err(e) => return Response::fail(e),
     };
+    let codex = if harness == "codex" {
+        match crate::cli_agent_codex::Config::load() {
+            Ok(c) => Some(c),
+            Err(e) => return Response::fail(e),
+        }
+    } else {
+        None
+    };
     let routes = sealed_creds().and_then(|creds| {
         let names: HashSet<String> = creds.iter().map(|c| c.name.clone()).collect();
+        if let Some(c) = &codex {
+            c.require_credential(&names)?;
+        }
         let mut routes = routes_for(adapter, &names)?;
         routes.extend(crate::cli_agent_egress::extra_routes(&routes, &creds));
         routes.extend(crate::cli_aws::session::routes(&routes, &creds)); // T2.02
@@ -201,6 +223,21 @@ pub fn cmd_run(
         ));
     }
     let mut env = build_env(adapter, gate_port, &placeholders, inherited.into_iter());
+    if harness == "omp" {
+        let Some(home) = std::env::var_os("HOME") else {
+            return Response::fail("HOME is required to locate OMP configuration");
+        };
+        let directory = crate::cli_agent_install::omp_agent_dir(
+            std::path::Path::new(&home),
+            std::env::var_os("PI_CODING_AGENT_DIR"),
+            std::env::var_os("XDG_CONFIG_HOME"),
+        );
+        env.retain(|(name, _)| name != "PI_CODING_AGENT_DIR");
+        env.push((
+            "PI_CODING_AGENT_DIR".into(),
+            directory.to_string_lossy().into_owned(),
+        ));
+    }
     env.extend(crate::cli_agent_db::env(
         &all_routes,
         &placeholders,
@@ -229,6 +266,8 @@ pub fn cmd_run(
     } else {
         argv
     };
+    let configured_argv = codex.as_ref().map(|c| c.argv(gate_port, argv));
+    let argv = configured_argv.as_deref().unwrap_or(argv);
     if sandbox {
         match crate::cli_agent_sandbox::Plan::new(argv, env, gate_port, isolate_net) {
             Ok(mut plan) => {
@@ -267,75 +306,5 @@ pub fn keep_safe_env(
 }
 
 #[cfg(test)]
-mod tests {
-
-    #[test]
-    fn real_keys_in_the_environment_are_withheld() {
-        let vars = vec![
-            ("PATH".to_string(), "/usr/bin".to_string()),
-            (
-                "OPENAI_API_KEY".to_string(),
-                "sk-proj-abcdefghijklmnopqrstuvwx".to_string(),
-            ),
-            (
-                "GH".to_string(),
-                "ghp_abcdefghijklmnopqrstuvwxyz0123456789".to_string(),
-            ),
-        ];
-        let (keep, withheld) = keep_safe_env(vars.into_iter());
-        assert_eq!(keep, vec![("PATH".to_string(), "/usr/bin".to_string())]);
-        assert_eq!(
-            withheld,
-            vec!["GH".to_string(), "OPENAI_API_KEY".to_string()]
-        );
-    }
-    use super::*;
-
-    fn claude() -> &'static Adapter {
-        cli_agent_adapters::lookup("claude").unwrap()
-    }
-
-    #[test]
-    fn real_key_in_shell_is_replaced_by_placeholder() {
-        let mut ph = HashMap::new();
-        ph.insert("anthropic".to_string(), "kepr-ph-x".to_string());
-        let inherited = vec![
-            ("ANTHROPIC_API_KEY".to_string(), "sk-ant-real".to_string()),
-            (
-                "ANTHROPIC_BASE_URL".to_string(),
-                "https://evil.example".to_string(),
-            ),
-            ("PATH".to_string(), "/usr/bin".to_string()),
-        ];
-        let env = build_env(claude(), 7000, &ph, inherited.into_iter());
-        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
-        assert_eq!(get("ANTHROPIC_API_KEY"), Some("kepr-ph-x"));
-        assert_eq!(
-            get("ANTHROPIC_BASE_URL"),
-            Some("http://127.0.0.1:7000/anthropic")
-        );
-        assert_eq!(get("PATH"), Some("/usr/bin"));
-        assert!(!env.iter().any(|(_, v)| v == "sk-ant-real"));
-        assert_eq!(
-            env.iter().filter(|(k, _)| k == "ANTHROPIC_API_KEY").count(),
-            1
-        );
-    }
-
-    #[test]
-    fn missing_credential_drops_its_variables() {
-        let env = build_env(claude(), 7000, &HashMap::new(), std::iter::empty());
-        assert!(env.is_empty());
-    }
-
-    #[test]
-    fn routes_need_a_sealed_credential() {
-        let none = HashSet::new();
-        assert!(routes_for(claude(), &none)
-            .unwrap_err()
-            .contains("kepr agent add ANTHROPIC_API_KEY"));
-        let some: HashSet<String> = ["ANTHROPIC_API_KEY".to_string()].into();
-        let r = routes_for(claude(), &some).unwrap();
-        assert_eq!((r[0].provider.as_str(), r[0].slot), ("anthropic", 0));
-    }
-}
+#[path = "cli_agent_run_tests.rs"]
+mod tests;

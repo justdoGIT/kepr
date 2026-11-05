@@ -122,6 +122,26 @@ impl std::io::Read for Deadline<'_> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_later_byte_does_not_restart_the_request_deadline() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        let mut reader = Deadline::new(&receiver, Duration::from_millis(50));
+        sender.write_all(b"a").unwrap();
+        let mut byte = [0];
+        reader.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, *b"a");
+        std::thread::sleep(Duration::from_millis(75));
+        sender.write_all(b"b").unwrap();
+        assert_eq!(
+            reader.read(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+    }
+
     fn current_umask() -> u32 {
         // umask(2) atomically swaps and returns the previous mask. Set-and-
         // restore is the standard idiom to read it without changing it.
