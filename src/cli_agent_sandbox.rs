@@ -12,10 +12,9 @@
 //        └ harness: no capabilities, no_new_privs, Landlock (T1.23),
 //                   seccomp filter
 //
-// Without --isolate-net the harness keeps host networking (package
-// installs keep working) but still cannot see the vault, the daemon
-// socket or any host process. Everything after the first fork runs
-// single-threaded until exec, so allocation there is safe.
+// Without --isolate-net, host networking remains available but the vault,
+// daemon socket and host processes stay hidden. After the first fork,
+// execution is single-threaded until exec, so allocation there is safe.
 
 use std::ffi::CString;
 use std::io::{Read, Write};
@@ -32,7 +31,7 @@ pub struct Plan {
     pub argv: Vec<CString>,
     pub envp: Vec<CString>,
     pub hide: Vec<CString>,
-    /// Socket files covered with /dev/null: the session bus (T13.28).
+    /// Files covered with /dev/null: session bus and credential caches.
     pub hide_files: Vec<CString>,
     pub gate_port: u16,
     /// Database and tunnel ports (T7.03), relayed like the gate's port.
@@ -98,7 +97,9 @@ impl Plan {
         isolate_net: bool,
     ) -> Result<Self, String> {
         crate::cli_sandbox_bus::warn_if_abstract(isolate_net);
-        let hide = hide_dirs()
+        let hidden_dirs = hide_dirs();
+        let hide_files = crate::cli_sandbox_auth::hidden_cstrings(&env, &hidden_dirs)?;
+        let hide = hidden_dirs
             .into_iter()
             .map(|p| {
                 CString::new(p.as_os_str().as_encoded_bytes()).map_err(|_| "bad path".to_string())
@@ -108,16 +109,14 @@ impl Plan {
             argv: cstrings(argv.iter().cloned())?,
             envp: cstrings(env.into_iter().map(|(k, v)| format!("{k}={v}")))?,
             hide,
-            hide_files: crate::cli_sandbox_bus::hidden_cstrings(),
+            hide_files,
             gate_port,
             extra_ports: Vec::new(),
             isolate_net,
             filter: seccomp::program(),
         })
     }
-}
 
-impl Plan {
     /// The gate's port, then the database and tunnel ports.
     fn relay_ports(&self) -> Vec<u16> {
         std::iter::once(self.gate_port)
@@ -236,6 +235,7 @@ fn exec_harness(plan: &Plan) -> ! {
     unsafe {
         libc::signal(libc::SIGINT, libc::SIG_DFL);
         libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     sys::drop_all_caps();
     if let Err(e) = crate::cli_sandbox_landlock::enforce(&plan.hide) {
@@ -349,63 +349,5 @@ pub fn run(plan: Plan) -> ! {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nested_hidden_dirs_are_dropped() {
-        let p = |s: &str| PathBuf::from(s);
-        assert_eq!(
-            outermost(vec![
-                p("/s/kepr/runtime/kepr"),
-                p("/r/kepr/profiles/work"),
-                p("/s/kepr"),
-                p("/r/kepr"),
-                p("/r/kepr2"),
-                p("/r/kepr"),
-            ]),
-            [p("/r/kepr"), p("/r/kepr2"), p("/s/kepr")]
-        );
-    }
-
-    #[test]
-    fn kepr_mount_points_are_hidden_too() {
-        // T12.20: a `kepr mount` directory gets the same empty tmpfs.
-        let dir = std::env::temp_dir().join(format!("kepr hide {}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let escaped = dir.display().to_string().replace(' ', "\\040");
-        let mi = format!("40 22 0:35 / {escaped} ro,nosuid - fuse.kepr kepr ro\n");
-        let gone = dir.join("missing");
-        let mi = format!(
-            "{mi}41 22 0:36 / {} ro - fuse.kepr kepr ro\n",
-            gone.display()
-        );
-        let hidden = hide_dirs_with(&mi);
-        assert!(hidden.contains(&dir), "{hidden:?}");
-        assert!(!hidden.contains(&gone), "only existing directories");
-        assert!(!hide_dirs_with("").contains(&dir));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn hide_dirs_only_existing_and_include_socket_dir_when_present() {
-        for d in hide_dirs() {
-            assert!(d.is_dir(), "{}", d.display());
-        }
-    }
-
-    #[test]
-    fn relays_the_gate_port_then_database_and_tunnel_ports() {
-        let mut plan = Plan::new(&["true".into()], vec![], 7000, true).unwrap();
-        assert_eq!(plan.relay_ports(), vec![7000]);
-        plan.extra_ports = vec![7001, 7002];
-        assert_eq!(plan.relay_ports(), vec![7000, 7001, 7002]);
-    }
-
-    #[test]
-    fn ns_flags_add_net_only_when_isolating() {
-        assert_eq!(ns_flags(true) & libc::CLONE_NEWNET, libc::CLONE_NEWNET);
-        assert_eq!(ns_flags(false) & libc::CLONE_NEWNET, 0);
-        assert_ne!(ns_flags(false) & libc::CLONE_NEWPID, 0);
-    }
-}
+#[path = "cli_agent_sandbox_tests.rs"]
+mod tests;

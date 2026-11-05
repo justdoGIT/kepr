@@ -11,18 +11,21 @@
 //! and relays its ready line back. Closing the connection stops the
 //! session gate, which is how `kepr panic` reaches it.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use kepr_core::framing::{read_frame, write_frame};
 use kepr_core::gate_protocol::ServiceStart;
+use kepr_core::gate_startup::{failure_reason, read_ready, write_config};
 use zeroize::Zeroizing;
 
 const MAX_START: usize = 64 * 1024;
+const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn peer_uid(s: &UnixStream) -> Option<u32> {
     // SAFETY: an all-zero ucred is a valid value of this plain C struct.
@@ -73,6 +76,10 @@ pub fn serve(path: &str, allowed_uid: u32) -> Result<(), String> {
 }
 
 fn session(mut conn: UnixStream) -> Result<(), String> {
+    conn.set_read_timeout(Some(READY_TIMEOUT))
+        .map_err(|e| e.to_string())?;
+    conn.set_write_timeout(Some(READY_TIMEOUT))
+        .map_err(|e| e.to_string())?;
     let fd = kepr_core::fdpass::recv_fd(&conn)?.ok_or("no channel fd")?;
     // SAFETY: recv_fd handed us this fd; we own it from here.
     let channel = unsafe { OwnedFd::from_raw_fd(fd) };
@@ -84,6 +91,7 @@ fn session(mut conn: UnixStream) -> Result<(), String> {
     let config = Zeroizing::new(serde_json::to_vec(&start.config).map_err(|e| e.to_string())?);
     drop(start.config);
 
+    let watch = conn.try_clone().map_err(|e| e.to_string())?;
     let chan_fd = channel.as_raw_fd();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(exe);
@@ -106,55 +114,95 @@ fn session(mut conn: UnixStream) -> Result<(), String> {
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("cannot start session gate: {e}"))?;
-    drop(channel);
+    let deadline = Instant::now() + READY_TIMEOUT;
     let ready = child
         .stdin
         .take()
-        .ok_or("no stdin")
-        .and_then(|mut i| i.write_all(&config).map_err(|_| "config write failed"))
-        .map_err(str::to_string)
+        .ok_or_else(|| "session gate has no stdin".to_string())
+        .and_then(|input| write_config(input, &config, deadline))
         .and_then(|_| {
-            let mut line = String::new();
-            let out = child.stdout.take().ok_or("no stdout")?;
-            BufReader::new(out)
-                .read_line(&mut line)
-                .map_err(|e| e.to_string())?;
-            Ok(line)
+            let stdout = child.stdout.take().ok_or("session gate has no stdout")?;
+            read_ready(stdout, deadline)
         });
     let ready = match ready {
-        Ok(l) if !l.is_empty() => l,
-        other => {
+        Ok(ready) => ready,
+        Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(other.err().unwrap_or_else(|| "session gate exited".into()));
+            let report = kepr_core::gate_protocol::ReadyLine {
+                ready: false,
+                port: 0,
+                placeholders: std::collections::HashMap::new(),
+                ca_pem: None,
+                db_ports: std::collections::HashMap::new(),
+                error: Some(failure_reason(&error).into()),
+            };
+            let bytes = serde_json::to_vec(&report).map_err(|_| "cannot encode startup failure")?;
+            write_frame(&mut conn, &bytes)
+                .map_err(|e| format!("cannot relay session gate startup failure: {e}"))?;
+            return Ok(());
         }
     };
-    write_frame(&mut conn, ready.trim_end().as_bytes()).map_err(|e| e.to_string())?;
+    let pidfd = match crate::session::pidfd_open(child.id() as i32) {
+        Ok(pidfd) => pidfd,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let ready_line = match serde_json::to_vec(&ready) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cannot encode session readiness".into());
+        }
+    };
+    if let Err(error) = write_frame(&mut conn, &ready_line) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("cannot relay session readiness: {error}"));
+    }
 
     // The daemon closing the connection (panic, session end) stops the gate.
-    let watch = conn.try_clone().map_err(|e| e.to_string())?;
+    if conn.set_read_timeout(None).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("cannot prepare session lifeline".into());
+    }
     // A pidfd names this exact process: after `wait` reaps it, a kill by
     // pid could hit another session's gate that reused the number.
-    let pidfd = crate::session::pidfd_open(child.id() as i32)?;
-    std::thread::spawn(move || {
-        let mut sink = [0u8; 64];
-        let mut w = watch;
-        while matches!(w.read(&mut sink), Ok(n) if n > 0) {}
-        use std::os::fd::AsRawFd;
-        // SAFETY: pidfd_send_signal on a pidfd we own; ESRCH once the
-        // gate has exited, never another process.
-        unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                pidfd.as_raw_fd(),
-                libc::SIGKILL,
-                std::ptr::null::<libc::siginfo_t>(),
-                0,
-            )
-        };
-    });
+    let monitor = std::thread::Builder::new()
+        .name("kepr-gate-lifeline".into())
+        .spawn(move || {
+            let mut sink = [0u8; 64];
+            let mut w = watch;
+            while matches!(w.read(&mut sink), Ok(n) if n > 0) {}
+            use std::os::fd::AsRawFd;
+            // SAFETY: pidfd_send_signal on a pidfd we own; ESRCH once the
+            // gate has exited, never another process.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+        });
+    let monitor = match monitor {
+        Ok(monitor) => monitor,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cannot start session lifeline monitor".into());
+        }
+    };
     let _ = child.wait();
     let _ = conn.shutdown(std::net::Shutdown::Both);
+    let _ = monitor.join();
     Ok(())
 }
 

@@ -247,7 +247,20 @@ mod tests {
         git(None, &["init", "--quiet", "--bare", &b]).unwrap();
         let url = format!("file://{b}");
         // Two devices = two cache roots.
-        let device = |n: &str| Git::open(&url, &t.path().join(n)).unwrap();
+        let device = |n: &str| {
+            let repo = Git::open(&url, &t.path().join(n)).unwrap();
+            git(
+                Some(&repo.dir),
+                &["config", "--local", "commit.gpgsign", "false"],
+            )
+            .unwrap();
+            git(
+                Some(&repo.dir),
+                &["config", "--local", "core.hooksPath", "/dev/null"],
+            )
+            .unwrap();
+            repo
+        };
         let mut a = device("a");
         a.put("aaaaaaaa.bundle", b"from a").unwrap();
         let mut b2 = device("b");
