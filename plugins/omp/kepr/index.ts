@@ -23,6 +23,7 @@ const ROUTES: Record<string, [string, string]> = {
 	anthropic: ["/anthropic", "KEPR_PH_ANTHROPIC"],
 	openai: ["/openai/v1", "KEPR_PH_OPENAI"],
 	xai: ["/xai/v1", "KEPR_PH_XAI"],
+	"cloudflare-ai-gateway": ["/cloudflare/compat", "KEPR_PH_CLOUDFLARE"],
 };
 
 interface HookResult {
@@ -56,6 +57,7 @@ function hook(event: string, payload: unknown): Promise<HookResult> {
 		child.stderr.on("data", (d: Buffer) => (stderr += d));
 		// kepr missing: allow. The gate and sandbox are the boundary.
 		child.on("error", () => resolve({ code: 0, message: "" }));
+		child.stdin.on("error", () => {});
 		child.on("close", (code: number | null) => {
 			clearTimeout(timer);
 			if (timedOut || code === null) return resolve(TIMED_OUT);
@@ -67,6 +69,25 @@ function hook(event: string, payload: unknown): Promise<HookResult> {
 
 export default function kepr(pi: ExtensionAPI) {
 	const routed: string[] = [];
+	process.stdout?.on("error", (err: unknown) => {
+		if (err && typeof err === "object" && "code" in err && err.code === "EPIPE") return;
+	});
+	process.stderr?.on("error", (err: unknown) => {
+		if (err && typeof err === "object" && "code" in err && err.code === "EPIPE") return;
+	});
+
+	const origEmit = process.emit;
+	type EmitFn = (event: string | symbol, ...args: unknown[]) => boolean;
+	process.emit = function (event: string | symbol, ...args: unknown[]): boolean {
+		if (event === "uncaughtException") {
+			const err = args[0];
+			if (err && typeof err === "object") {
+				if ("code" in err && err.code === "EPIPE") return true;
+				if ("message" in err && typeof err.message === "string" && err.message.includes("EPIPE")) return true;
+			}
+		}
+		return (origEmit as unknown as EmitFn).apply(this, [event, ...args]);
+	};
 	if (GATE) {
 		for (const [provider, [path, variable]] of Object.entries(ROUTES)) {
 			if (!process.env[variable]) continue;

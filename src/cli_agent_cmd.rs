@@ -1,15 +1,6 @@
 // cli_agent_cmd.rs — `kepr agent add|run|install|ls|revoke` (agent vault
 // P1). Parsed separately from the main argv parser because the verbs
 // take their own flags.
-//
-//   kepr agent add NAME [--for PROVIDER|host[:port]:inject]... [--stdin|--from-clipboard] [--requires-consent]
-//   kepr agent run HARNESS [--port N] [--no-sandbox|--strict-sandbox] [--isolate-net] [-- ARGV...]
-//   kepr agent install omp|grok|opencode|claude|codex|cursor|copilot [--port N]
-//   kepr agent doctor [--port N] [--json]
-//   kepr agent shim HARNESS [--dir DIR] [--remove]
-//   kepr agent adopt [FILE...] [--yes] [--remove]
-//   kepr agent ls
-//   kepr agent revoke NAME [--force]
 
 use std::io::{BufRead, IsTerminal};
 
@@ -169,6 +160,15 @@ fn cmd_add(a: &AgentArgs) -> Response {
         Err(e) => return Response::fail(e),
     };
     let sigv4 = bindings.iter().any(|b| b.inject == Inject::Sigv4); // T2.02
+    if bindings
+        .iter()
+        .any(|b| b.inject == Inject::CloudflareGateway)
+        && kepr_core::cloudflare::GatewayCredential::parse(value.as_str()).is_err()
+    {
+        return Response::fail(
+            "cloudflare requires a structured AI Gateway login; use `kepr agent add-cloudflare` to convert the standard token entry",
+        );
+    }
     if let (true, Err(e)) = (sigv4, AwsKey::parse(value.as_str())) {
         return Response::fail(e);
     }
@@ -302,8 +302,11 @@ fn cmd_revoke(a: &AgentArgs) -> Response {
 
 pub fn main(raw: &[String]) -> Response {
     match raw.first().map(String::as_str) {
+        Some("add-cloudflare") => {
+            return crate::cli_agent_cloudflare::cmd_add_cloudflare(&raw[1..])
+        }
         Some("add-db") => return crate::cli_agent_db::cmd_add_db(&raw[1..]),
-        Some("add-kube") => return crate::cli_agent_kube::cmd_add_kube(&raw[1..]), // T13.04
+        Some("add-kube") => return crate::cli_agent_kube::cmd_add_kube(&raw[1..]),
         Some("rotate-db") => return crate::cli_agent_db_rotate::cmd_rotate_db(&raw[1..]),
         Some("doctor") => return crate::cli_agent_doctor::cmd_doctor(&raw[1..]),
         Some("shim") => return crate::cli_agent_shim::cmd_shim(&raw[1..]),
@@ -345,75 +348,5 @@ pub fn main(raw: &[String]) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn v(s: &[&str]) -> Vec<String> {
-        s.iter().map(|x| x.to_string()).collect()
-    }
-
-    #[test]
-    fn parses_each_form() {
-        let a = parse(&v(&[
-            "add",
-            "k",
-            "--for",
-            "xai",
-            "--for",
-            "h.example.com:bearer",
-            "--stdin",
-        ]))
-        .unwrap();
-        assert_eq!(
-            (a.target.as_deref(), a.fors.len(), a.stdin),
-            (Some("k"), 2, true)
-        );
-        let r = parse(&v(&[
-            "run", "claude", "--port", "9000", "--", "claude", "-p", "hi",
-        ]))
-        .unwrap();
-        assert_eq!(r.port, Some(9000));
-        assert_eq!(r.argv, v(&["claude", "-p", "hi"]));
-        assert!(parse(&v(&["run", "claude", "--port", "0"])).is_err());
-        assert!(parse(&v(&["add", "a", "b"])).is_err());
-        assert!(parse(&[]).is_err());
-    }
-
-    #[test]
-    fn from_clipboard_parses_and_excludes_stdin() {
-        let a = parse(&v(&["add", "K", "--from-clipboard"])).unwrap();
-        assert!(a.from_clipboard && !a.stdin);
-        let e = parse(&v(&["add", "K", "--from-clipboard", "--stdin"])).unwrap_err();
-        assert_eq!(e, "use one of --stdin or --from-clipboard");
-    }
-
-    #[test]
-    fn daily_caps_parse() {
-        let r = parse(&v(&[
-            "run",
-            "claude",
-            "--max-requests-day",
-            "500",
-            "--max-tokens-day",
-            "200000",
-        ]))
-        .unwrap();
-        assert_eq!(
-            (r.limits.max_requests_day, r.limits.max_tokens_day),
-            (Some(500), Some(200_000))
-        );
-        assert!(parse(&v(&["run", "claude", "--max-tokens-day", "lots"])).is_err());
-    }
-
-    #[test]
-    fn unknown_verb_is_an_error() {
-        match main(&v(&["frobnicate"])) {
-            Response::Err { error } => assert!(error.contains("unknown agent command")),
-            other => panic!("{other:?}"),
-        }
-        match main(&v(&["doctor", "--bogus"])) {
-            Response::Err { error } => assert!(error.contains("kepr agent doctor")),
-            other => panic!("{other:?}"),
-        }
-    }
-}
+#[path = "cli_agent_cmd_tests.rs"]
+mod tests;

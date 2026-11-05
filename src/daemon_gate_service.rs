@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use kepr_core::framing::{read_frame, write_frame};
 use kepr_core::gate_protocol::{ReadyLine, ServiceStart, SessionConfig};
+use kepr_core::gate_startup::MAX_READY_LINE;
 use zeroize::Zeroizing;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -48,18 +49,26 @@ pub fn start(
     })?;
     conn.set_read_timeout(Some(READY_TIMEOUT))
         .map_err(|e| e.to_string())?;
+    conn.set_write_timeout(Some(READY_TIMEOUT))
+        .map_err(|e| e.to_string())?;
     kepr_core::fdpass::send_fd(&conn, gate_end.as_raw_fd())?;
     let start = ServiceStart { owner_pid, config };
     let payload = Zeroizing::new(serde_json::to_vec(&start).map_err(|e| e.to_string())?);
     drop(start);
     write_frame(&mut conn, &payload).map_err(|e| format!("kepr-gate service: {e}"))?;
-    let line = read_frame(&mut conn, 64 * 1024)
-        .map_err(|_| "the kepr-gate service did not start the session")?;
-    let ready: ReadyLine =
-        serde_json::from_slice(&line).map_err(|_| "kepr-gate sent a malformed ready line")?;
-    if !ready.ready {
-        return Err("kepr-gate reported not ready".into());
-    }
+    let line = read_frame(&mut conn, MAX_READY_LINE).map_err(|e| match e.kind() {
+        std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset => {
+            "the kepr-gate service closed before reporting readiness".to_string()
+        }
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+            "the kepr-gate service readiness timed out".to_string()
+        }
+        std::io::ErrorKind::InvalidData => {
+            "the kepr-gate service sent an oversized readiness response".to_string()
+        }
+        _ => format!("kepr-gate service readiness failed: {e}"),
+    })?;
+    let ready = kepr_core::gate_startup::parse_ready(&line)?;
     conn.set_read_timeout(None).map_err(|e| e.to_string())?;
     Ok((conn, ready))
 }
