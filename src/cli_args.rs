@@ -6,14 +6,34 @@ use kepr_core::generate::GenKind;
 
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn option_name(token: &str) -> &str {
+    if token == "--" {
+        token
+    } else {
+        token.strip_prefix("--").unwrap_or(token)
+    }
+}
+
+fn command_needs_name(command: &CliActivity) -> bool {
+    matches!(
+        command.as_str(),
+        "set"
+            | "get"
+            | "delete"
+            | "rotate"
+            | "sync-push"
+            | "sync-pull"
+            | "fido2-register"
+            | "protect-agent"
+    )
+}
+
 pub struct Args {
     pub command: CliActivity,
     pub name: Option<String>,
     pub value: Option<String>,
     pub generate: bool,
     pub gen_kind: GenKind,
-    /// `kepr set --profile P` (T5.04): generate from a profile; implies --generate.
-    pub profile: Option<String>,
     pub quiet: bool,
     pub export: bool,
     pub json: bool,
@@ -24,14 +44,10 @@ pub struct Args {
     pub env_vars: Vec<String>,
     /// `kepr exec` only: memfd names from `--memfd CSV`. Delivered via sealed RAM descriptors.
     pub memfd_vars: Vec<String>,
-    /// `kepr exec` only: mask secret values in the child's output.
-    pub mask: bool,
-    /// `kepr exec` only: argv after `--`. First element is the binary.
+    /// `kepr exec` only: child argv after options; `--` is an optional separator.
     pub exec_argv: Vec<String>,
     /// Explicit `.kepr.toml` path. Falls back to walk-up then no-manifest.
     pub manifest_path: Option<std::path::PathBuf>,
-    /// `kepr exec|env --stage S`: the manifest's `[env.S]` set (T5.02).
-    pub stage: Option<String>,
     /// `kepr set` only: TTL in seconds. Daemon writes sidecar meta; None = no expiry.
     pub ttl_secs: Option<u64>,
     /// `kepr rotate` only: validation hook path. Candidate piped on stdin.
@@ -42,39 +58,25 @@ pub struct Args {
     pub requires_consent: bool,
     /// `kepr set` only: FIDO2 hardware-key assertion gate. Phase 2 η.
     pub requires_fido2: bool,
-    /// `kepr lock --fido2`: the passphrase and a security key (T4.09).
-    pub lock_fido2: bool,
     /// `kepr fido2-register` only: hex credential ID from authenticator.
     pub fido2_credential_id: Option<String>,
     /// `kepr fido2-register` only: hex COSE_Key public key from authenticator.
     pub fido2_public_key_cose: Option<String>,
-    /// Flags of the `store` batch on core verbs (`ls --tag/--folder`, …).
-    pub store: crate::cli_store::StoreFlags,
-    /// Flags of the `session` batch on core verbs (`set --reauth`).
-    pub session: crate::cli_session::SessionFlags,
-    /// Flags of the `aws` batch on core verbs (`rotate --aws-iam`).
-    pub aws: crate::cli_aws::AwsFlags,
-    /// Flags of the `platform` batch on core verbs (`unlock --fingerprint`).
-    pub platform: crate::cli_platform::PlatformFlags,
 }
 
 pub fn parse_args() -> Result<Args, String> {
-    // Gather raw flags + positional into locals, then build Args at the
-    // end. Keeps `command` typed as CliActivity the whole way through —
-    // no `String::new()` placeholder that could leak out as an invalid
-    // activity.
     let raw: Vec<String> = std::env::args().collect();
-
-    // Compute the process-wide CliMode from argv + env *before* any
-    // parse error can fire, so error paths (unknown verb, missing
-    // required value) see the correct --json / --color state.
     cli_mode::init_from_argv(&raw);
+    parse_args_from(&raw)
+}
+
+fn parse_args_from(raw: &[String]) -> Result<Args, String> {
+    // Parse options and positionals before constructing typed Args.
 
     let mut name: Option<String> = None;
     let mut value: Option<String> = None;
     let mut generate = false;
     let mut gen_kind = GenKind::Hex;
-    let mut profile: Option<String> = None;
     let mut quiet = false;
     let mut export = false;
     let mut json = false;
@@ -83,187 +85,144 @@ pub fn parse_args() -> Result<Args, String> {
     let mut memfd_vars: Vec<String> = Vec::new();
     let mut exec_argv: Vec<String> = Vec::new();
     let mut manifest_path: Option<std::path::PathBuf> = None;
-    let mut stage: Option<String> = None;
     let mut stdin = false;
-    let mut mask = false;
     let mut ttl_secs: Option<u64> = None;
     let mut hook_path: Option<std::path::PathBuf> = None;
     let mut url: Option<String> = None;
     let mut requires_consent = false;
     let mut requires_fido2 = false;
-    let mut lock_fido2 = false;
     let mut fido2_credential_id: Option<String> = None;
     let mut fido2_public_key_cose: Option<String> = None;
-    let mut store = crate::cli_store::StoreFlags::default();
-    let mut session = crate::cli_session::SessionFlags::default();
-    let mut aws = crate::cli_aws::AwsFlags::default();
-    let mut platform = crate::cli_platform::PlatformFlags::default();
 
     let mut i = 1usize;
 
-    while i < raw.len() && raw[i].starts_with("--") {
-        match raw[i].as_str() {
-            "--json" => {
+    while i < raw.len() {
+        match option_name(&raw[i]) {
+            "json" => {
                 json = true;
                 i += 1;
             }
-            "--color" => {
-                i += 1;
-            }
-            "--no-color" => {
-                i += 1;
-            }
-            "--version" => {
+            "color" | "no-color" => i += 1,
+            "version" => {
                 println!("kepr {VERSION}");
-                std::process::exit(0);
-            }
-            "--help" | "-h" => {
-                crate::cli_help::print_help();
                 std::process::exit(0);
             }
             _ => break,
         }
     }
 
-    let command_verb = raw.get(i).ok_or("no command — try: kepr --help")?;
-    let command = CliActivity::parse(command_verb)?;
-    i += 1;
-    // T9.05: `kepr mcp` parses its own flags (cli_gatex/mcp_tools.rs).
-    if command.as_str() == "mcp" {
-        i = raw.len();
+    if let Some(request) = crate::cli_help::help_request(&raw[i..]) {
+        let topic = match request {
+            crate::cli_help::HelpRequest::General => None,
+            crate::cli_help::HelpRequest::Command(command) => Some(command),
+        };
+        if let Err(error) = crate::cli_help::print_help_for(topic.as_deref()) {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+        std::process::exit(0);
     }
 
-    if i < raw.len() && !raw[i].starts_with('-') {
+    let command_verb = raw.get(i).ok_or("no command — try: kepr help")?;
+    let command = CliActivity::parse(command_verb)?;
+    i += 1;
+
+    if command_needs_name(&command) && i < raw.len() && !raw[i].starts_with('-') {
         name = Some(raw[i].to_uppercase());
         i += 1;
     }
 
     while i < raw.len() {
-        match raw[i].as_str() {
-            "--generate" | "-g" => {
+        match option_name(&raw[i]) {
+            "generate" | "-g" => {
                 generate = true;
                 i += 1;
             }
-            "--quiet" | "-q" => {
+            "quiet" | "-q" => {
                 quiet = true;
                 i += 1;
             }
-            "--export" | "-e" => {
+            "export" | "-e" => {
                 export = true;
                 i += 1;
             }
-            "--force" | "-f" => {
+            "force" | "-f" => {
                 force = true;
                 i += 1;
             }
-            "--json" => {
+            "json" => {
                 json = true;
                 i += 1;
             }
-            "--color" => {
+            "color" => {
                 i += 1;
             }
-            "--no-color" => {
+            "no-color" => {
                 i += 1;
             }
-            "--stdin" => {
+            "stdin" => {
                 stdin = true;
                 i += 1;
             }
-            "--mask" => {
-                mask = true;
-                i += 1;
-            }
-            "--value" | "-v" => {
+            "value" | "-v" => {
                 i += 1;
                 value = Some(raw.get(i).ok_or("--value needs a value")?.clone());
                 i += 1;
             }
-            "--gen-kind" => {
+            "gen-kind" => {
                 i += 1;
                 let k = raw.get(i).ok_or("--gen-kind needs a value")?;
-                gen_kind = GenKind::from_str(k).ok_or(format!(
-                    "unknown gen-kind: {k} (hex|base62|pass|uuid|words)"
-                ))?;
+                gen_kind = GenKind::from_str(k)
+                    .ok_or(format!("unknown gen-kind: {k} (hex|base62|pass|uuid)"))?;
                 i += 1;
             }
-            "--profile" => {
-                profile = Some(raw.get(i + 1).ok_or("--profile needs a name")?.clone());
-                generate = true;
-                i += 2;
-            }
-            "--env" => {
-                // `kepr exec --env VAR1,VAR2` — defer the CSV split
-                // and validation to cli_exec::parse_env_csv so the
-                // error path is uniform whether the entries arrive
-                // here or from a `.kepr.toml` manifest.
+            "env" => {
+                // Use the same CSV validation for CLI and manifest input.
                 i += 1;
                 let csv = raw.get(i).ok_or("--env needs a CSV of variable names")?;
-                env_vars.extend(crate::cli_exec::parse_env_csv(csv)?); // repeatable (T5.06)
+                env_vars = crate::cli_exec::parse_env_csv(csv)?;
                 i += 1;
             }
-            "--memfd" => {
-                // `kepr exec --memfd VAR1,VAR2` — same CSV parsing as
-                // `--env`, but delivered as sealed RAM `memfd` file
-                // descriptors instead of environment variables.
+            "memfd" => {
+                // Reuse CSV validation; deliver through sealed RAM descriptors.
                 i += 1;
                 let csv = raw.get(i).ok_or("--memfd needs a CSV of variable names")?;
                 memfd_vars = crate::cli_exec::parse_env_csv(csv)?;
                 i += 1;
             }
-            "--manifest" => {
-                // Explicit pin to a `.kepr.toml`; it loses only to an
-                // explicit `--env CSV`. Ancestor auto-discovery is opt-in
-                // through `KEPR_AUTO_MANIFEST=1`.
+            "manifest" => {
+                // Explicit env overrides this; auto-discovery requires KEPR_AUTO_MANIFEST.
                 i += 1;
                 let p = raw.get(i).ok_or("--manifest needs a path")?;
                 manifest_path = Some(std::path::PathBuf::from(p));
                 i += 1;
             }
-            "--stage" => {
-                stage = Some(raw.get(i + 1).ok_or("--stage needs a name")?.clone());
-                i += 2;
-            }
-            "--url" => {
-                // Phase 2 ζ. Scheme-prefixed remote URL for
-                // `kepr sync-push|pull`. Validated downstream
-                // by `sync::pick_syncer`.
+            "url" => {
+                // Scheme validation is delegated to sync::pick_syncer.
                 i += 1;
                 let v = raw.get(i).ok_or("--url needs a value")?;
                 url = Some(v.clone());
                 i += 1;
             }
-            "--requires-consent" => {
-                // Phase 2 ε. No value: presence flips the flag.
-                // The daemon translates this into a sidecar
-                // `requires_consent: true` field.
+            "requires-consent" => {
+                // Presence enables daemon-side consent metadata.
                 requires_consent = true;
                 i += 1;
             }
-            "--requires-fido2" => {
+            "requires-fido2" => {
                 // Phase 2 η. No value: presence flips the flag.
                 requires_fido2 = true;
                 i += 1;
             }
-            "--fido2" => {
-                lock_fido2 = true; // T4.09: `kepr lock --fido2`
-                i += 1;
-            }
-            "--hook" => {
-                // `kepr rotate NAME --hook ./refresh.sh` — path to
-                // the validation hook. We don't existence-check
-                // here so the parser stays pure; cli_rotate
-                // re-checks before generating.
+            "hook" => {
+                // cli_rotate validates this path before generating.
                 i += 1;
                 let p = raw.get(i).ok_or("--hook needs a path")?;
                 hook_path = Some(std::path::PathBuf::from(p));
                 i += 1;
             }
-            "--ttl" => {
-                // `kepr set NAME --ttl 60` → cred expires 60 seconds
-                // from now. Reject 0 (would expire instantly, which
-                // is almost certainly a typo for "no ttl") and any
-                // value the parser can't fit into u64 (overflow).
+            "ttl" => {
+                // Reject zero and overflow to avoid immediate expiry or invalid values.
                 i += 1;
                 let raw_val = raw.get(i).ok_or("--ttl needs a number of seconds")?;
                 let secs: u64 = raw_val
@@ -278,19 +237,18 @@ pub fn parse_args() -> Result<Args, String> {
                 i += 1;
             }
             "--" => {
-                // Everything after `--` is the child argv. Bash's
-                // own getopt convention: the separator is consumed
-                // and never appears in `exec_argv`.
+                // Consume the separator; all following argv belongs to the child.
                 i += 1;
                 exec_argv = raw[i..].to_vec();
                 break;
             }
-            s if crate::cli_store::FLAGS.contains(&s) => i = store.take(&raw, i)?,
-            s if crate::cli_session::FLAGS.contains(&s) => i = session.take(&raw, i)?,
-            s if crate::cli_aws::FLAGS.contains(&s) => i = aws.take(&raw, i)?,
-            s if crate::cli_platform::FLAGS.contains(&s) => i = platform.take(&raw, i)?,
-            s if !s.starts_with('-') => {
-                if name.is_none() {
+            s if !raw[i].starts_with('-') => {
+                if command.as_str() == "exec"
+                    || (command.as_str() == "protect-agent" && name.is_some())
+                {
+                    exec_argv = raw[i..].to_vec();
+                    break;
+                } else if name.is_none() {
                     name = Some(s.to_uppercase());
                 } else if fido2_credential_id.is_none() {
                     fido2_credential_id = Some(s.to_string());
@@ -301,7 +259,7 @@ pub fn parse_args() -> Result<Args, String> {
                 }
                 i += 1;
             }
-            other => return Err(format!("unknown flag: {other}")),
+            _ => return Err(format!("unknown flag: {}", raw[i])),
         }
     }
 
@@ -311,7 +269,6 @@ pub fn parse_args() -> Result<Args, String> {
         value,
         generate,
         gen_kind,
-        profile,
         quiet,
         export,
         json,
@@ -319,21 +276,98 @@ pub fn parse_args() -> Result<Args, String> {
         force,
         env_vars,
         memfd_vars,
-        mask,
         exec_argv,
         manifest_path,
-        stage,
         ttl_secs,
         hook_path,
         url,
         requires_consent,
         requires_fido2,
-        lock_fido2,
         fido2_credential_id,
         fido2_public_key_cose,
-        store,
-        session,
-        aws,
-        platform,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Args {
+        let raw = std::iter::once("kepr".to_owned())
+            .chain(args.iter().map(|arg| (*arg).to_owned()))
+            .collect::<Vec<_>>();
+        parse_args_from(&raw).expect("arguments should parse")
+    }
+
+    #[test]
+    fn bare_set_options_match_double_hyphen_forms() {
+        let bare = parse(&["set", "k", "value", "v", "gen-kind", "pass", "ttl", "60"]);
+        let dashed = parse(&[
+            "set",
+            "k",
+            "--value",
+            "v",
+            "--gen-kind",
+            "pass",
+            "--ttl",
+            "60",
+        ]);
+        assert_eq!(bare.value, dashed.value);
+        assert_eq!(bare.gen_kind.as_str(), dashed.gen_kind.as_str());
+        assert_eq!(bare.ttl_secs, dashed.ttl_secs);
+        let policy = parse(&["set", "k", "requires-consent", "requires-fido2"]);
+        assert!(policy.requires_consent && policy.requires_fido2);
+    }
+
+    #[test]
+    fn bare_boolean_and_global_options_parse() {
+        let args = parse(&["json", "get", "API_KEY", "quiet", "export"]);
+        assert!(args.json);
+        assert!(args.quiet);
+        assert!(args.export);
+        assert_eq!(args.name.as_deref(), Some("API_KEY"));
+
+        let args = parse(&["delete", "API_KEY", "force"]);
+        assert!(args.force);
+        let generated = parse(&["set", "API_KEY", "generate"]);
+        assert!(generated.generate);
+        let stdin = parse(&["set", "API_KEY", "stdin"]);
+        assert!(stdin.stdin);
+    }
+
+    #[test]
+    fn bare_exec_options_allow_command_without_separator() {
+        let bare = parse(&["exec", "env", "API_KEY,DB", "/usr/bin/env"]);
+        let dashed = parse(&["exec", "--env", "API_KEY,DB", "--", "/usr/bin/env"]);
+        assert_eq!(bare.env_vars, dashed.env_vars);
+        let memfd = parse(&["exec", "memfd", "API_KEY", "/usr/bin/env"]);
+        assert_eq!(memfd.memfd_vars, vec!["API_KEY"]);
+        assert_eq!(bare.exec_argv, dashed.exec_argv);
+    }
+
+    #[test]
+    fn bare_value_options_work_for_other_commands() {
+        let env = parse(&["env", "manifest", "/tmp/kepr.toml"]);
+        assert_eq!(
+            env.manifest_path.as_deref(),
+            Some(std::path::Path::new("/tmp/kepr.toml"))
+        );
+
+        let rotate = parse(&[
+            "rotate",
+            "API_KEY",
+            "hook",
+            "/tmp/validate",
+            "gen-kind",
+            "uuid",
+        ]);
+        assert_eq!(
+            rotate.hook_path.as_deref(),
+            Some(std::path::Path::new("/tmp/validate"))
+        );
+        assert_eq!(rotate.gen_kind.as_str(), "uuid");
+
+        let sync = parse(&["sync-pull", "API_KEY", "url", "vault:team/key"]);
+        assert_eq!(sync.url.as_deref(), Some("vault:team/key"));
+    }
 }
