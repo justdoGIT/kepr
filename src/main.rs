@@ -109,7 +109,7 @@ use kepr_core::protocol::Response;
 fn main() {
     // Unknown verbs are rejected inside CliActivity::parse (called from
     // parse_args), so when parse_args succeeds, `command` is always one
-    // of the five canonical activities — dispatch can't fall through.
+    // of the known canonical activities — dispatch can't fall through.
     //
     // On parse failure: honour --json mode, if it was already seen on
     // argv, by emitting a Response::Err on stdout with no stderr noise.
