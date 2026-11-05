@@ -96,29 +96,13 @@ jobs:
           set -eo pipefail
 
           export PATH="$HOME/.npm-global/bin:/usr/local/bin:$PATH"
-          REPO="${GITHUB_REPOSITORY}"
-
-          # Ensure gh CLI is on PATH if available, or install into runner temp
           if ! command -v gh >/dev/null 2>&1; then
-            GH_TMP="$RUNNER_TEMP/gh-cli"
-            if [[ ! -x "$GH_TMP/bin/gh" ]]; then
-              mkdir -p "$GH_TMP"
-              curl -fsSL "https://github.com/cli/cli/releases/download/v2.67.0/gh_2.67.0_linux_amd64.tar.gz" 2>/dev/null | tar -xz -C "$GH_TMP" --strip-components=1 2>/dev/null || true
-            fi
-            [[ -x "$GH_TMP/bin/gh" ]] && export PATH="$GH_TMP/bin:$PATH"
+            echo "::error::gh CLI is required to post review comments" >&2
+            exit 1
           fi
 
           post_comment() {
-            local body="$1"
-            if command -v gh >/dev/null 2>&1; then
-              gh pr comment "$PR" --body "$body" 2>/dev/null || true
-            else
-              curl -fsSL -X POST \
-                -H "Authorization: Bearer $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/${REPO}/issues/${PR}/comments" \
-                -d "$(jq -n --arg b "$body" '{body: $b}')" 2>/dev/null || true
-            fi
+            gh pr comment "$PR" --body "$1"
           }
 
           post_inline() {
@@ -126,17 +110,8 @@ jobs:
             local path="$2"
             local line="$3"
             local sha="$4"
-            if command -v gh >/dev/null 2>&1; then
-              gh api "repos/${REPO}/pulls/${PR}/comments" \
-                -f body="$body" -f path="$path" -f commit_id="$sha" -f line="$line" -f side="RIGHT" 2>/dev/null || true
-            else
-              curl -fsSL -X POST \
-                -H "Authorization: Bearer $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/${REPO}/pulls/${PR}/comments" \
-                -d "$(jq -n --arg b "$body" --arg p "$path" --arg c "$sha" --argjson l "$line" \
-                    '{body: $b, path: $p, commit_id: $c, line: $l, side: "RIGHT"}')" 2>/dev/null || true
-            fi
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/comments" \
+              -f body="$body" -f path="$path" -f commit_id="$sha" -f line="$line" -f side="RIGHT"
           }
 
           # Active free-tier OpenRouter candidates
