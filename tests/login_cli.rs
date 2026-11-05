@@ -220,6 +220,8 @@ fn a_login_unlocks_kepr_and_the_passphrase_follows_the_login_password() {
     d.pam_unlock("pw-two\0");
     std::thread::sleep(Duration::from_millis(800));
     assert!(d.locked(), "the old passphrase still works");
+    // The old passphrase starts a one-second login back-off.
+    std::thread::sleep(Duration::from_millis(1300));
     // A password changed during the login (expired): unlock, then change.
     d.pam_unlock("pw-three\0pw-four\0");
     assert!(d.wait_unlocked());
