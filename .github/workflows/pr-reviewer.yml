@@ -96,13 +96,19 @@ jobs:
           set -eo pipefail
 
           export PATH="$HOME/.npm-global/bin:/usr/local/bin:$PATH"
-          if ! command -v gh >/dev/null 2>&1; then
-            echo "::error::gh CLI is required to post review comments" >&2
-            exit 1
-          fi
+          REPO="${GITHUB_REPOSITORY}"
 
           post_comment() {
-            gh pr comment "$PR" --body "$1"
+            local body="$1"
+            if command -v gh >/dev/null 2>&1; then
+              gh pr comment "$PR" --body "$body"
+              return
+            fi
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/issues/${PR}/comments" \
+              -d "$(jq -n --arg b "$body" '{body: $b}')"
           }
 
           post_inline() {
@@ -110,8 +116,17 @@ jobs:
             local path="$2"
             local line="$3"
             local sha="$4"
-            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/comments" \
-              -f body="$body" -f path="$path" -f commit_id="$sha" -f line="$line" -f side="RIGHT"
+            if command -v gh >/dev/null 2>&1; then
+              gh api "repos/${REPO}/pulls/${PR}/comments" \
+                -f body="$body" -f path="$path" -f commit_id="$sha" -f line="$line" -f side="RIGHT"
+              return
+            fi
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/pulls/${PR}/comments" \
+              -d "$(jq -n --arg b "$body" --arg p "$path" --arg c "$sha" --argjson l "$line" \
+                '{body: $b, path: $p, commit_id: $c, line: $l, side: "RIGHT"}')"
           }
 
           # Active free-tier OpenRouter candidates
@@ -123,19 +138,25 @@ jobs:
             "liquid/lfm-2.5-2.6b:free"
             "cohere/north-mini-code:free"
           )
-          # Query live free models from OpenRouter dynamically
-          while IFS= read -r live_m; do
-            already_listed=false
-            for candidate in "${MODEL_CANDIDATES[@]}"; do
-              if [[ "$candidate" == "$live_m" ]]; then
-                already_listed=true
-                break
+          # Query live free models from OpenRouter dynamically.
+          LIVE_MODELS=$(mktemp)
+          if curl -fsS --max-time 5 https://openrouter.ai/api/v1/models \
+               | jq -r '.data[] | select(.id | endswith(":free")) | .id' > "$LIVE_MODELS"; then
+            while IFS= read -r live_m; do
+              already_listed=false
+              for candidate in "${MODEL_CANDIDATES[@]}"; do
+                if [[ "$candidate" == "$live_m" ]]; then
+                  already_listed=true
+                  break
+                fi
+              done
+              if [[ -n "$live_m" && "$already_listed" == false ]]; then
+                MODEL_CANDIDATES+=("$live_m")
               fi
-            done
-            if [[ -n "$live_m" && "$already_listed" == false ]]; then
-              MODEL_CANDIDATES+=("$live_m")
-            fi
-          done < <(curl -s --max-time 5 https://openrouter.ai/api/v1/models | jq -r '.data[] | select(.id | endswith(":free")) | .id' 2>/dev/null || true)
+            done < "$LIVE_MODELS"
+          else
+            echo "WARNING: unable to query live OpenRouter models; using listed candidates" >&2
+          fi
 
           echo "=== PR #$PR ==="
 
@@ -144,22 +165,31 @@ jobs:
           FILTERED_DIFF=$(mktemp)
           PROMPT_FILE=$(mktemp)
           DIFF_ERR=$(mktemp)
-          trap 'rm -f "$DIFF_FILE" "$REVIEW_FILE" "$PROMPT_FILE" "$FILTERED_DIFF" "$DIFF_ERR"' EXIT
+          CHANGED_FILES=$(mktemp)
+          trap 'rm -f "$DIFF_FILE" "$REVIEW_FILE" "$PROMPT_FILE" "$FILTERED_DIFF" "$DIFF_ERR" "$CHANGED_FILES" "$LIVE_MODELS"' EXIT
 
-          # Generate diff via git (native, works without gh)
+          # Generate diff via git (native, works without gh).
           if [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]] && git cat-file -e "$BASE_SHA" 2>/dev/null; then
-            git diff "${BASE_SHA}...${HEAD_SHA}" > "$DIFF_FILE" 2>"$DIFF_ERR" || true
+            if ! git diff "${BASE_SHA}...${HEAD_SHA}" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+              echo "WARNING: local base/head diff failed; trying the GitHub API" >&2
+            fi
           elif git rev-parse --verify "origin/${BASE_REF:-main}" >/dev/null 2>&1; then
-            git diff "origin/${BASE_REF:-main}...HEAD" > "$DIFF_FILE" 2>"$DIFF_ERR" || true
+            if ! git diff "origin/${BASE_REF:-main}...HEAD" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+              echo "WARNING: local branch diff failed; trying the GitHub API" >&2
+            fi
           elif command -v gh >/dev/null 2>&1; then
-            gh pr diff "$PR" > "$DIFF_FILE" 2>"$DIFF_ERR" || true
+            if ! gh pr diff "$PR" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+              echo "WARNING: gh diff failed; trying the GitHub API" >&2
+            fi
           fi
 
           if [[ ! -s "$DIFF_FILE" ]]; then
-            # GitHub diff API fallback via curl if local git diff was empty
-            curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+            # GitHub diff API fallback if local git diff was empty.
+            if ! curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3.diff" \
-              "https://api.github.com/repos/${REPO}/pulls/${PR}" > "$DIFF_FILE" 2>"$DIFF_ERR" || true
+              "https://api.github.com/repos/${REPO}/pulls/${PR}" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+              echo "ERROR: GitHub diff API request failed" >&2
+            fi
           fi
 
           if [[ ! -s "$DIFF_FILE" ]]; then
@@ -170,15 +200,20 @@ jobs:
 
           echo "Changed files:"
           if [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]] && git cat-file -e "$BASE_SHA" 2>/dev/null; then
-            git diff "${BASE_SHA}...${HEAD_SHA}" --name-only 2>/dev/null | sort || true
-          else
-            git diff "origin/${BASE_REF:-main}...HEAD" --name-only 2>/dev/null | sort || true
+            if ! git diff "${BASE_SHA}...${HEAD_SHA}" --name-only > "$CHANGED_FILES"; then
+              echo "WARNING: unable to list changed files from base/head" >&2
+            fi
+          elif ! git diff "origin/${BASE_REF:-main}...HEAD" --name-only > "$CHANGED_FILES"; then
+            echo "WARNING: unable to list changed files from branch" >&2
+          fi
+          if [[ -s "$CHANGED_FILES" ]]; then
+            sort "$CHANGED_FILES"
           fi
           echo ""
 
-          # Strip noise: lockfiles and generated assets
-          grep -v '^diff --git.*\(Cargo\.lock\|package-lock\.json\|\.min\.js\)' \
-            "$DIFF_FILE" > "$FILTERED_DIFF" || true
+          # Strip noise: lockfiles and generated assets.
+          awk '!/^diff --git.*(Cargo\.lock|package-lock\.json|\.min\.js)/' \
+            "$DIFF_FILE" > "$FILTERED_DIFF"
 
           # Load review skill from repo
           SKILL_FILE=".github/skills/pr-reviewer/SKILL.md"
@@ -217,10 +252,21 @@ jobs:
             echo "=== $model unavailable, trying next candidate ==="
           done
 
-          # At last, fall back to the current model from which the PR was raised
+          # At last, fall back to the current model from which the PR was raised.
           if [[ -z "$USED_MODEL" ]]; then
-            PR_JSON=$(gh pr view "$PR" --json body,commits 2>/dev/null || echo "{}")
-            DETECTED=$(echo "$PR_JSON" | grep -oEi 'model:\s*([a-zA-Z0-9_./:-]+)' | head -n 1 | sed -E 's/.*:[[:space:]]*//' | tr -d '-> ' || true)
+            if command -v gh >/dev/null 2>&1; then
+              PR_JSON=$(gh pr view "$PR" --json body,commits)
+            else
+              PR_JSON=$(curl -fsS \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${REPO}/pulls/${PR}")
+            fi
+            DETECTED=""
+            if detected=$(grep -oEi 'model:\s*([a-zA-Z0-9_./:-]+)' <<< "$PR_JSON" \
+              | head -n 1 | sed -E 's/.*:[[:space:]]*//' | tr -d '-> '); then
+              DETECTED="$detected"
+            fi
             FALLBACK_MODEL="google/gemini-3.8-flash"
             case "$DETECTED" in
               *gemini-3.8*|*gemini*flash*) FALLBACK_MODEL="google/gemini-3.8-flash" ;;
