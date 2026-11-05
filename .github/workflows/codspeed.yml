@@ -19,6 +19,10 @@ concurrency:
 jobs:
   benchmarks:
     name: Run benchmarks
+    # CodSpeed's hosted tracking needs a GitHub-hosted runner, which the account cannot start while its billing is
+    # failing; performance.yml measures the same Divan benchmarks on the cluster runner meanwhile. Set the repo
+    # variable CODSPEED_ENABLED=true to run this job again.
+    if: vars.CODSPEED_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
