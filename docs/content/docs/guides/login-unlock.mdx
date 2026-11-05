@@ -91,6 +91,28 @@ The daemon starts with the session from the `kepr-daemon.service` user unit
 Started that way it expects the login's unlock and holds early requests for a
 few seconds, so the first `git pull` of a session does not race it.
 
+### Linux boot services and runit
+
+Without an absolute `XDG_RUNTIME_DIR`, both the client and daemon use
+`/run/user/<uid>/kepr/kepr.sock`; Linux no longer falls back to a socket under
+`~/.local/state/kepr`. That home directory still holds persistent encrypted
+state, not the runtime socket. `kepr-daemon --user` also clears inherited
+system-mode selection so it cannot accidentally bind `/run/kepr/kepr.sock`.
+
+A boot service must run as the vault owner and use the same runtime as the
+login helper (`/run/user/<uid>`). With elogind, enable lingering for that user
+before starting a boot-time runit service; let elogind own the runtime's
+lifecycle so a login does not mount over an earlier socket. The runtime and
+Kepr socket directory must be owned by that user with mode `0700`; the user
+socket is `0600`. Do not run a second service against the same vault.
+
+On Void, put the optional authentication hook **after** `pam_unix.so`, not
+before it, and include the optional session and password hooks above.
+`unlock` hands the captured password over when successful authentication
+establishes credentials or opens the session; it is not an authentication
+provider. The vault passphrase must already match the system password.
+
+
 ## When something is not as expected
 
 | Situation | What happens |

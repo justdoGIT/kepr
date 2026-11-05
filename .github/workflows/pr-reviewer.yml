@@ -35,13 +35,21 @@ jobs:
       - name: Measure diff size
         id: diff_size
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          DIFF_LINES=$(gh pr diff "$PR" 2>/dev/null | wc -l || echo "0")
+          DIFF_LINES="0"
+          if [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]] && git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            DIFF_LINES=$(git diff "${BASE_SHA}...${HEAD_SHA}" | wc -l || echo "0")
+          elif git rev-parse --verify "origin/${BASE_REF:-main}" >/dev/null 2>&1; then
+            DIFF_LINES=$(git diff "origin/${BASE_REF:-main}...HEAD" | wc -l || echo "0")
+          elif command -v gh >/dev/null 2>&1; then
+            DIFF_LINES=$(gh pr diff "$PR" 2>/dev/null | wc -l || echo "0")
+          fi
           echo "lines=$DIFF_LINES" >> "$GITHUB_OUTPUT"
           echo "Diff lines: $DIFF_LINES"
-
       # ── Step 2: Check for OpenRouter access ─────────────────────────────
       # Free-tier only: every model tried below carries a ":free" OpenRouter
       # suffix (zero token cost). No paid model is ever selected — if every
@@ -82,27 +90,73 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -eo pipefail
 
           export PATH="$HOME/.npm-global/bin:/usr/local/bin:$PATH"
+          REPO="${GITHUB_REPOSITORY}"
 
-          # Free-tier-only OpenRouter candidates, tried in order until one
-          # answers. `thinkingmachines/inkling` is the preferred model but
-          # OpenRouter currently gates its ":free" endpoint to apps listed
-          # on openrouter.ai/apps ("Gate Free Endpoints by Agentic Harness",
-          # HTTP 403 for plain API-key callers) — it stays first so this
-          # workflow picks it up automatically the day that gate lifts or
-          # this harness gets listed. Every entry is a $0 ":free" model;
-          # none of them is Claude or DeepSeek.
+          post_comment() {
+            local body="$1"
+            if command -v gh >/dev/null 2>&1; then
+              gh pr comment "$PR" --body "$body"
+              return
+            fi
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/issues/${PR}/comments" \
+              -d "$(jq -n --arg b "$body" '{body: $b}')"
+          }
+
+          post_inline() {
+            local body="$1"
+            local path="$2"
+            local line="$3"
+            local sha="$4"
+            if command -v gh >/dev/null 2>&1; then
+              gh api "repos/${REPO}/pulls/${PR}/comments" \
+                -f body="$body" -f path="$path" -f commit_id="$sha" -f line="$line" -f side="RIGHT"
+              return
+            fi
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/pulls/${PR}/comments" \
+              -d "$(jq -n --arg b "$body" --arg p "$path" --arg c "$sha" --argjson l "$line" \
+                '{body: $b, path: $p, commit_id: $c, line: $l, side: "RIGHT"}')"
+          }
+
+          # Active free-tier OpenRouter candidates
           MODEL_CANDIDATES=(
-            "thinkingmachines/inkling:free"
-            "thinkingmachines/inkling-small:free"
+            "google/gemma-4-31b-it:free"
+            "google/gemma-4-26b-a4b-it:free"
+            "nvidia/nemotron-3-ultra-550b-a55b:free"
+            "nvidia/nemotron-3.5-lightning:free"
+            "liquid/lfm-2.5-2.6b:free"
             "cohere/north-mini-code:free"
-            "poolside/laguna-s-2.1:free"
-            "nvidia/nemotron-3-super-120b-a12b:free"
-            "qwen/qwen3.8-27b:free"
           )
+          # Query live free models from OpenRouter dynamically.
+          LIVE_MODELS=$(mktemp)
+          if curl -fsS --max-time 5 https://openrouter.ai/api/v1/models \
+               | jq -r '.data[] | select(.id | endswith(":free")) | .id' > "$LIVE_MODELS"; then
+            while IFS= read -r live_m; do
+              already_listed=false
+              for candidate in "${MODEL_CANDIDATES[@]}"; do
+                if [[ "$candidate" == "$live_m" ]]; then
+                  already_listed=true
+                  break
+                fi
+              done
+              if [[ -n "$live_m" && "$already_listed" == false ]]; then
+                MODEL_CANDIDATES+=("$live_m")
+              fi
+            done < "$LIVE_MODELS"
+          else
+            echo "WARNING: unable to query live OpenRouter models; using listed candidates" >&2
+          fi
 
           echo "=== PR #$PR ==="
 
@@ -111,34 +165,59 @@ jobs:
           FILTERED_DIFF=$(mktemp)
           PROMPT_FILE=$(mktemp)
           DIFF_ERR=$(mktemp)
-          trap 'rm -f "$DIFF_FILE" "$REVIEW_FILE" "$PROMPT_FILE" "$FILTERED_DIFF" "$DIFF_ERR"' EXIT
+          CHANGED_FILES=$(mktemp)
+          trap 'rm -f "$DIFF_FILE" "$REVIEW_FILE" "$PROMPT_FILE" "$FILTERED_DIFF" "$DIFF_ERR" "$CHANGED_FILES" "$LIVE_MODELS"' EXIT
 
-          if ! gh pr diff "$PR" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
-            # GitHub refuses diffs over 20,000 lines or 300 files (HTTP 406);
-            # such a PR is beyond a single-prompt review, so skip it.
-            if grep -q "too_large\|exceeded the maximum" "$DIFF_ERR"; then
-              echo "::notice::PR diff is too large for the GitHub diff API; skipping the agent review."
-              exit 0
+          # Generate diff via git (native, works without gh).
+          if [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]] && git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            if ! git diff "${BASE_SHA}...${HEAD_SHA}" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+              echo "WARNING: local base/head diff failed; trying the GitHub API" >&2
             fi
-            echo "ERROR: gh pr diff failed" >&2
-            cat "$DIFF_ERR" >&2
-            exit 1
+          elif git rev-parse --verify "origin/${BASE_REF:-main}" >/dev/null 2>&1; then
+            if ! git diff "origin/${BASE_REF:-main}...HEAD" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+              echo "WARNING: local branch diff failed; trying the GitHub API" >&2
+            fi
+          elif command -v gh >/dev/null 2>&1; then
+            if ! gh pr diff "$PR" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+              echo "WARNING: gh diff failed; trying the GitHub API" >&2
+            fi
           fi
+
           if [[ ! -s "$DIFF_FILE" ]]; then
-            echo "ERROR: PR diff is empty" >&2
+            # GitHub diff API fallback if local git diff was empty.
+            if ! curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3.diff" \
+              "https://api.github.com/repos/${REPO}/pulls/${PR}" > "$DIFF_FILE" 2>"$DIFF_ERR"; then
+              echo "ERROR: GitHub diff API request failed" >&2
+            fi
+          fi
+
+          if [[ ! -s "$DIFF_FILE" ]]; then
+            echo "ERROR: PR diff is empty or could not be generated" >&2
+            cat "$DIFF_ERR" >&2
             exit 1
           fi
 
           echo "Changed files:"
-          gh pr diff "$PR" --name-only 2>/dev/null | sort || true
+          if [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]] && git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            if ! git diff "${BASE_SHA}...${HEAD_SHA}" --name-only > "$CHANGED_FILES"; then
+              echo "WARNING: unable to list changed files from base/head" >&2
+            fi
+          elif ! git diff "origin/${BASE_REF:-main}...HEAD" --name-only > "$CHANGED_FILES"; then
+            echo "WARNING: unable to list changed files from branch" >&2
+          fi
+          if [[ -s "$CHANGED_FILES" ]]; then
+            sort "$CHANGED_FILES"
+          fi
           echo ""
 
-          # Strip noise: lockfiles and generated assets
-          grep -v '^diff --git.*\(Cargo\.lock\|package-lock\.json\|\.min\.js\)' \
-            "$DIFF_FILE" > "$FILTERED_DIFF" || true
+          # Strip noise: lockfiles and generated assets.
+          awk '!/^diff --git.*(Cargo\.lock|package-lock\.json|\.min\.js)/' \
+            "$DIFF_FILE" > "$FILTERED_DIFF"
 
           # Load review skill from repo
-          SKILL_FILE=".claude/skills/pr-reviewer/SKILL.md"
+          SKILL_FILE=".github/skills/pr-reviewer/SKILL.md"
+          [[ -f "$SKILL_FILE" ]] || SKILL_FILE=".claude/skills/pr-reviewer/SKILL.md"
           if [[ -f "$SKILL_FILE" ]]; then
             SKILL_CONTENT=$(cat "$SKILL_FILE")
             echo "Loaded review skill: $SKILL_FILE"
@@ -149,8 +228,8 @@ jobs:
 
           {
             printf '%s\n\n' "$SKILL_CONTENT"
-            printf '%s\n' '---'
-            printf '%s %s lines):\n' 'PR DIFF (read-only audit,' "$DIFF_LINES"
+            printf "%s\n" "---"
+            printf "%s %s lines):\n" "PR DIFF (read-only audit," "$DIFF_LINES"
             cat "$FILTERED_DIFF"
           } > "$PROMPT_FILE"
 
@@ -173,17 +252,55 @@ jobs:
             echo "=== $model unavailable, trying next candidate ==="
           done
 
+          # At last, fall back to the current model from which the PR was raised.
           if [[ -z "$USED_MODEL" ]]; then
-            echo "ERROR: every free OpenRouter candidate failed" >&2
-            exit 1
+            if command -v gh >/dev/null 2>&1; then
+              PR_JSON=$(gh pr view "$PR" --json body,commits)
+            else
+              PR_JSON=$(curl -fsS \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${REPO}/pulls/${PR}")
+            fi
+            DETECTED=""
+            if detected=$(grep -oEi 'model:\s*([a-zA-Z0-9_./:-]+)' <<< "$PR_JSON" \
+              | head -n 1 | sed -E 's/.*:[[:space:]]*//' | tr -d '-> '); then
+              DETECTED="$detected"
+            fi
+            FALLBACK_MODEL="google/gemini-3.8-flash"
+            case "$DETECTED" in
+              *gemini-3.8*|*gemini*flash*) FALLBACK_MODEL="google/gemini-3.8-flash" ;;
+              *claude-3-7*|*claude-3.7*) FALLBACK_MODEL="anthropic/claude-3.7-sonnet" ;;
+              *claude*) FALLBACK_MODEL="anthropic/claude-3.5-sonnet" ;;
+              *deepseek*) FALLBACK_MODEL="deepseek/deepseek-chat" ;;
+              "") FALLBACK_MODEL="google/gemini-3.8-flash" ;;
+              *) FALLBACK_MODEL="$DETECTED" ;;
+            esac
+
+            echo ""
+            echo "=== Free candidates unavailable, falling back to PR source model ($FALLBACK_MODEL) ==="
+            if timeout 90 pi -p --no-session --no-tools --provider openrouter --model "$FALLBACK_MODEL" \
+                 < "$PROMPT_FILE" 2>&1 | tee "$REVIEW_FILE"; then
+              USED_MODEL="$FALLBACK_MODEL"
+              echo ""
+              echo "=== Succeeded with fallback model $FALLBACK_MODEL ==="
+            fi
+          fi
+
+          if [[ -z "$USED_MODEL" ]]; then
+            echo "WARNING: all free OpenRouter candidates and fallback model failed" >&2
+            post_comment "## Pi Agent Review Notice
+
+          Automated review was skipped: OpenRouter free models and fallback model were temporarily unavailable."
+            exit 0
           fi
 
           # ── Post review comments ──────────────────────────────────────
           echo "=== Posting review comments ==="
           if ! grep -q '^FINDING|' "$REVIEW_FILE"; then
-            gh pr comment "$PR" --body "## Pi Agent Review (openrouter / $USED_MODEL)
+            post_comment "## Pi Agent Review (openrouter / $USED_MODEL)
 
-          No issues found in this PR." || true
+          No issues found in this PR."
             exit 0
           fi
 
@@ -197,13 +314,7 @@ jobs:
               *)   BADGE="![P2](https://img.shields.io/badge/P2-warning-yellow?style=flat-square)" ;;
             esac
 
-            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/comments" \
-              -f body="$BADGE $desc" \
-              -f path="$path" \
-              -f commit_id="$HEAD_SHA" \
-              -f line="$line" \
-              -f side="RIGHT" \
-              2>/dev/null || true
+            post_inline "$BADGE $desc" "$path" "$line" "$HEAD_SHA"
 
             COMMENT_COUNT=$((COMMENT_COUNT + 1))
           done < <(grep '^FINDING|' "$REVIEW_FILE")
@@ -214,6 +325,7 @@ jobs:
           P1=$(   grep -c '^FINDING|[^|]*|[^|]*|P1|' "$REVIEW_FILE" || echo 0)
           P2=$(   grep -c '^FINDING|[^|]*|[^|]*|P2|' "$REVIEW_FILE" || echo 0)
 
+          SUMMARY_TMP=$(mktemp)
           {
             printf '## Pi Agent Review (%s / %s)\n\n' "openrouter" "$USED_MODEL"
             printf '_Diff: %s lines | Findings: %s (P1=%s P2=%s)_\n\n' \
@@ -222,6 +334,8 @@ jobs:
             printf '|----------|------|------|-------------|\n'
             while IFS='|' read -r _ path line severity desc; do
               [[ -n "$path" ]] || continue
-              printf '| %s | `%s` | %s | %s |\n' "$severity" "$path" "$line" "$desc"
+              printf "| %s | \`%s\` | %s | %s |\n" "$severity" "$path" "$line" "$desc"
             done < <(grep '^FINDING|' "$REVIEW_FILE")
-          } | gh pr comment "$PR" --body-file - 2>/dev/null || true
+          } > "$SUMMARY_TMP"
+          post_comment "$(cat "$SUMMARY_TMP")"
+          rm -f "$SUMMARY_TMP"

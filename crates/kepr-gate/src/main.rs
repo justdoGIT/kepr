@@ -9,6 +9,7 @@
 mod aws_egress;
 mod ca;
 mod canary;
+mod cloudflare;
 mod db;
 mod dlp;
 mod egress;
@@ -46,6 +47,7 @@ mod tls_provider;
 mod tunnel;
 mod vault;
 
+use std::io::Write;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -70,8 +72,26 @@ fn main() -> ExitCode {
     }
     match session::run() {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("kepr-gate: {e}");
+        Err(error) => {
+            let reason = if error.starts_with("cannot listen on 127.0.0.1:") {
+                "gate port bind failed"
+            } else if error.starts_with("database listener:") {
+                "database port bind failed"
+            } else {
+                "gate startup failed"
+            };
+            let report = kepr_core::gate_protocol::ReadyLine {
+                ready: false,
+                port: 0,
+                placeholders: std::collections::HashMap::new(),
+                ca_pem: None,
+                db_ports: std::collections::HashMap::new(),
+                error: Some(reason.into()),
+            };
+            if let Ok(line) = serde_json::to_string(&report) {
+                let _ = writeln!(std::io::stdout(), "{line}");
+            }
+            eprintln!("kepr-gate: {reason}");
             ExitCode::from(70)
         }
     }

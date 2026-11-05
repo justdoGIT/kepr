@@ -10,7 +10,9 @@ mod cli_agent_adopt;
 mod cli_agent_adopt_harness;
 mod cli_agent_adopt_history;
 mod cli_agent_adopt_remove;
+mod cli_agent_cloudflare;
 mod cli_agent_cmd;
+mod cli_agent_codex;
 mod cli_agent_db;
 mod cli_agent_db_rotate;
 mod cli_agent_detect;
@@ -52,6 +54,7 @@ mod cli_more;
 mod cli_record;
 mod cli_recovery;
 mod cli_rotate;
+mod cli_sandbox_auth;
 mod cli_sandbox_bus; // T13.28
 mod cli_sandbox_relay;
 mod cli_sandbox_seccomp;

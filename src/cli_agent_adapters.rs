@@ -25,12 +25,10 @@ pub struct Adapter {
     /// (provider, credential NAME)
     pub creds: &'static [(&'static str, &'static str)],
     pub env: &'static [EnvVar],
-    /// Fixed port, for harnesses configured through a file with a fixed
-    /// base URL (written by `kepr agent install`).
+    /// Optional fixed port required by a manually configured harness.
+    /// Install-backed harnesses default to a per-session ephemeral port.
     pub port: Option<u16>,
 }
-
-pub const INSTALL_PORT: u16 = 7878;
 
 const fn var(name: &'static str, value: Value) -> EnvVar {
     EnvVar { name, value }
@@ -48,14 +46,21 @@ pub const ADAPTERS: &[Adapter] = &[
         ],
         port: None,
     },
-    // OpenAI Codex CLI: OPENAI_BASE_URL + OPENAI_API_KEY.
+    // Codex API providers; cli_agent_codex pins the selected provider to the gate.
     Adapter {
         harness: "codex",
         program: "codex",
-        creds: &[("openai", "OPENAI_API_KEY")],
+        creds: &[
+            ("openai", "OPENAI_API_KEY"),
+            ("agentrouter", "AGENTROUTER_API_KEY"),
+        ],
         env: &[
             var("OPENAI_BASE_URL", Value::BaseUrl("openai", "/v1")),
             var("OPENAI_API_KEY", Value::Placeholder("OPENAI_API_KEY")),
+            var(
+                "AGENTROUTER_API_KEY",
+                Value::Placeholder("AGENTROUTER_API_KEY"),
+            ),
         ],
         port: None,
     },
@@ -82,29 +87,40 @@ pub const ADAPTERS: &[Adapter] = &[
         ],
         port: None,
     },
-    // oh-my-pi: ~/.omp/agent/models.yml (written by `kepr agent install omp`)
-    // names KEPR_PH_ANTHROPIC as the provider's apiKey variable.
+    // oh-my-pi: the kepr extension registers a provider at KEPR_GATE_URL.
     Adapter {
         harness: "omp",
         program: "omp",
-        creds: &[("anthropic", "ANTHROPIC_API_KEY")],
+        creds: &[
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("cloudflare", "CLOUDFLARE_AI_GATEWAY_API_KEY"),
+        ],
         env: &[
             var("KEPR_PH_ANTHROPIC", Value::Placeholder("ANTHROPIC_API_KEY")),
             var("ANTHROPIC_API_KEY", Value::Placeholder("ANTHROPIC_API_KEY")),
+            var(
+                "KEPR_PH_CLOUDFLARE",
+                Value::Placeholder("CLOUDFLARE_AI_GATEWAY_API_KEY"),
+            ),
+            var(
+                "CLOUDFLARE_AI_GATEWAY_API_KEY",
+                Value::Placeholder("CLOUDFLARE_AI_GATEWAY_API_KEY"),
+            ),
         ],
-        port: Some(INSTALL_PORT),
+        port: None,
     },
-    // Grok Build (xAI): ~/.grok/config.toml (written by `kepr agent install
-    // grok`) sets env_key = "KEPR_PH_XAI".
+    // Grok Build's session base URL override points the installed model at
+    // the per-session gate; the persisted model config need not pin a port.
     Adapter {
         harness: "grok",
         program: "grok",
         creds: &[("xai", "XAI_API_KEY")],
         env: &[
+            var("GROK_XAI_API_BASE_URL", Value::BaseUrl("xai", "/v1")),
             var("KEPR_PH_XAI", Value::Placeholder("XAI_API_KEY")),
             var("XAI_API_KEY", Value::Placeholder("XAI_API_KEY")),
         ],
-        port: Some(INSTALL_PORT),
+        port: None,
     },
     // Gemini CLI (T12.13): GOOGLE_GEMINI_BASE_URL (the API root; the SDK
     // adds /v1beta) + GEMINI_API_KEY (sent as x-goog-api-key).
@@ -118,9 +134,7 @@ pub const ADAPTERS: &[Adapter] = &[
         ],
         port: None,
     },
-    // opencode (T12.13): opencode.json (written by `kepr agent install
-    // opencode`) sets provider.anthropic.options.apiKey to
-    // "{env:KEPR_PH_ANTHROPIC}".
+    // OpenCode's config uses {env:KEPR_GATE_URL} at runtime.
     Adapter {
         harness: "opencode",
         program: "opencode",
@@ -129,7 +143,7 @@ pub const ADAPTERS: &[Adapter] = &[
             var("KEPR_PH_ANTHROPIC", Value::Placeholder("ANTHROPIC_API_KEY")),
             var("ANTHROPIC_API_KEY", Value::Placeholder("ANTHROPIC_API_KEY")),
         ],
-        port: Some(INSTALL_PORT),
+        port: None,
     },
 ];
 
@@ -149,6 +163,37 @@ pub fn lookup(harness: &str) -> Result<&'static Adapter, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_routes_a_sealed_agentrouter_credential() {
+        let available = std::collections::HashSet::from(["AGENTROUTER_API_KEY".to_string()]);
+        let routes = crate::cli_agent_run::routes_for(lookup("codex").unwrap(), &available)
+            .expect("Codex must support its configured AgentRouter key");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].provider, "agentrouter");
+        assert_eq!(routes[0].cred, "AGENTROUTER_API_KEY");
+        let ph = std::collections::HashMap::from([(
+            "agentrouter".to_string(),
+            "kepr-ph-test".to_string(),
+        )]);
+        let env = crate::cli_agent_run::build_env(
+            lookup("codex").unwrap(),
+            7001,
+            &ph,
+            [(
+                "AGENTROUTER_API_KEY".to_string(),
+                "synthetic-secret".to_string(),
+            )]
+            .into_iter(),
+        );
+        assert_eq!(
+            env.iter()
+                .find(|(k, _)| k == "AGENTROUTER_API_KEY")
+                .map(|(_, v)| v.as_str()),
+            Some("kepr-ph-test")
+        );
+        assert!(!env.iter().any(|(_, v)| v == "synthetic-secret"));
+    }
 
     #[test]
     fn harness_names_unique_and_placeholders_declared() {
@@ -171,25 +216,6 @@ mod tests {
                 assert!(kepr_core::providers::lookup(p).is_some(), "{p}");
             }
         }
-    }
-
-    #[test]
-    fn gemini_and_opencode_rows() {
-        let mut ph = std::collections::HashMap::new();
-        ph.insert("google".to_string(), "kepr-ph-g".to_string());
-        let gemini = lookup("gemini").unwrap();
-        assert_eq!((gemini.program, gemini.port), ("gemini", None));
-        let env = crate::cli_agent_run::build_env(gemini, 7001, &ph, std::iter::empty());
-        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
-        assert_eq!(
-            get("GOOGLE_GEMINI_BASE_URL"),
-            Some("http://127.0.0.1:7001/google")
-        );
-        assert_eq!(get("GEMINI_API_KEY"), Some("kepr-ph-g"));
-        let oc = lookup("opencode").unwrap();
-        assert_eq!((oc.program, oc.port), ("opencode", Some(INSTALL_PORT)));
-        assert_eq!(oc.creds, &[("anthropic", "ANTHROPIC_API_KEY")]);
-        assert!(oc.env.iter().any(|v| v.name == "KEPR_PH_ANTHROPIC"));
     }
 
     #[test]

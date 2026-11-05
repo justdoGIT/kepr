@@ -1,0 +1,33 @@
+{
+  "benches": {
+    "core:leak_scan/100": 23120.0,
+    "core:leak_scan/10000": 2294000.0,
+    "core:leak_scan/canary_probes": 156200.0,
+    "core:policy/check": 878.9,
+    "core:policy/glob": 200.0,
+    "core:protocol/frame_roundtrip/4096": 475.0,
+    "core:protocol/frame_roundtrip/60000": 4448.0,
+    "core:protocol/frame_roundtrip/64": 108.0,
+    "core:protocol/parse_get_request": 817.9,
+    "core:protocol/parse_set_request": 1144.0,
+    "core:recovery/shamir_combine_3_of_5": 678.2,
+    "core:recovery/shamir_split_3_of_5": 4124.0,
+    "core:recovery/words_decode": 10100.0,
+    "core:recovery/words_encode": 5283.0,
+    "core:sigv4_sign/128": 25350.0,
+    "core:sigv4_sign/16384": 144500.0,
+    "core:strength_estimate/estimate/Tr0ub4dor&3": 29630.0,
+    "core:strength_estimate/estimate/correct horse battery staple": 126900.0,
+    "core:strength_estimate/estimate/hunter2": 11220.0
+  },
+  "meta": {
+    "generated": "2026-11-05T17:36:39+00:00",
+    "hostname": "msi",
+    "machine": "x86_64",
+    "min_of_runs": 3,
+    "platform": "Linux-7.2.13_1-x86_64-with-glibc2.41",
+    "processor": "Intel(R) Core(TM) i3-7100 CPU @ 3.90GHz",
+    "sample_count": 20,
+    "workspace": "/home/kk/projects/kepr/crates/kepr-core"
+  }
+}

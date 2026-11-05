@@ -7,24 +7,59 @@
 // dispatch, emit framed JSON response. Connections are handled by a bounded
 // worker pool so a flood can't spawn unbounded threads.
 
+mod atomic_file;
 mod audit;
 mod audit_chain;
 mod audit_chain_recovery;
+mod audit_checkpoint;
+mod audit_verify;
+mod cred_meta;
 mod crypto;
 mod crypto_inproc;
 mod daemon_audit;
+mod daemon_aws;
 mod daemon_cache;
+mod daemon_client;
+mod daemon_cloudflare;
+mod daemon_credlock;
 mod daemon_dispatch;
+mod daemon_eco;
 mod daemon_expiry;
+mod daemon_extra;
+mod daemon_gate;
+mod daemon_gate_deadline;
+mod daemon_gate_registry;
+mod daemon_gate_service;
+mod daemon_gatex;
 mod daemon_handlers;
 mod daemon_handlers_get;
+mod daemon_handlers_list;
+mod daemon_health;
+mod daemon_history;
 mod daemon_lock;
+mod daemon_memlock;
 mod daemon_peer;
+mod daemon_platform;
+mod daemon_policy;
 mod daemon_polkit;
 mod daemon_pool;
 mod daemon_ratelimit;
+mod daemon_records;
+mod daemon_recordsx;
+mod daemon_recovery;
+mod daemon_seal;
+mod daemon_session;
+mod daemon_share;
+mod daemon_share_seen;
+mod daemon_sharing;
 mod daemon_singleton;
+mod daemon_sleepwatch;
 mod daemon_socket;
+mod daemon_ssh;
+mod daemon_store;
+mod daemon_syncx;
+mod daemon_usage;
+mod daemon_vault;
 mod expiry;
 mod fido2;
 mod key_unlock;
@@ -32,13 +67,15 @@ mod master_key;
 mod store;
 mod version_state;
 
+mod daemon_desktop;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::sync::OnceLock;
 
-use daemon_dispatch::handle_client;
-use daemon_pool::Pool;
+use crate::daemon_client::handle_client;
+use crate::daemon_memlock::{disable_core_dumps, lock_memory};
+use crate::daemon_pool::Pool;
 use daemon_ratelimit::RateLimiter;
 use daemon_socket::{
     effective_uid, set_socket_permissions, setup_socket_dir, tighten_umask_for_socket,
@@ -61,48 +98,12 @@ fn rate_limiter() -> &'static RateLimiter {
     RATE_LIMITER.get_or_init(|| RateLimiter::new(RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_PER_SEC))
 }
 
-// ── mlockall ─────────────────────────────────────────────────────────────────
-// Lock pages already allocated for the daemon. MCL_FUTURE is deliberately
-// excluded: under the common 8 MiB RLIMIT_MEMLOCK it can succeed initially,
-// then make pthread_create fail with EAGAIN when the worker pool allocates its
-// stacks. Individual secret buffers are zeroized; failure here remains a
-// warning because unprivileged user-mode daemons cannot raise this limit.
-
-const MCL_CURRENT: i32 = 1;
-extern "C" {
-    fn mlockall(flags: i32) -> i32;
-}
-
-fn lock_memory() {
-    let ret = unsafe { mlockall(MCL_CURRENT) };
-    if ret != 0 {
-        eprintln!("[kepr-daemon] warning: mlockall failed — secrets may be swappable");
-    }
-}
-
-/// Disable core dumps and ptrace attachment for this process.
-///
-/// SAFETY: `PR_SET_DUMPABLE` takes a single integer argument (0 = not
-/// dumpable); the remaining `prctl(2)` varargs are ignored for this
-/// option. No pointer or lifetime hazard — this only flips a per-process
-/// kernel flag. Without this, decrypted secrets, the master key, and
-/// Argon2id working memory can land in a systemd-coredump or be read via
-/// ptrace by a process that gains the right capability.
-fn disable_core_dumps() {
-    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
-    if ret != 0 {
-        eprintln!(
-            "[kepr-daemon] warning: prctl(PR_SET_DUMPABLE) failed — core dumps may leak secrets"
-        );
-    }
-}
-
 fn user_mode() -> bool {
     std::env::var_os("KEPR_USER_MODE").is_some() || effective_uid() != 0
 }
 
 fn state_dir() -> std::path::PathBuf {
-    if user_mode() {
+    let base = if user_mode() {
         std::env::var_os("XDG_STATE_HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
@@ -112,7 +113,8 @@ fn state_dir() -> std::path::PathBuf {
             .join("kepr")
     } else {
         std::path::PathBuf::from("/var/lib/kepr")
-    }
+    };
+    kepr_core::profile::nest(base)
 }
 
 fn master_key_path() -> std::path::PathBuf {
@@ -228,10 +230,13 @@ fn main() {
 
     let user = user_mode_requested(&args) || effective_uid() != 0;
     if user {
+        std::env::remove_var("KEPR_SYSTEM_MODE");
         std::env::set_var("KEPR_USER_MODE", "1");
     } else {
+        std::env::remove_var("KEPR_USER_MODE");
         std::env::set_var("KEPR_SYSTEM_MODE", "1");
     }
+    daemon_session::check_profile_or_exit();
 
     fs::create_dir_all(state_dir()).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot create state directory: {e}");
@@ -265,22 +270,6 @@ fn main() {
         eprintln!("[kepr-daemon] cannot secure credential directory: {e}");
         std::process::exit(1);
     });
-    let sealer: Box<dyn master_key::Sealer> = if user {
-        Box::new(master_key::LocalFileSealer)
-    } else {
-        Box::new(master_key::SystemdCredsSealer)
-    };
-    let password_protected = protected_master_key_path().exists();
-    let key = if password_protected {
-        None
-    } else {
-        Some(
-            master_key::load_or_generate(&master_key_path(), sealer.as_ref()).unwrap_or_else(|e| {
-                eprintln!("[kepr-daemon] cannot bootstrap master key: {e}");
-                std::process::exit(1);
-            }),
-        )
-    };
     let versions = std::sync::Arc::new(
         version_state::VersionState::load(version_state_path()).unwrap_or_else(|e| {
             eprintln!("[kepr-daemon] cannot load version state: {e}");
@@ -288,19 +277,10 @@ fn main() {
         }),
     );
     let versions_for_sweeper = std::sync::Arc::clone(&versions);
-    crypto::initialize_inproc_backend(key.as_ref().map(|key| **key).unwrap_or([0u8; 32]), versions)
-        .unwrap_or_else(|e| {
-            eprintln!("[kepr-daemon] cannot install backend: {e}");
-            std::process::exit(1);
-        });
-    if password_protected {
-        crypto::lock_backend().unwrap_or_else(|e| {
-            eprintln!("[kepr-daemon] cannot lock protected backend: {e}");
-            std::process::exit(1);
-        });
-        eprintln!("[kepr-daemon] credential store is locked; run `kepr unlock`");
+    daemon_seal::startup::start(user, versions);
+    if user {
+        daemon_session::unlock_wait::start();
     }
-    drop(key);
 
     sweep_legacy_credstore();
     daemon_expiry::spawn_sweeper(versions_for_sweeper);
@@ -313,6 +293,7 @@ fn main() {
         eprintln!("[kepr-daemon] cannot install audit chain: {e}");
         std::process::exit(1);
     });
+    daemon_policy::init();
 
     let socket = kepr_core::protocol::socket_path();
     setup_socket_dir();
@@ -320,6 +301,11 @@ fn main() {
     tighten_umask_for_socket();
     let listener = UnixListener::bind(&socket).expect("cannot bind socket");
     set_socket_permissions();
+    daemon_socket::private_umask_after_bind();
+    if user {
+        daemon_session::idle::spawn(effective_uid());
+        daemon_sleepwatch::spawn(effective_uid());
+    }
 
     let pool = Pool::new(POOL_WORKERS, POOL_QUEUE, handle_client);
     eprintln!(
@@ -331,17 +317,5 @@ fn main() {
             Ok(stream) => pool.dispatch(stream),
             Err(e) => eprintln!("[kepr-daemon] accept error: {e}"),
         }
-    }
-}
-
-#[cfg(test)]
-mod cli_arg_tests {
-    use super::user_mode_requested;
-
-    #[test]
-    fn accepts_bare_and_hyphenated_user_mode() {
-        assert!(user_mode_requested(&["user".to_string()]));
-        assert!(user_mode_requested(&["--user".to_string()]));
-        assert!(!user_mode_requested(&[]));
     }
 }

@@ -166,7 +166,8 @@ pub fn cmd_hook(args: &[String]) -> i32 {
     let event = args.first().map(String::as_str).unwrap_or_default();
     let mut raw = String::new();
     if event != "session-start" {
-        let _ = std::io::stdin().take(1 << 20).read_to_string(&mut raw);
+        let _ = std::io::stdin().take(10 << 20).read_to_string(&mut raw);
+        let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
     }
     let input: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
     let verdict = match event {

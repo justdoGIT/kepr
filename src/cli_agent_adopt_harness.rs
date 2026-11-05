@@ -7,7 +7,7 @@
 //   .grok/user-settings.json   apiKey (grok-cli)
 //   .aider.conf.yml            openai-api-key, anthropic-api-key, and
 //                              `api-key:` items `- provider=key`
-//   .omp/agent/models.yml      providers.<id>.apiKey (a key or a variable name)
+//   .config/omp/agent/models.yml providers.<id>.apiKey (a key or a variable name)
 // Read by key, not by line, and never rewritten: `--remove` leaves the
 // key for the user to delete by hand. Values are never printed.
 
@@ -22,7 +22,7 @@ pub const HARNESS_FILES: &[&str] = &[
     ".codex/auth.json",
     ".grok/user-settings.json",
     ".aider.conf.yml",
-    ".omp/agent/models.yml",
+    ".config/omp/agent/models.yml",
 ];
 
 /// JSON and YAML files are read by key and never rewritten.
