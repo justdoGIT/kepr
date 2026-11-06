@@ -50,7 +50,7 @@ pub fn session_answer(env: Env, input: &HashMap<String, String>) -> Option<(Stri
         return None;
     }
     let host = input.get("host")?.to_ascii_lowercase();
-    // The name folds `.` and `-` alike: a real dotted host name only.
+    // Dotted legacy names stay stable; other punctuation receives an exact suffix.
     kepr_core::binding::validate_host(&host).ok()?;
     let var = format!(
         "{}{}",
@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(host_to_kepr_name("github.com"), "GIT_GITHUB_COM");
         assert_eq!(
             host_to_kepr_name("gitlab.internal.net:8443"),
-            "GIT_GITLAB_INTERNAL_NET_8443"
+            "GIT_GITLAB_INTERNAL_NET_8443_HOST_6769746C61622E696E7465726E616C2E6E65743A38343433"
         );
     }
 
