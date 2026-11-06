@@ -293,7 +293,7 @@ pub async fn handle(
     let (value, inject) = match forward::admit(&log, route, req.headers(), req.uri().query()).await
     {
         Ok(v) => v,
-        Err(r) => return Ok(challenge(r)),
+        Err(r) => return Ok(challenge(*r)),
     };
     let own = crate::mask::forms(value.as_str()); // T12.01
     let key = Key { inject, value, own };

@@ -2,6 +2,21 @@
 use super::*;
 
 #[test]
+fn explicit_https_routes_are_bounded_and_cannot_spoof_credentials() {
+    let routes: Vec<_> = (0..crate::http_route::MAX_ROUTES).map(|slot| {
+        let cred = format!("KEY_{slot}");
+        GateRoute { provider: crate::http_route::key("api.example.com", &cred).unwrap(), cred, slot: slot as u16, target: None }
+    }).collect();
+    assert!(validate_routes(&routes).is_ok());
+    let mut bad = routes.clone();
+    bad[0].cred = "OTHER".into();
+    assert!(validate_routes(&bad).is_err());
+    let mut too_many = routes;
+    too_many.push(GateRoute { provider: "xai".into(), cred: "XAI_API_KEY".into(), slot: 64, target: None });
+    assert!(validate_routes(&too_many).unwrap_err().contains("1-64"));
+}
+
+#[test]
 fn rotation_messages_and_routes() {
     let r = GateRequest::RotateCommit {
         id: 4,

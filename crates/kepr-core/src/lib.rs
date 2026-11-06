@@ -30,6 +30,7 @@ pub mod protocol;
 pub mod protocol_response;
 pub mod protocol_types;
 pub mod providers;
+pub mod redact;
 pub mod secmem;
 pub mod shamir;
 pub mod sigv4;
@@ -49,6 +50,7 @@ pub mod protocol_store;
 // batch: records
 pub mod generate_profile;
 pub mod health_policy;
+pub mod http_route;
 pub mod protocol_records;
 pub mod record_types;
 pub mod strength;

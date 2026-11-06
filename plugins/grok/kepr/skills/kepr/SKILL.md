@@ -36,3 +36,43 @@ Rules:
    `kepr` MCP server's `call_api` tool; `list_secrets` shows what exists.
 6. If you see something that looks like a real key anywhere, stop and tell
    the user to run `kepr leaked NAME`, which stops sessions and deletes it.
+
+
+## Inspecting source and session history safely
+
+Key-shaped examples in source, test output, diffs, and old conversations can
+trigger the gate's 403 even when no live credential was exposed. Before showing
+such text to the model, capture it locally and pass it to `kepr hook redact` as
+JSON on stdin (`{"text": captured_text}`). Parse its JSON response and emit only
+its `text` field after checking the exit status and field type. Never emit the
+unfiltered output or redactor stderr on failure. Keep searches focused; the hook
+accepts at most 10 MiB of JSON input. Do not use this to inspect credential files.
+
+For example, inspect source with a bounded search:
+
+```python
+import json, subprocess
+found = subprocess.run(["rg", "-n", "topic", "path/to/source"], capture_output=True, text=True)
+checked = subprocess.run(
+    ["kepr", "hook", "redact"],
+    input=json.dumps({"text": found.stdout + found.stderr}),
+    capture_output=True, text=True,
+)
+if checked.returncode:
+    raise SystemExit("Secret check failed; output withheld")
+result = json.loads(checked.stdout)
+if not isinstance(result.get("text"), str):
+    raise SystemExit("Invalid secret-check response; output withheld")
+print(result["text"])
+```
+
+Use the shared detector, not a token-length-only regex: private-key blocks and
+JSON-escaped keys need redaction too. Build synthetic test strings from short
+fragments at runtime so tool calls themselves do not contain complete key shapes.
+If a real credential is discovered, follow the `kepr leaked NAME` rule above.
+
+An OpenAI Responses "different ... OpenAI resource" error is a separate upstream
+conversation-state failure. Preserve item contents, tool-call links, and encrypted
+reasoning; never fix it by deleting live history databases or disabling kepr.
+Save a sanitized recovery note before a restart. Updated gates take effect for new
+agent sessions; leave the current session's gate running while it is in use.

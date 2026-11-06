@@ -238,12 +238,13 @@ pub struct ReadyLine {
 }
 
 /// Rules every StartGate request must meet, checked by the daemon before
-/// it spawns a gate and again by the gate: 1-16 routes, known providers,
+/// it spawns a gate and again by the gate: bounded routes, known providers
+/// or explicit HTTPS destinations,
 /// unique providers and unique slots. Credential names are checked by
 /// the daemon (`store::validate_name`).
 pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
-    if routes.is_empty() || routes.len() > 16 {
-        return Err("an agent session needs 1-16 routes".into());
+    if routes.is_empty() || routes.len() > crate::http_route::MAX_ROUTES {
+        return Err(format!("an agent session needs 1-{} routes", crate::http_route::MAX_ROUTES));
     }
     for (i, r) in routes.iter().enumerate() {
         let db_ok = r.target.as_ref().is_some_and(|t| {
@@ -256,9 +257,12 @@ pub fn validate_routes(routes: &[GateRoute]) -> Result<(), String> {
         });
         let aws_ok = r.target.is_none() && r.provider == aws_route_key(&r.cred);
         let rotate_ok = r.target.is_none() && r.provider == rotate_route_key(&r.cred);
+        let http_ok = r.target.is_none() && crate::http_route::parse(&r.provider)
+            .is_some_and(|(_, credential)| credential == r.cred);
         if !db_ok
             && !aws_ok
             && !rotate_ok
+            && !http_ok
             && (r.target.is_some() || crate::providers::lookup(&r.provider).is_none())
         {
             return Err(format!("unknown provider {}", r.provider));

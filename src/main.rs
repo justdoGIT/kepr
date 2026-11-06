@@ -22,6 +22,7 @@ mod cli_agent_install;
 mod cli_agent_kube;
 mod cli_agent_plugin;
 mod cli_agent_run;
+mod cli_agent_omp;
 mod cli_agent_sandbox;
 mod cli_agent_shim;
 mod cli_args;

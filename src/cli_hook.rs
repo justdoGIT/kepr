@@ -127,19 +127,7 @@ pub fn prompt(input: &Value) -> Verdict {
 
 /// `text` with every key-shaped substring replaced, and how many.
 pub fn redact(text: &str) -> (String, usize) {
-    let hits = kepr_core::leak::find_all(text.as_bytes());
-    let (mut out, mut at) = (String::new(), 0);
-    for h in &hits {
-        if h.offset < at {
-            continue; // overlapping shapes
-        }
-        // Key shapes are ASCII, so these are char boundaries.
-        out.push_str(&text[at..h.offset]);
-        out.push_str(&format!("[{} removed by kepr]", h.kind));
-        at = h.offset + h.len;
-    }
-    out.push_str(&text[at..]);
-    (out, hits.len())
+    kepr_core::redact::text(text)
 }
 
 pub fn session_start(gate_url: Option<&str>) -> Verdict {
@@ -204,6 +192,22 @@ pub fn cmd_hook(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_removes_pem_payload_and_json_escaped_keys() {
+        let pem = format!(
+            "-----BEGIN {}-----\nprivate-test-payload\n-----END {}-----",
+            "PRIVATE KEY", "PRIVATE KEY"
+        );
+        let (clean, count) = redact(&pem);
+        assert!(count > 0);
+        assert!(!clean.contains("private-test-payload"));
+        let token = format!("sk-proj-{}", "a".repeat(24));
+        let escaped = format!("{{\"text\":\"\\u0073{}\"}}", &token[1..]);
+        let (clean, count) = redact(&escaped);
+        assert!(count > 0);
+        assert!(!clean.contains(&token[1..]));
+    }
 
     fn blocked(v: Verdict) -> bool {
         matches!(v, Verdict::Block(_))
