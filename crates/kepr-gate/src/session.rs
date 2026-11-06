@@ -5,7 +5,6 @@ use std::io::{Read, Write};
 use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
 use kepr_core::gate_protocol::{ReadyLine, SessionConfig};
 use zeroize::Zeroizing;
 
@@ -236,8 +235,9 @@ pub fn run() -> Result<(), String> {
     let hosts: Vec<String> = cfg
         .routes
         .iter()
-        .filter_map(|r| kepr_core::providers::lookup(&r.provider))
-        .map(|p| p.host.to_string())
+        .filter_map(|r| kepr_core::providers::lookup(&r.provider).map(|p| p.host)
+            .or_else(|| kepr_core::http_route::parse(&r.provider).map(|(h, _)| h)))
+        .map(str::to_string)
         .chain(crate::kube::hosts(&cfg.routes)) // T13.04
         .collect();
     // T2.02: AWS keys may be bound to any *.amazonaws.com host; the
