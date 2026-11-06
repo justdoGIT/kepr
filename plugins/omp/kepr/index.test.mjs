@@ -66,8 +66,11 @@ test('structured tool arguments preserve safe sibling fields', async () => {
   assert.equal(result.messages[0].content[0].arguments.safe, 'keep-me');
 });
 
-test('long histories keep redaction child processes bounded', async () => {
+test('long histories keep redaction child processes bounded and deduplicated', async () => {
   const h = await harness();
+  const repeated = Array.from({ length: 32 }, () => ({ role: 'assistant', content: 'SENSITIVE_TEST_REPEAT' }));
+  await h.context({ messages: repeated });
+  assert.equal(h.calls.length, 1, 'identical text shares one in-flight hook');
   const messages = Array.from({ length: 32 }, (_, i) => ({ role: 'assistant', content: `SENSITIVE_TEST_${i}` }));
   await h.context({ messages });
   assert.ok(h.maxConcurrent <= 8, `started ${h.maxConcurrent} concurrent hooks`);
