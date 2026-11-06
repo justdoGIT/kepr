@@ -1,0 +1,240 @@
+---
+title: "Kepr Codex and OMP integration review"
+description: "Evidence-backed review of recurring Codex and oh-my-pi integration failures, fixes, verification, and remaining work."
+---
+
+# Kepr Codex and OMP integration review
+
+**Review date:** 2026-11-07  
+**Scope:** Codex and oh-my-pi (`omp`) integration failures reported in recent
+Codex and omp session history, plus the related kepr gate, plugin, release, and
+documentation paths.
+
+## Executive result
+
+The recurring failures split into two classes:
+
+1. **Codex provider/resource state.** Kepr now validates Codex provider
+   configuration, forces the configured provider through the local gate, removes
+   cached login state from the protected invocation, and bounds the AgentRouter
+   Responses retry.
+2. **OMP conversation protection.** Signed reasoning is now rejected rather than
+   mutated. Tool-result and tool-argument content is redacted before a model
+   request, but the current plugin still starts one hook process per uncached
+   text block. That fan-out remains the main unresolved OMP reliability risk.
+
+No real credential values were read, printed, or included in this report.
+
+## Evidence and limits
+
+The review used:
+
+- Codex and omp session-history records and the saved handoff at
+  `/home/kk/.local/state/kepr-codex-fix/RECOVERY.md`.
+- The shared OMP review handoff at
+  `/home/kk/.local/state/kepr-codex-fix/OMP_REVIEW.md`.
+- The live, user-owned worktree at `/home/kk/projects/kepr` for current source
+  status and line-level confirmation.
+- An isolated review worktree at `/home/kk/projects/kepr-review-20261106` for
+  release-workflow and documentation-generator fixes.
+
+This is a targeted engineering review, not a formal security audit. Claims are
+labelled by evidence type:
+
+- **Observed:** directly read or exercised during this review.
+- **Historical:** recorded in the saved handoff from the preceding session; not
+  repeated here when repetition would restart or disturb a live protected
+  session.
+- **Inference:** derived from current source behavior and requiring a provider
+  or long-history reproduction.
+
+## Recurring failure analysis
+
+### Codex: AgentRouter Responses resource mismatch
+
+**Symptom.** A resumed Codex conversation could receive a 400 resource/state
+error when previous response or item identifiers were replayed to AgentRouter.
+Manual probes without Codex client headers also returned `401 unauthorized
+client`; that is a separate client-identification issue, not evidence that the
+kepr credential was invalid.
+
+**Current implementation.** `crates/kepr-gate/src/responses.rs` performs one
+bounded retry for the exact resource mismatch. The retry:
+
+- counts against the request limit;
+- removes saved item identifiers only from self-contained items;
+- preserves text, `call_id`, and encrypted reasoning;
+- refuses chained/reference-only history and unknown item shapes;
+- does not retry authorization or malformed-request errors.
+
+`src/cli_agent_codex.rs` additionally validates the configured provider name,
+sealed `env_key`, exact provider host, and restricted URL path. It rejects
+alternate auth sources such as cached bearer/login configuration. The protected
+argv sets an ephemeral credential store, the selected model provider, the local
+gate URL, and the sealed environment-key name.
+
+**Status:** **Fixed with bounded fallback.** The saved handoff records live
+AgentRouter turns returning 200 and mock coverage for mismatch, persistence,
+and retry limits. The exact historical upstream mismatch was not reproduced in
+the review session, so the fix should not be described as a complete upstream
+root-cause proof.
+
+### OMP: signed thinking mutation
+
+**Symptom.** Earlier OMP context redaction treated signed Anthropic thinking as
+ordinary text. It changed the text while retaining the provider signature,
+which violates the signed-block invariant and can produce an invalid-request
+400.
+
+**Current implementation.** The live plugin now detects signed thinking and
+fails closed instead of returning edited text:
+
+- `plugins/omp/kepr/index.ts:282-284` rejects signed thinking containing a
+  detected secret shape;
+- `crates/kepr-gate/src/prompt.rs` keeps signed thinking subject to blocking;
+- unsigned text remains eligible for redaction.
+
+**Status:** **Fixed in the user-owned worktree.** The prior test that expected a
+retained signature after mutation must remain removed or changed to assert the
+provider invariant: signed thinking is either unchanged or the request is
+blocked.
+
+### OMP: concurrent redaction process fan-out
+
+**Symptom.** The nested `Promise.all` calls in the live plugin launch one
+`kepr hook redact` child per uncached message or content block. A synthetic
+probe observed one concurrent child per input message. Long resumed histories,
+tool results, and tool arguments can therefore exhaust process or memory
+limits, hit the five-second hook timeout, and replace valid context with
+withheld markers.
+
+**Current implementation:**
+
+- outer fan-out: `plugins/omp/kepr/index.ts:257`;
+- content-part fan-out: `plugins/omp/kepr/index.ts:268`;
+- bounded memo: 256 completed text values, but no in-flight promise map.
+
+**Status:** **Open.** The safety behavior is fail-closed, but it is not a
+reliability fix. The preferred repair is bounded concurrency plus in-flight
+deduplication by text. A regression should exercise a long history and assert a
+small maximum child-process count without weakening redaction.
+
+### OMP: truncated PEM inside serialized tool arguments
+
+**Symptom.** The redactor intentionally consumes the remainder after an
+incomplete PEM header followed by a newline. Redacting a whole JSON-stringified
+arguments object can therefore remove closing JSON syntax when a truncated PEM
+appears before another field.
+
+**Current implementation.** The live plugin serializes tool arguments, invokes
+redaction, and parses the result at `plugins/omp/kepr/index.ts:271-277`.
+Malformed output is now withheld and the tool call is blocked rather than sent
+as invalid JSON.
+
+**Status:** **Safe failure, but incomplete behavior.** The current code avoids
+forwarding malformed arguments, at the cost of a false-positive block. The
+better repair is to redact each string leaf of the parsed argument object and
+re-serialize the object, preserving keys and non-string values. Add a regression
+with a truncated PEM string and a safe sibling field.
+
+### OMP: broken-pipe termination
+
+**Symptom.** Hook/plugin output streams could terminate an OMP process with an
+`EPIPE` exception when the consumer closed the pipe first.
+
+**Current implementation.** `plugins/omp/kepr/index.ts` installs stdout/stderr
+error handlers and suppresses only `EPIPE` uncaught exceptions. Other exceptions
+remain visible. The release notes document the broken-pipe protection.
+
+**Status:** **Fixed and scoped.** The handler does not blanket-suppress
+unrelated failures.
+
+## Boundary and secret-handling review
+
+The following controls were confirmed in the current source or saved test
+results:
+
+- `kepr agent run` obtains only sealed credential metadata and starts a local
+  gate; the harness receives placeholders and gate URLs.
+- `src/cli_agent_run.rs` removes adapter-controlled credentials, proxy values,
+  database variables, AWS session values, and values matching key shapes from
+  inherited environment data before `env_clear`/exec.
+- Codex refuses `--no-sandbox`; the protected Codex path requires the sandbox.
+- `src/cli_hook.rs` blocks revealing kepr verbs and key-shaped tool input, and
+  `redact` returns replaced text without returning matched values.
+- `crates/kepr-core/src/redact.rs` handles complete and truncated PEM blocks,
+  JSON escapes, source-span preservation, and Unicode surrounding text.
+- The OMP hook treats a timeout as a block. A missing kepr executable remains
+  allowed because the gate and sandbox are the primary boundary.
+- Plugin installation embeds the plugin and skill source in the binary so the
+  installed plugin matches the reviewed kepr version.
+
+## Review-worktree fixes
+
+These fixes were made in the isolated worktree
+`/home/kk/projects/kepr-review-20261106`; they were not written over the live
+worktree because it contains active user-owned changes.
+
+| Commit | Change | Reason |
+| --- | --- | --- |
+| `46c9345` | Allow the tracked repository Cargo configuration while rejecting newly-created local config during the isolated release build. | The guard previously rejected the repository's own `.cargo/config.toml`. |
+| `2ce0a4d` | Match the repository-local Cargo-config token exactly in the regression test. | The first regression assertion falsely matched global `$HOME/.cargo/config.toml`. |
+| `dc76a38` | Stage generated Rust API pages and publish them only after all rustdoc runs and parsing succeed. | A failed generation must preserve the last good API tree. |
+| `6bd002b` | Give the API-generation backup a unique process/time name. | An interrupted run must not delete another run's backup. |
+| `cec0ed3` | Document the release and documentation-generator fixes in the changelog. | Keep the unreleased change record complete. |
+
+## Verification
+
+### Repeated in this review
+
+- `cargo test --release --test release_workflow -- --nocapture` in the isolated
+  worktree: **9 passed, 0 failed** after the assertion correction.
+- `node --check docs/scripts/gen-rust-api.mjs`: **passed**.
+- `git diff --check`: **passed**.
+
+The first release-workflow run exposed a test defect rather than a workflow
+defect: the assertion matched the global Cargo path substring. That assertion
+was corrected and the complete nine-test suite was rerun successfully.
+
+### Historical verification from the saved handoff
+
+The preceding protected-session work recorded:
+
+- `cargo test --release --workspace` passed;
+- 815 CLI tests and 172 gate tests passed after the last changes;
+- `cargo clippy --release --workspace --all-targets --all-features -- -D warnings`
+  passed;
+- five OMP tests passed; Node SDK tests passed except one skipped live test;
+- VS Code tests passed;
+- release binaries built and installed hashes matched;
+- AgentRouter live and mock checks passed for the bounded retry behavior.
+
+Those results are historical evidence, not a claim that the full workspace suite
+was rerun after this report was started.
+
+## Remaining actions
+
+1. **Bound OMP redaction concurrency.** Add a small semaphore/worker queue and
+   an in-flight `Map<string, Promise<string>>`; preserve the existing 256-entry
+   completed-result bound and fail-closed timeout behavior.
+2. **Redact structured tool arguments.** Parse arguments first, redact string
+   leaves, preserve object structure, and block only when the redactor cannot
+   return valid structured data.
+3. **Replace the signed-thinking test expectation.** Test unchanged signed
+   blocks and explicit blocking on detected secret-shaped content.
+4. **Run a real long-history OMP probe.** Measure concurrent hook children and
+   verify bounded behavior without sending a provider request.
+5. **Run the provider-specific AgentRouter check with Codex headers** if the
+   historical resource mismatch needs further diagnosis. Do not treat a 401
+   from a headerless manual probe as a kepr credential failure.
+6. **Port isolated-worktree commits deliberately.** Because
+   `/home/kk/projects/kepr` contains active uncommitted source changes, cherry-pick
+   or manually port only the five listed commits after checking for conflicts.
+
+## Conclusion
+
+The signed-thinking corruption and the principal Codex routing hazards are
+addressed. The remaining recurring OMP issue is process fan-out during context
+redaction; it should be fixed before treating long resumed OMP sessions as
+reliable. The current implementation fails closed for malformed redaction and
+signed content, which protects secrets but can still reject valid conversations.
