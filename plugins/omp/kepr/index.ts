@@ -1,19 +1,11 @@
 // kepr extension for oh-my-pi (omp).
 //
-// - Inside `kepr agent run omp`: points omp's built-in providers at the
-//   local kepr gate, with the session placeholder as the API key. No
-//   models.yml edit is needed; the real key never enters omp.
-// - Blocks tool calls that would reveal a stored secret (`kepr get`,
-//   `kepr env`, `kepr exec`, ...) or that carry a real key, and prompts
-//   that contain a key, using `kepr hook` (the same policy as the Grok
-//   Build plugin).
-// - `/kepr` shows whether this session is protected.
-//
-// Requires the `kepr` binary on PATH (or KEPR_BIN). No network access, no
-// dependencies; types only.
+// Protected sessions route configured providers through the local kepr gate.
+// Conversation text is checked before every model request; signed reasoning is
+// never edited, and structured tool arguments keep their JSON shape.
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerProviders } from "./providers.ts";
@@ -21,88 +13,8 @@ import { registerProviders } from "./providers.ts";
 const KEPR = process.env.KEPR_BIN || "kepr";
 const GATE = process.env.KEPR_GATE_URL;
 
-// omp provider id -> [gate path, placeholder variable set by kepr agent run]
+// Legacy fallback for sessions started with only the original adapter env.
 const ROUTES: Record<string, [string, string]> = {
-  // Existing static routes remain unchanged
-};
-
-// Helper to load models config and (re)register providers.
-// Removed duplicate helper; using the earlier definition.
-  if (!GATE) return { routed: [], unavailable: [] };
-  if (process.env.KEPR_OMP_ROUTES) {
-    let config: unknown = {};
-    try {
-      const directory = process.env.PI_CODING_AGENT_DIR;
-      if (!directory) throw new Error("missing agent directory");
-      const raw = readFileSync(join(directory, "models.yml"), "utf8");
-      config = (globalThis as any).Bun.YAML.parse(raw);
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") throw new Error("kepr: could not load OMP models.yml; provider setup stopped");
-    }
-    const result = registerProviders(pi, GATE, JSON.parse(process.env.KEPR_OMP_ROUTES), config, process.env);
-    return result;
-  } else {
-    const routed: string[] = [];
-    const unavailable: string[] = [];
-    for (const [provider, [path, variable] of Object.entries(ROUTES)) {
-      if (!process.env[variable]) continue;
-      pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
-      routed.push(provider);
-    }
-    return { routed, unavailable };
-  }
-}
-
-// Set up watcher for runtime config changes (models.yml).
-// Removed external watcher; integrated into kepr function below.
-  const directory = process.env.PI_CODING_AGENT_DIR;
-  if (directory) {
-    const watchPath = join(directory, "models.yml");
-    try {
-      const { watch } = require("node:fs");
-      let debounce: NodeJS.Timeout;
-      watch(watchPath, (type) => {
-        if (type !== "change") return;
-        if (debounce) clearTimeout(debounce);
-        debounce = setTimeout(() => {
-          const res = loadAndRegisterProviders(pi);
-          routed.length = 0; unavailable.length = 0;
-          routed.push(...res.routed);
-          unavailable.push(...res.unavailable);
-          // Notify user via UI if available.
-          try { pi.emit?.("config_reload", {}); } catch {}
-        }, 200);
-      });
-    } catch (e) {
-      // ignore watch errors – fallback to no auto-reload.
-    }
-  }
-}
-// Removed duplicate helper; using the earlier definition.
-  if (!GATE) return { routed: [], unavailable: [] };
-  if (process.env.KEPR_OMP_ROUTES) {
-    let config: unknown = {};
-    try {
-      const directory = process.env.PI_CODING_AGENT_DIR;
-      if (!directory) throw new Error("missing agent directory");
-      const raw = readFileSync(join(directory, "models.yml"), "utf8");
-      config = (globalThis as any).Bun.YAML.parse(raw);
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") throw new Error("kepr: could not load OMP models.yml; provider setup stopped");
-    }
-    const result = registerProviders(pi, GATE, JSON.parse(process.env.KEPR_OMP_ROUTES), config, process.env);
-    return result;
-  } else {
-    const routed: string[] = [];
-    const unavailable: string[] = [];
-    for (const [provider, [path, variable] of Object.entries(ROUTES)) {
-      if (!process.env[variable]) continue;
-      pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
-      routed.push(provider);
-    }
-    return { routed, unavailable };
-  }
-}
 	anthropic: ["/anthropic", "KEPR_PH_ANTHROPIC"],
 	openai: ["/openai/v1", "KEPR_PH_OPENAI"],
 	xai: ["/xai/v1", "KEPR_PH_XAI"],
@@ -111,36 +23,47 @@ const ROUTES: Record<string, [string, string]> = {
 	kktoken: ["/kktoken/v1", "KEPR_PH_KKTOKEN"],
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorCode(error: unknown): string | undefined {
+	if (!isRecord(error) || typeof error.code !== "string") return;
+	return error.code;
+}
+
 interface HookResult {
 	code: number;
 	message: string;
 }
 
-// kepr was found but didn't answer in time: treated as a block, never as
-// an allow (a slow machine must not let `kepr get` through). A missing
-// kepr binary still allows: the gate and sandbox are the boundary.
+interface CheckedText {
+	text: string;
+	ok: boolean;
+}
+
 const TIMED_OUT: HookResult = { code: 2, message: "kepr: the safety check timed out; blocked" };
 
-/** Run `kepr hook EVENT` with `payload` on stdin (never in argv). */
+/** Run `kepr hook EVENT` with payload on stdin (never in argv). */
 function hook(event: string, payload: unknown): Promise<HookResult> {
 	return new Promise(resolve => {
 		let stdout = "";
 		let stderr = "";
-		let child;
+		let child: ChildProcess | undefined;
 		try {
 			child = spawn(KEPR, ["hook", event], { stdio: ["pipe", "pipe", "pipe"] });
 		} catch {
 			resolve({ code: 0, message: "" });
 			return;
 		}
+		if (!child) return resolve({ code: 0, message: "" });
 		let timedOut = false;
 		const timer = setTimeout(() => {
 			timedOut = true;
-			child.kill("SIGKILL");
+			child?.kill("SIGKILL");
 		}, 5000);
 		child.stdout.on("data", (d: Buffer) => (stdout += d));
 		child.stderr.on("data", (d: Buffer) => (stderr += d));
-		// kepr missing: allow. The gate and sandbox are the boundary.
 		child.on("error", () => resolve({ code: 0, message: "" }));
 		child.stdin.on("error", () => {});
 		child.on("close", (code: number | null) => {
@@ -150,6 +73,59 @@ function hook(event: string, payload: unknown): Promise<HookResult> {
 		});
 		child.stdin.end(JSON.stringify(payload));
 	});
+}
+
+function loadProviderConfig(): unknown {
+	const directory = process.env.PI_CODING_AGENT_DIR;
+	if (!directory) throw new Error("kepr: missing OMP agent directory");
+	try {
+		const raw = readFileSync(join(directory, "models.yml"), "utf8");
+		const bun = (globalThis as unknown as { Bun?: { YAML?: { parse(source: string): unknown } } }).Bun;
+		if (!bun?.YAML?.parse) throw new Error("Bun YAML parser unavailable");
+		return bun.YAML.parse(raw);
+	} catch (error: unknown) {
+		if (errorCode(error) === "ENOENT") return {};
+		throw new Error("kepr: could not load OMP models.yml; provider setup stopped");
+	}
+}
+
+function registerAllProviders(pi: ExtensionAPI): { routed: string[]; unavailable: string[] } {
+	if (!GATE) return { routed: [], unavailable: [] };
+	if (process.env.KEPR_OMP_ROUTES) {
+		let metadata: unknown;
+		try {
+			metadata = JSON.parse(process.env.KEPR_OMP_ROUTES);
+		} catch {
+			throw new Error("kepr: invalid OMP route metadata; restart with kepr agent run omp");
+		}
+		return registerProviders(pi, GATE, metadata, loadProviderConfig(), process.env);
+	}
+	const routed: string[] = [];
+	for (const [provider, [path, variable]] of Object.entries(ROUTES)) {
+		if (!process.env[variable]) continue;
+		pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
+		routed.push(provider);
+	}
+	return { routed, unavailable: [] };
+}
+
+// A bounded queue prevents a long resumed history from starting one child per
+// message. The promise map separately coalesces identical text in flight.
+const MAX_REDACTION_CHILDREN = 8;
+let activeRedactions = 0;
+const redactionQueue: (() => void)[] = [];
+
+async function withRedactionSlot<T>(work: () => Promise<T>): Promise<T> {
+	if (activeRedactions >= MAX_REDACTION_CHILDREN) {
+		await new Promise<void>(resolve => redactionQueue.push(resolve));
+	}
+	activeRedactions++;
+	try {
+		return await work();
+	} finally {
+		activeRedactions--;
+		redactionQueue.shift()?.();
+	}
 }
 
 export default function kepr(pi: ExtensionAPI) {
@@ -174,29 +150,11 @@ export default function kepr(pi: ExtensionAPI) {
 		}
 		return (origEmit as unknown as EmitFn).apply(this, [event, ...args]);
 	};
+
 	if (GATE) {
-		if (process.env.KEPR_OMP_ROUTES) {
-			let config: unknown = {};
-			try {
-				const directory = process.env.PI_CODING_AGENT_DIR;
-				if (!directory) throw new Error("missing agent directory");
-				const raw = readFileSync(join(directory, "models.yml"), "utf8");
-				config = (globalThis as any).Bun.YAML.parse(raw);
-			} catch (error: any) {
-				if (error?.code !== "ENOENT") throw new Error("kepr: could not load OMP models.yml; provider setup stopped");
-			}
-			const result = registerProviders(pi, GATE, JSON.parse(process.env.KEPR_OMP_ROUTES), config, process.env);
-			routed.push(...result.routed);
-			unavailable.push(...result.unavailable);
-		} else {
-		for (const [provider, [path, variable]] of Object.entries(ROUTES)) {
-			if (!process.env[variable]) continue;
-			// Override-only registration: same models, gate URL, and the
-			// placeholder (an env var name) as the key.
-			pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
-			routed.push(provider);
-		}
-		}
+		const result = registerAllProviders(pi);
+		routed.push(...result.routed);
+		unavailable.push(...result.unavailable);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -229,66 +187,110 @@ export default function kepr(pi: ExtensionAPI) {
 		return { handled: true };
 	});
 
-	// Backstop for non-interactive runs (`omp -p`, RPC), where `input`
-	// does not fire: remove key-shaped text from all conversation messages before
-	// every model request.
-	// Bounded memo of texts already checked; failures are not cached, so
-	// a timed-out redaction is retried on the next request.
 	const redacted = new Map<string, string>();
-	const clean = async (text: string): Promise<string> => {
+	const pending = new Map<string, Promise<CheckedText>>();
+	const checkText = (text: string): Promise<CheckedText> => {
 		const hit = redacted.get(text);
-		if (hit !== undefined) return hit;
-		const r = await hook("redact", { text });
-		let out: string;
-		try {
-			const result = JSON.parse(r.message);
-			if (r.code !== 0 || typeof result.text !== "string") throw new Error("invalid redaction");
-			out = result.text;
-		} catch {
-			// No answer: send nothing rather than an unchecked message.
-			return "[message withheld by kepr: the secret check did not answer]";
-		}
-		if (redacted.size >= 256) redacted.delete(redacted.keys().next().value as string);
-		redacted.set(text, out);
-		return out;
+		if (hit !== undefined) return Promise.resolve({ text: hit, ok: true });
+		const inFlight = pending.get(text);
+		if (inFlight) return inFlight;
+		const work = withRedactionSlot(async () => {
+			const r = await hook("redact", { text });
+			if (r.code === 0 && r.message === "") return { text, ok: true };
+			try {
+				const result: unknown = JSON.parse(r.message);
+				if (r.code !== 0 || !isRecord(result) || typeof result.text !== "string") throw new Error("invalid redaction");
+				const oldest = redacted.keys().next().value;
+				if (redacted.size >= 256 && oldest !== undefined) redacted.delete(oldest);
+				redacted.set(text, result.text);
+				return { text: result.text, ok: true };
+			} catch {
+				return { text: "[message withheld by kepr: the secret check did not answer]", ok: false };
+			}
+		});
+		pending.set(text, work);
+		void work.finally(() => pending.delete(text));
+		return work;
 	};
+
+	type StructuredResult = { value: unknown; changed: boolean; ok: boolean };
+	const redactStructured = async (value: unknown): Promise<StructuredResult> => {
+		if (typeof value === "string") {
+			const result = await checkText(value);
+			return { value: result.text, changed: result.text !== value, ok: result.ok };
+		}
+		if (Array.isArray(value)) {
+			const out: unknown[] = [];
+			let changed = false;
+			for (const item of value) {
+				const result = await redactStructured(item);
+				out.push(result.value);
+				changed ||= result.changed;
+				if (!result.ok) return { value: out, changed: true, ok: false };
+			}
+			return { value: out, changed, ok: true };
+		}
+		if (isRecord(value)) {
+			const out: Record<string, unknown> = {};
+			let changed = false;
+			for (const [key, item] of Object.entries(value)) {
+				const result = await redactStructured(item);
+				out[key] = result.value;
+				changed ||= result.changed;
+				if (!result.ok) return { value: out, changed: true, ok: false };
+			}
+			return { value: out, changed, ok: true };
+		}
+		return { value, changed: false, ok: true };
+	};
+
+	const redactToolArguments = async (value: unknown): Promise<{ value: unknown; changed: boolean }> => {
+		let parsed = value;
+		if (typeof value === "string") {
+			try { parsed = JSON.parse(value); }
+			catch { throw new Error("kepr: tool arguments withheld because they are not valid JSON"); }
+		}
+		const result = await redactStructured(parsed);
+		if (!result.ok) throw new Error("kepr: tool arguments withheld because the secret check did not answer");
+		if (typeof value === "string" && result.changed) return { value: JSON.stringify(result.value), changed: true };
+		return { value: result.value, changed: result.changed };
+	};
+
 	pi.on("context", async event => {
 		let changed = false;
-		const messages = await Promise.all(
-			event.messages.map(async (m: any) => {
-				if (!m || typeof m !== "object") return m;
-				if (typeof m.content === "string") {
-					const c = await clean(m.content);
-					if (c === m.content) return m;
-					changed = true;
-					return { ...m, content: c };
+		const messages = await Promise.all(event.messages.map(async (m: unknown) => {
+			if (!isRecord(m)) return m;
+			const content = m.content;
+			if (typeof content === "string") {
+				const result = await checkText(content);
+				if (result.text === content) return m;
+				changed = true;
+				return { ...m, content: result.text };
+			}
+			if (!Array.isArray(content)) return m;
+			let touched = false;
+			const parts = await Promise.all(content.map(async (p: unknown) => {
+				if (!isRecord(p)) return p;
+				const args = p.arguments;
+				if (p.type === "toolCall" && args !== undefined && args !== null && (typeof args === "object" || typeof args === "string")) {
+					const result = await redactToolArguments(args);
+					if (!result.changed) return p;
+					touched = changed = true;
+					return { ...p, arguments: result.value };
 				}
-				if (!Array.isArray(m.content)) return m;
-				let touched = false;
-				const parts = await Promise.all(
-					m.content.map(async (p: any) => {
-						const field = p?.type === "text" ? "text" : p?.type === "thinking" ? "thinking" : null;
-						if (p?.type === "toolCall" && p.arguments && typeof p.arguments === "object") {
-							const original = JSON.stringify(p.arguments);
-							const c = await clean(original);
-							if (c === original) return p;
-							touched = changed = true;
-							try { return { ...p, arguments: JSON.parse(c) }; }
-							catch { throw new Error("kepr: tool arguments withheld because the secret check did not answer"); }
-						}
-						if (!field || typeof p[field] !== "string") return p;
-						const c = await clean(p[field]);
-						if (c === p[field]) return p;
-						if (field === "thinking" && (p.thinkingSignature || p.signature)) {
-							throw new Error("kepr: signed reasoning contains key-shaped text and cannot be safely edited");
-						}
-						touched = changed = true;
-						return { ...p, [field]: c };
-					}),
-				);
-				return touched ? { ...m, content: parts } : m;
-			}),
-		);
+				const field: "text" | "thinking" | undefined = p.type === "text" ? "text" : p.type === "thinking" ? "thinking" : undefined;
+				const fieldValue = field ? p[field] : undefined;
+				if (!field || typeof fieldValue !== "string") return p;
+				const result = await checkText(fieldValue);
+				if (result.text === fieldValue) return p;
+				if (field === "thinking" && (p.thinkingSignature || p.signature)) {
+					throw new Error("kepr: signed reasoning contains key-shaped text and cannot be safely edited");
+				}
+				touched = changed = true;
+				return { ...p, [field]: result.text };
+			}));
+			return touched ? { ...m, content: parts } : m;
+		}));
 		if (changed) return { messages };
 	});
 
