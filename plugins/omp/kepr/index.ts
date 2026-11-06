@@ -14,16 +14,101 @@
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { registerProviders } from "./providers.ts";
 
 const KEPR = process.env.KEPR_BIN || "kepr";
 const GATE = process.env.KEPR_GATE_URL;
 
 // omp provider id -> [gate path, placeholder variable set by kepr agent run]
 const ROUTES: Record<string, [string, string]> = {
+  // Existing static routes remain unchanged
+};
+
+// Helper to load models config and (re)register providers.
+// Removed duplicate helper; using the earlier definition.
+  if (!GATE) return { routed: [], unavailable: [] };
+  if (process.env.KEPR_OMP_ROUTES) {
+    let config: unknown = {};
+    try {
+      const directory = process.env.PI_CODING_AGENT_DIR;
+      if (!directory) throw new Error("missing agent directory");
+      const raw = readFileSync(join(directory, "models.yml"), "utf8");
+      config = (globalThis as any).Bun.YAML.parse(raw);
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw new Error("kepr: could not load OMP models.yml; provider setup stopped");
+    }
+    const result = registerProviders(pi, GATE, JSON.parse(process.env.KEPR_OMP_ROUTES), config, process.env);
+    return result;
+  } else {
+    const routed: string[] = [];
+    const unavailable: string[] = [];
+    for (const [provider, [path, variable] of Object.entries(ROUTES)) {
+      if (!process.env[variable]) continue;
+      pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
+      routed.push(provider);
+    }
+    return { routed, unavailable };
+  }
+}
+
+// Set up watcher for runtime config changes (models.yml).
+// Removed external watcher; integrated into kepr function below.
+  const directory = process.env.PI_CODING_AGENT_DIR;
+  if (directory) {
+    const watchPath = join(directory, "models.yml");
+    try {
+      const { watch } = require("node:fs");
+      let debounce: NodeJS.Timeout;
+      watch(watchPath, (type) => {
+        if (type !== "change") return;
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          const res = loadAndRegisterProviders(pi);
+          routed.length = 0; unavailable.length = 0;
+          routed.push(...res.routed);
+          unavailable.push(...res.unavailable);
+          // Notify user via UI if available.
+          try { pi.emit?.("config_reload", {}); } catch {}
+        }, 200);
+      });
+    } catch (e) {
+      // ignore watch errors – fallback to no auto-reload.
+    }
+  }
+}
+// Removed duplicate helper; using the earlier definition.
+  if (!GATE) return { routed: [], unavailable: [] };
+  if (process.env.KEPR_OMP_ROUTES) {
+    let config: unknown = {};
+    try {
+      const directory = process.env.PI_CODING_AGENT_DIR;
+      if (!directory) throw new Error("missing agent directory");
+      const raw = readFileSync(join(directory, "models.yml"), "utf8");
+      config = (globalThis as any).Bun.YAML.parse(raw);
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw new Error("kepr: could not load OMP models.yml; provider setup stopped");
+    }
+    const result = registerProviders(pi, GATE, JSON.parse(process.env.KEPR_OMP_ROUTES), config, process.env);
+    return result;
+  } else {
+    const routed: string[] = [];
+    const unavailable: string[] = [];
+    for (const [provider, [path, variable] of Object.entries(ROUTES)) {
+      if (!process.env[variable]) continue;
+      pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
+      routed.push(provider);
+    }
+    return { routed, unavailable };
+  }
+}
 	anthropic: ["/anthropic", "KEPR_PH_ANTHROPIC"],
 	openai: ["/openai/v1", "KEPR_PH_OPENAI"],
 	xai: ["/xai/v1", "KEPR_PH_XAI"],
 	"cloudflare-ai-gateway": ["/cloudflare/compat", "KEPR_PH_CLOUDFLARE"],
+	hcnsec: ["/hcnsec/v1", "KEPR_PH_HCNSEC"],
+	kktoken: ["/kktoken/v1", "KEPR_PH_KKTOKEN"],
 };
 
 interface HookResult {
@@ -69,6 +154,7 @@ function hook(event: string, payload: unknown): Promise<HookResult> {
 
 export default function kepr(pi: ExtensionAPI) {
 	const routed: string[] = [];
+	const unavailable: string[] = [];
 	process.stdout?.on("error", (err: unknown) => {
 		if (err && typeof err === "object" && "code" in err && err.code === "EPIPE") return;
 	});
@@ -89,6 +175,20 @@ export default function kepr(pi: ExtensionAPI) {
 		return (origEmit as unknown as EmitFn).apply(this, [event, ...args]);
 	};
 	if (GATE) {
+		if (process.env.KEPR_OMP_ROUTES) {
+			let config: unknown = {};
+			try {
+				const directory = process.env.PI_CODING_AGENT_DIR;
+				if (!directory) throw new Error("missing agent directory");
+				const raw = readFileSync(join(directory, "models.yml"), "utf8");
+				config = (globalThis as any).Bun.YAML.parse(raw);
+			} catch (error: any) {
+				if (error?.code !== "ENOENT") throw new Error("kepr: could not load OMP models.yml; provider setup stopped");
+			}
+			const result = registerProviders(pi, GATE, JSON.parse(process.env.KEPR_OMP_ROUTES), config, process.env);
+			routed.push(...result.routed);
+			unavailable.push(...result.unavailable);
+		} else {
 		for (const [provider, [path, variable]] of Object.entries(ROUTES)) {
 			if (!process.env[variable]) continue;
 			// Override-only registration: same models, gate URL, and the
@@ -96,12 +196,14 @@ export default function kepr(pi: ExtensionAPI) {
 			pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
 			routed.push(provider);
 		}
+		}
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		if (GATE) {
 			ctx.ui.notify(`kepr: keys stay in the vault (${routed.join(", ") || "no providers"} via the gate)`, "info");
+			if (unavailable.length) ctx.ui.notify(`kepr: unavailable providers: ${unavailable.join(", ")}`, "warning");
 		} else {
 			ctx.ui.notify("kepr: not started with `kepr agent run omp`; real keys may be in the environment", "warning");
 		}
@@ -128,7 +230,7 @@ export default function kepr(pi: ExtensionAPI) {
 	});
 
 	// Backstop for non-interactive runs (`omp -p`, RPC), where `input`
-	// does not fire: remove key-shaped text from user messages before
+	// does not fire: remove key-shaped text from all conversation messages before
 	// every model request.
 	// Bounded memo of texts already checked; failures are not cached, so
 	// a timed-out redaction is retried on the next request.
@@ -139,7 +241,9 @@ export default function kepr(pi: ExtensionAPI) {
 		const r = await hook("redact", { text });
 		let out: string;
 		try {
-			out = String(JSON.parse(r.message).text);
+			const result = JSON.parse(r.message);
+			if (r.code !== 0 || typeof result.text !== "string") throw new Error("invalid redaction");
+			out = result.text;
 		} catch {
 			// No answer: send nothing rather than an unchecked message.
 			return "[message withheld by kepr: the secret check did not answer]";
@@ -152,7 +256,7 @@ export default function kepr(pi: ExtensionAPI) {
 		let changed = false;
 		const messages = await Promise.all(
 			event.messages.map(async (m: any) => {
-				if (m?.role !== "user") return m;
+				if (!m || typeof m !== "object") return m;
 				if (typeof m.content === "string") {
 					const c = await clean(m.content);
 					if (c === m.content) return m;
@@ -163,11 +267,23 @@ export default function kepr(pi: ExtensionAPI) {
 				let touched = false;
 				const parts = await Promise.all(
 					m.content.map(async (p: any) => {
-						if (p?.type !== "text" || typeof p.text !== "string") return p;
-						const c = await clean(p.text);
-						if (c === p.text) return p;
+						const field = p?.type === "text" ? "text" : p?.type === "thinking" ? "thinking" : null;
+						if (p?.type === "toolCall" && p.arguments && typeof p.arguments === "object") {
+							const original = JSON.stringify(p.arguments);
+							const c = await clean(original);
+							if (c === original) return p;
+							touched = changed = true;
+							try { return { ...p, arguments: JSON.parse(c) }; }
+							catch { throw new Error("kepr: tool arguments withheld because the secret check did not answer"); }
+						}
+						if (!field || typeof p[field] !== "string") return p;
+						const c = await clean(p[field]);
+						if (c === p[field]) return p;
+						if (field === "thinking" && (p.thinkingSignature || p.signature)) {
+							throw new Error("kepr: signed reasoning contains key-shaped text and cannot be safely edited");
+						}
 						touched = changed = true;
-						return { ...p, text: c };
+						return { ...p, [field]: c };
 					}),
 				);
 				return touched ? { ...m, content: parts } : m;
@@ -180,7 +296,7 @@ export default function kepr(pi: ExtensionAPI) {
 		description: "Show kepr protection for this session",
 		handler: async (_args, ctx) => {
 			const lines = GATE
-				? [`gate: ${GATE}`, `providers via the gate: ${routed.join(", ") || "none"}`]
+				? [`gate: ${GATE}`, `providers via the gate: ${routed.join(", ") || "none"}`, ...unavailable.map(p => `unavailable: ${p}`)]
 				: ["not started with `kepr agent run omp`"];
 			ctx.ui.notify(lines.join("\n"), GATE ? "info" : "warning");
 		},
