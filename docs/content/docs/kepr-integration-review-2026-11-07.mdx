@@ -149,6 +149,22 @@ remain visible. The release notes document the broken-pipe protection.
 **Status:** **Fixed and scoped.** The handler does not blanket-suppress
 unrelated failures.
 
+### Git credential host-name collision
+
+**Finding.** `git_cred_name` previously folded every non-alphanumeric host
+character to `_`. Distinct hosts such as `a.b-c` and `a-b.c` therefore selected
+the same credential. The raw/legacy Git helper path could then return or delete
+the wrong value.
+
+**Fix.** `crates/kepr-core/src/providers.rs` keeps dotted legacy names stable
+but appends a lowercased byte encoding for hosts containing other punctuation.
+The regression covers both colliding shapes and the existing port form.
+
+**Status:** **Fixed in the live worktree.** The targeted release test passed:
+`cargo test --release -p kepr-core git_over_https_on_github_com`.
+Existing stored credentials for hyphenated hosts need to be stored again under
+the collision-free name; dotted names retain their previous names.
+
 ## Boundary and secret-handling review
 
 The following controls were confirmed in the current source or saved test

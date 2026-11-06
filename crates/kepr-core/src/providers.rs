@@ -194,7 +194,9 @@ pub const BASIC_PASSWORD: &str = ":basic-password";
 pub const CLOUDFLARE_GATEWAY: &str = ":cloudflare-gateway";
 
 /// T12.06: git-credential-kepr's credential name for a git host
-/// (`github.com` → `GIT_GITHUB_COM`).
+/// (`github.com` → `GIT_GITHUB_COM`). Dotted legacy names remain stable;
+/// hosts containing other punctuation get a byte-encoded suffix so `.` and
+/// `-` cannot alias one another.
 pub fn git_cred_name(host: &str) -> String {
     let mapped: String = host
         .chars()
@@ -203,7 +205,15 @@ pub fn git_cred_name(host: &str) -> String {
             false => '_',
         })
         .collect();
-    format!("GIT_{mapped}")
+    if host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+        return format!("GIT_{mapped}");
+    }
+    let exact: String = host
+        .to_ascii_lowercase()
+        .bytes()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    format!("GIT_{mapped}_HOST_{exact}")
 }
 
 /// T12.06: inside `kepr agent run`, `<GIT_PH_PREFIX><git_cred_name>`

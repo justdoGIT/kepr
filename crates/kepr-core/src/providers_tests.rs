@@ -92,6 +92,7 @@ fn git_over_https_on_github_com() {
     assert_eq!(git_cred_name("github.com"), "GIT_GITHUB_COM");
     assert_eq!(
         git_cred_name("git.example.net:8443"),
-        "GIT_GIT_EXAMPLE_NET_8443"
+        "GIT_GIT_EXAMPLE_NET_8443_HOST_6769742E6578616D706C652E6E65743A38343433"
     );
+    assert_ne!(git_cred_name("a.b-c"), git_cred_name("a-b.c"));
 }
