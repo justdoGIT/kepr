@@ -32,7 +32,13 @@ mod tests {
     fn only_exact_https_hosts_and_credential_names_form_routes() {
         let route = key("api.example.com", "WORK_API_KEY").unwrap();
         assert_eq!(parse(&route), Some(("api.example.com", "WORK_API_KEY")));
-        for host in ["api.example.com:80", "api.example.com/path", "user@api.example.com", "api.example.com?x", "API.EXAMPLE.COM"] {
+        for host in [
+            "api.example.com:80",
+            "api.example.com/path",
+            "user@api.example.com",
+            "api.example.com?x",
+            "API.EXAMPLE.COM",
+        ] {
             assert!(key(host, "WORK_API_KEY").is_none());
         }
         for name in ["", "../secret", "KEY+OTHER", "lowercase"] {
