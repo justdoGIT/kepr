@@ -1,6 +1,6 @@
 //! Prompt DLP (T9.02): block requests to an LLM provider that contain a
-//! stored secret or something that looks like an API key. Decision 5:
-//! block and tell the agent; never redact silently.
+//! stored secret or something that looks like an API key. Conversation
+//! text may first be redacted by prompt.rs; stored values are always blocked.
 
 use kepr_core::generate::ZeroString;
 
@@ -56,12 +56,15 @@ pub fn check(
 /// serializer escapes `"` and `\\` in a value, and `\\u0073…` spells
 /// any text at all, so a raw byte match alone misses both.
 pub fn scan(body: &[u8], secrets: &[(String, ZeroString)]) -> Verdict {
-    match scan_raw(body, secrets) {
-        Verdict::Clean => match unescape_json(body) {
-            Some(decoded) => scan_raw(&decoded, secrets),
-            None => Verdict::Clean,
-        },
-        v => v,
+    let raw = scan_raw(body, secrets);
+    if matches!(raw, Verdict::StoredSecret(_)) {
+        return raw;
+    }
+    let decoded = unescape_json(body).map(|b| scan_raw(&b, secrets));
+    match decoded {
+        Some(v @ Verdict::StoredSecret(_)) => v,
+        Some(v) if raw == Verdict::Clean => v,
+        _ => raw,
     }
 }
 
@@ -166,6 +169,20 @@ mod tests {
             .map(|c| format!("\\u{:04x}", c as u32))
             .collect();
         let body = format!(r#"{{"content":"{spelled}"}}"#);
+        assert_eq!(
+            scan(body.as_bytes(), &secrets()),
+            Verdict::StoredSecret("MY_KEY".into())
+        );
+    }
+
+    #[test]
+    fn a_raw_key_shape_does_not_hide_an_escaped_stored_secret() {
+        let key = format!("sk-proj-{}", "a".repeat(24));
+        let escaped: String = "s3cr3t-value-123"
+            .chars()
+            .map(|c| format!("\\u{:04x}", c as u32))
+            .collect();
+        let body = format!(r#"{{"input":"{key} {escaped}"}}"#);
         assert_eq!(
             scan(body.as_bytes(), &secrets()),
             Verdict::StoredSecret("MY_KEY".into())

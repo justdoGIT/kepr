@@ -14,6 +14,8 @@
 // token on the wire); `store` and `erase` do nothing.
 
 mod client;
+#[path = "git_migrate.rs"]
+mod migration;
 
 use std::collections::HashMap;
 use std::io::{self, BufRead};
@@ -50,7 +52,7 @@ pub fn session_answer(env: Env, input: &HashMap<String, String>) -> Option<(Stri
         return None;
     }
     let host = input.get("host")?.to_ascii_lowercase();
-    // The name folds `.` and `-` alike: a real dotted host name only.
+    // Dotted legacy names stay stable; other punctuation receives an exact suffix.
     kepr_core::binding::validate_host(&host).ok()?;
     let var = format!(
         "{}{}",
@@ -102,8 +104,7 @@ pub fn cmd_get() -> ExitCode {
         Ok(Response::GetOk { value, .. }) => {
             let protocol = input.get("protocol").map(String::as_str).unwrap_or("");
             if let Ok(cred) = serde_json::from_str::<GitCred>(value.as_str()) {
-                // The name folds `.` and `-` alike: answer only for the
-                // exact host, and never send an https password over http.
+                // Verify stored destination independently of its credential name.
                 let same_host = cred.host.eq_ignore_ascii_case(host);
                 let same_proto = cred.protocol.is_empty() || cred.protocol == protocol;
                 if !same_host || !same_proto || (cred.protocol.is_empty() && protocol == "http") {
@@ -111,13 +112,9 @@ pub fn cmd_get() -> ExitCode {
                 }
                 println!("username={}", cred.username);
                 println!("password={}", cred.password.as_str());
-            } else if protocol != "http" {
-                let username = input
-                    .get("username")
-                    .cloned()
-                    .unwrap_or_else(|| "git".to_string());
-                println!("username={username}");
-                println!("password={}", value.as_str());
+            } else {
+                // Unstructured values have no verifiable destination.
+                return ExitCode::SUCCESS;
             }
             ExitCode::SUCCESS
         }
@@ -197,7 +194,15 @@ pub fn cmd_erase() -> ExitCode {
         _ => return ExitCode::SUCCESS,
     };
     let kepr_name = host_to_kepr_name(host);
-    let _ = client::send_request(&Request::Delete { name: kepr_name });
+    let protocol = input.get("protocol").map(String::as_str).unwrap_or("");
+    if let Ok(Response::GetOk { value, .. }) = client::send_request(&Request::Get {
+        name: kepr_name.clone(),
+        fido2_assertion: None,
+    }) {
+        if migration::matches(&value, host, protocol) {
+            let _ = client::send_request(&Request::Delete { name: kepr_name });
+        }
+    }
     ExitCode::SUCCESS
 }
 
@@ -210,6 +215,7 @@ fn main() -> ExitCode {
         "get" => cmd_get(),
         "store" => cmd_store(),
         "erase" => cmd_erase(),
+        "migrate" => migration::run(parse_git_input(io::stdin().lock())),
         _ => ExitCode::FAILURE,
     }
 }
@@ -222,10 +228,9 @@ mod tests {
     #[test]
     fn test_host_to_kepr_name() {
         assert_eq!(host_to_kepr_name("github.com"), "GIT_GITHUB_COM");
-        assert_eq!(
-            host_to_kepr_name("gitlab.internal.net:8443"),
-            "GIT_GITLAB_INTERNAL_NET_8443"
-        );
+        let port = host_to_kepr_name("gitlab.internal.net:8443");
+        assert_ne!(port, host_to_kepr_name("gitlab.internal.net:443"));
+        assert!(port.len() <= 128);
     }
 
     const PH: &str = "kepr-ph-0123456789abcdef-0003-0011223344556677";

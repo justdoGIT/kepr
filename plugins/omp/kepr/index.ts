@@ -1,107 +1,165 @@
 // kepr extension for oh-my-pi (omp).
 //
-// - Inside `kepr agent run omp`: points omp's built-in providers at the
-//   local kepr gate, with the session placeholder as the API key. No
-//   models.yml edit is needed; the real key never enters omp.
-// - Blocks tool calls that would reveal a stored secret (`kepr get`,
-//   `kepr env`, `kepr exec`, ...) or that carry a real key, and prompts
-//   that contain a key, using `kepr hook` (the same policy as the Grok
-//   Build plugin).
-// - `/kepr` shows whether this session is protected.
-//
-// Requires the `kepr` binary on PATH (or KEPR_BIN). No network access, no
-// dependencies; types only.
+// Protected sessions route configured providers through the local kepr gate.
+// Conversation text is checked before every model request; signed reasoning is
+// never edited, and structured tool arguments keep their JSON shape.
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { registerProviders } from "./providers.ts";
+import { createHash } from "node:crypto";
 
 const KEPR = process.env.KEPR_BIN || "kepr";
 const GATE = process.env.KEPR_GATE_URL;
 
-// omp provider id -> [gate path, placeholder variable set by kepr agent run]
+// Legacy fallback for sessions started with only the original adapter env.
 const ROUTES: Record<string, [string, string]> = {
 	anthropic: ["/anthropic", "KEPR_PH_ANTHROPIC"],
 	openai: ["/openai/v1", "KEPR_PH_OPENAI"],
 	xai: ["/xai/v1", "KEPR_PH_XAI"],
 	"cloudflare-ai-gateway": ["/cloudflare/compat", "KEPR_PH_CLOUDFLARE"],
+	hcnsec: ["/hcnsec/v1", "KEPR_PH_HCNSEC"],
+	kktoken: ["/kktoken/v1", "KEPR_PH_KKTOKEN"],
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorCode(error: unknown): string | undefined {
+	if (!isRecord(error) || typeof error.code !== "string") return;
+	return error.code;
+}
 
 interface HookResult {
 	code: number;
 	message: string;
 }
 
-// kepr was found but didn't answer in time: treated as a block, never as
-// an allow (a slow machine must not let `kepr get` through). A missing
-// kepr binary still allows: the gate and sandbox are the boundary.
-const TIMED_OUT: HookResult = { code: 2, message: "kepr: the safety check timed out; blocked" };
-
-/** Run `kepr hook EVENT` with `payload` on stdin (never in argv). */
-function hook(event: string, payload: unknown): Promise<HookResult> {
-	return new Promise(resolve => {
-		let stdout = "";
-		let stderr = "";
-		let child;
-		try {
-			child = spawn(KEPR, ["hook", event], { stdio: ["pipe", "pipe", "pipe"] });
-		} catch {
-			resolve({ code: 0, message: "" });
-			return;
-		}
-		let timedOut = false;
-		const timer = setTimeout(() => {
-			timedOut = true;
-			child.kill("SIGKILL");
-		}, 5000);
-		child.stdout.on("data", (d: Buffer) => (stdout += d));
-		child.stderr.on("data", (d: Buffer) => (stderr += d));
-		// kepr missing: allow. The gate and sandbox are the boundary.
-		child.on("error", () => resolve({ code: 0, message: "" }));
-		child.stdin.on("error", () => {});
-		child.on("close", (code: number | null) => {
-			clearTimeout(timer);
-			if (timedOut || code === null) return resolve(TIMED_OUT);
-			resolve({ code, message: (stderr || stdout).trim() });
-		});
-		child.stdin.end(JSON.stringify(payload));
-	});
+interface CheckedText {
+	text: string;
+	ok: boolean;
 }
 
-export default function kepr(pi: ExtensionAPI) {
-	const routed: string[] = [];
-	process.stdout?.on("error", (err: unknown) => {
-		if (err && typeof err === "object" && "code" in err && err.code === "EPIPE") return;
-	});
-	process.stderr?.on("error", (err: unknown) => {
-		if (err && typeof err === "object" && "code" in err && err.code === "EPIPE") return;
-	});
+const TIMED_OUT: HookResult = { code: 2, message: "kepr: the safety check timed out; blocked" };
 
-	const origEmit = process.emit;
-	type EmitFn = (event: string | symbol, ...args: unknown[]) => boolean;
-	process.emit = function (event: string | symbol, ...args: unknown[]): boolean {
-		if (event === "uncaughtException") {
-			const err = args[0];
-			if (err && typeof err === "object") {
-				if ("code" in err && err.code === "EPIPE") return true;
-				if ("message" in err && typeof err.message === "string" && err.message.includes("EPIPE")) return true;
-			}
+/** Run `kepr hook EVENT` with payload on stdin (never in argv). */
+function hook(event: string, payload: unknown): Promise<HookResult> {
+    return new Promise(resolve => {
+        let stdout = "", stderr = "", bytes = 0, failed = false;
+        let child: ChildProcess;
+        const refusal = { code: 2, message: "kepr: safety check unavailable; blocked" };
+        try { child = spawn(KEPR, ["hook", event], { stdio: ["pipe", "pipe", "pipe"] }); }
+        catch { resolve(refusal); return; }
+        let settled = false;
+        const finish = (result: HookResult) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(result);
+        };
+        const timer = setTimeout(() => { child.kill("SIGKILL"); finish(TIMED_OUT); }, 5000);
+        child.stdout!.on("data", (data: Buffer) => {
+            bytes += data.length;
+            if (bytes > 20 * 1024 * 1024) { child.kill("SIGKILL"); finish(refusal); }
+            else stdout += data;
+        });
+        child.stderr!.on("data", (data: Buffer) => {
+            if (stderr.length < 65536) stderr += data.toString().slice(0, 65536 - stderr.length);
+        });
+        child.on("error", () => finish(refusal));
+        child.stdin!.on("error", () => { failed = true; });
+        child.on("close", (code: number | null) => {
+            finish(failed || code === null ? refusal : { code, message: (stderr || stdout).trim() });
+        });
+        try { child.stdin!.end(JSON.stringify(payload)); }
+        catch { child.kill("SIGKILL"); finish(refusal); }
+    });
+}
+
+function loadProviderConfig(): unknown {
+	const directory = process.env.PI_CODING_AGENT_DIR;
+	if (!directory) throw new Error("kepr: missing OMP agent directory");
+	try {
+		const raw = readFileSync(join(directory, "models.yml"), "utf8");
+		const bun = (globalThis as unknown as { Bun?: { YAML?: { parse(source: string): unknown } } }).Bun;
+		if (!bun?.YAML?.parse) throw new Error("Bun YAML parser unavailable");
+		return bun.YAML.parse(raw);
+	} catch (error: unknown) {
+		if (errorCode(error) === "ENOENT") return {};
+		throw new Error("kepr: could not load OMP models.yml; provider setup stopped");
+	}
+}
+
+function registerAllProviders(pi: ExtensionAPI): { routed: string[]; unavailable: string[] } {
+	if (!GATE) return { routed: [], unavailable: [] };
+	if (process.env.KEPR_OMP_ROUTES) {
+		let metadata: unknown;
+		try {
+			metadata = JSON.parse(process.env.KEPR_OMP_ROUTES);
+		} catch {
+			throw new Error("kepr: invalid OMP route metadata; restart with kepr agent run omp");
 		}
-		return (origEmit as unknown as EmitFn).apply(this, [event, ...args]);
-	};
+		return registerProviders(pi, GATE, metadata, loadProviderConfig(), process.env);
+	}
+	const routed: string[] = [];
+	for (const [provider, [path, variable]] of Object.entries(ROUTES)) {
+		if (!process.env[variable]) continue;
+		pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
+		routed.push(provider);
+	}
+	return { routed, unavailable: [] };
+}
+
+// A bounded queue prevents a long resumed history from starting one child per
+// message. The promise map separately coalesces identical text in flight.
+const MAX_REDACTION_CHILDREN = 8;
+let activeRedactions = 0;
+const redactionQueue: (() => void)[] = [];
+
+async function withRedactionSlot<T>(work: () => Promise<T>): Promise<T> {
+    if (activeRedactions >= MAX_REDACTION_CHILDREN) {
+        await new Promise<void>(resolve => redactionQueue.push(resolve));
+    } else activeRedactions++;
+	try {
+		return await work();
+	} finally {
+        const next = redactionQueue.shift();
+        if (next) next(); else activeRedactions--;
+	}
+}
+
+async function boundedMap<T, U>(values: T[], visit: (value: T) => Promise<U>): Promise<U[]> {
+    const out = new Array<U>(values.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, values.length) }, async () => {
+        while (next < values.length) {
+            const index = next++;
+            out[index] = await visit(values[index]);
+        }
+    }));
+    return out;
+}
+
+export default function kepr(pi: ExtensionAPI, runHook: typeof hook = hook) {
+    const hook = runHook;
+	const routed: string[] = [];
+	const unavailable: string[] = [];
+    // Child pipe errors are owned by hook(); never replace process-wide emit.
+
 	if (GATE) {
-		for (const [provider, [path, variable]] of Object.entries(ROUTES)) {
-			if (!process.env[variable]) continue;
-			// Override-only registration: same models, gate URL, and the
-			// placeholder (an env var name) as the key.
-			pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
-			routed.push(provider);
-		}
+		const result = registerAllProviders(pi);
+		routed.push(...result.routed);
+		unavailable.push(...result.unavailable);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		if (GATE) {
 			ctx.ui.notify(`kepr: keys stay in the vault (${routed.join(", ") || "no providers"} via the gate)`, "info");
+			if (unavailable.length) ctx.ui.notify(`kepr: unavailable providers: ${unavailable.join(", ")}`, "warning");
 		} else {
 			ctx.ui.notify("kepr: not started with `kepr agent run omp`; real keys may be in the environment", "warning");
 		}
@@ -117,62 +175,132 @@ export default function kepr(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async event => {
 		const r = await hook("pre-tool", { tool_name: event.toolName, tool_input: event.input });
-		if (r.code === 2) return { block: true, reason: r.message };
+        if (r.code !== 0) return { block: true, reason: r.message };
 	});
 
 	pi.on("input", async (event, ctx) => {
 		const r = await hook("prompt", { prompt: event.text });
-		if (r.code !== 2) return;
+        if (r.code === 0) return;
 		if (ctx.hasUI) ctx.ui.notify(r.message, "error");
 		return { handled: true };
 	});
 
-	// Backstop for non-interactive runs (`omp -p`, RPC), where `input`
-	// does not fire: remove key-shaped text from user messages before
-	// every model request.
-	// Bounded memo of texts already checked; failures are not cached, so
-	// a timed-out redaction is retried on the next request.
-	const redacted = new Map<string, string>();
-	const clean = async (text: string): Promise<string> => {
-		const hit = redacted.get(text);
-		if (hit !== undefined) return hit;
-		const r = await hook("redact", { text });
-		let out: string;
-		try {
-			out = String(JSON.parse(r.message).text);
-		} catch {
-			// No answer: send nothing rather than an unchecked message.
-			return "[message withheld by kepr: the secret check did not answer]";
-		}
-		if (redacted.size >= 256) redacted.delete(redacted.keys().next().value as string);
-		redacted.set(text, out);
-		return out;
+    const MAX_CACHE_BYTES = 4 * 1024 * 1024;
+    const redacted = new Map<string, { text?: string; bytes: number }>();
+    let cacheBytes = 0;
+    const pending = new Map<string, Promise<CheckedText>>();
+    const checkText = (text: string): Promise<CheckedText> => {
+        const key = createHash("sha256").update(text).digest("hex");
+        const hit = redacted.get(key);
+        if (hit !== undefined) return Promise.resolve({ text: hit.text ?? text, ok: true });
+        const inFlight = pending.get(key);
+		if (inFlight) return inFlight;
+		const work = withRedactionSlot(async () => {
+			const r = await hook("redact", { text });
+			try {
+				const result: unknown = JSON.parse(r.message);
+                if (r.code !== 0 || !isRecord(result) || typeof result.text !== "string"
+                    || !Number.isSafeInteger(result.found) || (result.found as number) < 0) throw new Error("invalid redaction");
+                const cached = result.text === text ? undefined : result.text;
+                const bytes = 128 + (cached === undefined ? 0 : Buffer.byteLength(cached));
+                if (bytes <= MAX_CACHE_BYTES) {
+                    while (redacted.size >= 256 || cacheBytes + bytes > MAX_CACHE_BYTES) {
+                        const oldest = redacted.keys().next().value;
+                        if (oldest === undefined) break;
+                        cacheBytes -= redacted.get(oldest)!.bytes;
+                        redacted.delete(oldest);
+                    }
+                    redacted.set(key, { text: cached, bytes });
+                    cacheBytes += bytes;
+                }
+                return { text: result.text, ok: true };
+			} catch {
+				return { text: "[message withheld by kepr: the secret check did not answer]", ok: false };
+			}
+		});
+        pending.set(key, work);
+        void work.finally(() => pending.delete(key));
+		return work;
 	};
+
+	type StructuredResult = { value: unknown; changed: boolean; ok: boolean };
+	const redactStructured = async (value: unknown): Promise<StructuredResult> => {
+		if (typeof value === "string") {
+			const result = await checkText(value);
+			return { value: result.text, changed: result.text !== value, ok: result.ok };
+		}
+		if (Array.isArray(value)) {
+			const out: unknown[] = [];
+			let changed = false;
+			for (const item of value) {
+				const result = await redactStructured(item);
+				out.push(result.value);
+				changed ||= result.changed;
+				if (!result.ok) return { value: out, changed: true, ok: false };
+			}
+			return { value: out, changed, ok: true };
+		}
+		if (isRecord(value)) {
+			const out: Record<string, unknown> = {};
+			let changed = false;
+			for (const [key, item] of Object.entries(value)) {
+				const result = await redactStructured(item);
+				out[key] = result.value;
+				changed ||= result.changed;
+				if (!result.ok) return { value: out, changed: true, ok: false };
+			}
+			return { value: out, changed, ok: true };
+		}
+		return { value, changed: false, ok: true };
+	};
+
+	const redactToolArguments = async (value: unknown): Promise<{ value: unknown; changed: boolean }> => {
+		let parsed = value;
+		if (typeof value === "string") {
+			try { parsed = JSON.parse(value); }
+			catch { throw new Error("kepr: tool arguments withheld because they are not valid JSON"); }
+		}
+		const result = await redactStructured(parsed);
+		if (!result.ok) throw new Error("kepr: tool arguments withheld because the secret check did not answer");
+		if (typeof value === "string" && result.changed) return { value: JSON.stringify(result.value), changed: true };
+		return { value: result.value, changed: result.changed };
+	};
+
 	pi.on("context", async event => {
 		let changed = false;
-		const messages = await Promise.all(
-			event.messages.map(async (m: any) => {
-				if (m?.role !== "user") return m;
-				if (typeof m.content === "string") {
-					const c = await clean(m.content);
-					if (c === m.content) return m;
-					changed = true;
-					return { ...m, content: c };
+        const messages = await boundedMap(event.messages, async (m: unknown) => {
+			if (!isRecord(m)) return m;
+			const content = m.content;
+			if (typeof content === "string") {
+				const result = await checkText(content);
+				if (result.text === content) return m;
+				changed = true;
+				return { ...m, content: result.text };
+			}
+			if (!Array.isArray(content)) return m;
+			let touched = false;
+            const parts = await boundedMap(content, async (p: unknown) => {
+				if (!isRecord(p)) return p;
+				const args = p.arguments;
+				if (p.type === "toolCall" && args !== undefined && args !== null && (typeof args === "object" || typeof args === "string")) {
+					const result = await redactToolArguments(args);
+					if (!result.changed) return p;
+					touched = changed = true;
+					return { ...p, arguments: result.value };
 				}
-				if (!Array.isArray(m.content)) return m;
-				let touched = false;
-				const parts = await Promise.all(
-					m.content.map(async (p: any) => {
-						if (p?.type !== "text" || typeof p.text !== "string") return p;
-						const c = await clean(p.text);
-						if (c === p.text) return p;
-						touched = changed = true;
-						return { ...p, text: c };
-					}),
-				);
-				return touched ? { ...m, content: parts } : m;
-			}),
-		);
+				const field: "text" | "thinking" | undefined = p.type === "text" ? "text" : p.type === "thinking" ? "thinking" : undefined;
+				const fieldValue = field ? p[field] : undefined;
+				if (!field || typeof fieldValue !== "string") return p;
+				const result = await checkText(fieldValue);
+				if (result.text === fieldValue) return p;
+				if (field === "thinking" && (p.thinkingSignature || p.signature)) {
+					throw new Error("kepr: signed reasoning contains key-shaped text and cannot be safely edited");
+				}
+				touched = changed = true;
+				return { ...p, [field]: result.text };
+            });
+			return touched ? { ...m, content: parts } : m;
+        });
 		if (changed) return { messages };
 	});
 
@@ -180,7 +308,7 @@ export default function kepr(pi: ExtensionAPI) {
 		description: "Show kepr protection for this session",
 		handler: async (_args, ctx) => {
 			const lines = GATE
-				? [`gate: ${GATE}`, `providers via the gate: ${routed.join(", ") || "none"}`]
+				? [`gate: ${GATE}`, `providers via the gate: ${routed.join(", ") || "none"}`, ...unavailable.map(p => `unavailable: ${p}`)]
 				: ["not started with `kepr agent run omp`"];
 			ctx.ui.notify(lines.join("\n"), GATE ? "info" : "warning");
 		},

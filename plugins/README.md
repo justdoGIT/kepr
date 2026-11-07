@@ -15,6 +15,36 @@ Build". In short: they stop the obvious ways a secret reaches the model
 (a pasted key, `kepr get`, a key in a tool call). The boundary is still the
 gate and the sandbox of `kepr agent run`.
 
+The omp context hook redacts text in user, assistant, and tool-result messages,
+including unsigned thinking text and tool arguments. It preserves tool-call identifiers,
+image data, and reasoning signatures. A failed redaction check withholds text;
+it does not send unchecked content. Signed thinking that requires redaction is
+refused because changing its text would invalidate its signature. Run the tests with Node 24:
+`node --test plugins/omp/kepr/index.test.mjs`.
+
+Missing executables, nonzero exits, malformed replies, and five-second timeouts
+are failures, not unchecked successes. JSON hook input is limited to 10 MiB;
+oversized input exits with status 2 and no success reply. Context checks use at
+most eight redaction children, bounded message/part scheduling, and a 4 MiB
+cache with digest keys. Unchanged messages do not retain a duplicate text value.
+The extension does not replace `process.emit` or suppress global stream errors.
+
+The gate also redacts key-shaped conversation text for Responses, Chat
+Completions, and Messages requests. Stored credentials, canaries, unsafe headers,
+and key shapes outside supported text fields still block the request. Changed
+requests carry replacement markers and the response header `x-kepr-redactions`.
+The local saved conversation is not rewritten.
+Serialized function arguments are parsed and redacted by string leaf, preserving
+safe sibling fields even for truncated PEM text. Invalid argument JSON is refused.
+
+For AgentRouter's specific Responses resource-mismatch 400, the gate retries
+once without saved item IDs when every item contains its portable content.
+Messages, tool-call links and encrypted reasoning remain intact. Requests using
+`previous_response_id`, `conversation`, references, or unsupported items are not
+retried. Authentication failures are not retried. The retry counts toward request
+limits and is reported by `x-kepr-responses-retry: item-ids`. A persistent mismatch
+still requires the upstream provider to use the resource that owns its state.
+
 Install by hand, without `kepr agent install`:
 
 ```bash

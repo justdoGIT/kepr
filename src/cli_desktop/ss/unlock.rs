@@ -13,15 +13,18 @@
 // GUI dialogs need a display. `Unlocker` sends the passphrase to the daemon
 // (`Unlock`); a wrong one is shown in the next dialog, up to three times.
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use kepr_core::generate::ZeroString;
 use zeroize::Zeroizing;
+#[path = "unlock_spawn.rs"]
+mod spawn_helper;
+use spawn_helper::spawn;
 
 const DIALOG_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_OUT: usize = 4096;
@@ -200,24 +203,6 @@ fn wait(mut child: Child, cancel: &AtomicBool) -> Result<(bool, Zeroizing<Vec<u8
     Ok((ok, got))
 }
 
-fn spawn(program: &Path, args: &[&str], stdin: Option<&str>) -> Result<Child, String> {
-    let mut c = Command::new(program)
-        .args(args)
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("{}: {e}", program.display()))?;
-    if let (Some(text), Some(mut si)) = (stdin, c.stdin.take()) {
-        let _ = si.write_all(text.as_bytes());
-    }
-    Ok(c)
-}
-
 fn first_line(out: &[u8]) -> Option<ZeroString> {
     let text = std::str::from_utf8(out).ok()?;
     let line = text
@@ -375,6 +360,27 @@ mod tests {
             description: "desc\nline two",
             error: None,
         }
+    }
+
+    #[test]
+    fn a_program_open_for_writing_is_waited_for() {
+        let d = tmp("busy");
+        let p = script(&d, "dialog", "printf 'ok\\n'");
+        let writer = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            drop(writer);
+        });
+        let dialog = Dialog {
+            program: p,
+            kind: Kind::Askpass,
+        };
+        let got = dialog
+            .passphrase(&ask(), &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.as_str(), "ok");
+        closer.join().unwrap();
     }
 
     #[test]

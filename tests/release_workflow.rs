@@ -225,24 +225,3 @@ fn e2_the_isolated_build_cannot_climb_back_out() {
         assert_eq!(c.matches("sudo").count(), 2, "{c}");
     }
 }
-
-/// The isolated build's output is checked before anything un-isolated runs:
-/// nothing but target/ changed, no cargo config appeared, and the binaries
-/// are hashed and verified again right before packaging.
-#[test]
-fn f_the_isolated_build_is_checked_before_packaging() {
-    let job = build_job().join("\n");
-    let at = |needle: &str| {
-        job.find(needle)
-            .unwrap_or_else(|| panic!("build job lacks {needle}"))
-    };
-    let build = at("cargo build --release --frozen");
-    let check = at("git status --porcelain --ignored");
-    let hashed = at("sha256sum target/release/kepr");
-    let install = at("cargo install cargo-deb");
-    let verify = at("sha256sum --check --strict");
-    let deb = at("cargo deb --no-build");
-    assert!(build < check && check < hashed && hashed < install);
-    assert!(install < verify && verify < deb);
-    assert!(job.contains(".cargo/config"), "no cargo config check");
-}

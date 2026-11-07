@@ -207,7 +207,7 @@ pub async fn handle(
         match forward::admit_at(&log, route, req.headers(), req.uri().query(), (&host, port)).await
         {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(*r),
         };
     let rec: Result<Record, _> = match inject {
         Inject::KubeToken => serde_json::from_str(value.as_str()),
