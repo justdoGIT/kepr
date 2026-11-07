@@ -120,12 +120,12 @@ jobs:
       fail-fast: false
       matrix:
         # beta is an early-warning job: it runs on main and manual runs, not on every PR push.
-        toolchain: ${{ fromJSON(github.event_name == 'pull_request' && '["1.87.0","stable"]' || '["1.87.0","stable","beta"]') }}
+        toolchain: ${{ fromJSON(github.event_name == 'pull_request' && '["1.88.0","stable"]' || '["1.88.0","stable","beta"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
         # The cluster runner already carries the pinned devsetup-stable toolchain (manifest/toolchains.yaml in
-        # dev-setup) and exports its bin directory as DEVSETUP_RUST_BIN; `stable` uses it there. The MSRV (1.87.0)
+        # dev-setup) and exports its bin directory as DEVSETUP_RUST_BIN; `stable` uses it there. The MSRV (1.88.0)
         # and beta jobs, and GitHub-hosted runners, install their own.
         if: matrix.toolchain != 'stable' || env.DEVSETUP_RUST_BIN == ''
         # Pinned to a specific commit (stable branch) to prevent supply-chain
