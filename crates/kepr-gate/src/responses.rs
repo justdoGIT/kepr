@@ -56,7 +56,10 @@ fn replay(body: &[u8], error: &[u8]) -> Option<Bytes> {
         }
         changed |= item.as_object_mut()?.remove("id").is_some();
     }
-    changed.then(|| Bytes::from(serde_json::to_vec(&request).expect("JSON value serializes")))
+    if !changed {
+        return None;
+    }
+    serde_json::to_vec(&request).ok().map(Bytes::from)
 }
 
 /// Successful/SSE responses stream immediately. Only the specific 400 error
