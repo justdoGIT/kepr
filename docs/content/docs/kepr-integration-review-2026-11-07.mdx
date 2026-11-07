@@ -173,8 +173,8 @@ results:
   `redact` returns replaced text without returning matched values.
 - `crates/kepr-core/src/redact.rs` handles complete and truncated PEM blocks,
   JSON escapes, source-span preservation, and Unicode surrounding text.
-- The OMP hook treats a timeout as a block. A missing kepr executable remains
-  allowed because the gate and sandbox are the primary boundary.
+- OMP now refuses missing checkers, timeouts, malformed output, and failed checks;
+  neither tool calls nor signed reasoning are forwarded unchecked.
 - Plugin installation embeds the plugin and skill source in the binary so the
   installed plugin matches the reviewed kepr version.
 
@@ -230,11 +230,78 @@ was rerun after this report was started.
 2. **Run the provider-specific AgentRouter check with Codex headers** if the
    historical resource mismatch needs further diagnosis. Do not treat a 401
    from a headerless manual probe as a kepr credential failure.
-3. **Port isolated-worktree commits deliberately.** Because
-   `/home/kk/projects/kepr` contains active uncommitted source changes, cherry-pick
-   or manually port only the five listed commits after checking for conflicts.
+3. **Complete authenticated integration.** The release Cargo-config guard and
+   staged API generator fixes have been ported into the repair working tree.
+   The unlock-dialog ETXTBSY repair is also ported. The dependency/MSRV branch
+   remains separate pending remote PR/CI verification. Preserve all worktrees
+   until the relevant changes are confirmed merged on the remote main branch.
 ## Conclusion
 
 The signed-thinking corruption, principal Codex routing hazards, and OMP process
 fan-out are addressed. Structured redaction preserves valid tool arguments while
 still failing closed for invalid JSON, unanswered checks, and signed content.
+
+## Follow-up repair boundaries
+
+- Destination routing requires the authenticated placeholder's credential to
+  match a destination route; it cannot fall back to another account.
+- Git hosts with punctuation or long names use `GIT2_` plus a SHA-256 digest;
+  bounded dotted-host names retain their exact legacy spelling. Raw legacy
+  passwords without structured destination identity are no longer returned.
+- To migrate a structured legacy login, supply Git's `protocol=https` and
+  `host=...` input to `git-credential-kepr migrate` outside an agent session.
+  Migration refuses an existing destination and mismatched identities, preserves
+  consent/FIDO2 flags, and refuses expiring, sealed, or reauthentication-protected
+  entries that need explicit re-enrolment. Stop concurrent credential writers
+  during migration: the existing wire API has no atomic create-if-absent.
+  The legacy entry is retained for rollback rather than racing a deletion.
+- Hook payload limits are checked before JSON interpretation; invalid input
+  never becomes a successful empty redaction. Unchanged payloads are borrowed,
+  and escaped-text source positions are reconstructed only for actual matches.
+
+
+## Follow-up verification
+
+- `cargo test --release --workspace`: passed, including the routing, hook-size,
+  JSON-argument, naming, migration, unlock retry, and source-size regressions.
+- `cargo build --release --workspace`: passed.
+- `cargo clippy --release --workspace --all-targets -- -D warnings`: passed.
+- OMP extension/provider suite: 13 passed; tests import the actual extension
+  instead of rewriting its source in a VM.
+- Actual release gate with a synthetic resolver: wrong-account placeholders
+  rejected before resolution; valid same-credential destination aliases retained.
+- Actual release Git helper against an isolated capture socket: colliding hosts
+  receive distinct names; wrong stored identities are not returned or deleted;
+  explicit migration refuses existing destinations and retains rollback data.
+- Actual OMP extension with the release checker: oversized history is withheld
+  with a notice, and truncated PEM arguments retain safe sibling fields.
+- 4 MiB unchanged redaction input: peak RSS 13,668 KiB plain and 17,744 KiB with
+  one escape, measured with `/usr/bin/time` on the release executable.
+- API generator smoke with simulated rustdoc success/failure: old pages survive
+  failure; both binary sections publish together on success.
+- Final Semgrep Rust/TypeScript/JavaScript/workflow scan: 16 files, 10 findings.
+  These flag existing guarded libc calls, argument parsing that skips `argv[0]`,
+  and a test-only predictable temp directory. No new unsafe block or suppression
+  was introduced; this is not a zero-finding scan. The repository's referenced
+  `.claude/.semgrep-baseline.json` is absent.
+
+## Worktree audit and delivery state
+
+The review worktree and both PR-reconciliation worktrees were clean when audited.
+Comparing the review branch against the already-integrated startup commit
+`393d6a2` narrowed its remaining changes to the release workflow, its test,
+the API generator, and changelog. The useful behavior is ported here; the
+incidental source-text assertion was removed rather than repinned.
+
+The `fix/unlock-etxtbsy` behavior is ported with its regression. Dialog startup
+was separated from prompting instead of increasing the source-size allowlist.
+`fix/pr226-msrv` contains dependency updates and an MSRV/CI move to Rust 1.88;
+upstream PR #226 remains open and needs its own CI verification.
+
+The earlier signing/authentication blocker was resolved by running a task-scoped
+`kepr ssh-agent`: private keys remain in the daemon and only signatures leave it.
+Authenticated fetch confirmed the repair branch matches upstream PR #231.
+Review-worktree changes are integrated through that feature PR, never by pushing
+directly to protected main. Branch/worktree cleanup requires verified upstream
+integration; incomplete or unmatched work must be retained.
+

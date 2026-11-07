@@ -43,6 +43,36 @@ fn validity(p: &mut CertificateParams) {
     p.not_after = now + Duration::hours(24);
 }
 
+/// Build certificate scope once from the validated session routes.
+pub(crate) fn for_routes(
+    routes: &[kepr_core::gate_protocol::GateRoute],
+) -> Result<Option<Arc<SessionCa>>, String> {
+    let hosts: Vec<String> = routes
+        .iter()
+        .filter_map(|r| {
+            kepr_core::providers::lookup(&r.provider)
+                .map(|p| p.host)
+                .or_else(|| kepr_core::http_route::parse(&r.provider).map(|(h, _)| h))
+        })
+        .map(str::to_string)
+        .chain(crate::kube::hosts(routes))
+        .collect();
+    let mut suffixes = Vec::new();
+    if routes.iter().any(|r| r.provider.starts_with("aws:")) {
+        suffixes.push("amazonaws.com");
+    }
+    suffixes.extend(
+        kepr_core::providers::DOMAINS
+            .iter()
+            .filter(|(p, _)| routes.iter().any(|r| r.provider == *p))
+            .map(|(_, d)| *d),
+    );
+    if hosts.is_empty() && suffixes.is_empty() {
+        return Ok(None);
+    }
+    SessionCa::with_suffixes(&hosts, &suffixes).map(|ca| Some(Arc::new(ca)))
+}
+
 impl SessionCa {
     /// A CA that can sign only `hosts` (lower-case DNS names).
     #[cfg(test)]

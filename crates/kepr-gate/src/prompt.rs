@@ -1,8 +1,9 @@
 //! Redact key-shaped conversation text before the final DLP check.
 
 use serde_json::Value;
+use std::borrow::Cow;
 
-pub fn prepare(path: &str, body: &[u8]) -> (Vec<u8>, usize) {
+pub fn prepare<'a>(path: &str, body: &'a [u8]) -> Result<(Cow<'a, [u8]>, usize), String> {
     if !matches!(
         path,
         "/v1/responses"
@@ -11,10 +12,10 @@ pub fn prepare(path: &str, body: &[u8]) -> (Vec<u8>, usize) {
             | "/v1/chat/completions"
             | "/chat/completions"
     ) {
-        return (body.to_vec(), 0);
+        return Ok((Cow::Borrowed(body), 0));
     }
     let Ok(mut request) = serde_json::from_slice::<Value>(body) else {
-        return (body.to_vec(), 0);
+        return Ok((Cow::Borrowed(body), 0));
     };
     let mut count = text_field(&mut request, "instructions");
     count += content_field(&mut request, "system");
@@ -24,7 +25,7 @@ pub fn prepare(path: &str, body: &[u8]) -> (Vec<u8>, usize) {
                 Value::String(_) => count += text(items),
                 Value::Array(items) => {
                     for item in items {
-                        count += item_text(item);
+                        count += item_text(item)?;
                     }
                 }
                 _ => {}
@@ -32,19 +33,18 @@ pub fn prepare(path: &str, body: &[u8]) -> (Vec<u8>, usize) {
         }
     }
     if count == 0 {
-        return (body.to_vec(), 0);
+        return Ok((Cow::Borrowed(body), 0));
     }
-    (
-        serde_json::to_vec(&request).expect("JSON value serializes"),
-        count,
-    )
+    serde_json::to_vec(&request)
+        .map(|b| (Cow::Owned(b), count))
+        .map_err(|_| "kepr: could not serialize checked request".into())
 }
 
 fn text(value: &mut Value) -> usize {
     let Value::String(s) = value else { return 0 };
     let (clean, count) = kepr_core::redact::text(s);
     if count > 0 {
-        *s = clean;
+        *s = clean.into_owned();
     }
     count
 }
@@ -77,9 +77,36 @@ fn content(value: &mut Value) -> usize {
     }
 }
 
-fn item_text(item: &mut Value) -> usize {
-    match item["type"].as_str() {
-        Some("function_call") => text_field(item, "arguments"),
+fn structured(value: &mut Value) -> usize {
+    match value {
+        Value::String(_) => text(value),
+        Value::Array(items) => items.iter_mut().map(structured).sum(),
+        Value::Object(items) => items.values_mut().map(structured).sum(),
+        _ => 0,
+    }
+}
+
+fn arguments(value: &mut Value) -> Result<usize, String> {
+    let Some(raw) = value.get_mut("arguments") else {
+        return Ok(0);
+    };
+    let Some(source) = raw.as_str() else {
+        return Err("kepr: tool arguments must be JSON text".into());
+    };
+    let mut parsed: Value = serde_json::from_str(source)
+        .map_err(|_| "kepr: invalid JSON tool arguments".to_string())?;
+    let count = structured(&mut parsed);
+    if count > 0 {
+        *raw = Value::String(
+            serde_json::to_string(&parsed).map_err(|_| "kepr: invalid tool arguments")?,
+        );
+    }
+    Ok(count)
+}
+
+fn item_text(item: &mut Value) -> Result<usize, String> {
+    Ok(match item["type"].as_str() {
+        Some("function_call") => arguments(item)?,
         Some("custom_tool_call") => text_field(item, "input"),
         Some("function_call_output" | "custom_tool_call_output") => content_field(item, "output"),
         Some("reasoning") => content_field(item, "summary"),
@@ -88,28 +115,29 @@ fn item_text(item: &mut Value) -> usize {
             if let Some(calls) = item.get_mut("tool_calls").and_then(Value::as_array_mut) {
                 for call in calls {
                     if let Some(function) = call.get_mut("function") {
-                        count += text_field(function, "arguments");
+                        count += arguments(function)?;
                     }
                 }
             }
             count
         }
         _ => 0,
-    }
+    })
 }
 
 /// Canary screening happens first in proxy.rs. Stored credentials must be
 /// refused on the original bytes, even when another field can be redacted.
-pub fn checked(
+pub fn checked<'a>(
     path: &str,
     parts: &hyper::http::request::Parts,
-    body: &[u8],
+    body: &'a [u8],
     secrets: &[(String, kepr_core::generate::ZeroString)],
-) -> Result<(Vec<u8>, usize), String> {
+) -> Result<(Cow<'a, [u8]>, usize), String> {
     if let crate::dlp::Verdict::StoredSecret(_) = crate::dlp::scan(body, secrets) {
-        return Err(crate::dlp::check(parts, body, secrets).expect("stored secret is blocked"));
+        return Err(crate::dlp::check(parts, body, secrets)
+            .unwrap_or_else(|| "request blocked: stored credential present".into()));
     }
-    let (clean, count) = prepare(path, body);
+    let (clean, count) = prepare(path, body)?;
     if let Some(reason) = crate::dlp::check(parts, &clean, secrets) {
         return Err(reason);
     }
@@ -120,12 +148,29 @@ pub fn checked(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn incomplete_pem_arguments_keep_valid_json_and_siblings() {
+        let args = json!({"pem": format!("-----BEGIN {}-----\npayload", "PRIVATE KEY"), "path": "keep.txt"});
+        let body = serde_json::to_vec(
+            &json!({"input":[{"type":"function_call", "arguments": args.to_string()}]}),
+        )
+        .unwrap();
+        let (clean, _) = prepare("/v1/responses", &body).unwrap();
+        let outer: Value = serde_json::from_slice(&clean).unwrap();
+        let args: Value =
+            serde_json::from_str(outer["input"][0]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["path"], "keep.txt");
+        assert_eq!(args["pem"], "[private key removed by kepr]");
+        let bad = br#"{"input":[{"type":"function_call","arguments":"{"}]}"#;
+        assert!(prepare("/v1/responses", bad).is_err());
+    }
 
     #[test]
     fn tool_history_is_redacted_without_changing_call_ids() {
         let token = format!("sk-proj-{}", "a".repeat(24));
         let body = json!({"input":[{"type":"function_call_output", "call_id":"call_example", "output":token}], "model":"test"});
-        let (out, count) = prepare("/v1/responses", &serde_json::to_vec(&body).unwrap());
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (out, count) = prepare("/v1/responses", &bytes).unwrap();
         assert!(count > 0);
         assert!(!crate::dlp::looks_like_key(&out));
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
@@ -135,8 +180,14 @@ mod tests {
     #[test]
     fn unrelated_apis_and_opaque_data_are_unchanged() {
         let body = br#"{"input":[{"type":"reasoning","encrypted_content":"opaque"}],"metadata":{"note":"keep"}}"#;
-        assert_eq!(prepare("/v1/files", body), (body.to_vec(), 0));
-        assert_eq!(prepare("/v1/responses", body), (body.to_vec(), 0));
+        assert!(matches!(
+            prepare("/v1/files", body).unwrap(),
+            (Cow::Borrowed(_), 0)
+        ));
+        assert!(matches!(
+            prepare("/v1/responses", body).unwrap(),
+            (Cow::Borrowed(_), 0)
+        ));
     }
 
     #[test]
@@ -178,7 +229,8 @@ mod tests {
             {"type":"message", "id":"msg_saved", "role":"assistant", "phase":"commentary", "content":[{"type":"output_text", "text":token}]},
             {"type":"reasoning", "id":"rs_saved", "encrypted_content":"opaque", "summary":[]}
         ]});
-        let (out, count) = prepare("/v1/responses", &serde_json::to_vec(&body).unwrap());
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (out, count) = prepare("/v1/responses", &bytes).unwrap();
         assert_eq!(count, 1);
         let clean: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(clean["previous_response_id"], body["previous_response_id"]);
@@ -198,7 +250,10 @@ mod tests {
             .body(())
             .unwrap()
             .into_parts();
-        assert_eq!(prepare("/v1/messages", &body), (body.clone(), 0));
+        assert!(matches!(
+            prepare("/v1/messages", &body).unwrap(),
+            (Cow::Borrowed(_), 0)
+        ));
         assert!(checked("/v1/messages", &parts, &body, &[]).is_err());
     }
 }

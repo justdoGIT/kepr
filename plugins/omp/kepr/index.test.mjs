@@ -1,123 +1,94 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { stripTypeScriptTypes } from 'node:module';
-import vm from 'node:vm';
-import { EventEmitter } from 'node:events';
+import { spawnSync } from 'node:child_process';
+import kepr from './index.ts';
 
-async function harness(response = text => ({ text: text.replaceAll('SENSITIVE_TEST', '[removed]'), found: 1 })) {
-  const source = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
-  const code = stripTypeScriptTypes(source)
-    .replace(/import \{ spawn,[^}]+\} from "node:child_process";/, '')
-    .replace('import { readFileSync } from "node:fs";', '')
-    .replace('import { join } from "node:path";', '')
-    .replace('import { registerProviders } from "./providers.ts";', '')
-    .replace('export default function kepr', 'function kepr');
+function harness(check = text => ({text: text.replaceAll('SENSITIVE_TEST', '[removed]'), found: 1})) {
   const handlers = new Map();
   const calls = [];
-  let active = 0;
-  let maxConcurrent = 0;
-  const spawn = () => {
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
-    child.stdin = new EventEmitter(); child.kill = () => {};
-    child.stdin.end = raw => {
-      const { text } = JSON.parse(raw);
-      calls.push(text);
-      active++;
-      maxConcurrent = Math.max(maxConcurrent, active);
-      queueMicrotask(() => {
-        child.stdout.emit('data', JSON.stringify(response(text)));
-        active--;
-        child.emit('close', 0);
-      });
-    };
-    return child;
+  let active = 0, maximum = 0;
+  const run = async (event, payload) => {
+    calls.push(payload.text);
+    active++; maximum = Math.max(maximum, active);
+    await new Promise(resolve => setImmediate(resolve));
+    active--;
+    return { code: 0, message: JSON.stringify(check(payload.text)) };
   };
-  const sandbox = { spawn, process: { env: {}, emit() {} }, setTimeout, clearTimeout };
-  vm.runInNewContext(code + '\nkepr(pi);', { ...sandbox, pi: {
-    on: (event, handler) => handlers.set(event, handler), registerCommand() {},
-  }});
-  return { context: handlers.get('context'), calls, get maxConcurrent() { return maxConcurrent; } };
+  kepr({on: (name, fn) => handlers.set(name, fn), registerCommand() {}}, run);
+  return {context: handlers.get('context'), handlers, calls, get maximum() { return maximum; }};
 }
 
-test('context redacts tool results and assistant text, retaining tool linkage', async () => {
-  const { context, calls } = await harness();
-  const messages = [
-    { role: 'toolResult', toolCallId: 'call_example', content: [{ type: 'text', text: 'SENSITIVE_TEST' }] },
-    { role: 'assistant', content: [{ type: 'text', text: 'SENSITIVE_TEST' }] },
-  ];
-  const result = await context({ messages });
-  assert.ok(result, 'tool output must be checked before a model request');
-  assert.equal(result.messages[0].toolCallId, 'call_example');
-  assert.equal(result.messages[0].content[0].text, '[removed]');
-  assert.equal(result.messages[1].content[0].text, '[removed]');
-  assert.ok(calls.length > 0);
-  assert.equal(messages[0].content[0].text, 'SENSITIVE_TEST', 'saved history is not mutated');
-});
-test('structured tool arguments preserve safe sibling fields', async () => {
-  const marker = ['-----', 'BEGIN', 'KEY', '-----'].join('');
-  const { context } = await harness(text => ({ text: text.replace(marker, '[removed]'), found: 1 }));
-  const result = await context({ messages: [{ role: 'assistant', content: [{
-    type: 'toolCall',
-    arguments: { pem: `${marker}\\ntruncated`, safe: 'keep-me' },
-  }] }] });
-  assert.equal(result.messages[0].content[0].arguments.pem, '[removed]\\ntruncated');
-  assert.equal(result.messages[0].content[0].arguments.safe, 'keep-me');
+test('redaction retains tool linkage, safe fields, signatures and saved history', async () => {
+  const h = harness();
+  const signed = {type:'thinking',thinking:'safe',thinkingSignature:'opaque'};
+  const image = {type:'image',data:'opaque'};
+  const messages = [{role:'assistant',content:[
+    {type:'text',text:'SENSITIVE_TEST'},
+    {type:'toolCall',id:'saved',arguments:{nested:['SENSITIVE_TEST'],path:'keep.txt'}}, signed,image,
+  ]}];
+  const out = await h.context({messages});
+  assert.equal(out.messages[0].content[0].text,'[removed]');
+  assert.equal(out.messages[0].content[1].arguments.nested[0],'[removed]');
+  assert.equal(out.messages[0].content[1].arguments.path,'keep.txt');
+  assert.equal(out.messages[0].content[1].id,'saved');
+  assert.equal(out.messages[0].content[2],signed);
+  assert.equal(out.messages[0].content[3],image);
+  assert.equal(messages[0].content[0].text,'SENSITIVE_TEST');
 });
 
-test('long histories keep redaction child processes bounded and deduplicated', async () => {
-  const h = await harness();
-  const repeated = Array.from({ length: 32 }, () => ({ role: 'assistant', content: 'SENSITIVE_TEST_REPEAT' }));
-  await h.context({ messages: repeated });
-  assert.equal(h.calls.length, 1, 'identical text shares one in-flight hook');
-  const messages = Array.from({ length: 32 }, (_, i) => ({ role: 'assistant', content: `SENSITIVE_TEST_${i}` }));
-  await h.context({ messages });
-  assert.ok(h.maxConcurrent <= 8, `started ${h.maxConcurrent} concurrent hooks`);
+test('long histories bound concurrency and coalesce identical in-flight text', async () => {
+  const h = harness();
+  await h.context({messages:Array.from({length:32},()=>({role:'user',content:'SENSITIVE_TEST'}))});
+  assert.equal(h.calls.length,1);
+  await h.context({messages:Array.from({length:64},(_,i)=>({role:'user',content:`SENSITIVE_TEST_${i}`}))});
+  assert.ok(h.maximum<=8);
 });
 
-
-
-test('context preserves opaque blocks and cleans thinking and tool arguments', async () => {
-  const { context } = await harness();
-  const thinking = { type: 'thinking', thinking: 'SENSITIVE_TEST' };
-  const signature = { type: 'thinking', thinking: 'safe', thinkingSignature: 'keep-signature' };
-  const image = { type: 'image', data: 'opaque-image', mimeType: 'image/png' };
-  const messages = [{ role: 'assistant', content: [thinking, image,
-    { type: 'toolCall', id: 'call_saved', name: 'read', arguments: { nested: ['SENSITIVE_TEST'] } },
-    signature,
-  ] }];
-  const out = await context({ messages });
-  assert.equal(out.messages[0].content[0].thinking, '[removed]');
-  assert.equal(out.messages[0].content[3], signature);
-  assert.equal(out.messages[0].content[1], image);
-  assert.equal(out.messages[0].content[2].id, 'call_saved');
-  assert.equal(out.messages[0].content[2].arguments.nested[0], '[removed]');
-});
-
-test('invalid redactor output withholds text and is not cached', async () => {
-  const { context, calls } = await harness(() => ({}));
-  const messages = [{ role: 'toolResult', content: 'SENSITIVE_TEST' }];
-  for (let i = 0; i < 2; i++) {
-    const out = await context({ messages });
-    assert.match(out.messages[0].content, /withheld by kepr/);
-    assert.ok(!out.messages[0].content.includes('SENSITIVE_TEST'));
+test('failed checks are withheld and never cached', async () => {
+  for (const reply of [{}, {text:'unchecked'}, {text:'unchecked',found:-1}]) {
+    const h = harness(()=>reply);
+    for (let i=0;i<2;i++) {
+      const out=await h.context({messages:[{role:'toolResult',content:'SENSITIVE_TEST'}]});
+      assert.match(out.messages[0].content,/withheld by kepr/);
+    }
+    assert.equal(h.calls.length,2);
   }
-  assert.equal(calls.length, 2);
 });
 
-test('unchanged context keeps placeholders and reuses successful checks', async () => {
-  const { context, calls } = await harness();
-  const messages = [{ role: 'user', content: 'kepr-ph-example' }];
-  assert.equal(await context({ messages }), undefined);
-  assert.equal(await context({ messages }), undefined);
-  assert.equal(calls.length, 1);
+test('signed reasoning and invalid arguments are refused, not corrupted', async () => {
+  const h=harness();
+  await assert.rejects(h.context({messages:[{content:[{type:'thinking',thinking:'SENSITIVE_TEST',thinkingSignature:'opaque'}]}]}),/signed reasoning/);
+  await assert.rejects(h.context({messages:[{content:[{type:'toolCall',arguments:'{'}]}]}),/valid JSON/);
 });
 
+test('successful unchanged checks are reused without retaining a second payload', async () => {
+  const h=harness(text=>({text,found:0}));
+  const event={messages:[{role:'user',content:'kepr-ph-synthetic'}]};
+  assert.equal(await h.context(event),undefined);
+  assert.equal(await h.context(event),undefined);
+  assert.equal(h.calls.length,1);
+});
 
-test('signed thinking is never edited or sent unchecked', async () => {
-  const { context } = await harness();
-  const content = { type: 'thinking', thinking: 'SENSITIVE_TEST', thinkingSignature: 'opaque' };
-  await assert.rejects(context({ messages: [{ role: 'assistant', content: [content] }] }), /signed reasoning/);
-  assert.equal(content.thinking, 'SENSITIVE_TEST');
+test('cache evicts redacted payloads by bytes, not only entry count', async () => {
+  const clean='x'.repeat(3*1024*1024);
+  const h=harness(()=>({text:clean,found:1}));
+  for (const content of ['first','second','first']) await h.context({messages:[{content}]});
+  assert.deepEqual(h.calls,['first','second','first']);
+});
+
+test('missing executable fails closed for context, signed reasoning, tools and input', () => {
+  const module = new URL('./index.ts',import.meta.url).href;
+  const source=`import kepr from ${JSON.stringify(module)};
+    const handlers=new Map(); const emit=process.emit;
+    kepr({on:(n,f)=>handlers.set(n,f),registerCommand(){}});
+    if(process.emit!==emit) throw new Error('global emit changed');
+    const out=await handlers.get('context')({messages:[{content:'synthetic unchecked'}]});
+    if(!out.messages[0].content.includes('withheld')) throw new Error('unchecked context');
+    let refused=false;
+    try {await handlers.get('context')({messages:[{content:[{type:'thinking',thinking:'unchecked',thinkingSignature:'opaque'}]}]});} catch {refused=true;}
+    if(!refused) throw new Error('unchecked signature');
+    if(!(await handlers.get('tool_call')({toolName:'read',input:{}})).block) throw new Error('unchecked tool');
+    if(!(await handlers.get('input')({text:'safe'},{hasUI:false})).handled) throw new Error('unchecked input');`;
+  const child=spawnSync(process.execPath,['--input-type=module','-e',source],{env:{PATH:'/usr/bin:/bin',KEPR_BIN:'/nonexistent/kepr-review'},encoding:'utf8',timeout:15000});
+  assert.equal(child.status,0,child.stderr);
 });

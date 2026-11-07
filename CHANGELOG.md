@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [unreleased]
+- Reject cross-credential HTTPS placeholders using immutable destination/slot
+  indexes; retain valid aliases for the same credential.
+- Bound Git credential names in a separate digest namespace and verify stored
+  host/protocol before erasing. Add explicit, identity-checked legacy migration.
+- Fail closed when OMP safety checks are missing, malformed, or unavailable;
+  reject oversized hook input rather than silently dropping conversation text.
+- Bound OMP redaction cache bytes and queued work without retaining sensitive
+  input as cache keys; handle child pipe failures without global error suppression.
+- Preserve JSON tool-argument structure during PEM redaction and borrow unchanged
+  request bodies; map escaped-text matches without per-byte offset allocations.
+- Port review-worktree fixes for tracked release Cargo configuration, staged API
+  publication, and bounded retry of transient unlock-dialog executable contention.
 - Route Cloudflare AI Gateway requests through the gate and protect omp
   harness sessions from broken-pipe (EPIPE) stream terminations.
 - Use `/run/user/<uid>/kepr` as the Linux user-socket default instead of a

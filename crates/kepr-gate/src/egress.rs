@@ -46,23 +46,16 @@ fn bound_provider(state: &State, host: &str, port: u16) -> Option<&'static str> 
     (port == 443 && ca.covers(host) && state.routes.contains_key(p.name)).then_some(p.name)
 }
 /// Exact-host routes for providers without a built-in preset.
-fn configured_routes(state: &State, host: &str, port: u16) -> Option<Vec<String>> {
+fn configured_routes(
+    state: &State,
+    host: &str,
+    port: u16,
+) -> Option<Arc<std::collections::HashMap<String, String>>> {
     if port != 443 || !state.ca.as_ref().is_some_and(|ca| ca.covers(host)) {
         return None;
     }
-    let mut routes: Vec<String> = state
-        .routes
-        .keys()
-        .filter(|name| {
-            kepr_core::http_route::parse(name)
-                .is_some_and(|(route_host, _)| route_host == host)
-        })
-        .cloned()
-        .collect();
-    routes.sort_unstable();
-    (!routes.is_empty()).then_some(routes)
+    state.configured_routes(host)
 }
-
 
 /// T2.04: the provider whose domain `host` is under (gcloud:
 /// `*.googleapis.com`), when the daemon releases this session's key for
@@ -88,7 +81,7 @@ enum To {
     Domain(&'static str, String),
     /// T12.07: github.com, smart-HTTP only (git_http.rs).
     Git,
-    Configured(Vec<String>),
+    Configured(Arc<std::collections::HashMap<String, String>>),
     /// T13.04: a Kubernetes API server: (route key, host, port).
     Kube(String, String, u16),
 }
@@ -335,9 +328,18 @@ mod tests {
     async fn configured_https_routes_select_the_account_and_enforce_host_bindings() {
         struct Accounts;
         impl Resolve for Accounts {
-            fn generation(&self) -> Result<u64, String> { Ok(1) }
-            fn resolve(&self, name: &str, host: &str, port: u16) -> Result<(ZeroString, Inject), String> {
-                if port != 443 || host != "api.example.com" { return Err("unbound".into()); }
+            fn generation(&self) -> Result<u64, String> {
+                Ok(1)
+            }
+            fn resolve(
+                &self,
+                name: &str,
+                host: &str,
+                port: u16,
+            ) -> Result<(ZeroString, Inject), String> {
+                if port != 443 || host != "api.example.com" {
+                    return Err("unbound".into());
+                }
                 match name {
                     "WORK" => Ok((ZeroString::from("WORK_VALUE"), Inject::Bearer)),
                     "PERSONAL" => Ok((ZeroString::from("PERSONAL_VALUE"), Inject::Bearer)),
@@ -346,11 +348,34 @@ mod tests {
             }
         }
         let (base, mut rx) = upstream().await;
-        let ca = Arc::new(crate::ca::SessionCa::with_suffixes(&["api.example.com".into(), "unbound.example.com".into()], &[]).unwrap());
-        let entries = [("WORK", "api.example.com"), ("PERSONAL", "api.example.com"), ("WORK", "unbound.example.com")];
-        let routes = entries.iter().enumerate().map(|(slot, (cred, host))| (kepr_core::http_route::key(host, cred).unwrap(), Route { cred: cred.to_string(), slot: slot as u16 })).collect();
+        let ca = Arc::new(
+            crate::ca::SessionCa::with_suffixes(
+                &["api.example.com".into(), "unbound.example.com".into()],
+                &[],
+            )
+            .unwrap(),
+        );
+        let entries = [
+            ("WORK", "api.example.com"),
+            ("PERSONAL", "api.example.com"),
+            ("WORK", "unbound.example.com"),
+        ];
+        let routes = entries
+            .iter()
+            .enumerate()
+            .map(|(slot, (cred, host))| {
+                (
+                    kepr_core::http_route::key(host, cred).unwrap(),
+                    Route {
+                        cred: cred.to_string(),
+                        slot: slot as u16,
+                    },
+                )
+            })
+            .collect();
         let cache = Arc::new(Cache::new(Box::new(Accounts), DEFAULT_TTL));
-        let mut state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache).with_egress(Some(ca.clone()), false);
+        let mut state = State::new(SID.into(), SplitKey::new(&KEY).unwrap(), routes, cache)
+            .with_egress(Some(ca.clone()), false);
         state.client = build_client(true);
         state.base_override = Some(base);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -359,24 +384,59 @@ mod tests {
         let mut tx = tls_to(&address, &ca, "api.example.com").await;
         for (slot, value) in [(0, "WORK_VALUE"), (1, "PERSONAL_VALUE"), (2, "WORK_VALUE")] {
             let ph = crate::placeholder::make(&KEY, SID, slot);
-            let request = Request::get("/v1/models").header("authorization", format!("Bearer {ph}")).body(Full::new(Bytes::new())).unwrap();
-            assert_eq!(tx.send_request(request).await.unwrap().status(), StatusCode::OK);
+            let request = Request::get("/v1/models")
+                .header("authorization", format!("Bearer {ph}"))
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            assert_eq!(
+                tx.send_request(request).await.unwrap().status(),
+                StatusCode::OK
+            );
             let seen = rx.recv().await.unwrap();
             assert!(seen.contains(&format!("authorization: Bearer {value}")));
             assert!(!seen.contains("kepr-ph-"));
         }
         let mut denied = tls_to(&address, &ca, "unbound.example.com").await;
         let ph = crate::placeholder::make(&KEY, SID, 0);
-        let request = Request::get("/v1/models").header("authorization", format!("Bearer {ph}")).body(Full::new(Bytes::new())).unwrap();
-        assert_eq!(denied.send_request(request).await.unwrap().status(), StatusCode::BAD_GATEWAY);
-        assert!(rx.try_recv().is_err(), "unbound destination reached upstream");
+        let request = Request::get("/v1/models")
+            .header("authorization", format!("Bearer {ph}"))
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        assert_eq!(
+            denied.send_request(request).await.unwrap().status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "unbound destination reached upstream"
+        );
+        // A different credential must never be selected through the fallback.
+        let ph = crate::placeholder::make(&KEY, SID, 1);
+        let request = Request::get("/v1/models")
+            .header("authorization", format!("Bearer {ph}"))
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        assert_eq!(
+            denied.send_request(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(rx.try_recv().is_err());
+
         // A direct account route must reject another account's placeholder.
         let (stream, _) = (TcpStream::connect(&address).await.unwrap(), ());
-        let (mut direct, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.unwrap();
+        let (mut direct, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .unwrap();
         tokio::spawn(connection);
         let ph = crate::placeholder::make(&KEY, SID, 1);
-        let request = Request::get("/https+api.example.com+WORK/v1/models").header("authorization", format!("Bearer {ph}")).body(Full::new(Bytes::new())).unwrap();
-        assert_eq!(direct.send_request(request).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        let request = Request::get("/https+api.example.com+WORK/v1/models")
+            .header("authorization", format!("Bearer {ph}"))
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        assert_eq!(
+            direct.send_request(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
         assert!(rx.try_recv().is_err());
     }
 

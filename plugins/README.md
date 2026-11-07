@@ -22,11 +22,20 @@ it does not send unchecked content. Signed thinking that requires redaction is
 refused because changing its text would invalidate its signature. Run the tests with Node 24:
 `node --test plugins/omp/kepr/index.test.mjs`.
 
+Missing executables, nonzero exits, malformed replies, and five-second timeouts
+are failures, not unchecked successes. JSON hook input is limited to 10 MiB;
+oversized input exits with status 2 and no success reply. Context checks use at
+most eight redaction children, bounded message/part scheduling, and a 4 MiB
+cache with digest keys. Unchanged messages do not retain a duplicate text value.
+The extension does not replace `process.emit` or suppress global stream errors.
+
 The gate also redacts key-shaped conversation text for Responses, Chat
 Completions, and Messages requests. Stored credentials, canaries, unsafe headers,
 and key shapes outside supported text fields still block the request. Changed
 requests carry replacement markers and the response header `x-kepr-redactions`.
 The local saved conversation is not rewritten.
+Serialized function arguments are parsed and redacted by string leaf, preserving
+safe sibling fields even for truncated PEM text. Invalid argument JSON is refused.
 
 For AgentRouter's specific Responses resource-mismatch 400, the gate retries
 once without saved item IDs when every item contains its portable content.

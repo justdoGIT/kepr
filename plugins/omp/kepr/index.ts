@@ -9,6 +9,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerProviders } from "./providers.ts";
+import { createHash } from "node:crypto";
 
 const KEPR = process.env.KEPR_BIN || "kepr";
 const GATE = process.env.KEPR_GATE_URL;
@@ -46,33 +47,36 @@ const TIMED_OUT: HookResult = { code: 2, message: "kepr: the safety check timed 
 
 /** Run `kepr hook EVENT` with payload on stdin (never in argv). */
 function hook(event: string, payload: unknown): Promise<HookResult> {
-	return new Promise(resolve => {
-		let stdout = "";
-		let stderr = "";
-		let child: ChildProcess | undefined;
-		try {
-			child = spawn(KEPR, ["hook", event], { stdio: ["pipe", "pipe", "pipe"] });
-		} catch {
-			resolve({ code: 0, message: "" });
-			return;
-		}
-		if (!child) return resolve({ code: 0, message: "" });
-		let timedOut = false;
-		const timer = setTimeout(() => {
-			timedOut = true;
-			child?.kill("SIGKILL");
-		}, 5000);
-		child.stdout.on("data", (d: Buffer) => (stdout += d));
-		child.stderr.on("data", (d: Buffer) => (stderr += d));
-		child.on("error", () => resolve({ code: 0, message: "" }));
-		child.stdin.on("error", () => {});
-		child.on("close", (code: number | null) => {
-			clearTimeout(timer);
-			if (timedOut || code === null) return resolve(TIMED_OUT);
-			resolve({ code, message: (stderr || stdout).trim() });
-		});
-		child.stdin.end(JSON.stringify(payload));
-	});
+    return new Promise(resolve => {
+        let stdout = "", stderr = "", bytes = 0, failed = false;
+        let child: ChildProcess;
+        const refusal = { code: 2, message: "kepr: safety check unavailable; blocked" };
+        try { child = spawn(KEPR, ["hook", event], { stdio: ["pipe", "pipe", "pipe"] }); }
+        catch { resolve(refusal); return; }
+        let settled = false;
+        const finish = (result: HookResult) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(result);
+        };
+        const timer = setTimeout(() => { child.kill("SIGKILL"); finish(TIMED_OUT); }, 5000);
+        child.stdout!.on("data", (data: Buffer) => {
+            bytes += data.length;
+            if (bytes > 20 * 1024 * 1024) { child.kill("SIGKILL"); finish(refusal); }
+            else stdout += data;
+        });
+        child.stderr!.on("data", (data: Buffer) => {
+            if (stderr.length < 65536) stderr += data.toString().slice(0, 65536 - stderr.length);
+        });
+        child.on("error", () => finish(refusal));
+        child.stdin!.on("error", () => { failed = true; });
+        child.on("close", (code: number | null) => {
+            finish(failed || code === null ? refusal : { code, message: (stderr || stdout).trim() });
+        });
+        try { child.stdin!.end(JSON.stringify(payload)); }
+        catch { child.kill("SIGKILL"); finish(refusal); }
+    });
 }
 
 function loadProviderConfig(): unknown {
@@ -116,40 +120,34 @@ let activeRedactions = 0;
 const redactionQueue: (() => void)[] = [];
 
 async function withRedactionSlot<T>(work: () => Promise<T>): Promise<T> {
-	if (activeRedactions >= MAX_REDACTION_CHILDREN) {
-		await new Promise<void>(resolve => redactionQueue.push(resolve));
-	}
-	activeRedactions++;
+    if (activeRedactions >= MAX_REDACTION_CHILDREN) {
+        await new Promise<void>(resolve => redactionQueue.push(resolve));
+    } else activeRedactions++;
 	try {
 		return await work();
 	} finally {
-		activeRedactions--;
-		redactionQueue.shift()?.();
+        const next = redactionQueue.shift();
+        if (next) next(); else activeRedactions--;
 	}
 }
 
-export default function kepr(pi: ExtensionAPI) {
+async function boundedMap<T, U>(values: T[], visit: (value: T) => Promise<U>): Promise<U[]> {
+    const out = new Array<U>(values.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, values.length) }, async () => {
+        while (next < values.length) {
+            const index = next++;
+            out[index] = await visit(values[index]);
+        }
+    }));
+    return out;
+}
+
+export default function kepr(pi: ExtensionAPI, runHook: typeof hook = hook) {
+    const hook = runHook;
 	const routed: string[] = [];
 	const unavailable: string[] = [];
-	process.stdout?.on("error", (err: unknown) => {
-		if (err && typeof err === "object" && "code" in err && err.code === "EPIPE") return;
-	});
-	process.stderr?.on("error", (err: unknown) => {
-		if (err && typeof err === "object" && "code" in err && err.code === "EPIPE") return;
-	});
-
-	const origEmit = process.emit;
-	type EmitFn = (event: string | symbol, ...args: unknown[]) => boolean;
-	process.emit = function (event: string | symbol, ...args: unknown[]): boolean {
-		if (event === "uncaughtException") {
-			const err = args[0];
-			if (err && typeof err === "object") {
-				if ("code" in err && err.code === "EPIPE") return true;
-				if ("message" in err && typeof err.message === "string" && err.message.includes("EPIPE")) return true;
-			}
-		}
-		return (origEmit as unknown as EmitFn).apply(this, [event, ...args]);
-	};
+    // Child pipe errors are owned by hook(); never replace process-wide emit.
 
 	if (GATE) {
 		const result = registerAllProviders(pi);
@@ -177,39 +175,51 @@ export default function kepr(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async event => {
 		const r = await hook("pre-tool", { tool_name: event.toolName, tool_input: event.input });
-		if (r.code === 2) return { block: true, reason: r.message };
+        if (r.code !== 0) return { block: true, reason: r.message };
 	});
 
 	pi.on("input", async (event, ctx) => {
 		const r = await hook("prompt", { prompt: event.text });
-		if (r.code !== 2) return;
+        if (r.code === 0) return;
 		if (ctx.hasUI) ctx.ui.notify(r.message, "error");
 		return { handled: true };
 	});
 
-	const redacted = new Map<string, string>();
-	const pending = new Map<string, Promise<CheckedText>>();
-	const checkText = (text: string): Promise<CheckedText> => {
-		const hit = redacted.get(text);
-		if (hit !== undefined) return Promise.resolve({ text: hit, ok: true });
-		const inFlight = pending.get(text);
+    const MAX_CACHE_BYTES = 4 * 1024 * 1024;
+    const redacted = new Map<string, { text?: string; bytes: number }>();
+    let cacheBytes = 0;
+    const pending = new Map<string, Promise<CheckedText>>();
+    const checkText = (text: string): Promise<CheckedText> => {
+        const key = createHash("sha256").update(text).digest("hex");
+        const hit = redacted.get(key);
+        if (hit !== undefined) return Promise.resolve({ text: hit.text ?? text, ok: true });
+        const inFlight = pending.get(key);
 		if (inFlight) return inFlight;
 		const work = withRedactionSlot(async () => {
 			const r = await hook("redact", { text });
-			if (r.code === 0 && r.message === "") return { text, ok: true };
 			try {
 				const result: unknown = JSON.parse(r.message);
-				if (r.code !== 0 || !isRecord(result) || typeof result.text !== "string") throw new Error("invalid redaction");
-				const oldest = redacted.keys().next().value;
-				if (redacted.size >= 256 && oldest !== undefined) redacted.delete(oldest);
-				redacted.set(text, result.text);
-				return { text: result.text, ok: true };
+                if (r.code !== 0 || !isRecord(result) || typeof result.text !== "string"
+                    || !Number.isSafeInteger(result.found) || (result.found as number) < 0) throw new Error("invalid redaction");
+                const cached = result.text === text ? undefined : result.text;
+                const bytes = 128 + (cached === undefined ? 0 : Buffer.byteLength(cached));
+                if (bytes <= MAX_CACHE_BYTES) {
+                    while (redacted.size >= 256 || cacheBytes + bytes > MAX_CACHE_BYTES) {
+                        const oldest = redacted.keys().next().value;
+                        if (oldest === undefined) break;
+                        cacheBytes -= redacted.get(oldest)!.bytes;
+                        redacted.delete(oldest);
+                    }
+                    redacted.set(key, { text: cached, bytes });
+                    cacheBytes += bytes;
+                }
+                return { text: result.text, ok: true };
 			} catch {
 				return { text: "[message withheld by kepr: the secret check did not answer]", ok: false };
 			}
 		});
-		pending.set(text, work);
-		void work.finally(() => pending.delete(text));
+        pending.set(key, work);
+        void work.finally(() => pending.delete(key));
 		return work;
 	};
 
@@ -258,7 +268,7 @@ export default function kepr(pi: ExtensionAPI) {
 
 	pi.on("context", async event => {
 		let changed = false;
-		const messages = await Promise.all(event.messages.map(async (m: unknown) => {
+        const messages = await boundedMap(event.messages, async (m: unknown) => {
 			if (!isRecord(m)) return m;
 			const content = m.content;
 			if (typeof content === "string") {
@@ -269,7 +279,7 @@ export default function kepr(pi: ExtensionAPI) {
 			}
 			if (!Array.isArray(content)) return m;
 			let touched = false;
-			const parts = await Promise.all(content.map(async (p: unknown) => {
+            const parts = await boundedMap(content, async (p: unknown) => {
 				if (!isRecord(p)) return p;
 				const args = p.arguments;
 				if (p.type === "toolCall" && args !== undefined && args !== null && (typeof args === "object" || typeof args === "string")) {
@@ -288,9 +298,9 @@ export default function kepr(pi: ExtensionAPI) {
 				}
 				touched = changed = true;
 				return { ...p, [field]: result.text };
-			}));
+            });
 			return touched ? { ...m, content: parts } : m;
-		}));
+        });
 		if (changed) return { messages };
 	});
 

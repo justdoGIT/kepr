@@ -26,6 +26,9 @@ pub(crate) use crate::reply::{json, kepr_error, limit_response};
 pub type Body = BoxBody<Bytes, hyper::Error>;
 pub const MAX_BODY: usize = 8 * 1024 * 1024;
 
+#[path = "routing.rs"]
+mod routing;
+
 pub struct Route {
     pub cred: String,
     pub slot: u16,
@@ -35,6 +38,7 @@ pub struct State {
     pub session_id: String,
     pub session_key: SplitKey<32>,
     pub routes: HashMap<String, Route>,
+    route_index: routing::Index,
     pub cache: Arc<Cache>,
     pub limiter: Arc<Limiter>,
     /// P2.1 egress proxy: the session CA and whether unbound hosts tunnel.
@@ -84,6 +88,7 @@ impl State {
         Self {
             session_id,
             session_key,
+            route_index: routing::Index::new(&routes),
             routes,
             cache,
             limiter: Arc::new(Limiter::new(Default::default())),
@@ -113,6 +118,10 @@ impl State {
     pub fn validated(self) -> Result<Self, String> {
         self.limiter.config().validate()?;
         Ok(self)
+    }
+
+    pub(crate) fn configured_routes(&self, host: &str) -> Option<Arc<HashMap<String, String>>> {
+        self.route_index.host(host)
     }
 
     pub(crate) fn valid_placeholder(&self, s: &str, slot: u16) -> bool {
@@ -163,43 +172,20 @@ pub async fn proxy_request(
 /// Dispatch an egress request to the configured exact-host route selected by its placeholder.
 pub async fn proxy_request_for_routes(
     state: Arc<State>,
-    routes: Vec<String>,
+    routes: Arc<HashMap<String, String>>,
     rest: &str,
     req: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
     let placeholders = crate::rewrite::placeholders_in(req.headers(), req.uri().query());
-    let binding = state.routes.values().find_map(|route| {
-        (!placeholders.is_empty()
-            && placeholders
-                .iter()
-                .all(|p| state.valid_placeholder(p, route.slot)))
-        .then(|| (route.cred.clone(), route.slot))
-    });
-    let pname = routes
-        .iter()
-        .find(|name| {
-            state.routes.get(name.as_str()).is_some_and(|route| {
-                binding
-                    .as_ref()
-                    .is_some_and(|(cred, _)| cred == &route.cred)
-            })
-        })
-        .or_else(|| routes.first())
-        .cloned();
-    let Some(pname) = pname else {
-        return Ok(kepr_error(StatusCode::NOT_FOUND, "kepr", "unknown kepr route"));
+    let Some((pname, slot)) = state.route_index.select(&state, &routes, &placeholders) else {
+        return Ok(kepr_error(
+            StatusCode::UNAUTHORIZED,
+            "kepr",
+            "invalid destination credential",
+        ));
     };
-    proxy_request_to_with_slot(
-        state,
-        &pname,
-        None,
-        rest,
-        req,
-        binding.map(|(_, slot)| slot),
-    )
-    .await
+    proxy_request_to_with_slot(state, pname, None, rest, req, Some(slot)).await
 }
-
 
 /// `proxy_request` toward `host` instead of the provider's own host
 /// (T2.04: a bound host under a provider domain, e.g. gcloud's).
@@ -233,12 +219,16 @@ async fn proxy_request_to_with_slot(
         slot,
     });
     let route = route_override.as_ref().unwrap_or(base_route);
-    let destination = routes::lookup(pname).map(|p| p.host)
+    let destination = routes::lookup(pname)
+        .map(|p| p.host)
         .or_else(|| kepr_core::http_route::parse(pname).map(|(h, _)| h));
-    let Some(destination) = destination else { return Ok(not_found()); };
+    let Some(destination) = destination else {
+        return Ok(not_found());
+    };
     // A configured HTTPS route cannot be redirected by the egress caller.
     if kepr_core::http_route::parse(pname).is_some()
-        && host.as_deref().is_some_and(|h| h != destination) {
+        && host.as_deref().is_some_and(|h| h != destination)
+    {
         return Ok(not_found());
     }
     let host = host.unwrap_or_else(|| destination.to_string());
@@ -290,7 +280,10 @@ async fn proxy_request_to_with_slot(
                 return Ok(log.reply(r, bytes.len(), Some("dlp")));
             }
         };
-    let bytes = Bytes::from(clean);
+    let bytes = match clean {
+        std::borrow::Cow::Borrowed(_) => bytes,
+        std::borrow::Cow::Owned(clean) => Bytes::from(clean),
+    };
 
     let conn = state.recorder.http_request(pname, &method, rest, &bytes);
     let response =

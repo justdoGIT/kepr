@@ -19,7 +19,7 @@
 //   - Private items. Filtering is strict on visibility == "public".
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, mkdtempSync, renameSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -72,20 +72,6 @@ function kindOf(item) {
   return k || 'unknown';
 }
 
-function pathOf(index, id) {
-  const seen = new Set();
-  const parts = [];
-  let cur = id;
-  while (cur && !seen.has(cur)) {
-    seen.add(cur);
-    const it = index[cur];
-    if (!it) break;
-    if (it.name) parts.unshift(it.name);
-    // rustdoc doesn't store parents inline; best we can do is the path table.
-    break;
-  }
-  return parts.join('::');
-}
 
 function slug(s) {
   return s.replace(/[^a-zA-Z0-9_-]+/g, '-').toLowerCase();
@@ -98,7 +84,7 @@ function mdxEscape(s = '') {
 
 // ── emit ────────────────────────────────────────────────────────────
 
-function emitModulePage({ bin, moduleName, items }) {
+function emitModulePage({ bin, moduleName, items, outRoot }) {
   const frontmatter =
     `---\n` +
     `title: "${bin}::${moduleName}"\n` +
@@ -119,22 +105,36 @@ function emitModulePage({ bin, moduleName, items }) {
     })
     .join('\n---\n\n');
 
-  const outPath = join(OUT_ROOT, bin, `${slug(moduleName)}.mdx`);
+  const outPath = join(outRoot, bin, `${slug(moduleName)}.mdx`);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, frontmatter + header + body);
   return outPath;
 }
 
-function emitMeta({ bin, modules }) {
+function emitMeta({ bin, modules, outRoot }) {
   const meta = {
     title: bin,
     defaultOpen: false,
     pages: modules.sort(),
   };
+  mkdirSync(join(outRoot, bin), { recursive: true });
   writeFileSync(
-    join(OUT_ROOT, bin, 'meta.json'),
+    join(outRoot, bin, 'meta.json'),
     JSON.stringify(meta, null, 2) + '\n',
   );
+}
+
+function publish(stageRoot) {
+  const backup = `${OUT_ROOT}.backup-${process.pid}-${Date.now()}`;
+  const hadOutput = existsSync(OUT_ROOT);
+  if (hadOutput) renameSync(OUT_ROOT, backup);
+  try {
+    renameSync(stageRoot, OUT_ROOT);
+  } catch (error) {
+    if (hadOutput) renameSync(backup, OUT_ROOT);
+    throw error;
+  }
+  if (hadOutput) rmSync(backup, { recursive: true, force: true });
 }
 
 // ── main ────────────────────────────────────────────────────────────
@@ -142,9 +142,9 @@ function emitMeta({ bin, modules }) {
 function main() {
   ensureNightly();
 
-  if (existsSync(OUT_ROOT)) rmSync(OUT_ROOT, { recursive: true });
-  mkdirSync(OUT_ROOT, { recursive: true });
-
+  mkdirSync(dirname(OUT_ROOT), { recursive: true });
+  const stageRoot = mkdtempSync(join(dirname(OUT_ROOT), '.api-stage-'));
+  try {
   const binModules = [];
 
   for (const bin of BINS) {
@@ -167,17 +167,17 @@ function main() {
 
     const moduleNames = [];
     for (const [moduleName, items] of modules) {
-      emitModulePage({ bin, moduleName, items });
+      emitModulePage({ bin, moduleName, items, outRoot: stageRoot });
       moduleNames.push(slug(moduleName));
     }
-    emitMeta({ bin, modules: moduleNames });
+    emitMeta({ bin, modules: moduleNames, outRoot: stageRoot });
     binModules.push(bin);
     console.log(`  wrote ${moduleNames.length} module page(s) under content/docs/api/${bin}/`);
   }
 
   // Top-level api/meta.json — one group per binary.
   writeFileSync(
-    join(OUT_ROOT, 'meta.json'),
+    join(stageRoot, 'meta.json'),
     JSON.stringify(
       { title: 'API reference', defaultOpen: false, pages: binModules },
       null,
@@ -185,7 +185,11 @@ function main() {
     ) + '\n',
   );
 
+  publish(stageRoot);
   console.log('\n✓ done. Append "api" to content/docs/meta.json "pages" to expose it in the sidebar.');
+  } finally {
+    if (existsSync(stageRoot)) rmSync(stageRoot, { recursive: true, force: true });
+  }
 }
 
 main();

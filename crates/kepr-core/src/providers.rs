@@ -193,27 +193,22 @@ pub const BASIC_PASSWORD: &str = ":basic-password";
 /// Structured Cloudflare credentials must never be sent as a raw header.
 pub const CLOUDFLARE_GATEWAY: &str = ":cloudflare-gateway";
 
-/// T12.06: git-credential-kepr's credential name for a git host
-/// (`github.com` → `GIT_GITHUB_COM`). Dotted legacy names remain stable;
-/// hosts containing other punctuation get a byte-encoded suffix so `.` and
-/// `-` cannot alias one another.
+/// Exact DNS spellings retain their bounded legacy names; other hosts use
+/// a disjoint, bounded digest namespace (including explicit ports).
 pub fn git_cred_name(host: &str) -> String {
-    let mapped: String = host
-        .chars()
-        .map(|c| match c.is_ascii_alphanumeric() {
-            true => c.to_ascii_uppercase(),
-            false => '_',
-        })
-        .collect();
-    if host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
-        return format!("GIT_{mapped}");
+    use sha2::{Digest, Sha256};
+    let host = host.to_ascii_lowercase();
+    if host.len() <= 124 && host.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.') {
+        return format!("GIT_{}", host.replace('.', "_").to_ascii_uppercase());
     }
-    let exact: String = host
-        .to_ascii_lowercase()
-        .bytes()
-        .map(|b| format!("{b:02X}"))
-        .collect();
-    format!("GIT_{mapped}_HOST_{exact}")
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut name = String::with_capacity(69);
+    name.push_str("GIT2_");
+    for b in Sha256::digest(host.as_bytes()) {
+        name.push(HEX[(b >> 4) as usize] as char);
+        name.push(HEX[(b & 15) as usize] as char);
+    }
+    name
 }
 
 /// T12.06: inside `kepr agent run`, `<GIT_PH_PREFIX><git_cred_name>`
