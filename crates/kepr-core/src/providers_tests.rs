@@ -90,8 +90,19 @@ fn git_over_https_on_github_com() {
     assert_eq!(git.binding().inject, Inject::BasicPassword);
     assert!(git.prefixes.is_empty() && git.name_hints.is_empty());
     assert_eq!(git_cred_name("github.com"), "GIT_GITHUB_COM");
-    assert_eq!(
-        git_cred_name("git.example.net:8443"),
-        "GIT_GIT_EXAMPLE_NET_8443"
+    for host in [
+        format!("git-{}.example", "a".repeat(100)),
+        "git.example.net:8443".into(),
+    ] {
+        assert!(git_cred_name(&host).len() <= 128);
+        assert_eq!(
+            git_cred_name(&host),
+            git_cred_name(&host.to_ascii_uppercase())
+        );
+    }
+    assert_ne!(
+        git_cred_name("foo-bar.example"),
+        git_cred_name("foo.bar.example.host.666f6f2d6261722e6578616d706c65")
     );
+    assert_ne!(git_cred_name("a.b-c"), git_cred_name("a-b.c"));
 }

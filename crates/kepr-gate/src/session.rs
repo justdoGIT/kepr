@@ -1,12 +1,11 @@
 //! Harden kepr-gate, read its session config, watch the owner, then serve.
 
+use kepr_core::gate_protocol::{ReadyLine, SessionConfig};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-use kepr_core::gate_protocol::{ReadyLine, SessionConfig};
 use zeroize::Zeroizing;
 
 use crate::placeholder;
@@ -232,32 +231,7 @@ pub fn run() -> Result<(), String> {
         );
     }
     let bind_port = cfg.port.unwrap_or(0);
-    // P2.1: a CA for exactly the hosts this session's keys are bound to.
-    let hosts: Vec<String> = cfg
-        .routes
-        .iter()
-        .filter_map(|r| kepr_core::providers::lookup(&r.provider))
-        .map(|p| p.host.to_string())
-        .chain(crate::kube::hosts(&cfg.routes)) // T13.04
-        .collect();
-    // T2.02: AWS keys may be bound to any *.amazonaws.com host; the
-    // egress proxy asks the daemon per host (aws_egress.rs).
-    let aws = cfg.routes.iter().any(|r| r.provider.starts_with("aws:"));
-    let mut suffixes: Vec<&str> = if aws { vec!["amazonaws.com"] } else { vec![] };
-    // T2.04: keys bound to hosts under a provider domain (gcloud).
-    let domains = kepr_core::providers::DOMAINS.iter();
-    suffixes.extend(
-        domains
-            .filter(|(p, _)| cfg.routes.iter().any(|r| r.provider == *p))
-            .map(|(_, d)| *d),
-    );
-    // A database-only session has no HTTPS host, hence no CA.
-    let ca = match hosts.is_empty() && suffixes.is_empty() {
-        true => None,
-        false => Some(Arc::new(crate::ca::SessionCa::with_suffixes(
-            &hosts, &suffixes,
-        )?)),
-    };
+    let ca = crate::ca::for_routes(&cfg.routes)?;
     let ca_pem = ca.as_ref().map(|c| c.pem().to_string());
     let recorder = Arc::new(crate::recording::Recorder::new(cfg.record));
     crate::recording::spawn_flusher(recorder.clone(), cache.clone());

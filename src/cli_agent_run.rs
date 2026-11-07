@@ -164,7 +164,11 @@ pub fn cmd_run(
         if let Some(c) = &codex {
             c.require_credential(&names)?;
         }
-        let mut routes = routes_for(adapter, &names)?;
+        let mut routes = if harness == "omp" {
+            crate::cli_agent_omp::routes(&creds)?
+        } else {
+            routes_for(adapter, &names)?
+        };
         routes.extend(crate::cli_agent_egress::extra_routes(&routes, &creds));
         routes.extend(crate::cli_aws::session::routes(&routes, &creds)); // T2.02
         let db = crate::cli_agent_db::routes(&routes, &creds);
@@ -175,6 +179,7 @@ pub fn cmd_run(
         routes.extend(tunnels);
         crate::cli_gatex::grant::apply(&mut routes, &session.grants)?;
         crate::cli_gatex::dbuser::apply(&mut routes, &session.db_users)?; // T13.02
+        kepr_core::gate_protocol::validate_routes(&routes)?;
         Ok(routes)
     });
     let routes = match routes {
@@ -211,6 +216,8 @@ pub fn cmd_run(
     let (inherited, withheld) = keep_safe_env(std::env::vars().filter(|(k, _)| {
         k != "KEPR_GATE_URL"
             && k != "KEPR_AGENT_HARNESS"
+            && !k.starts_with("KEPR_OMP_")
+            && !(harness == "omp" && all_routes.iter().any(|r| r.cred == *k))
             && !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
             && !crate::cli_agent_db::DB_VARS.contains(&k.as_str())
             && !shadowed.contains(&k.as_str())
@@ -260,6 +267,12 @@ pub fn cmd_run(
     }
     let aws_env = crate::cli_aws::session::env(&placeholders, &env); // T2.02
     env.extend(aws_env);
+    if harness == "omp" {
+        match crate::cli_agent_omp::env(&all_routes, &placeholders) {
+            Ok(vars) => env.extend(vars),
+            Err(e) => return Response::fail(e),
+        }
+    }
     let default_argv = [adapter.program.to_string()];
     let argv = if argv.is_empty() {
         &default_argv[..]

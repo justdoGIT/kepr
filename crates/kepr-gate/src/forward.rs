@@ -16,6 +16,8 @@ use crate::journal::Log;
 use crate::proxy::{kepr_error, limit_response, Body, Route, State};
 use crate::rewrite::{placeholders_in, upstream_headers, upstream_query};
 
+pub(crate) type Refusal = Box<Response<Body>>;
+
 /// What every HTTP route checks before it forwards (T12.07: git_http.rs
 /// too): the canary screen of the head, the placeholder, the limits, then
 /// the key for `log.host` (a GitHub App key swapped for its token). `Err`
@@ -25,7 +27,7 @@ pub(crate) async fn admit(
     route: &Route,
     headers: &HeaderMap,
     query: Option<&str>,
-) -> Result<(ZeroString, Inject), Response<Body>> {
+) -> Result<(ZeroString, Inject), Refusal> {
     admit_at(log, route, headers, query, (log.host, 443)).await
 }
 
@@ -37,36 +39,52 @@ pub(crate) async fn admit_at(
     headers: &HeaderMap,
     query: Option<&str>,
     (host, port): (&str, u16),
-) -> Result<(ZeroString, Inject), Response<Body>> {
+) -> Result<(ZeroString, Inject), Refusal> {
     let state = log.state;
     if let Some((r, why)) = crate::canary::screen(&state.cache, headers, query, None).await {
-        return Err(log.reply(r, 0, Some(why))); // T9.08
+        return Err(Box::new(log.reply(r, 0, Some(why)))); // T9.08
     }
     let phs = placeholders_in(headers, query);
     if phs.is_empty() || !phs.iter().all(|p| state.valid_placeholder(p, route.slot)) {
         let msg = "invalid or missing kepr placeholder";
-        return Err(log.reply(kepr_error(StatusCode::UNAUTHORIZED, "kepr", msg), 0, None));
+        return Err(Box::new(log.reply(
+            kepr_error(StatusCode::UNAUTHORIZED, "kepr", msg),
+            0,
+            None,
+        )));
     }
     if let Err(refusal) = state.limiter.admit(Instant::now()) {
-        return Err(log.reply(limit_response(refusal), 0, Some("limit")));
+        return Err(Box::new(log.reply(
+            limit_response(refusal),
+            0,
+            Some("limit"),
+        )));
     }
     let today = (state.limiter).admit_today(state.cache.clone(), route.cred.clone());
     if let Err(refusal) = today.await {
-        return Err(log.reply(limit_response(refusal), 0, Some("limit"))); // T9.06
+        return Err(Box::new(log.reply(
+            limit_response(refusal),
+            0,
+            Some("limit"),
+        ))); // T9.06
     }
     let (cache, cred, h) = (state.cache.clone(), route.cred.clone(), host.to_string());
     let Ok(Ok((value, inject))) =
         tokio::task::spawn_blocking(move || cache.get(&cred, &h, port)).await
     else {
         let msg = "kepr could not obtain the credential";
-        return Err(log.reply(kepr_error(StatusCode::BAD_GATEWAY, "kepr", msg), 0, None));
+        return Err(Box::new(log.reply(
+            kepr_error(StatusCode::BAD_GATEWAY, "kepr", msg),
+            0,
+            None,
+        )));
     };
     // T7.08: a GitHub App key becomes an installation token here.
     crate::github_app::swap(state, value, inject)
         .await
         .map_err(|_| {
             let msg = "kepr could not obtain a token";
-            log.reply(kepr_error(StatusCode::BAD_GATEWAY, "kepr", msg), 0, None)
+            Box::new(log.reply(kepr_error(StatusCode::BAD_GATEWAY, "kepr", msg), 0, None))
         })
 }
 

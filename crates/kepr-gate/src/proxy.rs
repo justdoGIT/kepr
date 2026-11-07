@@ -14,7 +14,6 @@ use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use kepr_core::secmem::SplitKey;
 
-use crate::dlp;
 use crate::forward;
 use crate::journal::Log;
 use crate::limits::{reports_usage, Limiter, UsageMeter};
@@ -27,6 +26,9 @@ pub(crate) use crate::reply::{json, kepr_error, limit_response};
 pub type Body = BoxBody<Bytes, hyper::Error>;
 pub const MAX_BODY: usize = 8 * 1024 * 1024;
 
+#[path = "routing.rs"]
+mod routing;
+
 pub struct Route {
     pub cred: String,
     pub slot: u16,
@@ -36,6 +38,7 @@ pub struct State {
     pub session_id: String,
     pub session_key: SplitKey<32>,
     pub routes: HashMap<String, Route>,
+    route_index: routing::Index,
     pub cache: Arc<Cache>,
     pub limiter: Arc<Limiter>,
     /// P2.1 egress proxy: the session CA and whether unbound hosts tunnel.
@@ -85,6 +88,7 @@ impl State {
         Self {
             session_id,
             session_key,
+            route_index: routing::Index::new(&routes),
             routes,
             cache,
             limiter: Arc::new(Limiter::new(Default::default())),
@@ -114,6 +118,10 @@ impl State {
     pub fn validated(self) -> Result<Self, String> {
         self.limiter.config().validate()?;
         Ok(self)
+    }
+
+    pub(crate) fn configured_routes(&self, host: &str) -> Option<Arc<HashMap<String, String>>> {
+        self.route_index.host(host)
     }
 
     pub(crate) fn valid_placeholder(&self, s: &str, slot: u16) -> bool {
@@ -161,6 +169,23 @@ pub async fn proxy_request(
 ) -> Result<Response<Body>, Infallible> {
     proxy_request_to(state, pname, None, rest, req).await
 }
+/// Dispatch an egress request to the configured exact-host route selected by its placeholder.
+pub async fn proxy_request_for_routes(
+    state: Arc<State>,
+    routes: Arc<HashMap<String, String>>,
+    rest: &str,
+    req: Request<Incoming>,
+) -> Result<Response<Body>, Infallible> {
+    let placeholders = crate::rewrite::placeholders_in(req.headers(), req.uri().query());
+    let Some((pname, slot)) = state.route_index.select(&state, &routes, &placeholders) else {
+        return Ok(kepr_error(
+            StatusCode::UNAUTHORIZED,
+            "kepr",
+            "invalid destination credential",
+        ));
+    };
+    proxy_request_to_with_slot(state, pname, None, rest, req, Some(slot)).await
+}
 
 /// `proxy_request` toward `host` instead of the provider's own host
 /// (T2.04: a bound host under a provider domain, e.g. gcloud's).
@@ -171,14 +196,42 @@ pub async fn proxy_request_to(
     rest: &str,
     req: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
+    proxy_request_to_with_slot(state, pname, host, rest, req, None).await
+}
+
+async fn proxy_request_to_with_slot(
+    state: Arc<State>,
+    pname: &str,
+    host: Option<String>,
+    rest: &str,
+    req: Request<Incoming>,
+    slot: Option<u16>,
+) -> Result<Response<Body>, Infallible> {
     if pname == "git" {
         return crate::git_http::handle(state, rest, req).await; // T12.07: smart-HTTP only
     }
     let not_found = || kepr_error(StatusCode::NOT_FOUND, "kepr", "unknown kepr route");
-    let (Some(provider), Some(route)) = (routes::lookup(pname), state.routes.get(pname)) else {
+    let Some(base_route) = state.routes.get(pname) else {
         return Ok(not_found());
     };
-    let host = host.unwrap_or_else(|| provider.host.to_string());
+    let route_override = slot.map(|slot| Route {
+        cred: base_route.cred.clone(),
+        slot,
+    });
+    let route = route_override.as_ref().unwrap_or(base_route);
+    let destination = routes::lookup(pname)
+        .map(|p| p.host)
+        .or_else(|| kepr_core::http_route::parse(pname).map(|(h, _)| h));
+    let Some(destination) = destination else {
+        return Ok(not_found());
+    };
+    // A configured HTTPS route cannot be redirected by the egress caller.
+    if kepr_core::http_route::parse(pname).is_some()
+        && host.as_deref().is_some_and(|h| h != destination)
+    {
+        return Ok(not_found());
+    }
+    let host = host.unwrap_or_else(|| destination.to_string());
     let method = req.method().to_string();
     let log = Log {
         state: &state,
@@ -191,7 +244,7 @@ pub async fn proxy_request_to(
     let (value, inject) = match forward::admit(&log, route, req.headers(), req.uri().query()).await
     {
         Ok(v) => v,
-        Err(r) => return Ok(r),
+        Err(r) => return Ok(*r),
     };
 
     let (parts, body) = req.into_parts();
@@ -219,32 +272,28 @@ pub async fn proxy_request_to(
     if let Some((r, why)) = body.await {
         return Ok(log.reply(r, bytes.len(), Some(why)));
     }
-    if let Some(msg) = dlp::check(&parts, &bytes, &state.cache.values()) {
-        let r = kepr_error(StatusCode::FORBIDDEN, "kepr_blocked", &msg);
-        return Ok(log.reply(r, bytes.len(), Some("dlp")));
-    }
+    let (clean, redactions) =
+        match crate::prompt::checked(rest, &parts, &bytes, &state.cache.values()) {
+            Ok(result) => result,
+            Err(msg) => {
+                let r = kepr_error(StatusCode::FORBIDDEN, "kepr_blocked", &msg);
+                return Ok(log.reply(r, bytes.len(), Some("dlp")));
+            }
+        };
+    let bytes = match clean {
+        std::borrow::Cow::Borrowed(_) => bytes,
+        std::borrow::Cow::Owned(clean) => Bytes::from(clean),
+    };
 
     let conn = state.recorder.http_request(pname, &method, rest, &bytes);
-    let built = if inject == kepr_core::binding::Inject::CloudflareGateway {
-        crate::cloudflare::upstream_request(&log, &parts, value.as_str(), bytes.clone())
-    } else {
-        forward::upstream_request(
-            &log,
-            &parts,
-            &inject,
-            value.as_str(),
-            Full::new(bytes.clone()),
-        )
-    };
-    let own = crate::mask::forms(value.as_str()); // T12.01, even if the cache empties
+    let response =
+        crate::responses::send(&log, route, &parts, &inject, value.as_str(), bytes.clone()).await;
     drop(value);
-    let Some(up) = built else {
-        return Ok(log.reply(forward::cannot_build(), bytes.len(), None));
-    };
-
-    match state.client.request(up).await {
-        Ok(resp) => {
-            let (p, b) = forward::for_agent(&state, resp, &inject, own);
+    match response {
+        Ok((mut p, b)) => {
+            if redactions > 0 {
+                p.headers.insert("x-kepr-redactions", redactions.into());
+            }
             let line = log.line(p.status, bytes.len(), None);
             let status = p.status.as_u16();
             let b = (state.recorder).http_response(conn, pname, status, b);
@@ -263,7 +312,7 @@ pub async fn proxy_request_to(
             });
             Ok(Response::from_parts(p, b.boxed()))
         }
-        Err(_) => Ok(log.reply(forward::upstream_failed(), bytes.len(), None)),
+        Err(r) => Ok(log.reply(*r, bytes.len(), None)),
     }
 }
 
@@ -419,6 +468,13 @@ mod tests {
             "anthropic".to_string(),
             Route {
                 cred: "ANTHROPIC_API_KEY".into(),
+                slot: 0,
+            },
+        );
+        routes.insert(
+            "agentrouter".into(),
+            Route {
+                cred: "AGENTROUTER_API_KEY".into(),
                 slot: 0,
             },
         );
@@ -733,7 +789,8 @@ mod tests {
             "{body}"
         );
         let ph = placeholder::make(&KEY, SID, 0);
-        let r = send(&gate, &ph, &format!("{{\"note\":\"{decoy}\"}}")).await;
+        let body = serde_json::json!({"messages":[{"role":"user", "content":decoy}]}).to_string();
+        let r = send(&gate, &ph, &body).await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN);
         assert_eq!(*planted.1.lock().unwrap(), 2, "both reported to the daemon");
         // A clean request still goes through; the refused ones never left.
@@ -904,5 +961,162 @@ mod tests {
         );
         let out = upstream_headers(&h, &Inject::Bearer, "v").unwrap();
         assert_eq!(out.get(AUTHORIZATION).unwrap(), "Bearer v");
+    }
+
+    async fn response_sequence(
+        replies: Vec<(StatusCode, String)>,
+    ) -> (String, mpsc::UnboundedReceiver<serde_json::Value>) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let replies = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+            replies,
+        )));
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = l.accept().await {
+                let (replies, tx) = (replies.clone(), tx.clone());
+                tokio::spawn(async move {
+                    let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
+                        let (replies, tx) = (replies.clone(), tx.clone());
+                        async move {
+                            let body = req.into_body().collect().await.unwrap().to_bytes();
+                            tx.send(serde_json::from_slice(&body).unwrap()).unwrap();
+                            let (status, body) = replies.lock().unwrap().pop_front().unwrap_or((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "extra request".into(),
+                            ));
+                            Ok::<_, Infallible>(
+                                Response::builder()
+                                    .status(status)
+                                    .body(Full::new(Bytes::from(body)))
+                                    .unwrap(),
+                            )
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        (base, rx)
+    }
+
+    fn resource_error() -> String {
+        serde_json::json!({"error":{"message":"The requested item was created under a different test OpenAI resource. Use the same resource that created the item to access it."}}).to_string()
+    }
+
+    fn response_history() -> serde_json::Value {
+        serde_json::json!({"input":[
+            {"role":"user","content":"full previous context"},
+            {"type":"message", "id":"msg_saved", "role":"assistant", "content":[{"type":"output_text", "text":"working"}]},
+            {"type":"function_call", "id":"fc_saved", "call_id":"call_saved", "name":"read", "arguments":"{}"},
+            {"type":"function_call_output", "call_id":"call_saved", "output":"full result"}
+        ]})
+    }
+
+    async fn send_responses(gate: &str, body: serde_json::Value) -> Response<Incoming> {
+        let client: PlainClient<HttpConnector, Full<Bytes>> =
+            PlainClient::builder(hyper_util::rt::TokioExecutor::new()).build_http();
+        let req = Request::post(format!("{gate}/agentrouter/v1/responses"))
+            .header("x-api-key", placeholder::make(&KEY, SID, 0))
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(body.to_string())))
+            .unwrap();
+        client.request(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn conversation_redaction_reaches_upstream_without_touching_links() {
+        let (up, mut seen) = response_sequence(vec![(StatusCode::OK, "{}".into())]).await;
+        let gate = start_gate(up).await;
+        let token = format!("sk-proj-{}", "a".repeat(24));
+        let mut body = response_history();
+        body["input"][3]["output"] = serde_json::json!(token);
+        let response = send_responses(&gate, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-kepr-redactions"], "1");
+        let body = seen.recv().await.unwrap();
+        assert!(!body.to_string().contains(&token));
+        assert_eq!(body["input"][3]["call_id"], "call_saved");
+        assert_eq!(body["input"][1]["id"], "msg_saved");
+        assert!(body.get("system").is_none());
+    }
+
+    #[tokio::test]
+    async fn resource_mismatch_retries_once_with_complete_items() {
+        let (up, mut seen) = response_sequence(vec![
+            (StatusCode::BAD_REQUEST, resource_error()),
+            (StatusCode::OK, "ok".into()),
+        ])
+        .await;
+        let gate = start_gate(up).await;
+        let response = send_responses(&gate, response_history()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-kepr-responses-retry"], "item-ids");
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "ok"
+        );
+        let first = seen.recv().await.unwrap();
+        let second = seen.recv().await.unwrap();
+        assert_eq!(first["input"][1]["id"], "msg_saved");
+        assert!(second["input"][1].get("id").is_none());
+        assert_eq!(second["input"][2]["call_id"], "call_saved");
+        assert_eq!(second["input"][3]["output"], "full result");
+        assert!(seen.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn persistent_resource_mismatch_is_returned_after_one_retry() {
+        let (up, mut seen) =
+            response_sequence(vec![(StatusCode::BAD_REQUEST, resource_error()); 2]).await;
+        let gate = start_gate(up).await;
+        let response = send_responses(&gate, response_history()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            resource_error()
+        );
+        assert!(seen.try_recv().is_ok());
+        assert!(seen.try_recv().is_ok());
+        assert!(seen.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn chained_history_and_auth_errors_are_not_retried() {
+        for chained in [true, false] {
+            let status = if chained {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::UNAUTHORIZED
+            };
+            let (up, mut seen) = response_sequence(vec![(status, resource_error())]).await;
+            let gate = start_gate(up).await;
+            let mut body = response_history();
+            if chained {
+                body["previous_response_id"] = serde_json::json!("resp_saved");
+            }
+            let response = send_responses(&gate, body).await;
+            assert_eq!(response.status(), status);
+            assert!(response.headers().get("x-kepr-responses-retry").is_none());
+            assert!(seen.try_recv().is_ok());
+            assert!(seen.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn resource_retry_obeys_request_limit() {
+        let (up, mut seen) =
+            response_sequence(vec![(StatusCode::BAD_REQUEST, resource_error())]).await;
+        let limits = kepr_core::gate_protocol::GateLimits {
+            max_requests: Some(1),
+            ..Default::default()
+        };
+        let gate = start_gate_with(up, limits).await;
+        let response = send_responses(&gate, response_history()).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(seen.try_recv().is_ok());
+        assert!(seen.try_recv().is_err());
     }
 }

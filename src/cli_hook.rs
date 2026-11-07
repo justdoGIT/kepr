@@ -17,7 +17,7 @@
 //
 // This is a guard for unsandboxed runs, not the boundary: under `kepr
 // agent run` the sandbox hides the daemon socket and the agent only ever
-// holds placeholders. Unreadable input is allowed (exit 0) for that reason.
+// holds placeholders. Invalid or oversized hook input is refused (exit 2).
 
 use std::io::Read;
 
@@ -126,20 +126,8 @@ pub fn prompt(input: &Value) -> Verdict {
 }
 
 /// `text` with every key-shaped substring replaced, and how many.
-pub fn redact(text: &str) -> (String, usize) {
-    let hits = kepr_core::leak::find_all(text.as_bytes());
-    let (mut out, mut at) = (String::new(), 0);
-    for h in &hits {
-        if h.offset < at {
-            continue; // overlapping shapes
-        }
-        // Key shapes are ASCII, so these are char boundaries.
-        out.push_str(&text[at..h.offset]);
-        out.push_str(&format!("[{} removed by kepr]", h.kind));
-        at = h.offset + h.len;
-    }
-    out.push_str(&text[at..]);
-    (out, hits.len())
+pub fn redact(text: &str) -> (std::borrow::Cow<'_, str>, usize) {
+    kepr_core::redact::text(text)
 }
 
 pub fn session_start(gate_url: Option<&str>) -> Verdict {
@@ -161,15 +149,48 @@ pub fn session_start(gate_url: Option<&str>) -> Verdict {
     })
 }
 
+const MAX_HOOK_INPUT: u64 = 10 << 20;
+
+fn read_input(event: &str, reader: impl Read) -> Result<Value, &'static str> {
+    let mut raw = String::new();
+    reader
+        .take(MAX_HOOK_INPUT + 1)
+        .read_to_string(&mut raw)
+        .map_err(|_| "kepr: could not read safety-check input")?;
+    if raw.len() as u64 > MAX_HOOK_INPUT {
+        return Err("kepr: safety-check input exceeds 10 MiB; blocked");
+    }
+    let input: Value =
+        serde_json::from_str(&raw).map_err(|_| "kepr: invalid safety-check JSON; blocked")?;
+    let valid = match event {
+        "redact" => input.get("text").is_some_and(Value::is_string),
+        "prompt" => field(&input, &["prompt", "userPrompt"]).is_string(),
+        "pre-tool" => field(&input, &["tool_input", "toolInput"]).is_object(),
+        _ => false,
+    };
+    if !valid {
+        return Err("kepr: invalid safety-check payload; blocked");
+    }
+    Ok(input)
+}
+
 /// `kepr hook EVENT`: exit code + output for the harness.
 pub fn cmd_hook(args: &[String]) -> i32 {
     let event = args.first().map(String::as_str).unwrap_or_default();
-    let mut raw = String::new();
-    if event != "session-start" {
-        let _ = std::io::stdin().take(10 << 20).read_to_string(&mut raw);
-        let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
-    }
-    let input: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    let input = match event {
+        "session-start" => Value::Null,
+        "redact" | "prompt" | "pre-tool" => match read_input(event, std::io::stdin().lock()) {
+            Ok(input) => input,
+            Err(reason) => {
+                eprintln!("{reason}");
+                return 2;
+            }
+        },
+        _ => {
+            eprintln!("usage: kepr hook pre-tool|prompt|session-start|redact");
+            return 1;
+        }
+    };
     let verdict = match event {
         "pre-tool" => pre_tool(&input),
         "prompt" => prompt(&input),
@@ -204,6 +225,47 @@ pub fn cmd_hook(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalid_and_oversized_input_is_refused() {
+        for raw in ["", "{", "null", "{}", r#"{"text":5}"#] {
+            assert!(read_input("redact", raw.as_bytes()).is_err());
+        }
+        let raw =
+            serde_json::to_vec(&json!({"text": "a".repeat(MAX_HOOK_INPUT as usize)})).unwrap();
+        assert!(read_input("redact", raw.as_slice()).is_err());
+        let raw = br#"{"text":""}"#;
+        assert_eq!(read_input("redact", raw.as_slice()).unwrap()["text"], "");
+        assert!(read_input("prompt", br#"{"prompt":null}"#.as_slice()).is_err());
+        assert!(read_input("pre-tool", br#"{"tool_input":null}"#.as_slice()).is_err());
+    }
+    #[test]
+    fn input_limit_accepts_exact_size_but_rejects_one_more_byte() {
+        let mut raw = br#"{"text":"keep"}"#.to_vec();
+        raw.resize(MAX_HOOK_INPUT as usize, b' ');
+        assert_eq!(
+            read_input("redact", raw.as_slice()).unwrap()["text"],
+            "keep"
+        );
+        raw.push(b' ');
+        assert!(read_input("redact", raw.as_slice()).is_err());
+        assert!(read_input("redact", [0xff].as_slice()).is_err());
+    }
+
+    #[test]
+    fn redact_removes_pem_payload_and_json_escaped_keys() {
+        let pem = format!(
+            "-----BEGIN {}-----\nprivate-test-payload\n-----END {}-----",
+            "PRIVATE KEY", "PRIVATE KEY"
+        );
+        let (clean, count) = redact(&pem);
+        assert!(count > 0);
+        assert!(!clean.contains("private-test-payload"));
+        let token = format!("sk-proj-{}", "a".repeat(24));
+        let escaped = format!("{{\"text\":\"\\u0073{}\"}}", &token[1..]);
+        let (clean, count) = redact(&escaped);
+        assert!(count > 0);
+        assert!(!clean.contains(&token[1..]));
+    }
 
     fn blocked(v: Verdict) -> bool {
         matches!(v, Verdict::Block(_))

@@ -21,6 +21,10 @@ const OMP: Files = &[
         include_str!("../plugins/omp/kepr/package.json"),
     ),
     ("index.ts", include_str!("../plugins/omp/kepr/index.ts")),
+    (
+        "providers.ts",
+        include_str!("../plugins/omp/kepr/providers.ts"),
+    ),
 ];
 
 const GROK: Files = &[
