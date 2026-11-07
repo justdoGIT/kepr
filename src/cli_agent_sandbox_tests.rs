@@ -1,5 +1,7 @@
 // Protected harness filesystem and network isolation regressions.
 use super::*;
+use crate::cli_sandbox_dirs::{hide_dirs_with, outermost};
+use std::path::PathBuf;
 
 #[test]
 fn codex_auth_cache_is_masked_without_reading_it() {
@@ -71,4 +73,39 @@ fn ns_flags_add_net_only_when_isolating() {
     assert_eq!(ns_flags(true) & libc::CLONE_NEWNET, libc::CLONE_NEWNET);
     assert_eq!(ns_flags(false) & libc::CLONE_NEWNET, 0);
     assert_ne!(ns_flags(false) & libc::CLONE_NEWPID, 0);
+}
+
+#[test]
+fn wait_init_reaps_orphaned_children_before_harness_exits() {
+    // SAFETY: fork and waitpid called on test-owned child processes.
+    unsafe {
+        let runner = libc::fork();
+        assert!(runner >= 0);
+        if runner == 0 {
+            let orphan = libc::fork();
+            if orphan == 0 {
+                libc::_exit(42);
+            }
+            let harness = libc::fork();
+            if harness == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                libc::_exit(7);
+            }
+            let code = wait_init(harness);
+            if code != 7 {
+                libc::_exit(1);
+            }
+            let mut status = 0;
+            let r = libc::waitpid(orphan, &mut status, libc::WNOHANG);
+            if r != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ECHILD) {
+                libc::_exit(2);
+            }
+            libc::_exit(0);
+        }
+        let mut status = 0;
+        let r = libc::waitpid(runner, &mut status, 0);
+        assert_eq!(r, runner);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+    }
 }

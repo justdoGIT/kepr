@@ -21,7 +21,6 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 
 use crate::cli_sandbox_relay as relay;
 use crate::cli_sandbox_seccomp as seccomp;
@@ -39,53 +38,12 @@ pub struct Plan {
     pub isolate_net: bool,
     filter: Vec<libc::sock_filter>,
 }
-
-fn base(var: &str, default_rel: &str) -> Option<PathBuf> {
-    std::env::var_os(var)
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(default_rel)))
-}
-
-/// Directories the agent must not see: credential store, daemon state
-/// (master key, audit log), the daemon socket, the system-mode paths,
-/// and every `kepr mount` directory (T12.20).
-pub fn hide_dirs() -> Vec<PathBuf> {
-    hide_dirs_with(&std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default())
-}
-
-fn hide_dirs_with(mountinfo: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = [
-        base("XDG_DATA_HOME", ".local/share"),
-        base("XDG_STATE_HOME", ".local/state"),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|b| b.join("kepr"))
-    .collect();
-    v.push(kepr_core::protocol::socket_dir());
-    v.push(kepr_core::protocol::runtime_root()); // T11.16: every profile's socket
-    v.extend(["/etc/credstore.encrypted", "/var/lib/kepr", "/run/kepr"].map(PathBuf::from));
-    v.extend(sys::fuse_kepr_mounts(mountinfo));
-    v.extend(crate::cli_sandbox_bus::hidden_dirs()); // T13.28: keyring sockets
-    outermost(v.into_iter().filter(|p| p.is_dir()).collect())
-}
-
-/// Sorted, without any path inside another: a directory under one
-/// already covered by an empty tmpfs no longer exists to be mounted on.
-fn outermost(mut v: Vec<PathBuf>) -> Vec<PathBuf> {
-    v.sort();
-    v.dedup();
-    let all = v.clone();
-    v.retain(|p| !all.iter().any(|q| q != p && p.starts_with(q)));
-    v
-}
+pub use crate::cli_sandbox_dirs::hide_dirs;
 
 fn cstrings(items: impl IntoIterator<Item = String>) -> Result<Vec<CString>, String> {
     items
         .into_iter()
-        .map(|s| {
-            CString::new(s).map_err(|_| "argument or environment contains a NUL byte".to_string())
-        })
+        .map(|s| CString::new(s).map_err(|_| "argument or environment contains a NUL byte".into()))
         .collect()
 }
 
@@ -134,24 +92,41 @@ fn ns_flags(isolate_net: bool) -> libc::c_int {
     }
 }
 
+fn decode_status(s: libc::c_int) -> i32 {
+    if libc::WIFEXITED(s) {
+        libc::WEXITSTATUS(s)
+    } else if libc::WIFSIGNALED(s) {
+        128 + libc::WTERMSIG(s)
+    } else {
+        125
+    }
+}
+
 fn wait_code(pid: libc::pid_t) -> i32 {
     let mut status = 0;
-    loop {
-        // SAFETY: waitpid on our own child with a valid status pointer.
-        let r = unsafe { libc::waitpid(pid, &mut status, 0) };
-        if r == pid {
-            break;
-        }
-        if r < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+    // SAFETY: waitpid on own child with a valid status pointer.
+    while unsafe { libc::waitpid(pid, &mut status, 0) } != pid {
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             return 125;
         }
     }
-    if libc::WIFEXITED(status) {
-        libc::WEXITSTATUS(status)
-    } else if libc::WIFSIGNALED(status) {
-        128 + libc::WTERMSIG(status)
-    } else {
-        125
+    decode_status(status)
+}
+
+fn wait_init(harness: libc::pid_t) -> i32 {
+    let (mut status, mut code) = (0, 125);
+    loop {
+        // SAFETY: waitpid(-1) reaps any child or orphan in this PID namespace.
+        let r = unsafe { libc::waitpid(-1, &mut status, 0) };
+        if r == harness {
+            code = decode_status(status);
+            // SAFETY: drain any remaining exited children with WNOHANG.
+            while unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) } > 0 {}
+            break code;
+        }
+        if r < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            break code;
+        }
     }
 }
 
@@ -231,11 +206,11 @@ pub fn probe(isolate_net: bool) -> Result<(), String> {
 fn exec_harness(plan: &Plan) -> ! {
     // Restore the signals the sandbox's own processes ignore, so Ctrl-C
     // and Ctrl-\ reach the harness normally.
-    // SAFETY: signal(2) with constant arguments.
+    // SAFETY: signal(2) with constant default arguments.
     unsafe {
-        libc::signal(libc::SIGINT, libc::SIG_DFL);
-        libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        for sig in [libc::SIGINT, libc::SIGQUIT, libc::SIGPIPE] {
+            libc::signal(sig, libc::SIG_DFL);
+        }
     }
     sys::drop_all_caps();
     if let Err(e) = crate::cli_sandbox_landlock::enforce(&plan.hide) {
@@ -294,7 +269,7 @@ fn init(plan: &Plan, relay: Option<UnixStream>) -> ! {
         exec_harness(plan);
     }
     // Reap everything (we are init); exit with the harness's status.
-    let code = wait_code(harness);
+    let code = wait_init(harness);
     // SAFETY: _exit; the kernel kills the rest of the PID namespace.
     unsafe { libc::_exit(code) }
 }
