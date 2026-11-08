@@ -1,0 +1,13 @@
+name: Code scan
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "47 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  semgrep:
+    runs-on: ci-standard
+    uses: http://192.168.1.4:3000/justdoGIT/ci-templates/.forgejo/workflows/reusable-code-scan.yml@83ac654c9b72024842eb7ea1163a3c403acf90d4
