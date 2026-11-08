@@ -66,10 +66,12 @@ who is paired. Up to 32 devices can be paired.
 
 On each machine:
 
+```bash
 kepr sync remote add dir:/mnt/shared/kepr
 # Or use rsync over SSH:
 # kepr sync remote add rsync:user@host:/srv/kepr-sync
 kepr sync now
+```
 
 `kepr sync now` reads the other devices' bundles from the remote, applies
 them (the newest change to a credential wins), and then leaves this
