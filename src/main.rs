@@ -57,6 +57,7 @@ mod cli_recovery;
 mod cli_rotate;
 mod cli_sandbox_auth;
 mod cli_sandbox_bus; // T13.28
+mod cli_sandbox_dirs;
 mod cli_sandbox_relay;
 mod cli_sandbox_seccomp;
 mod cli_sandbox_sys;
