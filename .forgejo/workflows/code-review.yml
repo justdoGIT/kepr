@@ -1,0 +1,20 @@
+name: PR Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-review:
+    name: Automated PR Code Review
+    runs-on: ci-standard
+    steps:
+      - name: Run trusted PR reviewer
+        uses: http://192.168.1.4:3000/justdoGIT/ci-templates@b7fc82f200521d9ce0b53124537aeb1177a8f9ae
+        env:
+          FORGEJO_TOKEN: ${{ secrets.CI_API_TOKEN || secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          FORGEJO_URL: ${{ github.server_url }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
