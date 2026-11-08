@@ -41,18 +41,39 @@ fn connect_socket(start: bool) -> Result<UnixStream, String> {
         return Ok(stream);
     }
 
-    if start && std::env::var_os("KEPR_SYSTEM_MODE").is_none() {
-        let _ = Command::new("kepr-daemon")
-            .arg("--user")
+    if start
+        && std::env::var_os("KEPR_SYSTEM_MODE").is_none()
+        && std::env::var_os("KEPR_GATE_URL").is_none()
+    {
+        let mut cmd = Command::new("kepr-daemon");
+        cmd.arg("--user")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        // SAFETY: setsid(2) has no preconditions and detaches daemon from caller's session.
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let child = cmd.spawn().ok();
         for _ in 0..40 {
             thread::sleep(Duration::from_millis(50));
             if let Some(stream) = connect_checked(&socket) {
+                if let Some(mut c) = child {
+                    let _ = c.try_wait();
+                }
                 return Ok(stream);
             }
+        }
+        if let Some(mut c) = child {
+            if matches!(c.try_wait(), Ok(None)) {
+                let _ = c.kill();
+            }
+            let _ = c.wait();
         }
     }
 
@@ -150,5 +171,17 @@ mod tests {
             !trusted_peer(1000, 1000, true),
             "a user posing as the service"
         );
+    }
+
+    #[test]
+    fn connect_socket_never_spawns_under_agent_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_RUNTIME_DIR", tmp.path());
+        std::env::set_var("KEPR_GATE_URL", "http://127.0.0.1:9999");
+        let r = connect_socket(true);
+        std::env::remove_var("KEPR_GATE_URL");
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        assert!(r.is_err());
+        assert!(!tmp.path().join("kepr/kepr.sock").exists());
     }
 }

@@ -213,16 +213,17 @@ pub fn cmd_run(
     // Egress proxy (P2.1): drop inherited proxy/CA settings and the real
     // tokens the egress placeholders replace, then add ours.
     let shadowed = crate::cli_agent_egress::shadowed(&placeholders);
-    let (inherited, withheld) = keep_safe_env(std::env::vars().filter(|(k, _)| {
-        k != "KEPR_GATE_URL"
-            && k != "KEPR_AGENT_HARNESS"
-            && !k.starts_with("KEPR_OMP_")
-            && !(harness == "omp" && all_routes.iter().any(|r| r.cred == *k))
-            && !crate::cli_agent_egress::PROXY_VARS.contains(&k.as_str())
-            && !crate::cli_agent_db::DB_VARS.contains(&k.as_str())
-            && !shadowed.contains(&k.as_str())
-            && !crate::cli_aws::session::shadowed(&placeholders, k)
-    }));
+    let drop_var = |k: &str| {
+        k == "KEPR_GATE_URL"
+            || k == "KEPR_AGENT_HARNESS"
+            || k.starts_with("KEPR_OMP_")
+            || (harness == "omp" && all_routes.iter().any(|r| r.cred == k))
+            || crate::cli_agent_egress::PROXY_VARS.contains(&k)
+            || crate::cli_agent_db::DB_VARS.contains(&k)
+            || shadowed.contains(&k)
+            || crate::cli_aws::session::shadowed(&placeholders, k)
+    };
+    let (inherited, withheld) = keep_safe_env(std::env::vars().filter(|(k, _)| !drop_var(k)));
     if !withheld.is_empty() {
         crate::cli_ui::warn(&format!(
             "not passed to the agent (they hold real keys): {}; store them with `kepr agent add`",
