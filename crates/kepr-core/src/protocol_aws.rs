@@ -7,10 +7,16 @@
 use serde::{Deserialize, Serialize};
 
 /// How a scheduled rotation runs (`.meta` `rotate_via`):
-/// `aws-iam`, `db`, or `hook:<generator>:<absolute path>`.
+/// `aws-iam`, `db`, `provider`, `provider:<name>`, or `hook:<generator>:<absolute path>`.
 pub fn valid_rotate_via(via: &str) -> bool {
     match via {
-        "aws-iam" | "db" => true,
+        "aws-iam" | "db" | "provider" => true,
+        _ if via.starts_with("provider:") => {
+            let p = &via["provider:".len()..];
+            !p.is_empty()
+                && p.len() <= 64
+                && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        }
         _ => via
             .strip_prefix("hook:")
             .and_then(|r| r.split_once(':'))
@@ -140,6 +146,10 @@ mod tests {
         for ok in [
             "aws-iam",
             "db",
+            "provider",
+            "provider:openai",
+            "provider:openrouter",
+            "provider:auto",
             "hook:hex:/home/u/bin/rotate.sh",
             "hook:words:/a:b",
         ] {

@@ -22,6 +22,7 @@ pub enum Plan {
     Scheduled(String),
     AwsIam,
     Database,
+    Provider(String),
     /// Not rotatable by kepr; why, and what to do.
     Manual(&'static str),
 }
@@ -34,11 +35,16 @@ pub fn plan(c: &CredInfo) -> Option<Plan> {
         return Some(Plan::Scheduled(via.clone()));
     }
     let sealed = c.sealed == Some(true);
-    Some(match () {
-        _ if sealed && c.aws_sigv4 == Some(true) => Plan::AwsIam,
-        _ if sealed && c.record_type.as_deref() == Some("database") => Plan::Database,
-        _ => Plan::Manual("no rotator configured: kepr rotate NAME --every 30d --hook CMD"),
-    })
+    if sealed && c.aws_sigv4 == Some(true) {
+        return Some(Plan::AwsIam);
+    }
+    if sealed && c.record_type.as_deref() == Some("database") {
+        return Some(Plan::Database);
+    }
+    if let Some(p) = super::rotate_provider::detect_provider_for_cred(c) {
+        return Some(Plan::Provider(p));
+    }
+    Some(Plan::Manual("no rotator configured: kepr rotate NAME --every 30d --hook CMD"))
 }
 
 fn describe(p: &Plan) -> String {
@@ -49,15 +55,17 @@ fn describe(p: &Plan) -> String {
         ),
         Plan::AwsIam => "AWS IAM access key".into(),
         Plan::Database => "database password".into(),
+        Plan::Provider(p) => format!("provider API ({p})"),
         Plan::Manual(m) => format!("manual: {m}"),
     }
 }
 
-/// Run the plan for every credential. `send` lists, `run` rotates one.
+/// Run the plan for every credential, optionally filtering to provider keys only.
 pub fn run_all(
     send: &dyn Fn(&Request) -> Response,
     run: &dyn Fn(&str, &Plan) -> Response,
     dry_run: bool,
+    only_providers: bool,
 ) -> Response {
     let say = |m: &str| {
         if !crate::cli_ui::json_mode() {
@@ -71,6 +79,13 @@ pub fn run_all(
     let (mut done, mut failed, mut manual) = (0, 0, 0);
     for c in &credentials {
         let Some(p) = plan(c) else { continue };
+        if only_providers {
+            let is_provider = matches!(p, Plan::Provider(_))
+                || matches!(&p, Plan::Scheduled(v) if v.starts_with("provider"));
+            if !is_provider {
+                continue;
+            }
+        }
         if let Plan::Manual(_) = p {
             manual += 1;
             say(&format!("{}: {}", c.name, describe(&p)));
@@ -110,13 +125,14 @@ pub fn rotate_one(name: &str, p: &Plan) -> Response {
         Plan::Scheduled(_) => super::rotate_sched::run_scheduled(name),
         Plan::AwsIam => super::rotate_iam::cmd(name),
         Plan::Database => crate::cli_agent_db_rotate::cmd_rotate_db(&[name.to_uppercase()]),
+        Plan::Provider(p) => super::rotate_provider::cmd(name, Some(p)),
         Plan::Manual(_) => Response::fail("not rotatable by kepr"),
     }
 }
 
-pub fn cmd(dry_run: bool) -> Response {
+pub fn cmd(dry_run: bool, only_providers: bool) -> Response {
     let send = |r: &Request| crate::client::send_request(r).unwrap_or_else(Response::fail);
-    run_all(&send, &rotate_one, dry_run)
+    run_all(&send, &rotate_one, dry_run, only_providers)
 }
 
 #[cfg(test)]
@@ -153,6 +169,7 @@ mod tests {
                 record_type: Some("database".into()),
                 ..sealed("PROD_DB")
             },
+            cred("OPENROUTER_API_KEY"),
             cred("PLAIN_NOTE"),
             cred("KEPR_PKI_CA"),
             CredInfo {
@@ -168,9 +185,10 @@ mod tests {
         assert!(matches!(plan(&f[0]), Some(Plan::Scheduled(_))));
         assert_eq!(plan(&f[1]), Some(Plan::AwsIam));
         assert_eq!(plan(&f[2]), Some(Plan::Database));
-        assert!(matches!(plan(&f[3]), Some(Plan::Manual(_))));
-        assert_eq!(plan(&f[4]), None, "kepr's own keys");
-        assert_eq!(plan(&f[5]), None, "aliases");
+        assert_eq!(plan(&f[3]), Some(Plan::Provider("openrouter".into())));
+        assert!(matches!(plan(&f[4]), Some(Plan::Manual(_))));
+        assert_eq!(plan(&f[5]), None, "kepr's own keys");
+        assert_eq!(plan(&f[6]), None, "aliases");
         // An unsealed database-looking record is not guessed at.
         let unsealed = CredInfo {
             record_type: Some("database".into()),
@@ -188,7 +206,7 @@ mod tests {
 
     #[test]
     fn a_dry_run_changes_nothing() {
-        let r = run_all(&lister(), &|_, _| panic!("rotated in a dry run"), true);
+        let r = run_all(&lister(), &|_, _| panic!("rotated in a dry run"), true, false);
         assert!(r.is_success());
     }
 
@@ -199,10 +217,16 @@ mod tests {
             ran.borrow_mut().push((n.to_string(), p.clone()));
             Response::Pong
         };
-        let r = run_all(&lister(), &run, false);
+        let r = run_all(&lister(), &run, false, false);
         assert!(r.is_success());
         let names: Vec<String> = ran.borrow().iter().map(|(n, _)| n.clone()).collect();
-        assert_eq!(names, ["STRIPE", "AWS_PROD", "PROD_DB"]);
+        assert_eq!(names, ["STRIPE", "AWS_PROD", "PROD_DB", "OPENROUTER_API_KEY"]);
+
+        ran.borrow_mut().clear();
+        let r_filtered = run_all(&lister(), &run, false, true);
+        assert!(r_filtered.is_success());
+        let provider_names: Vec<String> = ran.borrow().iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(provider_names, ["OPENROUTER_API_KEY"]);
     }
 
     #[test]
@@ -216,17 +240,17 @@ mod tests {
                 Response::Pong
             }
         };
-        let r = run_all(&lister(), &run, false);
+        let r = run_all(&lister(), &run, false, false);
         assert_eq!(
             r.err_msg(),
             Some("1 rotation(s) failed; those keys are unchanged")
         );
-        assert_eq!(*ran.borrow(), ["STRIPE", "AWS_PROD", "PROD_DB"]);
+        assert_eq!(*ran.borrow(), ["STRIPE", "AWS_PROD", "PROD_DB", "OPENROUTER_API_KEY"]);
     }
 
     #[test]
     fn a_list_error_is_reported() {
-        let r = run_all(&|_| Response::fail("locked"), &|_, _| Response::Pong, false);
+        let r = run_all(&|_| Response::fail("locked"), &|_, _| Response::Pong, false, false);
         assert_eq!(r.err_msg(), Some("locked"));
     }
 }

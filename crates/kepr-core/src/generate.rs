@@ -206,6 +206,7 @@ pub fn random_chars(alphabet: &[u8], len: usize) -> Result<Vec<u8>, String> {
 }
 
 /// `n` words drawn uniformly from the EFF large wordlist.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn random_words(n: usize) -> Result<Vec<&'static str>, String> {
     let words: Vec<&str> = EFF_WORDS.lines().collect();
     let len = words.len();

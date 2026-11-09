@@ -2,7 +2,7 @@
 //! These name a destination, never grant it: the daemon still requires a
 //! sealed credential with an exact host:443 binding at every resolution.
 
-pub const MAX_ROUTES: usize = 64;
+pub const MAX_ROUTES: usize = 256;
 
 pub fn key(host: &str, credential: &str) -> Option<String> {
     let route = format!("https+{host}+{credential}");

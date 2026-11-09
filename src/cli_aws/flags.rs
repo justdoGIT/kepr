@@ -17,6 +17,7 @@ use crate::cli_args::Args;
 pub const FLAGS: &[&str] = &[
     "--aws-iam",
     "--db",
+    "--provider",
     "--every",
     "--scheduled",
     "--due",
@@ -31,6 +32,8 @@ pub struct AwsFlags {
     pub aws_iam: bool,
     /// `rotate --db`: a sealed database login (T7.07).
     pub db: bool,
+    /// `rotate --provider [NAME]`: rotate API key through provider API.
+    pub provider: Option<String>,
     /// `rotate --every DUR|off` (T7.07).
     pub every: Option<String>,
     /// `rotate --scheduled`: what the daemon spawns (T7.07).
@@ -50,6 +53,16 @@ impl AwsFlags {
             "--scheduled" => self.scheduled = true,
             "--due" => self.due = true,
             "--dry-run" => self.dry_run = true,
+            "--provider" => {
+                if let Some(v) = raw.get(i + 1) {
+                    if !v.starts_with("--") && !FLAGS.contains(&v.as_str()) {
+                        self.provider = Some(v.clone());
+                        return Ok(i + 2);
+                    }
+                }
+                self.provider = Some("auto".to_string());
+                return Ok(i + 1);
+            }
             "--every" => {
                 let v = raw.get(i + 1).ok_or("--every needs a duration, e.g. 30d")?;
                 self.every = Some(v.clone());
@@ -64,6 +77,7 @@ impl AwsFlags {
     pub fn any(&self) -> bool {
         self.aws_iam
             || self.db
+            || self.provider.is_some()
             || self.scheduled
             || self.due
             || self.dry_run
@@ -74,7 +88,7 @@ impl AwsFlags {
 /// `--due` runs every due schedule: it takes no NAME and no other
 /// rotate flag (`hook`: whether `--hook` was given).
 fn due_alone(name: Option<&str>, f: &AwsFlags, hook: bool) -> Result<(), &'static str> {
-    let other = hook || f.aws_iam || f.db || f.scheduled || f.every.is_some();
+    let other = hook || f.aws_iam || f.db || f.provider.is_some() || f.scheduled || f.every.is_some();
     if name.is_some() || other {
         return Err("--due takes no NAME or other flag");
     }
@@ -99,9 +113,10 @@ pub fn cmd_rotate(a: &Args) -> Response {
             || f.due
             || f.every.is_some();
         if other {
-            return fail("--all takes no NAME or other rotate flag (except --dry-run)");
+            return fail("--all takes no NAME or other rotate flag (except --dry-run or --provider)");
         }
-        return super::rotate_sched::shout(super::rotate_all::cmd(f.dry_run));
+        let only_providers = f.provider.is_some();
+        return super::rotate_sched::shout(super::rotate_all::cmd(f.dry_run, only_providers));
     }
     if f.dry_run {
         return fail("--dry-run goes with --all");
@@ -124,14 +139,23 @@ pub fn cmd_rotate(a: &Args) -> Response {
         return super::rotate_sched::shout(super::rotate_sched::schedule(a, name, every));
     }
     if f.scheduled {
-        if f.aws_iam || f.db || a.hook_path.is_some() {
+        if f.aws_iam || f.db || f.provider.is_some() || a.hook_path.is_some() {
             return fail("--scheduled runs the rotator the schedule names; pass no other");
         }
         let r = super::rotate_sched::run_scheduled(name);
         return super::rotate_sched::shout(r);
     }
-    if a.hook_path.is_some() || (f.aws_iam && f.db) {
-        return fail("pick one rotator: --hook CMD, --aws-iam or --db");
+    let count = (a.hook_path.is_some() as u8)
+        + (f.aws_iam as u8)
+        + (f.db as u8)
+        + (f.provider.is_some() as u8);
+    if count > 1 {
+        return fail("pick one rotator: --hook CMD, --aws-iam, --db or --provider");
+    }
+    if let Some(prov) = &f.provider {
+        let p = if prov == "auto" { None } else { Some(prov.as_str()) };
+        let r = super::rotate_provider::cmd(name, p);
+        return super::rotate_sched::shout(r);
     }
     if f.db {
         let db = crate::cli_agent_db_rotate::cmd_rotate_db(&[name.to_uppercase()]);
@@ -175,7 +199,7 @@ mod tests {
 
     #[test]
     fn takes_only_its_own_flags() {
-        let raw: Vec<String> = ["kepr", "rotate", "K", "--aws-iam", "--x", "--every", "30d"]
+        let raw: Vec<String> = ["kepr", "rotate", "K", "--aws-iam", "--x", "--every", "30d", "--provider", "openai"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -186,6 +210,8 @@ mod tests {
         assert!(f.take(&raw, 4).is_err());
         assert_eq!(f.take(&raw, 5), Ok(7));
         assert_eq!(f.every.as_deref(), Some("30d"));
+        assert_eq!(f.take(&raw, 7), Ok(9));
+        assert_eq!(f.provider.as_deref(), Some("openai"));
         let last = ["kepr".to_string(), "--every".to_string()];
         assert!(f.take(&last, 1).is_err(), "--every at the end has no value");
         assert!(FLAGS.iter().all(

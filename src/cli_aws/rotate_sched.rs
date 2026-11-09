@@ -66,18 +66,28 @@ pub fn rough(secs: u64) -> String {
 }
 
 /// The `rotate_via` for this command line: exactly one rotator.
-pub fn via(hook: Option<&Path>, kind: GenKind, aws_iam: bool, db: bool) -> Result<String, String> {
-    match (hook, aws_iam, db) {
-        (Some(h), false, false) => {
+pub fn via(
+    hook: Option<&Path>,
+    kind: GenKind,
+    aws_iam: bool,
+    db: bool,
+    provider: Option<&str>,
+) -> Result<String, String> {
+    match (hook, aws_iam, db, provider) {
+        (Some(h), false, false, None) => {
             let abs = std::fs::canonicalize(h).map_err(|e| format!("{}: {e}", h.display()))?;
             Ok(format!("hook:{}:{}", kind.as_str(), abs.display()))
         }
-        (None, true, false) => Ok("aws-iam".into()),
-        (None, false, true) => Ok("db".into()),
-        (None, false, false) => {
-            Err("--every needs a rotator: --hook CMD, --aws-iam or --db".into())
+        (None, true, false, None) => Ok("aws-iam".into()),
+        (None, false, true, None) => Ok("db".into()),
+        (None, false, false, Some(p)) => {
+            let p = if p.is_empty() || p == "auto" { "auto" } else { p };
+            Ok(format!("provider:{p}"))
         }
-        _ => Err("pick one rotator: --hook CMD, --aws-iam or --db".into()),
+        (None, false, false, None) => {
+            Err("--every needs a rotator: --hook CMD, --aws-iam, --db or --provider".into())
+        }
+        _ => Err("pick one rotator: --hook CMD, --aws-iam, --db or --provider".into()),
     }
 }
 
@@ -87,11 +97,17 @@ pub fn schedule(a: &Args, name: &str, every: &str) -> Response {
         Ok(e) => e,
         Err(e) => return Response::fail(e),
     };
-    let rotator = a.hook_path.is_some() || a.aws.aws_iam || a.aws.db;
+    let rotator = a.hook_path.is_some() || a.aws.aws_iam || a.aws.db || a.aws.provider.is_some();
     let via = match every {
         None if rotator => return Response::fail("--every off takes no rotator"),
         None => None,
-        Some(_) => match via(a.hook_path.as_deref(), a.gen_kind, a.aws.aws_iam, a.aws.db) {
+        Some(_) => match via(
+            a.hook_path.as_deref(),
+            a.gen_kind,
+            a.aws.aws_iam,
+            a.aws.db,
+            a.aws.provider.as_deref(),
+        ) {
             Ok(v) => Some(v),
             Err(e) => return Response::fail(e),
         },
@@ -164,6 +180,10 @@ pub fn run_scheduled(name: &str) -> Response {
     match via.as_str() {
         "aws-iam" => super::rotate_iam::cmd(&upper),
         "db" => crate::cli_agent_db_rotate::cmd_rotate_db(&[upper]),
+        v if v == "provider" || v.starts_with("provider:") => {
+            let prov = v.strip_prefix("provider:").filter(|p| *p != "auto");
+            super::rotate_provider::cmd(&upper, prov)
+        }
         _ => match via.strip_prefix("hook:").and_then(|r| r.split_once(':')) {
             Some((kind, path)) => run_hook(&upper, kind, path),
             None => Response::fail("unknown rotation in the schedule"),
@@ -290,18 +310,20 @@ mod tests {
 
     #[test]
     fn exactly_one_rotator() {
-        assert_eq!(via(None, GenKind::Hex, true, false), Ok("aws-iam".into()));
-        assert_eq!(via(None, GenKind::Hex, false, true), Ok("db".into()));
-        assert!(via(None, GenKind::Hex, false, false).is_err());
-        assert!(via(None, GenKind::Hex, true, true).is_err());
+        assert_eq!(via(None, GenKind::Hex, true, false, None), Ok("aws-iam".into()));
+        assert_eq!(via(None, GenKind::Hex, false, true, None), Ok("db".into()));
+        assert_eq!(via(None, GenKind::Hex, false, false, Some("openai")), Ok("provider:openai".into()));
+        assert_eq!(via(None, GenKind::Hex, false, false, Some("")), Ok("provider:auto".into()));
+        assert!(via(None, GenKind::Hex, false, false, None).is_err());
+        assert!(via(None, GenKind::Hex, true, true, None).is_err());
         let sh = Path::new("/bin/sh");
-        assert!(via(Some(sh), GenKind::Hex, true, false).is_err());
-        let v = via(Some(sh), GenKind::Hex, false, false).unwrap();
+        assert!(via(Some(sh), GenKind::Hex, true, false, None).is_err());
+        let v = via(Some(sh), GenKind::Hex, false, false, None).unwrap();
         assert!(
             v.starts_with("hook:hex:/") && kepr_core::protocol_aws::valid_rotate_via(&v),
             "{v}"
         );
-        assert!(via(Some(Path::new("/no/such/hook")), GenKind::Hex, false, false).is_err());
+        assert!(via(Some(Path::new("/no/such/hook")), GenKind::Hex, false, false, None).is_err());
     }
 
     #[test]

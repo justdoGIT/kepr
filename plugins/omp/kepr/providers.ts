@@ -100,7 +100,7 @@ export function registerProviders(
     config: unknown,
     env: Record<string, string | undefined>,
 ) {
-    if (!/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(gate) || !Array.isArray(metadata) || metadata.length > 64) invalid();
+    if (!/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(gate) || !Array.isArray(metadata) || metadata.length > 256) invalid();
     const routes: Route[] = [];
     const seen = new Set<string>();
     for (const candidate of metadata) {

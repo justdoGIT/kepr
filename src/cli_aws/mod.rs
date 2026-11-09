@@ -30,6 +30,7 @@ pub mod leaked;
 pub mod presets;
 pub mod rotate_all;
 pub mod rotate_iam;
+pub mod rotate_provider;
 pub mod rotate_sched;
 pub mod session;
 pub mod sts;
@@ -58,7 +59,9 @@ pub const HELP: &str = "\
   rotate KEY --aws-iam                 new IAM access key for the stored KEY: created, verified
                                        (STS), stored, then the old key deleted (2-key limit)
   rotate KEY --db                      new password for a sealed database login (rotate-db)
-  rotate KEY --every 30d --hook CMD | --aws-iam | --db
+  rotate KEY --provider [NAME]         rotate API key through provider API (openrouter, openai,
+                                       anthropic, groq, mistral, deepseek, xai, or auto-detected)
+  rotate KEY --every 30d --hook CMD | --aws-iam | --db | --provider [NAME]
                                        rotate on a schedule (12h, 30d, 2w; `--every off` stops);
                                        the user-mode daemon runs due ones and `kepr list`
                                        shows the next. `rotate KEY --scheduled` runs it now
