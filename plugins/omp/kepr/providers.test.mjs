@@ -1,11 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { stripTypeScriptTypes } from 'node:module';
 import vm from 'node:vm';
 
-const source = stripTypeScriptTypes(await readFile(new URL('./providers.ts', import.meta.url), 'utf8')).replaceAll('export function ', 'function ');
-const register = vm.runInNewContext(source + '\nregisterProviders;', { URL });
+let register;
+if (typeof Bun !== 'undefined') {
+  ({ registerProviders: register } = await import('./providers.ts'));
+} else {
+  const { stripTypeScriptTypes } = await import('node:module');
+  const source = stripTypeScriptTypes(await readFile(new URL('./providers.ts', import.meta.url), 'utf8'))
+    .replaceAll('export function ', 'function ');
+  register = vm.runInNewContext(source + '\nregisterProviders;', { URL });
+}
 const gate = 'http://127.0.0.1:9876';
 const route = (credential, slot = 0, host = 'api.example.com') => ({ credential, host, route: `https+${host}+${credential}`, variable: `KEPR_OMP_KEY_${slot}` });
 const plan = (config, routes = [route('WORK')], env = { KEPR_OMP_KEY_0: 'kepr-ph-test' }) => {
