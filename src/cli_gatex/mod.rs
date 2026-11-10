@@ -7,6 +7,7 @@ pub mod dbuser;
 pub mod grant;
 pub mod logs;
 pub mod mcp_pg;
+pub mod mcp_routes;
 pub mod mcp_ssh;
 pub mod mcp_tools;
 pub mod mysql_login;

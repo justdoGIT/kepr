@@ -50,10 +50,6 @@ pub trait Backend {
 }
 
 fn tools(cfg: &McpConfig) -> Value {
-    let providers: Vec<&str> = kepr_core::providers::PROVIDERS
-        .iter()
-        .map(|p| p.name)
-        .collect();
     json!([
         {
             "name": "list_secrets",
@@ -62,11 +58,11 @@ fn tools(cfg: &McpConfig) -> Value {
         },
         {
             "name": "call_api",
-            "description": "Call a model provider's HTTP API using the user's sealed key for that provider. The key is added by kepr; never include keys yourself.",
+            "description": "Call an HTTP API using a sealed key on its bound host. Use a built-in provider name or an explicit HTTPS route. The key is added by kepr; never include keys yourself.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "provider": {"type": "string", "enum": providers},
+                    "provider": {"type": "string", "description": "Built-in provider name, or https+HOST+NAME using an exact host:443 binding and a sealed credential NAME from list_secrets."},
                     "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
                     "path": {"type": "string", "description": "Path on the provider's API host, e.g. /v1/models"},
                     "body": {"type": "string", "description": "Request body (usually JSON)"},
@@ -114,6 +110,16 @@ fn call_tool(backend: &mut dyn Backend, name: &str, args: &Value) -> Value {
             else {
                 return text_result("provider, method and path are required".into(), true);
             };
+            if !kepr_core::providers::PROVIDERS
+                .iter()
+                .any(|p| p.name == provider)
+                && kepr_core::http_route::parse(provider).is_none()
+            {
+                return text_result(
+                    "provider must be a built-in name or a valid explicit HTTPS route".into(),
+                    true,
+                );
+            }
             if !path.starts_with('/') || path.contains("://") {
                 return text_result(
                     "path must start with / (a path on the provider's host)".into(),
@@ -416,5 +422,47 @@ mod tests {
             .starts_with("HTTP 200"));
         assert_eq!(b.calls[0].2, "/v1/models");
         assert_eq!(b.calls[0].3.get("x-trace").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn call_api_schema_accepts_explicit_https_routes() {
+        let mut b = Fake::default();
+        let r = rpc(&mut b, "tools/list", json!({}));
+        let provider = &r["result"]["tools"][1]["inputSchema"]["properties"]["provider"];
+        assert!(provider.get("enum").is_none());
+        assert!(provider["description"].as_str().unwrap().contains("https+"));
+        let r = rpc(
+            &mut b,
+            "tools/call",
+            json!({
+                "name": "call_api", "arguments": {
+                    "provider": "https+forgejo.kepr.dev+FORGEJO_API_TOKEN",
+                    "method": "GET", "path": "/api/v1/user"
+                }
+            }),
+        );
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(b.calls[0].0, "https+forgejo.kepr.dev+FORGEJO_API_TOKEN");
+    }
+
+    #[test]
+    fn call_api_rejects_unvalidated_provider_routes() {
+        let mut b = Fake::default();
+        for provider in [
+            "unknown",
+            "https+github.com+GH_TOKEN",
+            "https+forgejo.kepr.dev:3000+TOKEN",
+            "https+forgejo.kepr.dev+lowercase",
+        ] {
+            let r = rpc(
+                &mut b,
+                "tools/call",
+                json!({
+                    "name": "call_api", "arguments": {"provider": provider, "method": "GET", "path": "/api/v1/user"}
+                }),
+            );
+            assert_eq!(r["result"]["isError"], true, "{provider}");
+        }
+        assert!(b.calls.is_empty());
     }
 }
