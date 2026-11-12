@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [unreleased]
+- Bind every `kepr mcp` database and SSH tool call to an operator grant: the
+  session's tenant, workspace and connector account are checked with
+  `authz::decide` before the target is touched, and `--allow-admin` is required
+  for DDL.
+- Refuse MCP tool arguments that do not match the declared schema and SQL that
+  is not exactly one statement (semicolons and backslash escapes are refused),
+  so a `db_query` can neither chain statements nor reach DDL without the
+  `admin` action.
+- Make protected `kepr agent run HARNESS` snapshot the current folder automatically;
+  add `--workspace PATH` for another folder and keep `--workspace-session` for reuse.
+- Make private workspace launches reachable: reopen top-level runtime roots such
+  as `/usr` from the filesystem root instead of rejecting their `/` parent, so
+  a protected `kepr agent run` over a prepared session starts and its edits are
+  reviewable.
+- Refuse to generate a replacement master key when the credential store is
+  non-empty, preventing silent loss of access after an unsealed key disappears.
 - Reject cross-credential HTTPS placeholders using immutable destination/slot
   indexes; retain valid aliases for the same credential.
 - Bound Git credential names in a separate digest namespace and verify stored
