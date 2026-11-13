@@ -3,6 +3,8 @@ use common::*;
 use serde_json::Value;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
+#[path = "common/workspace_launch_cases.rs"]
+mod workspace_launch_cases;
 #[test]
 fn prepare_without_files_captures_safe_source_tree() {
     let (_root, source, state) = fixture();
@@ -329,5 +331,3 @@ fn credential_directory_roots_are_excluded_before_selected_files_are_read() {
     assert!(reply(&out)["error"].as_str().unwrap().contains("excluded"));
     assert!(!state.join("kepr/workspaces").exists());
 }
-
-mod workspace_launch_cases;
