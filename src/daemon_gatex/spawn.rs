@@ -63,6 +63,7 @@ pub(crate) fn start_local(
     gate_end: &UnixStream,
     config: SessionConfig,
 ) -> Result<(Child, ReadyLine), String> {
+    let expected_privacy = config.privacy.as_ref().map(|p| p.preset);
     let payload = zeroize::Zeroizing::new(
         serde_json::to_vec(&config).map_err(|_| "cannot encode kepr-gate session config")?,
     );
@@ -76,7 +77,11 @@ pub(crate) fn start_local(
         .and_then(|stdin| write_config(stdin, &payload, deadline))
         .and_then(|_| {
             let stdout = child.stdout.take().ok_or("kepr-gate has no stdout")?;
-            read_ready(stdout, deadline)
+            let ready = read_ready(stdout, deadline)?;
+            if ready.privacy != expected_privacy {
+                return Err("gate did not confirm the requested privacy policy".into());
+            }
+            Ok(ready)
         });
     match ready {
         Ok(r) => Ok((child, r)),

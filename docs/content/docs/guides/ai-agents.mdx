@@ -5,37 +5,52 @@ description: "Give AI coding agents (Claude Code, Codex, grok-cli, Aider, oh-my-
 
 ## The idea
 
-Paste a key once. From then on an agent can **use** it but never **hold** it:
+Enter a key once in your own terminal. A protected agent can **use** it without
+receiving its plaintext value:
 
-- the key is stored **sealed** (write-only): `kepr get` refuses it, and so
-  does every other API;
-- the agent receives a worthless **placeholder** (`kepr-ph-…`) and a local
-  base URL;
-- **kepr-gate**, a local proxy started by the kepr daemon, swaps the
-  placeholder for the real key on the wire, and only toward the host the key
-  is bound to (`api.anthropic.com` for an Anthropic key, and so on).
+- `kepr agent add` stores a **sealed**, destination-bound credential;
+  plaintext retrieval/export APIs, including `kepr get`, refuse it;
+- the agent receives a session **placeholder** (`kepr-ph-…`) and a local
+  gate URL, not the real key;
+- the daemon releases the credential only to the gate for an authorized
+  binding, and the gate injects it toward that destination over TLS.
 
-The real key is never in the agent's environment, files, inherited file
-descriptors or memory.
+This protects sessions launched with `kepr agent run`; installing a plugin
+alone does not protect an existing shell, all applications, or the device.
+If a session was started normally, relaunch it with `kepr agent run <harness>`.
 
 ## Quick start
 
 ```bash
-kepr agent add ANTHROPIC_API_KEY     # paste the key (input hidden)
-kepr agent run claude                # starts Claude Code with a placeholder
+kepr agent add ANTHROPIC_API_KEY --for anthropic
+kepr agent run claude
 ```
 
-The provider is detected from the key's prefix (`sk-ant-`, `xai-`, `sk-`,
-`sk-or-`, `gsk_`, `AIza`). For keys without a recognisable prefix, say which
-provider it belongs to:
+Run `add` yourself, outside the agent. At `Paste … (input hidden):`, type or
+paste the value and press Enter. Terminal echo is disabled: no characters or
+asterisks appear. Do not put the value in chat, command arguments, shell
+exports, or harness configuration files.
+
+Use the exact provider binding for the destination you intend. For example,
+`--for openai` binds `api.openai.com:443`, `--for xai` binds `api.x.ai:443`,
+`--for agentrouter` binds `agentrouter.org:443`, and `--for selora` binds
+`api.selora.lol:443`. A reseller's OpenAI-compatible API is not OpenAI's host.
+For a custom HTTPS endpoint, an explicit binding is possible:
 
 ```bash
-kepr agent add MISTRAL_API_KEY --for mistral
-kepr agent add DEEPSEEK_API_KEY --for deepseek
+kepr agent add WORK_API_KEY --for api.example.com:443:bearer
 ```
 
-Supported model providers include anthropic, openai, xai, google, mistral,
-deepseek, groq, openrouter, agentrouter, and Cloudflare AI Gateway.
+Omitting `--for` uses a recognizable prefix or variable-name hint; a bare
+`sk-` prefix is ambiguous. Explicit binding avoids guessing. Check the names
+and bound hosts with `kepr agent ls` (no values). A binding is not proof that
+the provider accepts the credential or offers a particular model.
+Custom bindings must also use a route supported by the selected launch
+policy; binding an arbitrary host does not add private-cloud inspection for it.
+
+Model-provider presets include anthropic, openai, xai, google, mistral,
+deepseek, groq, openrouter, agentrouter, selora, fireworks, moonshot,
+venice, and Cloudflare AI Gateway.
 
 ### Cloudflare AI Gateway
 
@@ -47,7 +62,7 @@ printing or exporting any value:
 ```bash
 kepr agent add-cloudflare
 kepr agent install omp
-kepr agent run omp -- omp --model cloudflare-ai-gateway/reflection-ai/beam-1.0-501b-a23b
+kepr agent run omp
 ```
 
 `add-cloudflare` validates all three entries inside the daemon, then replaces
@@ -86,11 +101,13 @@ harnesses save keys, since the agent can read those inside its session and
 a harness may use a key there instead of the gate's placeholder:
 `~/.codex/auth.json` (`OPENAI_API_KEY`), `~/.grok/user-settings.json`
 (grok-cli's `apiKey`), `~/.aider.conf.yml` (`openai-api-key`,
-`anthropic-api-key`, `api-key` items) and `~/.omp/agent/models.yml`
-(`apiKey`). These JSON and YAML files are read by key and never rewritten:
-with `--remove`, kepr tells you to delete the key by hand. Variable names
-and references (`KEPR_PH_ANTHROPIC`, `${VAR}`, `{env:VAR}`) are not keys
-and are left alone.
+`anthropic-api-key`, `api-key` items) and `~/.config/omp/agent/models.yml`
+(`apiKey`). These default adoption locations do not follow every custom
+`CODEX_HOME`, `PI_CODING_AGENT_DIR`, or XDG location; supply explicit FILE
+arguments for those. These JSON/YAML files are never rewritten: with
+`--remove`, kepr tells you to delete the key by hand. Variable names and
+references (`KEPR_PH_ANTHROPIC`, `${VAR}`, `{env:VAR}`) are not keys and are
+left alone.
 
 It also reads your shell history: `$HISTFILE` (or `~/.bash_history`),
 `~/.zsh_history` and `${XDG_DATA_HOME:-~/.local/share}/fish/fish_history`.
@@ -110,37 +127,95 @@ such as `curl -H "Authorization: Bearer …"`, are left to `kepr scan
 | Harness | Command | Key it uses |
 | --- | --- | --- |
 | Claude Code | `kepr agent run claude` (optional once: `kepr agent install claude`) | `ANTHROPIC_API_KEY` |
-| OpenAI Codex CLI | `kepr agent run codex` (optional once: `kepr agent install codex`) | Selected provider: `OPENAI_API_KEY` or `AGENTROUTER_API_KEY` |
+| OpenAI Codex CLI | `kepr agent run codex` (optional once: `kepr agent install codex`) | Selected provider: `OPENAI_API_KEY`, `AGENTROUTER_API_KEY`, or `SELORA_API_KEY` |
 | grok-cli | `kepr agent run grok-cli` | `XAI_API_KEY` |
 | Aider (OpenAI path) | `kepr agent run aider` | `OPENAI_API_KEY` |
 | Gemini CLI | `kepr agent run gemini` | `GEMINI_API_KEY` |
-| oh-my-pi | `kepr agent install omp` once, then `kepr agent run omp` | Sealed Anthropic or Cloudflare AI Gateway login |
+| oh-my-pi | `kepr agent install omp` once, then `kepr agent run omp` | Sealed credentials bound to supported model-provider hosts |
 | Grok Build | `kepr agent install grok` once, then `kepr agent run grok` | `XAI_API_KEY` |
 | opencode (Anthropic) | `kepr agent install opencode` once, then `kepr agent run opencode` | `ANTHROPIC_API_KEY` |
 
-`kepr agent install` edits the harness's own config file
-(`~/.omp/agent/models.yml`, `~/.grok/config.toml`,
-`~/.config/opencode/opencode.json`) to point at the gate on port 7878,
-after writing a timestamped backup. It also installs kepr's plugin for
-omp and Grok Build (below). Running it twice changes nothing. The opencode
-config gets only a base URL and `{env:KEPR_PH_ANTHROPIC}`; a file with
-comments or another non-JSON shape is left alone, with a message.
+`grok` means **Grok Build**; `grok-cli` means the separate community CLI.
+Both adapters execute a program named `grok`, so ensure your `PATH` selects
+the intended implementation. Community grok-cli needs no install step and
+receives `GROK_API_KEY`, `XAI_API_KEY`, and `GROK_BASE_URL` for its session.
 
-Claude Code and Codex need no persistent config edit. Codex reads its selected
-API provider from `CODEX_HOME/config.toml` and receives CLI overrides pointing
-that provider at the gate. OpenAI and AgentRouter are supported; AgentRouter
-uses `env_key = "AGENTROUTER_API_KEY"` and an HTTPS URL under
-`https://agentrouter.org/`. Seal its key privately, then launch:
+`kepr agent install omp|grok|opencode` updates the harness integration,
+backing up changed existing config files before writing. Default gate ports
+are **dynamic per session**; do not hard-code port 7878. OMP's plugin uses
+`KEPR_GATE_URL`; Grok Build receives its session base URL; opencode uses
+`{env:KEPR_GATE_URL}/anthropic/v1` and `{env:KEPR_PH_ANTHROPIC}`. An explicit
+`--port N` is an opt-in fixed-port configuration, not the default.
+
+Host configuration paths are:
+
+- OMP: `$PI_CODING_AGENT_DIR/models.yml`, otherwise
+  `${XDG_CONFIG_HOME:-~/.config}/omp/agent/models.yml` (absolute XDG path);
+- Grok Build: `~/.grok/config.toml`;
+- opencode: `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json`.
+
+Protected workspace launches use a generated private home rather than
+copying host authentication, history, or configuration. OMP gets an embedded
+kepr extension and an empty generated `models.yml`; do not assume custom
+host model definitions or other installed plugins are copied into it.
+In configurations the OMP extension does load, API-key references are matched
+to sealed credentials by name and exact HTTPS host. Missing bindings make
+that provider unavailable, not a fallback to `kepr get` or direct networking.
+
+The reviewed OpenAI-compatible OMP defaults include Fireworks
+(`https://api.fireworks.ai/inference/v1`), Moonshot CN
+(`https://api.moonshot.cn/v1`), and Venice
+(`https://api.venice.ai/api/v1`). Their exact hosts and chat paths are
+allowlisted for the private-cloud adapter; unsupported endpoints, provider
+extensions, media, and opaque state remain refused. Model availability and
+live provider behavior are not tested by these bindings.
+
+### Provider credential lifecycle qualification
+
+OMP routes do not retrieve API keys from providers. Operators add the sealed
+credential to kepr; the gate only resolves it for the exact bound host. The
+reviewed provider control planes expose the following lifecycle capabilities:
+
+| Provider | Official lifecycle evidence | Kepr automation |
+| --- | --- | --- |
+| OpenAI | [organization admin-key create](https://developers.openai.com/api/reference/resources/admin/subresources/api-keys/methods/create) and [delete](https://developers.openai.com/api/reference/resources/admin/subresources/api-keys/methods/delete) | `rotate --provider openai --bootstrap ADMIN_KEY` |
+| OpenRouter | [management-key create](https://openrouter.ai/docs/api/api-reference/api-keys/create-a-new-api-key) and [delete](https://openrouter.ai/docs/api/api-reference/api-keys/delete-an-api-key) | `rotate --provider openrouter --bootstrap MANAGEMENT_KEY` |
+| Venice | [Admin-key management](https://docs.venice.ai/guides/getting-started/managing-api-keys), including create and revoke | `rotate --provider venice --bootstrap ADMIN_KEY` |
+| Fireworks | [control-plane API-key create](https://docs.fireworks.ai/api-reference/create-api-key) requires account and user identifiers; it is not a generic OMP key-only flow | Manual lifecycle; no automatic provider rotator |
+| Moonshot CN | [official quickstart](https://platform.moonshot.cn/docs/guide/start-using-kimi-api) documents dashboard-created API keys and inference use, not an authenticated key-management endpoint | Manual lifecycle; no automatic provider rotator |
+
+For automated rotation, `ADMIN_KEY`/`MANAGEMENT_KEY` is a separate sealed
+credential. The daemon sends only credential names to a rotation gate; the gate
+creates, validates, commits, and cleans up failed replacements without returning
+secret values to the CLI. Provider model availability and live account
+permissions still require a separate operator check.
+
+Codex reads the selected provider from `$CODEX_HOME/config.toml` (default
+`~/.codex/config.toml`) before entering the private home. A selected
+`--profile NAME` also loads `NAME.config.toml` from that directory. Supported
+API credentials are:
+
+| Selected API | `env_key` | Required HTTPS host |
+| --- | --- | --- |
+| OpenAI | `OPENAI_API_KEY` (default for provider `openai`) | `api.openai.com` |
+| AgentRouter | `AGENTROUTER_API_KEY` | `agentrouter.org` |
+| Selora | `SELORA_API_KEY` | `api.selora.lol` |
+
+AgentRouter and Selora require a matching HTTPS `base_url` and must not set
+`requires_openai_auth = true`. Store only the environment-variable name in
+`env_key`, never the key. Kepr grants the selected provider's sealed credential
+and pins CLI overrides to the dynamic gate with ephemeral auth storage:
 
 ```bash
-kepr agent add AGENTROUTER_API_KEY --for agentrouter
-kepr agent run codex
+kepr agent add SELORA_API_KEY --for selora
+kepr agent run codex -- codex --profile selora
 ```
 
-Codex uses ephemeral authentication storage inside the protected session.
-Cached `auth.json` files and their symlink targets are masked, while the
-original login remains available outside the session. Providers using inline
-credentials or another authentication helper are refused.
+This assumes that non-secret Selora provider/profile configuration already
+exists. Arguments after `--` include the **executable** (`codex`), not just
+its flags. Cached `auth.json` files and their symlink targets are masked;
+inline credentials and alternate authentication helpers are refused. Unlocking
+the vault does not replace a missing selected-provider credential or binding.
 
 `kepr agent install claude` adds kepr's
 guidance for the model as a Claude Code skill
@@ -159,7 +234,7 @@ itself keep secrets out of the conversation. Both plugins ask
 
 | What it does | omp | Grok Build |
 | --- | --- | --- |
-| Sends provider calls through the gate with the placeholder (no config edit needed) | yes (`anthropic`, `openai`, `xai`, `cloudflare-ai-gateway`) | via session base URL |
+| Sends supported, bound provider calls through the session gate with placeholders | yes (credential-name and exact-host matching) | via session base URL |
 | Refuses tool calls that would print a stored value (`kepr get`, `env`, `exec`, `totp`, `inject`, `copy`, `record`, `recovery-kit`, `share`, `sync-push`) | yes | yes |
 | Refuses tool calls that contain a real key (a command, or file content) | yes | yes |
 | Refuses a prompt with a pasted key, before it reaches the model | interactive sessions | yes |
@@ -168,21 +243,24 @@ itself keep secrets out of the conversation. Both plugins ask
 | `kepr mcp` as an MCP server | – | yes |
 | Status command | `/kepr` | – |
 
-- **Where they go:** the omp extension goes into `~/.omp/agent/extensions/kepr/`,
-  where omp finds it on its own. The Grok Build plugin's source goes into
-  `~/.local/share/kepr/plugins/grok/kepr/`, and kepr registers it with
-  `grok plugin install … --trust`, or `grok plugin update kepr` after an
-  upgrade. If `grok` isn't on your `PATH`, kepr prints the command to run.
-- **What they don't do:** the plugins are a guard for sessions that run
-  without the sandbox. The boundary is still the gate and the sandbox: under
-  `kepr agent run`, the agent only ever holds placeholders, and the kepr
-  socket is hidden from it.
-- **Tested against:** omp 18.6.0 and Grok Build 1.0.46.
+- **Where they go:** the OMP extension is installed under
+  `$PI_CODING_AGENT_DIR/extensions/kepr/`, otherwise
+  `${XDG_CONFIG_HOME:-~/.config}/omp/agent/extensions/kepr/`. The Grok Build
+  plugin's source goes into `~/.local/share/kepr/plugins/grok/kepr/`, and kepr
+  registers it with `grok plugin install … --trust`, or updates it after an
+  upgrade. If `grok` is absent from `PATH`, kepr prints the registration command.
+- **Protection boundary:** hooks help guard conversation/tool traffic, but
+  they are not a replacement for the gate and required isolation. Protected
+  launches generate a private home; host-installed Grok Build plugins are
+  not copied there. Do not treat a successful host plugin install as proof
+  that hooks are active inside that private home.
+- **Qualification:** these integration paths describe source behavior, not
+  a current release certification or live-provider/model availability test.
 
 Pass your own command line after `--`:
 
 ```bash
-kepr agent run claude -- claude --model claude-sonnet-5-5
+kepr agent run codex -- codex --profile selora
 ```
 
 Any real key already exported in your shell (for example
@@ -207,46 +285,73 @@ kepr never replaces or removes a file that isn't one of its shims:
 
 ## The sandbox
 
-`kepr agent run` starts the harness in its own user, mount and PID
-namespaces (when the kernel allows it):
+Protected launches require Linux user, mount, PID, and network namespace
+isolation and a private workspace. If required isolation is unavailable,
+launch fails closed; it does **not** silently run on the host.
 
-- the credential store, the daemon's state (master key, audit log) and the
-  daemon socket are covered by empty read-only directories;
-- only the session's own processes are visible, so other processes'
-  `/proc/PID/root` can't be used to reach the host filesystem;
-- the desktop's session bus socket is covered with `/dev/null`, and GNOME
-  Keyring's and gcr's sockets in `$XDG_RUNTIME_DIR` are hidden, so the agent
-  cannot ask a Secret Service (GNOME Keyring, KWallet, or kepr's own) for
-  your passwords. `KEPR_SANDBOX_DBUS=allow` keeps the bus reachable; see
-  [Replace GNOME Keyring](/docs/guides/replace-gnome-keyring);
-- cached Codex credentials under `CODEX_HOME` and the standard Codex
-  directories are covered with `/dev/null`, including symlink targets;
-- the harness has no capabilities, `no_new_privs`, and a seccomp filter
-  that denies `ptrace`, `process_vm_readv/writev`, `bpf`,
-  `perf_event_open`, kexec and module loading (debuggers don't work inside
-  a session).
-
-Networking stays as normal, so package installs work. Add `--isolate-net`
-to give the session nothing but loopback: the gate is still reachable
-(connections are relayed to it), but nothing else is.
+- The credential store, daemon state/socket, desktop keyring sockets, and
+  cached Codex authentication are hidden from the harness.
+- The harness runs with a generated private home, no capabilities,
+  `no_new_privs`, and a seccomp filter restricting process inspection and
+  privileged operations.
+- Gate-only network access is the default (`--isolate-net` is already on).
+  Arbitrary direct networking and package downloads are not available.
+- Disabling Landlock or allowing the desktop session bus is rejected in
+  protected mode; do not use isolation overrides to repair a failed launch.
 
 ```bash
-kepr agent run claude                 # sandboxed (default when available)
-kepr agent run claude --isolate-net   # sandboxed, gate-only network
-kepr agent run claude --strict-sandbox  # refuse to run unsandboxed
-kepr agent run claude --no-sandbox    # opt out
+kepr agent run claude
+kepr agent run claude --security-preset private-cloud
+kepr doctor
 ```
 
-If the kernel refuses unprivileged user namespaces (Ubuntu 24.04+ restricts
-them through AppArmor), Codex refuses to launch. Codex also rejects
-`--no-sandbox`. Other harnesses warn and run unsandboxed by default; `install.sh`
-installs an AppArmor profile that allows it for `/usr/local/bin/kepr`.
-`kepr doctor` shows what your kernel supports.
+`private-cloud` applies bounded local pattern masking before supported cloud
+requests. It is not anonymity, complete sensitive-data detection, or a claim
+of zero external disclosure. `local-only` currently refuses launch before a
+cloud gate starts because local inference routing is not implemented.
+
+`--compatibility` is an explicit **security downgrade**: it disables privacy
+filtering and required isolation and runs in the real working folder without
+an automatic workspace snapshot. It can fall back without a sandbox; only
+that mode accepts `--no-sandbox` (Codex still refuses it). Do not choose it as
+a workaround for a lock, authentication, binding, or isolation failure.
+Native macOS/Windows protected launch enforcement is not qualified by these
+Linux instructions.
+
+## What the agent can change: the workspace snapshot
+
+A protected `kepr agent run` does not run in your real folder. Before the
+harness starts, kepr copies the current directory (or `--workspace PATH`)
+into a private session, mounts that copy as the harness's working directory
+under the user and mount namespaces, and leaves the host tree untouched.
+When the harness exits, every change stays in the session:
+
+```bash
+kepr agent run claude                    # snapshot the current folder
+kepr agent run claude --workspace ~/src/app
+kepr workspace review <SESSION>          # diff, patch file, approval digest
+kepr workspace export <SESSION> --approve <DIGEST> --output ~/src/app-reviewed
+```
+
+Run review/export from your operator terminal, not from inside the agent.
+`review` writes a patch and prints a digest that expires after an hour and
+binds the captured file contents and modes. Inspect that patch before using
+the digest. Export refuses changed/expired approvals and an existing
+destination; the approval is consumed once. The new bundle contains changed
+files under `files/` and `manifest.json` (including deletions); it does not
+modify your original tree or automatically apply deletions.
+`--workspace-session SESSION` selects a previously **prepared, not yet run**
+session instead of creating another snapshot. It does not resume a finished
+harness session. Protected source-tree snapshots exclude credential/config
+paths and links; path-unsafe, binary, over-limit, control-character and
+unscreenable files are omitted and counted in the preparation result. Explicit
+`--file` inputs remain UTF-8 text only and fail closed when they cannot be
+screened.
 
 ## Asking before a key is used
 
 ```bash
-kepr agent add ANTHROPIC_API_KEY --requires-consent
+kepr agent add ANTHROPIC_API_KEY --for anthropic --requires-consent
 ```
 
 Before the daemon hands such a key to a gate, polkit asks you to approve
@@ -292,12 +397,18 @@ masked. Example client entry:
 
 ## Tools the agent runs: `gh`, `curl`, SDKs
 
-Model calls use the gate's base URL. Tools that talk to a host by name can't,
-so every session also gets the gate as its HTTPS proxy:
+The protected default only enables inspected model-provider routes; it does
+not automatically grant arbitrary tool credentials. The general HTTPS-proxy,
+database, and Google Cloud capabilities below are separate routes, not a
+promise that `kepr agent run claude` grants them in protected private-cloud
+mode. Uninspected database/tunnel requests are refused there. Do not disable
+protection merely to make a tool work.
+
+Where an explicitly selected non-private-cloud policy permits an HTTPS tool
+route, the gate acts as its proxy. For example, store a GitHub token privately:
 
 ```bash
-kepr agent add GITHUB_TOKEN          # paste a ghp_/github_pat_ token: bound to api.github.com
-kepr agent run claude                # GH_TOKEN / GITHUB_TOKEN are placeholders now
+kepr agent add GITHUB_TOKEN --for github
 ```
 
 - **Bound hosts:** for a host a sealed key is bound to (here
@@ -313,9 +424,8 @@ kepr agent run claude                # GH_TOKEN / GITHUB_TOKEN are placeholders 
   CA, so other HTTPS keeps working.
 - **Real tokens in your shell:** a `GH_TOKEN` or `GITHUB_TOKEN` you exported
   is replaced by the placeholder and never reaches the agent.
-- **Other hosts:** they are tunnelled unchanged. With `--isolate-net` they
-  are refused, so the agent reaches only the providers its keys are bound
-  to.
+- **Other hosts:** tunnelling is available only when network isolation is
+  explicitly not required. Protected launches deny unbound destinations.
 
 ### Google Cloud: `kepr gcp add`
 
@@ -327,7 +437,7 @@ service-account key, or the `authorized_user` file that
 kepr gcp add GCP_DEPLOY --key-file sa.json
 kepr gcp add GCP_ME --key-file ~/.config/gcloud/application_default_credentials.json \
   --impersonate deploy@my-proj.iam.gserviceaccount.com
-kepr agent run claude                # gcloud sees a CLOUDSDK_AUTH_ACCESS_TOKEN placeholder
+# A stored login is not automatically granted to protected model sessions.
 ```
 
 - **Bindings:** `www.googleapis.com` and the common `*.googleapis.com`
@@ -344,7 +454,7 @@ kepr agent run claude                # gcloud sees a CLOUDSDK_AUTH_ACCESS_TOKEN 
 
 ```bash
 kepr agent add-db PROD --url postgres://app@db.internal:5432/prod   # asks for the password
-kepr agent run claude
+# A stored database route is not automatically granted to protected model sessions.
 ```
 
 - **What the agent gets:** `DATABASE_URL` and `PGHOST`/`PGPORT`/`PGUSER`/
@@ -355,8 +465,8 @@ kepr agent run claude
   real server with the sealed login using SCRAM-SHA-256 or cleartext (MD5 is
   refused). From then on it relays the session unchanged.
 - **TLS to the server:** it's verified against public roots by default.
-  Pass `--ca FILE` for a managed database's own CA, or `--sslmode disable`
-  to allow plaintext, for local databases only.
+  Use `--ca FILE` for a managed database's own CA; do not disable TLS as an
+  authentication troubleshooting workaround.
 - **The login itself:** the user name, database and password stay sealed,
   and `kepr get PROD` is refused. The agent can run queries as that user but
   can't take the password anywhere.
@@ -427,7 +537,7 @@ This command:
 4. Tells you where to revoke the key at the provider; kepr can't revoke it
    for you.
 
-Then store the new key with `kepr agent add`. To see where the old one was
+Then store the new key with `kepr agent add NAME --for PROVIDER`. To see where the old one was
 used: `journalctl -t kepr-daemon KEPR_NAME=ANTHROPIC_API_KEY`, or
 `kepr usage`.
 
@@ -459,9 +569,11 @@ Encrypted key files must be decrypted (on a copy) before import.
 - **Lifetime:** the gate exits, and wipes its cache, when the agent exits.
   Any `set`, `delete` or expiry in the store invalidates cached keys at
   once, so `kepr agent revoke` takes effect immediately.
-- **Journal:** one metadata-only line per request on the daemon's stderr
-  (provider, method, path without query, status, sizes, time). Never
-  headers or bodies.
+- **Journal:** sanitized metadata-only request records include provider,
+  method, templated path without query, status, sizes, and timing, never
+  headers or bodies. Inspected calls also persist intent/decision metadata
+  before upstream execution and outcome metadata afterward; an unknown
+  outcome is not proof that an external action did not happen.
 
 ## Managing keys
 
@@ -473,11 +585,26 @@ kepr restore ANTHROPIC_API_KEY --version 1   # undo the last change
 kepr usage --days 30                 # uses, refusals, last use; never-used keys
 ```
 
-A sealed key can't be unsealed. To change its value or provider, run
-`kepr agent add` again. Any other new value (`kepr set`, `kepr rotate
---hook`, `kepr sync-pull`, an import with `--overwrite`) keeps it sealed to
-the same hosts, and keeps a `--requires-consent`; `kepr delete` it first to
-store a readable value under that name.
+A sealed key cannot be unsealed. To replace its value or correct its provider
+binding, privately run `kepr agent add NAME --for PROVIDER` again. Other
+updates (`kepr set`, `kepr rotate --hook`, `kepr sync-pull`, or an import with
+`--overwrite`) preserve its sealed status, bindings, and consent requirement;
+they are not plaintext-retrieval workarounds.
+
+### Distinguishing failures
+
+| Symptom | Meaning and safe response |
+| --- | --- |
+| `get` refuses a sealed credential | Expected write-only behavior. Use `kepr agent run`; do not export it or change it to a readable entry. |
+| Vault is locked | Unlock privately with `kepr unlock` (or an already-enrolled recovery method when indicated). Sealing remains in force after unlocking. |
+| Missing selected credential / no matching binding | Check `kepr agent ls` and the configured provider host and `env_key`. Privately add/re-add the correct credential with an exact `--for` binding; do not substitute another provider's key. |
+| Ciphertext decryption/authentication failure | Not a sealed-key refusal or ordinary lock. Preserve the store and matching master-key/recovery material; verify the intended daemon/profile and restore a known-good matching backup or use an enrolled recovery mechanism. Restarting cannot repair authenticated ciphertext, and deleting/regenerating the master key can orphan the store. |
+| Cannot connect / isolation unavailable | Check `kepr status`, `kepr doctor`, and `kepr agent doctor` outside the agent. Start the approved daemon/service if needed; do not weaken isolation or expose the socket. |
+
+User-mode clients may start a missing daemon outside agent sessions; this is
+not an upgrade restart or a repair for corrupt credentials. Agent sessions
+do not auto-start the host daemon. Follow the installer/service lifecycle
+instead of assuming a new CLI binary replaced an already-running daemon.
 
 ## Commands you run yourself: `kepr exec --mask`
 

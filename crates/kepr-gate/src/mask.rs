@@ -85,7 +85,7 @@ fn json_escaped(v: &str, slash: bool) -> ZeroString {
 }
 
 /// Percent-encoding (RFC 3986 unreserved kept) and Base64 spellings of `v`.
-fn encoded_forms(v: &str) -> Vec<ZeroString> {
+pub(crate) fn encoded_forms(v: &str) -> Vec<ZeroString> {
     use base64::Engine;
     let mut pct = String::with_capacity(v.len() * 3);
     for b in v.bytes() {

@@ -22,9 +22,9 @@ jobs:
     name: Changed paths
     # CI_RUNS_ON (repo variable, JSON) selects the runner for the jobs that compile Rust or need system tools, e.g.
     # ["self-hosted","hp"]; CI_RUNS_ON_LIGHT selects it for the jobs that do not (path filter, Go/Python SDKs, docs),
-    # e.g. ["self-hosted","light"], and falls back to CI_RUNS_ON. Both unset means GitHub-hosted. The same variables
+    # e.g. ["self-hosted","light"], and falls back to CI_RUNS_ON. PRs always use disposable GitHub-hosted runners. The variables
     # are used by security.yml and pr-reviewer.yml.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     if: github.event.pull_request.draft != true
     permissions:
@@ -113,7 +113,7 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.toolchain }})
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     strategy:
@@ -123,6 +123,8 @@ jobs:
         toolchain: ${{ fromJSON(github.event_name == 'pull_request' && '["1.88.0","stable"]' || '["1.88.0","stable","beta"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         # The cluster runner already carries the pinned devsetup-stable toolchain (manifest/toolchains.yaml in
         # dev-setup) and exports its bin directory as DEVSETUP_RUST_BIN; `stable` uses it there. The MSRV (1.88.0)
@@ -148,13 +150,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy -D warnings
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test --release
-        run: cargo test --release --all-targets
+        run: cargo test --release --workspace --all-targets --locked
 
       - name: pam_kepr (own workspace)
-        run: cargo test --manifest-path crates/kepr-pam/Cargo.toml
+        run: cargo test --manifest-path crates/kepr-pam/Cargo.toml --locked
 
       - name: cargo build --release
         run: cargo build --release --bins
@@ -165,11 +167,13 @@ jobs:
     # ubuntu-latest. The `--all-features` lint above links AWS-LC's ordinary
     # build only, which needs just a C compiler.
     name: Rust (FIPS module)
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         if: env.DEVSETUP_RUST_BIN == ''
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -205,11 +209,13 @@ jobs:
 
   python-sdk:
     name: Python SDK
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.python == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: unittest
         run: python3 -m unittest discover -s sdk/python/tests -v
       - name: Ansible lookup plugin
@@ -217,11 +223,13 @@ jobs:
 
   node-sdk:
     name: Node SDK
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.node == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
@@ -236,11 +244,13 @@ jobs:
 
   ruby-sdk:
     name: Ruby SDK
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.ruby == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: minitest
         working-directory: sdk/ruby
         # ruby/setup-ruby only supports GitHub-hosted images, so on the
@@ -257,11 +267,13 @@ jobs:
 
   editor-integrations:
     name: Raycast, iTerm2, JetBrains parsing
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.integrations == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Raycast (node)
         run: node --test integrations/raycast/test/*.test.js
       - name: iTerm2 (python)
@@ -277,11 +289,13 @@ jobs:
 
   dotnet-sdk:
     name: .NET SDK
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.dotnet == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: dotnet test
         # GitHub-hosted images ship the .NET SDK; a self-hosted runner without it says so and skips.
         run: |
@@ -293,11 +307,13 @@ jobs:
 
   powershell-sdk:
     name: PowerShell module
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.dotnet == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: build the assembly and run Pester
         run: |
           if ! command -v dotnet >/dev/null || ! command -v pwsh >/dev/null; then
@@ -305,6 +321,7 @@ jobs:
             exit 0
           fi
           dotnet build sdk/dotnet/src -c Release -o sdk/powershell/Kepr/lib
+          # shellcheck disable=SC2016  # PowerShell expands its own variables.
           pwsh -NoProfile -Command '
             if (-not (Get-Module -ListAvailable Pester | Where-Object Version -ge 5.0.0)) {
               Install-Module Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser
@@ -314,11 +331,13 @@ jobs:
 
   go-sdk:
     name: Go SDK
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.go == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: go vet + test
         working-directory: sdk/go
         run: |
@@ -328,11 +347,13 @@ jobs:
 
   ci-templates:
     name: GitHub Action + GitLab template
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.templates == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: actionlint (workflows, and the action's inputs via its example)
         env:
           SHELLCHECK_OPTS: --severity=warning
@@ -355,11 +376,13 @@ jobs:
   # batch: platform
   csi-provider:
     name: Secrets Store CSI provider
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.csi == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: go vet + test
         working-directory: integrations/csi-provider
         run: |
@@ -369,11 +392,13 @@ jobs:
 
   terraform-provider:
     name: Terraform provider
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.terraform == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: go vet + test
         working-directory: integrations/terraform-provider-kepr
         run: |
@@ -383,7 +408,7 @@ jobs:
 
   docs:
     name: Docs (Fumadocs)
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     needs: changes
     if: needs.changes.outputs.docs == 'true'
     defaults:
@@ -391,6 +416,8 @@ jobs:
         working-directory: docs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"

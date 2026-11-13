@@ -12,9 +12,11 @@
 //! without pulling in root-only privileges.
 
 pub mod auth;
+pub mod authz;
 pub mod binding;
 pub mod canary;
 pub mod cloudflare;
+pub mod endpoint;
 pub mod fdpass;
 pub mod framing;
 pub mod gate_limits;
@@ -26,6 +28,7 @@ pub mod keyring;
 pub mod leak;
 pub mod mac;
 pub mod memfd;
+pub mod privacy;
 pub mod protocol;
 pub mod protocol_response;
 pub mod protocol_types;
@@ -36,6 +39,8 @@ pub mod shamir;
 pub mod sigv4;
 pub mod ssh_wire;
 pub mod ssh_wire_ecdsa;
+pub mod text_decode;
+pub mod workspace;
 
 // ── P2–P11 ticket batches (2026-10-05): `protocol_<batch>` and other
 // shared modules, declared under each batch's marker.
@@ -63,6 +68,7 @@ pub mod protocol_syncx;
 pub mod policy;
 pub mod policy_glob;
 pub mod policy_roles;
+pub mod policy_tools;
 pub mod protocol_policy;
 // batch: gate
 pub mod gate_journal;
@@ -92,6 +98,7 @@ pub mod protocol_desktop;
 // batch: gate-sec (P12)
 pub mod landlock;
 pub mod seccomp;
+pub mod workspace_policy;
 // batch: gate-providers (P12)
 pub mod gcp_token;
 // end of batches

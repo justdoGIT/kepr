@@ -17,14 +17,18 @@
 // execution is single-threaded until exec, so allocation there is safe.
 
 use std::ffi::CString;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 use crate::cli_sandbox_relay as relay;
 use crate::cli_sandbox_seccomp as seccomp;
 use crate::cli_sandbox_sys as sys;
+
+#[path = "cli_sandbox_child.rs"]
+mod child;
+#[path = "cli_sandbox_probe.rs"]
+mod preflight;
+pub use preflight::probe;
+pub(crate) use preflight::{probe_namespaces, probe_workspace};
 
 pub struct Plan {
     pub argv: Vec<CString>,
@@ -36,6 +40,7 @@ pub struct Plan {
     /// Database and tunnel ports (T7.03), relayed like the gate's port.
     pub extra_ports: Vec<u16>,
     pub isolate_net: bool,
+    pub workspace: Option<crate::cli_sandbox_workspace::WorkspaceMounts>,
     filter: Vec<libc::sock_filter>,
 }
 pub use crate::cli_sandbox_dirs::hide_dirs;
@@ -48,6 +53,25 @@ fn cstrings(items: impl IntoIterator<Item = String>) -> Result<Vec<CString>, Str
 }
 
 impl Plan {
+    pub(crate) fn private(
+        argv: &[String],
+        env: Vec<(String, String)>,
+        gate_port: u16,
+        workspace: crate::cli_sandbox_workspace::WorkspaceMounts,
+    ) -> Result<Self, String> {
+        crate::cli_sandbox_stdio::validate()?;
+        Ok(Self {
+            argv: cstrings(argv.iter().cloned())?,
+            envp: cstrings(env.into_iter().map(|(k, v)| format!("{k}={v}")))?,
+            hide: Vec::new(),
+            hide_files: Vec::new(),
+            gate_port,
+            extra_ports: Vec::new(),
+            isolate_net: true,
+            workspace: Some(workspace),
+            filter: seccomp::workspace_program(),
+        })
+    }
     pub fn new(
         argv: &[String],
         env: Vec<(String, String)>,
@@ -71,6 +95,7 @@ impl Plan {
             gate_port,
             extra_ports: Vec::new(),
             isolate_net,
+            workspace: None,
             filter: seccomp::program(),
         })
     }
@@ -141,6 +166,14 @@ fn fork() -> libc::pid_t {
     unsafe { libc::fork() }
 }
 
+fn parent_death() -> Result<(), String> {
+    // SAFETY: constant prctl arguments; kill this trusted bridge on parent exit.
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } != 0 {
+        return Err("sandbox parent-death guard unavailable".into());
+    }
+    Ok(())
+}
+
 /// Enter the namespaces (in the current, already-forked process).
 fn enter_namespaces(isolate_net: bool, uid: u32, gid: u32) -> Result<(), String> {
     // SAFETY: unshare takes only flags.
@@ -154,130 +187,25 @@ fn enter_namespaces(isolate_net: bool, uid: u32, gid: u32) -> Result<(), String>
     Ok(())
 }
 
-/// Check, in a throwaway child, that the full sandbox can be set up.
-pub fn probe(isolate_net: bool) -> Result<(), String> {
-    // SAFETY: getuid/getgid have no failure modes.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-    let hide: Vec<CString> = hide_dirs()
-        .into_iter()
-        .filter_map(|p| CString::new(p.as_os_str().as_encoded_bytes()).ok())
-        .collect();
-    let files = crate::cli_sandbox_bus::hidden_cstrings();
-    let (mut rd, wr) = UnixStream::pair().map_err(|e| e.to_string())?;
-    let pid = fork();
-    if pid < 0 {
-        return Err("fork failed".into());
-    }
-    if pid == 0 {
-        drop(rd);
-        let report = |r: Result<(), String>| {
-            let msg = r.err().unwrap_or_default();
-            let _ = (&wr).write_all(msg.as_bytes());
-            // SAFETY: _exit after fork.
-            unsafe { libc::_exit(0) }
-        };
-        if let Err(e) = enter_namespaces(isolate_net, uid, gid) {
-            report(Err(e));
-        }
-        let inner = fork();
-        if inner == 0 {
-            let keep = [wr.as_raw_fd()]; // T12.52: a failure makes the default warn
-            report(
-                sys::setup_mounts(&hide)
-                    .and_then(|()| sys::mask_files(&files))
-                    .and_then(|()| sys::close_inherited(&keep)),
-            );
-        }
-        wait_code(inner);
-        // SAFETY: _exit after fork.
-        unsafe { libc::_exit(0) }
-    }
-    drop(wr);
-    let mut msg = String::new();
-    let _ = rd.read_to_string(&mut msg);
-    wait_code(pid);
-    if msg.is_empty() {
+fn finish_probe(msg: String, status: i32) -> Result<(), String> {
+    if status != 0 {
+        Err("sandbox probe process failed".into())
+    } else if msg.is_empty() {
         Ok(())
     } else {
         Err(msg)
     }
 }
 
-fn exec_harness(plan: &Plan) -> ! {
-    // Restore the signals the sandbox's own processes ignore, so Ctrl-C
-    // and Ctrl-\ reach the harness normally.
-    // SAFETY: signal(2) with constant default arguments.
-    unsafe {
-        for sig in [libc::SIGINT, libc::SIGQUIT, libc::SIGPIPE] {
-            libc::signal(sig, libc::SIG_DFL);
-        }
-    }
-    sys::drop_all_caps();
-    if let Err(e) = crate::cli_sandbox_landlock::enforce(&plan.hide) {
-        die(&e); // T1.23
-    }
-    if let Err(e) = seccomp::install(&plan.filter) {
-        die(e);
-    }
-    let mut argv: Vec<*const libc::c_char> = plan.argv.iter().map(|c| c.as_ptr()).collect();
-    argv.push(std::ptr::null());
-    let mut envp: Vec<*const libc::c_char> = plan.envp.iter().map(|c| c.as_ptr()).collect();
-    envp.push(std::ptr::null());
-    // SAFETY: NUL-terminated argv/envp arrays of valid C strings that
-    // outlive the call; execvpe only returns on failure.
-    unsafe { libc::execvpe(argv[0], argv.as_ptr(), envp.as_ptr()) };
-    die(&format!(
-        "exec {}: {}",
-        plan.argv[0].to_string_lossy(),
-        std::io::Error::last_os_error()
-    ))
-}
-
-/// pid 1 of the sandbox: set up mounts, start the acceptor, run and reap.
-fn init(plan: &Plan, relay: Option<UnixStream>) -> ! {
-    if let Err(e) = sys::setup_mounts(&plan.hide).and_then(|()| sys::mask_files(&plan.hide_files)) {
-        die(&e);
-    }
-    // T12.52: no fd the caller left open reaches pid 1, the acceptors or
-    // the harness; only the acceptors' relay socket is kept (dropped
-    // before the harness forks). It runs before the harness's Landlock
-    // and seccomp, so the filter needs no new syscall.
-    let keep: Vec<RawFd> = relay.iter().map(|r| r.as_raw_fd()).collect();
-    if let Err(e) = sys::close_inherited(&keep) {
-        die(&e);
-    }
-    // One acceptor per relayed port; each hands connections to the relay.
-    let ports = if plan.isolate_net {
-        plan.relay_ports()
-    } else {
-        Vec::new()
-    };
-    for port in ports {
-        let l = TcpListener::bind(("127.0.0.1", port))
-            .unwrap_or_else(|e| die(&format!("listen inside the sandbox: {e}")));
-        let r = relay.as_ref().map(|r| r.try_clone());
-        let Some(Ok(r)) = r else {
-            die("sandbox relay missing")
-        };
-        if fork() == 0 {
-            relay::acceptor(l, r);
-        }
-    }
-    drop(relay);
-    let harness = fork();
-    if harness == 0 {
-        exec_harness(plan);
-    }
-    // Reap everything (we are init); exit with the harness's status.
-    let code = wait_init(harness);
-    // SAFETY: _exit; the kernel kills the rest of the PID namespace.
-    unsafe { libc::_exit(code) }
-}
-
 /// Run the harness sandboxed; exits the process with its status.
 pub fn run(plan: Plan) -> ! {
+    std::process::exit(run_status(plan))
+}
+
+/// Return only after the namespace tree is gone, so the host can seal completion.
+pub(crate) fn run_status(plan: Plan) -> i32 {
     // SAFETY: getuid/getgid have no failure modes.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let (uid, gid, owner) = unsafe { (libc::getuid(), libc::getgid(), libc::getpid()) };
     let (relay_host, relay_sandbox) = match plan.isolate_net.then(UnixStream::pair) {
         Some(Ok((a, b))) => (Some(a), Some(b)),
         Some(Err(e)) => die(&e.to_string()),
@@ -298,12 +226,22 @@ pub fn run(plan: Plan) -> ! {
     }
     if child == 0 {
         drop(relay_host);
+        if let Err(e) = parent_death() {
+            die(&e);
+        }
+        // SAFETY: getppid checks the fork owner's continued presence.
+        if unsafe { libc::getppid() } != owner {
+            die("sandbox owner ended");
+        }
         if let Err(e) = enter_namespaces(plan.isolate_net, uid, gid) {
             die(&e);
         }
         let pid1 = fork();
         if pid1 == 0 {
-            init(&plan, relay_sandbox);
+            if let Err(e) = parent_death() {
+                die(&e);
+            }
+            child::init(&plan, relay_sandbox);
         }
         drop(relay_sandbox);
         let code = wait_code(pid1);
@@ -320,7 +258,7 @@ pub fn run(plan: Plan) -> ! {
         let ports = plan.relay_ports();
         std::thread::spawn(move || relay::relay_loop(r, ports));
     }
-    std::process::exit(wait_code(child))
+    wait_code(child)
 }
 
 #[cfg(test)]

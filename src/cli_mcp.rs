@@ -8,17 +8,21 @@
 // Newline-delimited JSON-RPC 2.0, as MCP's stdio transport specifies.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use kepr_core::protocol::Response;
 use serde_json::{json, Value};
 
-use crate::cli_gatex::mcp_tools::{self, with_gate, Attempt, Gate, McpConfig};
+use crate::cli_gatex::mcp_tools::{self, with_gate, Attempt, Budget, Gate, GateSession, McpConfig};
+
+#[path = "cli_mcp_io.rs"]
+mod io;
 
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
-const MAX_BODY: usize = 64 * 1024;
+use io::MAX_BODY;
 
 pub struct SecretInfo {
     pub name: String,
@@ -94,6 +98,7 @@ fn call_tool(backend: &mut dyn Backend, name: &str, args: &Value) -> Value {
             Ok(list) => {
                 let lines: Vec<String> = list
                     .iter()
+                    .filter(|s| backend.config().permits_credential(&s.name))
                     .map(|s| format!("{} → {}", s.name, s.hosts.join(", ")))
                     .collect();
                 text_result(
@@ -114,23 +119,17 @@ fn call_tool(backend: &mut dyn Backend, name: &str, args: &Value) -> Value {
             else {
                 return text_result("provider, method and path are required".into(), true);
             };
-            if !path.starts_with('/') || path.contains("://") {
+            let headers =
+                match io::validate_api(provider, method, path, s("body"), args.get("headers")) {
+                    Ok(headers) => headers,
+                    Err(e) => return text_result(e, true),
+                };
+            if backend.config().credentials.is_empty() {
                 return text_result(
-                    "path must start with / (a path on the provider's host)".into(),
+                    "no API credentials granted; operator must pass --credential NAME".into(),
                     true,
                 );
             }
-            let headers: HashMap<String, String> = args
-                .get("headers")
-                .and_then(Value::as_object)
-                .map(|m| {
-                    m.iter()
-                        .filter_map(|(k, v)| {
-                            Some((k.to_ascii_lowercase(), v.as_str()?.to_string()))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
             match backend.call(provider, method, path, s("body"), &headers) {
                 Ok((status, mut body)) => {
                     if body.len() > MAX_BODY {
@@ -202,14 +201,19 @@ pub fn handle(backend: &mut dyn Backend, msg: &Value) -> Option<Value> {
 /// an in-process ssh-agent socket for ssh_run.
 #[derive(Default)]
 struct Live {
-    gate: Option<Gate>,
+    gate: GateSession,
+    budget: Budget,
     cfg: McpConfig,
     ssh: Option<crate::cli_gatex::mcp_ssh::Agent>,
 }
 
-fn list_sealed() -> Result<Vec<SecretInfo>, String> {
+fn list_sealed(cfg: &McpConfig) -> Result<Vec<SecretInfo>, String> {
+    if cfg.credentials.is_empty() {
+        return Ok(Vec::new());
+    }
     Ok(mcp_tools::sealed()?
         .into_iter()
+        .filter(|c| cfg.permits_credential(&c.name))
         .map(|c| SecretInfo {
             name: c.name,
             hosts: c.bound_hosts.unwrap_or_default(),
@@ -217,46 +221,9 @@ fn list_sealed() -> Result<Vec<SecretInfo>, String> {
         .collect())
 }
 
-fn http_attempt(
-    gate: &Gate,
-    provider: &str,
-    method: &str,
-    path: &str,
-    body: Option<&str>,
-    headers: &HashMap<String, String>,
-) -> Result<Attempt<(u16, String)>, String> {
-    let ph = gate
-        .placeholders
-        .get(provider)
-        .ok_or_else(|| format!("no sealed key for provider {provider}"))?;
-    let port = gate.port;
-    let mut req = ureq::request(method, &format!("http://127.0.0.1:{port}/{provider}{path}"));
-    for (k, v) in headers {
-        if !matches!(
-            k.as_str(),
-            "authorization" | "x-api-key" | "x-goog-api-key" | "host"
-        ) {
-            req = req.set(k, v);
-        }
-    }
-    req = req.set("authorization", &format!("Bearer {ph}"));
-    let resp = match body {
-        Some(b) => req.send_string(b),
-        None => req.call(),
-    };
-    match resp {
-        Ok(r) | Err(ureq::Error::Status(_, r)) => {
-            let status = r.status();
-            Ok(Attempt::Done((status, r.into_string().unwrap_or_default())))
-        }
-        // The gate is not answering (stopped by `kepr panic`, crashed).
-        Err(ureq::Error::Transport(_)) => Ok(Attempt::Restart(mcp_tools::GATE_GONE.into())),
-    }
-}
-
 impl Backend for Live {
     fn list(&mut self) -> Result<Vec<SecretInfo>, String> {
-        list_sealed()
+        list_sealed(&self.cfg)
     }
 
     fn call(
@@ -267,8 +234,9 @@ impl Backend for Live {
         body: Option<&str>,
         headers: &HashMap<String, String>,
     ) -> Result<(u16, String), String> {
-        with_gate(&mut self.gate, |g| {
-            http_attempt(g, provider, method, path, body, headers)
+        self.budget.charge(Instant::now())?;
+        with_gate(&mut self.gate, &self.cfg, |g| {
+            io::http_attempt(g, provider, method, path, body, headers)
         })
     }
 
@@ -277,14 +245,23 @@ impl Backend for Live {
     }
 
     fn db_query(&mut self, target: &str, sql: &str, read_only: bool) -> Result<String, String> {
-        with_gate(&mut self.gate, |g| {
+        self.budget.charge(Instant::now())?;
+        with_gate(&mut self.gate, &self.cfg, |g| {
             mcp_tools::db_attempt(g, target, sql, read_only)
         })
     }
 
     fn ssh_run(&mut self, host: &str, cmd: &str) -> Result<String, String> {
+        if matches!(self.gate, GateSession::Closed) {
+            return Err("MCP gate authorization ended; operator must start a new session".into());
+        }
+        self.budget.charge(Instant::now())?;
+        let names = self.cfg.ssh_keys.clone();
         let keys = || -> Arc<dyn crate::cli_ssh_agent::Keys + Send + Sync> {
-            Arc::new(crate::cli_ssh_agent::Daemon)
+            Arc::new(crate::cli_gatex::mcp_ssh::SelectedKeys::new(
+                Arc::new(crate::cli_ssh_agent::Daemon),
+                names,
+            ))
         };
         crate::cli_gatex::mcp_ssh::ssh_run(&mut self.ssh, keys, Path::new("ssh"), host, cmd)
     }
@@ -296,13 +273,23 @@ pub fn cmd_mcp() -> Response {
         Err(e) => return Response::fail(e),
     };
     let mut backend = Live {
+        budget: Budget::new(&cfg),
         cfg,
         ..Live::default()
     };
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
+    let mut input = stdin.lock();
+    loop {
+        let line = match io::read_frame(&mut input) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(reason) => {
+                let r = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": reason}});
+                let _ = writeln!(out, "{r}").and_then(|_| out.flush());
+                break;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -325,11 +312,26 @@ pub fn cmd_mcp() -> Response {
 mod tests {
     use super::*;
 
-    #[derive(Default)]
     struct Fake {
+        cfg: McpConfig,
         calls: Vec<(String, String, String, HashMap<String, String>)>,
     }
+    impl Default for Fake {
+        fn default() -> Self {
+            let cfg = McpConfig {
+                credentials: vec!["OPENAI_API_KEY".into(), "ANTHROPIC_API_KEY".into()],
+                ..Default::default()
+            };
+            Self {
+                cfg,
+                calls: Vec::new(),
+            }
+        }
+    }
     impl Backend for Fake {
+        fn config(&self) -> &McpConfig {
+            &self.cfg
+        }
         fn list(&mut self) -> Result<Vec<SecretInfo>, String> {
             Ok(vec![SecretInfo {
                 name: "ANTHROPIC_API_KEY".into(),
@@ -416,5 +418,57 @@ mod tests {
             .starts_with("HTTP 200"));
         assert_eq!(b.calls[0].2, "/v1/models");
         assert_eq!(b.calls[0].3.get("x-trace").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn sec_003_rejects_unknown_method_before_backend() {
+        let mut b = Fake::default();
+        let r = rpc(
+            &mut b,
+            "tools/call",
+            json!({"name": "call_api", "arguments": {
+                "provider": "openai", "method": "CONNECT", "path": "/v1/models"
+            }}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(b.calls.is_empty());
+    }
+
+    #[test]
+    fn sec_003_rejects_oversized_body_before_backend() {
+        let mut b = Fake::default();
+        let r = rpc(
+            &mut b,
+            "tools/call",
+            json!({"name": "call_api", "arguments": {
+                "provider": "openai", "method": "POST", "path": "/v1/responses",
+                "body": "x".repeat(MAX_BODY + 1)
+            }}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(b.calls.is_empty());
+    }
+
+    #[test]
+    fn empty_operator_grant_lists_nothing_and_cannot_call_api() {
+        let mut b = Fake {
+            cfg: McpConfig::default(),
+            calls: Vec::new(),
+        };
+        let list = rpc(
+            &mut b,
+            "tools/call",
+            json!({"name": "list_secrets", "arguments": {}}),
+        );
+        assert_eq!(list["result"]["content"][0]["text"], "no sealed keys");
+        let call = rpc(
+            &mut b,
+            "tools/call",
+            json!({"name": "call_api", "arguments": {
+                "provider": "openai", "method": "GET", "path": "/v1/models"
+            }}),
+        );
+        assert_eq!(call["result"]["isError"], true);
+        assert!(b.calls.is_empty());
     }
 }

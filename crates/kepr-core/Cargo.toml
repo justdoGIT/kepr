@@ -18,6 +18,7 @@ memchr = "2"
 base64 = "0.23"
 # T2.01: SigV4 signing (sigv4.rs), shared by sync and the gate.
 sha2 = "0.11"
+blake3 = "1"
 hmac = "0.13"
 # T7.02: mysql_native_password scrambles (mysql_wire.rs). Same RustCrypto
 # crate and version the root crate already uses for TOTP.

@@ -3,6 +3,7 @@
 //! text may first be redacted by prompt.rs; stored values are always blocked.
 
 use kepr_core::generate::ZeroString;
+pub(crate) use kepr_core::text_decode::{unescape_json, unescape_percent};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -26,8 +27,9 @@ pub fn check(
 ) -> Option<String> {
     let encoded = parts
         .headers
-        .get(hyper::header::CONTENT_ENCODING)
-        .is_some_and(|v| !v.as_bytes().eq_ignore_ascii_case(b"identity"));
+        .get_all(hyper::header::CONTENT_ENCODING)
+        .iter()
+        .any(|v| !v.as_bytes().eq_ignore_ascii_case(b"identity"));
     if encoded {
         return Some("kepr blocked this request: compressed request bodies can't be checked for secrets; send it uncompressed.".into());
     }
@@ -52,59 +54,48 @@ pub fn check(
     }
 }
 
-/// Scan `body` as sent and, when it has JSON escapes, as decoded: a
-/// serializer escapes `"` and `\\` in a value, and `\\u0073…` spells
-/// any text at all, so a raw byte match alone misses both.
+/// Screen session values, their secret fields, and the encodings used by
+/// response masking. Decode JSON and percent escapes in either order once;
+/// transformations are bounded and never resolve additional vault values.
 pub fn scan(body: &[u8], secrets: &[(String, ZeroString)]) -> Verdict {
-    let raw = scan_raw(body, secrets);
+    let forms: Vec<_> = secrets
+        .iter()
+        .flat_map(|(name, value)| {
+            let mut forms = crate::mask::forms(value.as_str());
+            // Keep the existing whole-record protection as well as its fields.
+            if value.len() >= MIN_SECRET_LEN && !forms.iter().any(|v| v.as_str() == value.as_str())
+            {
+                forms.extend(crate::mask::encoded_forms(value.as_str()));
+                forms.push(ZeroString::from(value.as_str()));
+            }
+            forms.into_iter().map(move |v| (name.clone(), v))
+        })
+        .collect();
+    let raw = scan_raw(body, &forms);
     if matches!(raw, Verdict::StoredSecret(_)) {
         return raw;
     }
-    let decoded = unescape_json(body).map(|b| scan_raw(&b, secrets));
-    match decoded {
-        Some(v @ Verdict::StoredSecret(_)) => v,
-        Some(v) if raw == Verdict::Clean => v,
-        _ => raw,
-    }
-}
-
-/// JSON string escapes decoded in place (`\\uXXXX`, `\\"`, `\\n`, …);
-/// `None` when there are none. Not a JSON parser: it decodes escapes
-/// wherever they are, which is what a scan wants.
-pub(crate) fn unescape_json(body: &[u8]) -> Option<zeroize::Zeroizing<Vec<u8>>> {
-    memchr::memchr(b'\\', body)?;
-    let mut out = zeroize::Zeroizing::new(Vec::with_capacity(body.len()));
-    let mut i = 0;
-    while i < body.len() {
-        if body[i] != b'\\' || i + 1 >= body.len() {
-            out.push(body[i]);
-            i += 1;
-            continue;
-        }
-        let e = body[i + 1];
-        i += 2;
-        match e {
-            b'n' => out.push(b'\n'),
-            b't' => out.push(b'\t'),
-            b'r' => out.push(b'\r'),
-            b'b' => out.push(8),
-            b'f' => out.push(12),
-            b'u' => {
-                let hex = body.get(i..i + 4).and_then(|h| std::str::from_utf8(h).ok());
-                match hex.and_then(|h| u32::from_str_radix(h, 16).ok()) {
-                    Some(cp) => {
-                        let c = char::from_u32(cp).unwrap_or('\u{fffd}');
-                        let mut buf = [0u8; 4];
-                        out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-                        i += 4;
-                    }
-                    None => out.extend_from_slice(b"\\u"),
-                }
-            }
-            other => out.push(other), // \" \\ \/ and anything else
+    let json = unescape_json(body);
+    let percent = unescape_percent(body);
+    let json_percent = json.as_deref().and_then(|b| unescape_percent(b));
+    let percent_json = percent.as_deref().and_then(|b| unescape_json(b));
+    let mut verdict = raw;
+    for decoded in [
+        json.as_deref(),
+        percent.as_deref(),
+        json_percent.as_deref(),
+        percent_json.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        match scan_raw(decoded, &forms) {
+            v @ Verdict::StoredSecret(_) => return v,
+            Verdict::LooksLikeKey if verdict == Verdict::Clean => verdict = Verdict::LooksLikeKey,
+            _ => {}
         }
     }
-    Some(out)
+    verdict
 }
 
 fn scan_raw(body: &[u8], secrets: &[(String, ZeroString)]) -> Verdict {
@@ -123,6 +114,10 @@ fn scan_raw(body: &[u8], secrets: &[(String, ZeroString)]) -> Verdict {
 pub fn looks_like_key(body: &[u8]) -> bool {
     kepr_core::leak::looks_like_key(body)
 }
+
+#[cfg(test)]
+#[path = "dlp_regressions.rs"]
+mod regressions;
 
 #[cfg(test)]
 mod tests {

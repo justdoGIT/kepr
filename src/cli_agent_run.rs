@@ -1,4 +1,4 @@
-// cli_agent_run.rs — `kepr agent run HARNESS [--port N] [-- ARGV...]`
+// cli_agent_run.rs — `kepr agent run HARNESS [--workspace PATH] [--port N] [-- ARGV...]`
 // (T1.13). Asks the daemon to start a kepr-gate for this process, then
 // execs the harness with gate URLs and placeholders in place of keys.
 // exec keeps the pid, so the gate's --owner-pid watch ends the gate
@@ -11,8 +11,17 @@ use std::process::Command;
 use kepr_core::gate_protocol::{GateLimits, GateRoute};
 use kepr_core::protocol::{Request, Response};
 
-use crate::cli_agent_adapters::{self, Adapter, Value};
+use crate::cli_agent_adapters::{self, Adapter};
 use crate::client;
+
+#[path = "cli_agent_launch.rs"]
+mod launch;
+pub(crate) use launch::reserved_environment_name;
+pub use launch::{build_env, SandboxMode};
+use launch::{decide_sandbox, harness_sandbox};
+#[path = "cli_agent_run_env.rs"]
+mod env;
+pub use env::keep_safe_env;
 
 /// The caller's sealed credentials.
 pub fn sealed_creds() -> Result<Vec<kepr_core::protocol::CredInfo>, String> {
@@ -53,84 +62,36 @@ pub fn routes_for(
     Ok(routes)
 }
 
-/// The harness environment: inherited env minus every variable the
-/// adapter controls and every credential NAME it uses, plus gate URLs
-/// and placeholders for the credentials that are available.
-/// `placeholders` is keyed by provider (as returned in GateStarted).
-pub fn build_env(
+/// A protected workspace may run an explicitly supplied command even when no
+/// usable model route exists. It receives no gate, credentials, or proxy; the
+/// workspace sandbox remains the only execution surface.
+fn run_workspace_command(
+    private: crate::cli_workspace::launch::PreparedLaunch,
     adapter: &Adapter,
-    port: u16,
-    placeholders: &HashMap<String, String>,
-    inherited: impl Iterator<Item = (String, String)>,
-) -> Vec<(String, String)> {
-    let mut drop: HashSet<&str> = adapter.env.iter().map(|v| v.name).collect();
-    drop.extend(adapter.creds.iter().map(|(_, c)| *c));
-    let mut env: Vec<(String, String)> = inherited
-        .filter(|(k, _)| !drop.contains(k.as_str()))
-        .collect();
-    let provider_of = |cred: &str| {
-        adapter
-            .creds
-            .iter()
-            .find(|(_, c)| *c == cred)
-            .map(|(p, _)| *p)
-    };
-    for v in adapter.env {
-        let value = match v.value {
-            Value::Placeholder(c) => provider_of(c).and_then(|p| placeholders.get(p)).cloned(),
-            Value::BaseUrl(p, suffix) => placeholders
-                .contains_key(p)
-                .then(|| format!("http://127.0.0.1:{port}/{p}{suffix}")),
-        };
-        if let Some(val) = value {
-            env.push((v.name.to_string(), val));
-        }
+    harness: &str,
+) -> ! {
+    crate::cli_ui::warn(
+        "protected workspace command: no provider gate was started; cloud credentials are unavailable",
+    );
+    let (inherited, withheld) = keep_safe_env(std::env::vars());
+    if !withheld.is_empty() {
+        crate::cli_ui::warn(&format!(
+            "not passed to the workspace command (they hold real keys): {}",
+            withheld.join(", ")
+        ));
     }
-    env
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SandboxMode {
-    /// `--no-sandbox`
-    Off,
-    /// default: sandbox when the kernel allows it, warn otherwise
-    Auto,
-    /// `--strict-sandbox`: refuse to run without it
-    Required,
-}
-
-/// Decide whether to sandbox, probing the kernel first.
-fn decide_sandbox(mode: SandboxMode, isolate_net: bool) -> Result<bool, String> {
-    if mode == SandboxMode::Off {
-        return if isolate_net {
-            Err("--isolate-net needs the sandbox; drop --no-sandbox".into())
-        } else {
-            Ok(false)
-        };
+    let mut env = build_env(adapter, 0, &HashMap::new(), inherited.into_iter());
+    env.push(("KEPR_AGENT_HARNESS".into(), harness.into()));
+    if let Err(error) = private.stage(harness, 0, None, &mut env) {
+        eprintln!("kepr: {error}");
+        std::process::exit(125);
     }
-    match crate::cli_agent_sandbox::probe(isolate_net) {
-        Ok(()) => Ok(true),
-        Err(e) if mode == SandboxMode::Auto && !isolate_net => {
-            crate::cli_ui::warn(&format!(
-                "agent sandbox unavailable ({e}); running without it. \
-                 `kepr doctor` shows why; --strict-sandbox refuses instead"
-            ));
-            Ok(false)
-        }
-        Err(e) => Err(format!(
-            "agent sandbox unavailable: {e} (see `kepr doctor`)"
-        )),
+    if let Err(error) = launch::validate_final_env(&env, 0) {
+        eprintln!("kepr: {error}");
+        std::process::exit(125);
     }
-}
-
-fn harness_sandbox(harness: &str, mode: SandboxMode) -> Result<SandboxMode, String> {
-    match (harness, mode) {
-        ("codex", SandboxMode::Off) => {
-            Err("Codex protection requires the sandbox; omit --no-sandbox".into())
-        }
-        ("codex", _) => Ok(SandboxMode::Required),
-        _ => Ok(mode),
-    }
+    let argv = private.argv.clone();
+    private.run(&argv, env, 0)
 }
 
 pub fn cmd_run(
@@ -146,47 +107,100 @@ pub fn cmd_run(
         Ok(a) => a,
         Err(e) => return Response::fail(e),
     };
-    let sandbox = match harness_sandbox(harness, mode).and_then(|m| decide_sandbox(m, isolate_net))
-    {
-        Ok(s) => s,
-        Err(e) => return Response::fail(e),
+    let privacy = match crate::cli_privacy::config::for_launch(mode) {
+        Ok(policy) => policy,
+        Err(message) => return Response::fail(message),
+    };
+    let explicit_argv = !argv.is_empty();
+    let default_argv = [adapter.program.to_string()];
+    let argv = if argv.is_empty() {
+        &default_argv[..]
+    } else {
+        argv
+    };
+    let private = match session.workspace_session.as_deref() {
+        Some(id) if mode == SandboxMode::Required && isolate_net => {
+            match crate::cli_workspace::launch::prepare(id, argv) {
+                Ok(p) => Some(p),
+                Err(e) => return Response::fail(e),
+            }
+        }
+        Some(_) => return Response::fail("workspace session requires protected isolation"),
+        None if mode == SandboxMode::Required => {
+            return Response::fail("protected launch requires --workspace-session")
+        }
+        None => None,
+    };
+    let sandbox = if private.is_some() {
+        true
+    } else {
+        match harness_sandbox(harness, mode).and_then(|m| decide_sandbox(m, isolate_net)) {
+            Ok(s) => s,
+            Err(e) => return Response::fail(e),
+        }
+    };
+    let credentials = match sealed_creds() {
+        Ok(credentials) => credentials,
+        Err(_error) if private.is_some() && explicit_argv => {
+            run_workspace_command(private.unwrap(), adapter, harness)
+        }
+        Err(error) => return Response::fail(error),
     };
     let codex = if harness == "codex" {
-        match crate::cli_agent_codex::Config::load() {
+        match crate::cli_agent_codex::Config::load(argv) {
             Ok(c) => Some(c),
             Err(e) => return Response::fail(e),
         }
     } else {
         None
     };
-    let routes = sealed_creds().and_then(|creds| {
+    if mode == SandboxMode::Required
+        && (!session.tunnels.is_empty()
+            || !session.grants.is_empty()
+            || !session.db_users.is_empty())
+    {
+        return Response::fail(
+            "privacy sessions do not support uninspected database or tunnel routes",
+        );
+    }
+    let routes: Result<Vec<GateRoute>, String> = (|| -> Result<Vec<GateRoute>, String> {
+        let creds = &credentials;
         let names: HashSet<String> = creds.iter().map(|c| c.name.clone()).collect();
-        if let Some(c) = &codex {
-            c.require_credential(&names)?;
-        }
-        let mut routes = if harness == "omp" {
-            crate::cli_agent_omp::routes(&creds)?
+        let mut routes = if let Some(c) = &codex {
+            c.routes(&names)?
+        } else if harness == "omp" {
+            if mode == SandboxMode::Required {
+                crate::cli_agent_omp::privacy_routes(creds)?
+            } else {
+                crate::cli_agent_omp::routes(creds)?
+            }
         } else {
             routes_for(adapter, &names)?
         };
-        routes.extend(crate::cli_agent_egress::extra_routes(&routes, &creds));
-        routes.extend(crate::cli_aws::session::routes(&routes, &creds)); // T2.02
-        let db = crate::cli_agent_db::routes(&routes, &creds);
-        routes.extend(db);
-        let kube = crate::cli_agent_kube::routes(&routes, &creds); // T13.04
-        routes.extend(kube);
-        let tunnels = crate::cli_gatex::tunnel::routes(&routes, &session.tunnels)?;
-        routes.extend(tunnels);
-        crate::cli_gatex::grant::apply(&mut routes, &session.grants)?;
-        crate::cli_gatex::dbuser::apply(&mut routes, &session.db_users)?; // T13.02
+        if mode != SandboxMode::Required {
+            routes.extend(crate::cli_agent_egress::extra_routes(&routes, creds));
+            routes.extend(crate::cli_aws::session::routes(&routes, creds)); // T2.02
+            let db = crate::cli_agent_db::routes(&routes, creds);
+            routes.extend(db);
+            let kube = crate::cli_agent_kube::routes(&routes, creds); // T13.04
+            routes.extend(kube);
+            let tunnels = crate::cli_gatex::tunnel::routes(&routes, &session.tunnels)?;
+            routes.extend(tunnels);
+            crate::cli_gatex::grant::apply(&mut routes, &session.grants)?;
+            crate::cli_gatex::dbuser::apply(&mut routes, &session.db_users)?; // T13.02
+        }
         kepr_core::gate_protocol::validate_routes(&routes)?;
         Ok(routes)
-    });
+    })();
     let routes = match routes {
         Ok(r) => r,
-        Err(e) => return Response::fail(e),
+        Err(_error) if private.is_some() && explicit_argv => {
+            run_workspace_command(private.unwrap(), adapter, harness)
+        }
+        Err(error) => return Response::fail(error),
     };
     let all_routes = routes.clone();
+    let requested_privacy = privacy.as_ref().map(|p| p.preset);
     let req = Request::StartGate {
         routes,
         port: port.or(adapter.port),
@@ -194,6 +208,7 @@ pub fn cmd_run(
         tunnel: !isolate_net,
         record: session.record,
         harness: Some(adapter.harness.to_string()), // T7.10
+        privacy,
     };
     let (gate_port, placeholders, ca_pem, db_ports) = match client::send_request(&req) {
         Ok(Response::GateStarted {
@@ -202,13 +217,20 @@ pub fn cmd_run(
             extras,
             ..
         }) => {
+            if let Err(error) = launch::confirm_privacy(requested_privacy, extras.privacy) {
+                return Response::fail(error);
+            }
             session.announce(extras.session.as_deref());
             crate::cli_policy::label_session(extras.session.as_deref(), harness); // T9.07
             (port, placeholders, extras.ca_pem, extras.db_ports)
         }
+        Ok(Response::Err { error }) if private.is_some() && explicit_argv => {
+            let _ = error;
+            run_workspace_command(private.unwrap(), adapter, harness)
+        }
         Ok(Response::Err { error }) => return Response::fail(error),
         Ok(_) => return Response::fail("unexpected daemon response"),
-        Err(e) => return Response::fail(e),
+        Err(error) => return Response::fail(error),
     };
     // Egress proxy (P2.1): drop inherited proxy/CA settings and the real
     // tokens the egress placeholders replace, then add ours.
@@ -231,7 +253,7 @@ pub fn cmd_run(
         ));
     }
     let mut env = build_env(adapter, gate_port, &placeholders, inherited.into_iter());
-    if harness == "omp" {
+    if harness == "omp" && private.is_none() {
         let Some(home) = std::env::var_os("HOME") else {
             return Response::fail("HOME is required to locate OMP configuration");
         };
@@ -259,11 +281,13 @@ pub fn cmd_run(
     ));
     // T6.11: policy.toml `agent` / `harness` rules match on this.
     env.push(("KEPR_AGENT_HARNESS".into(), harness.to_string()));
-    if let Some(pem) = ca_pem {
-        let kube = crate::cli_agent_kube::entries(&all_routes, &placeholders);
-        match crate::cli_agent_egress::env(gate_port, &pem, &placeholders, &kube) {
-            Ok(e) => env.extend(e),
-            Err(e) => return Response::fail(e),
+    if private.is_none() {
+        if let Some(pem) = ca_pem.as_deref() {
+            let kube = crate::cli_agent_kube::entries(&all_routes, &placeholders);
+            match crate::cli_agent_egress::env(gate_port, pem, &placeholders, &kube) {
+                Ok(e) => env.extend(e),
+                Err(e) => return Response::fail(e),
+            }
         }
     }
     let aws_env = crate::cli_aws::session::env(&placeholders, &env); // T2.02
@@ -274,14 +298,29 @@ pub fn cmd_run(
             Err(e) => return Response::fail(e),
         }
     }
-    let default_argv = [adapter.program.to_string()];
-    let argv = if argv.is_empty() {
-        &default_argv[..]
-    } else {
-        argv
-    };
-    let configured_argv = codex.as_ref().map(|c| c.argv(gate_port, argv));
-    let argv = configured_argv.as_deref().unwrap_or(argv);
+    if let Some(private) = private.as_ref() {
+        if let Err(e) = private.stage(harness, gate_port, ca_pem.as_deref(), &mut env) {
+            return Response::fail(e);
+        }
+    }
+    if let Err(error) = launch::validate_final_env(&env, gate_port) {
+        return Response::fail(error);
+    }
+    let runtime_argv = private
+        .as_ref()
+        .map(|p| p.argv.clone())
+        .unwrap_or_else(|| argv.to_vec());
+    let configured_argv = codex.as_ref().map(|c| {
+        if private.is_some() {
+            c.private_argv(gate_port, &runtime_argv)
+        } else {
+            c.argv(gate_port, &runtime_argv)
+        }
+    });
+    let argv = configured_argv.as_deref().unwrap_or(&runtime_argv);
+    if let Some(private) = private {
+        private.run(argv, env, gate_port);
+    }
     if sandbox {
         match crate::cli_agent_sandbox::Plan::new(argv, env, gate_port, isolate_net) {
             Ok(mut plan) => {
@@ -298,25 +337,6 @@ pub fn cmd_run(
         .envs(env)
         .exec();
     Response::fail(format!("exec {} failed: {err}", argv[0]))
-}
-
-/// Split inherited variables into those passed on and the names of those
-/// withheld because their value looks like a real API key or private key
-/// (an `OPENAI_API_KEY` exported in ~/.bashrc must not reach a Claude
-/// session just because Claude doesn't use it).
-pub fn keep_safe_env(
-    vars: impl Iterator<Item = (String, String)>,
-) -> (Vec<(String, String)>, Vec<String>) {
-    let (mut keep, mut withheld) = (Vec::new(), Vec::new());
-    for (k, v) in vars {
-        if kepr_core::leak::looks_like_key(v.as_bytes()) {
-            withheld.push(k);
-        } else {
-            keep.push((k, v));
-        }
-    }
-    withheld.sort();
-    (keep, withheld)
 }
 
 #[cfg(test)]

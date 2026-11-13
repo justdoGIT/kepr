@@ -82,7 +82,7 @@ fn jump(code: u32, k: u32, jt: u8, jf: u8) -> libc::sock_filter {
 /// The BPF program: kill on a foreign arch, EPERM for `denied`, allow
 /// the rest.
 pub fn program(denied: &[i64]) -> Vec<libc::sock_filter> {
-    build(denied, false)
+    build(denied, false, &[])
 }
 
 /// A gate session's program: `program(&gate_denied())`, and no new
@@ -91,10 +91,29 @@ pub fn program(denied: &[i64]) -> Vec<libc::sock_filter> {
 /// clone3, whose flags sit behind a pointer a filter can't read, with
 /// ENOSYS, so libc falls back to clone to start threads.
 pub fn gate_program() -> Vec<libc::sock_filter> {
-    build(&gate_denied(), true)
+    build(&gate_denied(), true, &[])
 }
 
-fn build(denied: &[i64], no_new_namespaces: bool) -> Vec<libc::sock_filter> {
+/// Socket families a private-workspace harness never needs: host or
+/// abstract Unix sockets, netlink, packet and vsock. Internet families
+/// stay allowed, and `socketpair` is untouched, so local IPC and the
+/// loopback gate relay keep working.
+pub fn workspace_denied_families() -> [i64; 4] {
+    [
+        libc::AF_UNIX as i64,
+        libc::AF_VSOCK as i64,
+        libc::AF_NETLINK as i64,
+        libc::AF_PACKET as i64,
+    ]
+}
+
+/// A private-workspace session's program: the sandbox list, plus
+/// `socket(2)` restricted to internet families.
+pub fn workspace_program() -> Vec<libc::sock_filter> {
+    build(&sandbox_denied(), false, &workspace_denied_families())
+}
+
+fn build(denied: &[i64], no_new_namespaces: bool, families: &[i64]) -> Vec<libc::sock_filter> {
     use libc::{BPF_ABS, BPF_JEQ, BPF_JMP, BPF_JSET, BPF_K, BPF_LD, BPF_RET, BPF_W};
     let ld = |off| stmt(BPF_LD | BPF_W | BPF_ABS, off);
     let ret = |v| stmt(BPF_RET | BPF_K, v);
@@ -122,6 +141,22 @@ fn build(denied: &[i64], no_new_namespaces: bool) -> Vec<libc::sock_filter> {
         p.push(ret(eperm));
         p.push(ret(libc::SECCOMP_RET_ALLOW));
     }
+    if !families.is_empty() {
+        // socket(2) family gate. Not socket: skip the block and continue
+        // with the deny list. A listed family jumps to this block's EPERM
+        // return; any other family (AF_INET, AF_INET6) skips that return
+        // through the JA below and reaches the deny list too, so an entry
+        // for `SYS_socket` still applies.
+        let n = families.len();
+        p.push(eq(libc::SYS_socket, 0, (n + 3) as u8));
+        p.push(ld(OFF_ARG0_LO));
+        for (i, family) in families.iter().enumerate() {
+            p.push(eq(*family, (n - i) as u8, 0));
+        }
+        p.push(jump(BPF_JMP | libc::BPF_JA | BPF_K, 1, 0, 0));
+        p.push(ret(eperm));
+    }
+
     let n = denied.len();
     for (i, nr) in denied.iter().enumerate() {
         // match → jump to the EPERM return after the remaining checks
@@ -164,6 +199,62 @@ pub fn install(prog: &[libc::sock_filter]) -> Result<(), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_workspace_filter_blocks_unapproved_socket_families() {
+        let filter = workspace_program();
+        // SAFETY: the child performs only fixed libc calls before _exit.
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            if install(&filter).is_err() {
+                // SAFETY: terminate only this isolated test child.
+                unsafe {
+                    libc::_exit(2);
+                }
+            }
+            for family in [
+                libc::AF_UNIX,
+                libc::AF_VSOCK,
+                libc::AF_NETLINK,
+                libc::AF_PACKET,
+            ] {
+                // SAFETY: fixed socket arguments; no connect or external traffic.
+                let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+                if fd != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+                    // SAFETY: terminate only this isolated test child.
+                    unsafe {
+                        libc::_exit(3);
+                    }
+                }
+            }
+            // SAFETY: create an ordinary TCP socket, without connecting it.
+            let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+            if fd < 0 {
+                // SAFETY: terminate only this isolated test child.
+                unsafe {
+                    libc::_exit(4);
+                }
+            }
+            // SAFETY: close the newly owned socket.
+            unsafe {
+                libc::close(fd);
+            }
+            let mut pair = [-1; 2];
+            // SAFETY: socketpair writes two descriptors to a valid array; local IPC only.
+            let code =
+                unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()) };
+            // SAFETY: terminate the test child, closing its local IPC descriptors.
+            unsafe {
+                libc::_exit(if code == 0 { 0 } else { 5 });
+            }
+        }
+        let mut status = 0;
+        // SAFETY: reap the child this test created.
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+    }
 
     #[test]
     fn program_shape() {
@@ -226,6 +317,7 @@ mod tests {
                 c if c == libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K => jump(acc == ins.k),
                 c if c == libc::BPF_JMP | libc::BPF_JGE | libc::BPF_K => jump(acc >= ins.k),
                 c if c == libc::BPF_JMP | libc::BPF_JSET | libc::BPF_K => jump(acc & ins.k != 0),
+                c if c == libc::BPF_JMP | libc::BPF_JA => 1 + ins.k as usize,
                 c => panic!("opcode {c:#x}"),
             };
         }
@@ -262,6 +354,41 @@ mod tests {
         assert_eq!(eval(&sandbox, AUDIT_ARCH, libc::SYS_execve, 0), allow);
         assert_eq!(eval(&sandbox, AUDIT_ARCH, libc::SYS_clone3, 0), allow);
         assert_eq!(eval(&sandbox, AUDIT_ARCH, libc::SYS_clone, new_user), allow);
+    }
+
+    #[test]
+    fn workspace_gate_allows_only_internet_socket_families() {
+        let eperm = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
+        let allow = libc::SECCOMP_RET_ALLOW;
+        let workspace = workspace_program();
+        for family in workspace_denied_families() {
+            assert_eq!(
+                eval(&workspace, AUDIT_ARCH, libc::SYS_socket, family as u64),
+                eperm,
+                "family {family}"
+            );
+        }
+        for family in [libc::AF_INET as u64, libc::AF_INET6 as u64] {
+            assert_eq!(
+                eval(&workspace, AUDIT_ARCH, libc::SYS_socket, family),
+                allow
+            );
+        }
+        // Local IPC needs no host socket: socketpair stays allowed.
+        assert_eq!(
+            eval(
+                &workspace,
+                AUDIT_ARCH,
+                libc::SYS_socketpair,
+                libc::AF_UNIX as u64
+            ),
+            allow
+        );
+        // The rest of the sandbox list still applies.
+        for nr in sandbox_denied() {
+            assert_eq!(eval(&workspace, AUDIT_ARCH, nr, 0), eperm, "{nr}");
+        }
+        assert_eq!(eval(&workspace, AUDIT_ARCH, libc::SYS_execve, 0), allow);
     }
 
     /// Run `check` in a forked child under `prog`; its exit code.
@@ -355,5 +482,49 @@ mod tests {
             code, 0,
             "bit 0 unshare, 1 clone(NEWUSER), 2 clone3, 3 clone"
         );
+    }
+
+    #[test]
+    fn workspace_filter_denies_host_socket_families_in_a_child() {
+        let prog = workspace_program();
+        // SAFETY: raw syscalls only; every fd is closed before _exit.
+        let code = in_child_code(&prog, || unsafe {
+            let mut failed = 0;
+            for family in workspace_denied_families() {
+                let r = libc::syscall(
+                    libc::SYS_socket,
+                    family,
+                    libc::SOCK_STREAM as libc::c_ulong,
+                    0usize,
+                );
+                failed |= i32::from(!fails_with(r, libc::EPERM));
+            }
+            // Internet families still work, as does socketpair for local IPC.
+            let fd = libc::syscall(
+                libc::SYS_socket,
+                libc::AF_INET as libc::c_ulong,
+                libc::SOCK_STREAM as libc::c_ulong,
+                0usize,
+            );
+            failed |= i32::from(fd < 0) << 1;
+            if fd >= 0 {
+                libc::close(fd as i32);
+            }
+            let mut pair = [0i32; 2];
+            let r = libc::syscall(
+                libc::SYS_socketpair,
+                libc::AF_UNIX as libc::c_ulong,
+                libc::SOCK_STREAM as libc::c_ulong,
+                0usize,
+                pair.as_mut_ptr(),
+            );
+            if r == 0 {
+                libc::close(pair[0]);
+                libc::close(pair[1]);
+            }
+            failed |= i32::from(r != 0) << 2;
+            failed
+        });
+        assert_eq!(code, 0, "bit 0 family, 1 AF_INET, 2 socketpair");
     }
 }

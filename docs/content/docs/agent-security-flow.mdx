@@ -1,0 +1,220 @@
+---
+title: "Agent Security: Visual Data Flow"
+description: "How Kepr handles credentials and personal data, and the controls needed for classification, identity, actions and device-wide protection."
+---
+
+import { SecurityFlow } from "@/components/security-flow";
+
+# Agent security: follow the data
+
+Your screenshots show a progression from disclosure risks to several separate
+controls: pattern detection, sensitivity classification, private processing,
+work identity, user-scoped tools, write approvals and audit evidence. The
+initial screenshots represent later steps in that progression.
+
+Kepr can support this architecture. Some foundations are implemented in the
+current working tree; others need new enforcement components. A private
+internal API can still forward sensitive data to an external provider, and a
+personal app outside Kepr can bypass an agent-only gate.
+
+<SecurityFlow />
+
+## Open or share the diagrams
+
+- [Offline interactive explorer](/visuals/kepr-security/index.html): all assets
+  are embedded; no models, external assets, analytics or network calls.
+- [Current flow, SVG](/visuals/kepr-security/kepr-current-flow.svg) and
+  [PNG](/visuals/kepr-security/kepr-current-flow.png).
+- [Proposed flow, SVG](/visuals/kepr-security/kepr-target-flow.svg) and
+  [PNG](/visuals/kepr-security/kepr-target-flow.png).
+
+The explorer uses synthetic examples and short readable token labels. Actual
+Kepr personal-data tokens are randomized and scoped to a session. The tool
+buttons simulate decisions; they do not call a model, send mail or change
+security policy.
+
+The diagrams are explanatory snapshots, not live capability reports. Current
+source behavior and remaining boundaries below take precedence over simulated
+labels; no visualization code or assets were changed for this update.
+
+## What the current request path does
+
+1. The operator starts `kepr agent run HARNESS` in an operator terminal. It
+   snapshots the current folder (or `--workspace PATH`) unless a prepared
+   `--workspace-session` is supplied, and requires sandbox/network isolation.
+   The harness receives dynamic session gate URLs and provider-scoped
+   placeholders, not raw credentials. Changes stay in the copied workspace
+   until operator review and digest-approved export to a new directory.
+2. The gate checks the placeholder, destination route and request budgets. It
+   resolves the approved credential through its private daemon channel.
+3. Kepr screens the original body and request metadata for stored secrets and
+   supported key shapes/encodings before upstream authentication injection.
+4. In a supported private-cloud request, it masks emails, international phone
+   numbers, IPs, personal paths and supplied literal identifiers. It removes
+   optional identity metadata and unnecessary headers and sets supported
+   storage controls. This is basic masking, not full anonymization.
+5. The gate adds the real key only through the provider's authentication
+   contract on its bound host. The provider receives that key for auth; the
+   model prompt and agent do not receive it from Kepr.
+6. Supported response processing screens credential echoes and preserves
+   conversation links. Personal-data tokens are not automatically restored.
+7. Before forwarding a gate HTTP request, the gate obtains acknowledgment of a
+   daemon-fsynced metadata intent. It attempts a paired result at upstream
+   headers/send failure. Retained intents without results become `Unknown` on
+   daemon startup; this does not prove completed business actions or cover all
+   non-HTTP tools. A separate queued usage/request journal records time,
+   session, provider, method, templated path, status and usage; that queue is
+   best-effort. Prompt bodies are not stored by these metadata journals.
+
+Current privacy processing refuses unsupported opaque reasoning, signed state,
+media and routes. The private workspace launcher exists in Linux source;
+native qualification, local inference routing and device-wide enforcement are
+unfinished. `local-only` refuses launch before a cloud gate starts. Explicit
+`--compatibility` disables privacy filtering and required isolation; it is not
+a troubleshooting repair. Source capability does not establish that a running
+installation has these changes.
+
+`private-cloud` masks bounded patterns; it does not provide anonymity. The
+provider still sees the authenticated account, public source IP, request timing,
+model and connection metadata. Unsupported encodings and semantic identifiers
+remain outside its coverage. No local-only or device-offline guarantee is
+available merely by setting a proxy or environment variable.
+
+## Mapping your controls to Kepr
+
+| Control in the screenshots            | Current foundation                                                                   | Required extension                                                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| DLP using patterns and NER            | Shared secret screening and basic personal-data masks                                | Local NER, card-number validation, structured-data detectors, organization-specific dictionaries and bounded decoder coverage |
+| Reversible map                        | Local bounded ephemeral original-to-token mappings                                   | A protected restoration service with exact display/sink authorization, TTL and no generic substitution into model tools       |
+| Classify sensitivity and route        | No general sensitivity classifier/router                                             | Trusted labels plus a local classifier; restricted content stays local or is blocked                                          |
+| Work SSO and tenant restrictions      | OS peer identity, per-user vault namespaces and OIDC device-enrolment support        | Tenant-bound agent sessions, verified work IdP claims and resource-level authorization for each MCP call                      |
+| User-scoped tools                     | Explicit credential/SSH-key grants, operator-fixed tenant/workspace/connector tuple, typed arguments/SQL classes, read-only DB default and finite request budgets | Verified work identity, finer resource/command authorization and exact-action approvals; current flags are not work-IdP claims |
+| Confirm write actions                 | Consent for selected credential use and related approval mechanisms                  | Approval bound to the exact operation, recipient/path, content digest, session, expiry and one-use nonce                      |
+| Hidden instructions and remote images | Strict protected-session route/media refusals help                                   | Typed content provenance, safe markdown rendering, mediated fetches and verified tool/output destinations                     |
+| Legal disclosure evidence             | Credential audit plus daemon-fsynced HTTP intent and paired result attempts; unmatched retained intents reconcile to `Unknown` at daemon startup | Protected actor resolution, per-attempt idempotency, non-HTTP coverage, classification/approval evidence and qualified retention |
+| Personal AI bypass                    | Not intercepted outside a protected session                                          | Native managed-device, network, application and account enforcement                                                           |
+
+## Extend DLP without giving it the whole security decision
+
+Use deterministic local detectors for emails, structured identifiers, keys and
+validated payment-card candidates. Add local NER for names, organizations and
+locations; expose confidence and permit organization-specific identifiers.
+NER is probabilistic and must not be the only disclosure control.
+
+Keep business sensitivity separate from entity detection. “Draft an email for
+the Orion acquisition” can reveal confidential meaning without a key, address,
+card or identifier. A locally hosted gpt-oss model can assist classification,
+but it must not downgrade a trusted document restriction. Unknown or disputed
+labels should select the conservative route configured by the operator.
+
+Classify original content locally before masking. For content whose policy
+permits cloud use, tokenize allowed sensitive fields and remove optional
+metadata before forwarding. For confidential or restricted content, choose
+local processing or stop if no approved local runtime exists. Do not silently
+send the request to a cloud model after local inference fails.
+
+Even a locally generated summary can reveal sensitive meaning. Any subsequent
+external disclosure needs its own policy check; “a private model touched it”
+does not establish that the output is safe to send.
+
+## Keep the reversible map under local authority
+
+The map belongs to the trusted local broker, not the model or untrusted tools.
+Separate display restoration from action execution. A trusted local display
+may restore a person’s name or mail address when policy permits. A send action
+may resolve the exact allowed recipient only after the destination and action
+are authorized. Bind the resolution to that approved sink.
+
+Never restore tokens inside arbitrary generated URLs, markdown images,
+terminal commands, tool arguments or logs. Do not turn API keys into generally
+restorable prompt tokens. API credentials stay on the separate authentication
+injection path. Keep maps bounded and short lived, zeroize originals on expiry,
+and do not expose a general “decode everything” tool to the agent.
+
+## Enforce identity and action policy at the boundary
+
+Work-only access requires verified identity claims, not a prompt saying
+“use the work account” or an email-domain string. Check token signatures,
+issuer, audience, tenant, subject, expiry and permitted memberships. Bind the
+authenticated actor and tenant to the session, then check actual resources
+and connector accounts on every tool call.
+
+For a write operation, first evaluate the disclosure, destination and resource
+policy. If permitted and confirmation is required, show the exact action and
+bind approval to its digest, session, actor, destination, expiry and one-use
+nonce. Re-check those facts immediately before execution. Human confirmation
+must not override a work-only destination rule or a restricted-data deny.
+Resolve the final recipient/payload locally before approval, or pin the map
+version and final digest; a token must not acquire a different binding later.
+
+Offer a preset requiring confirmation for every write, matching your diagram.
+An easier daily preset can require confirmation for outbound sends/uploads,
+deletes and privilege changes while allowing reversible local drafts according
+to policy. Neither preset should let a model grant itself new permissions.
+
+## Cover injection and renderer traffic
+
+Track retrieved wiki pages, mail, documents, search results and MCP output as
+untrusted data with source identity and content hashes. That content must not
+alter grants, classifications, approval state or the provider allowlist.
+
+Disable automatic remote images in untrusted markdown, sanitize executable
+HTML and route permitted fetches through an authorized broker. Check final
+destinations, redirects, DNS/private-address changes, query/path content and
+encoded data. A markdown renderer or browser can make a request without an
+LLM API call; the model gateway alone does not cover that path.
+
+Apply the same checks to browser navigation, uploads, email, webhooks, DNS,
+telemetry and other egress routes. Native device enforcement is required to
+cover personal apps outside the protected harness. Work SSO controls account
+access; it does not automatically stop a separate personal application.
+
+## Audit “who sent what, where and when” without a new data leak
+
+The target ledger should record actor/session reference, tenant, policy version,
+input sensitivity, detected field categories/counts, destination, tool/action, decision, approval
+reference and outcome. Store actor resolution separately with restricted
+access, so legitimate investigations can identify the user without exposing
+identities to every log reader.
+
+For evidence of exact content, prefer a keyed digest with carefully protected
+keys. Unsalted hashes of low-entropy identifiers can be guessed. Keep raw
+evidence optional, encrypted locally, access controlled and subject to short
+retention; do not silently log full prompts or reversible maps.
+
+Current gate HTTP intent persistence fails closed before forwarding. Result
+attempts happen before complete response consumption and do not prove business
+success; failed result persistence cannot reverse a request already sent.
+Daemon startup marks retained unmatched IDs `Unknown`, but repeated identical
+HTTP arguments currently reuse an ID (empty nonce), so this is not per-attempt
+idempotency or exactly-once execution. Actor refs are session refs with fixed
+policy/sensitivity labels and no approval reference. The separate queued
+request/usage journal can still drop events. Extending these mechanisms to all
+high-risk actions and qualifying retention is required for a complete legal
+disclosure ledger.
+
+## Implementation sequence
+
+1. Extend local entity/card detection and add a preview of exactly what would
+   leave. Report detector limits and the actual enforced session boundary.
+2. Add trusted sensitivity labels and local/cloud routing with no silent
+   downgrade. Sandbox classifier workers with no credentials or egress.
+3. Extend the implemented operator-scoped MCP tuple with verified work identity,
+   finer resource grants and exact-action approvals. Keep policy denial authoritative.
+4. Add protected PII restoration, typed ingestion and safe rendering/fetches.
+5. Extend durable disclosure evidence and native app/device enforcement.
+
+Every boundary needs negative tests: indirect injection, business secrets with
+no PII, encoded identifiers, personal recipients after approval, changed action
+arguments, replayed approvals, renderer fetches, local-runtime failure and
+audit-storage failure. The [security suite plan](/docs/security-suite-plan)
+tracks broader implementation and native-platform gaps.
+
+## Historical verification of this visual artifact
+
+Earlier artifact checks were reported for simulated decisions, one-use approval
+presentation, zoom/SVG export and desktop/mobile layout, with no external
+requests observed. They were not rerun for this documentation update. The
+standalone artifact embeds assets and declares a CSP denying network
+connections. Neither those historical browser results nor the examples qualify
+production security components, native enforcement or a current release.

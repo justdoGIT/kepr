@@ -7,19 +7,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
-use http_body_util::{combinators::BoxBody, BodyExt, Full, Limited};
+use http_body_util::{combinators::BoxBody, BodyExt, Limited};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
-use hyper_rustls::HttpsConnector;
-use hyper_util::client::legacy::{connect::HttpConnector, Client};
-use kepr_core::secmem::SplitKey;
 
 use crate::forward;
 use crate::journal::Log;
-use crate::limits::{reports_usage, Limiter, UsageMeter};
-use crate::placeholder;
+use crate::limits::{reports_usage, UsageMeter};
 use crate::routes;
-use crate::vault::Cache;
 
 pub(crate) use crate::reply::{json, kepr_error, limit_response};
 
@@ -28,112 +23,15 @@ pub const MAX_BODY: usize = 8 * 1024 * 1024;
 
 #[path = "routing.rs"]
 mod routing;
+#[path = "proxy_state.rs"]
+mod state;
+pub(crate) use state::build_client;
+pub use state::State;
+pub(crate) use state::UpstreamClient;
 
 pub struct Route {
     pub cred: String,
     pub slot: u16,
-}
-
-pub struct State {
-    pub session_id: String,
-    pub session_key: SplitKey<32>,
-    pub routes: HashMap<String, Route>,
-    route_index: routing::Index,
-    pub cache: Arc<Cache>,
-    pub limiter: Arc<Limiter>,
-    /// P2.1 egress proxy: the session CA and whether unbound hosts tunnel.
-    pub ca: Option<Arc<crate::ca::SessionCa>>,
-    pub tunnel: bool,
-    /// T7.03: host:port of the session's raw tunnels (tunnel.rs).
-    pub tunnels: Vec<(String, u16)>,
-    /// T13.04: the session's Kubernetes API servers (kube.rs).
-    pub kube: Vec<crate::kube::KubeTarget>,
-    pub(crate) kube_clients: crate::kube::Clients,
-    /// T7.09: what the agent sends and receives (`--record`).
-    pub recorder: Arc<crate::recording::Recorder>,
-    /// T11.22: request journal entries on their way to the daemon.
-    pub journal: Arc<crate::journal::Queue>,
-    pub(crate) client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
-    pub(crate) base_override: Option<String>,
-}
-
-/// T12.07: generic over the request body, for git pushes streamed upstream.
-pub(crate) fn build_client<B>(allow_plain_http: bool) -> Client<HttpsConnector<HttpConnector>, B>
-where
-    B: hyper::body::Body + Send,
-    B::Data: Send,
-{
-    // Compiled-in roots only: never trust CA files or proxies from the
-    // environment, which the agent may control.
-    let b = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_provider_and_webpki_roots(crate::tls_provider::provider())
-        .expect("the TLS provider supports the default protocol versions");
-    let b = if allow_plain_http {
-        b.https_or_http()
-    } else {
-        b.https_only()
-    };
-    // HTTP/1.1 only: every provider serves it, and h2 would add ~400 KB.
-    let conn = b.enable_http1().build();
-    Client::builder(hyper_util::rt::TokioExecutor::new()).build(conn)
-}
-
-impl State {
-    pub fn new(
-        session_id: String,
-        session_key: SplitKey<32>,
-        routes: HashMap<String, Route>,
-        cache: Arc<Cache>,
-    ) -> Self {
-        Self {
-            session_id,
-            session_key,
-            route_index: routing::Index::new(&routes),
-            routes,
-            cache,
-            limiter: Arc::new(Limiter::new(Default::default())),
-            client: build_client(false),
-            base_override: None,
-            ca: None,
-            tunnel: false,
-            tunnels: Vec::new(),
-            kube: Vec::new(),
-            kube_clients: Default::default(),
-            recorder: Arc::new(crate::recording::Recorder::new(false)),
-            journal: Arc::default(),
-        }
-    }
-
-    pub fn with_egress(mut self, ca: Option<Arc<crate::ca::SessionCa>>, tunnel: bool) -> Self {
-        (self.ca, self.tunnel) = (ca, tunnel);
-        self
-    }
-
-    pub fn with_limits(mut self, limits: kepr_core::gate_protocol::GateLimits) -> Self {
-        self.limiter = Arc::new(Limiter::new(limits));
-        self
-    }
-
-    /// The gate re-checks what the daemon already validated.
-    pub fn validated(self) -> Result<Self, String> {
-        self.limiter.config().validate()?;
-        Ok(self)
-    }
-
-    pub(crate) fn configured_routes(&self, host: &str) -> Option<Arc<HashMap<String, String>>> {
-        self.route_index.host(host)
-    }
-
-    pub(crate) fn valid_placeholder(&self, s: &str, slot: u16) -> bool {
-        match placeholder::parse(s) {
-            Some(p) => {
-                p.session_id == self.session_id
-                    && p.slot == slot
-                    && self.session_key.with_key(|k| placeholder::verify(k, &p))
-            }
-            None => false,
-        }
-    }
 }
 
 pub async fn handle(
@@ -207,6 +105,18 @@ async fn proxy_request_to_with_slot(
     req: Request<Incoming>,
     slot: Option<u16>,
 ) -> Result<Response<Body>, Infallible> {
+    if state.privacy.enabled()
+        && (!kepr_core::privacy::supports_provider(pname)
+            || host
+                .as_deref()
+                .is_some_and(|h| routes::lookup(pname).is_none_or(|p| p.host != h)))
+    {
+        return Ok(kepr_error(
+            StatusCode::FORBIDDEN,
+            "kepr_blocked",
+            "uninspected privacy destination",
+        ));
+    }
     if pname == "git" {
         return crate::git_http::handle(state, rest, req).await; // T12.07: smart-HTTP only
     }
@@ -247,7 +157,7 @@ async fn proxy_request_to_with_slot(
         Err(r) => return Ok(*r),
     };
 
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
     let bytes = match Limited::new(body, MAX_BODY).collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
@@ -272,7 +182,7 @@ async fn proxy_request_to_with_slot(
     if let Some((r, why)) = body.await {
         return Ok(log.reply(r, bytes.len(), Some(why)));
     }
-    let (clean, redactions) =
+    let (clean, mut redactions) =
         match crate::prompt::checked(rest, &parts, &bytes, &state.cache.values()) {
             Ok(result) => result,
             Err(msg) => {
@@ -285,17 +195,63 @@ async fn proxy_request_to_with_slot(
         std::borrow::Cow::Owned(clean) => Bytes::from(clean),
     };
 
+    let privacy_path =
+        if state.privacy.enabled() && inject == kepr_core::binding::Inject::CloudflareGateway {
+            match crate::cloudflare::privacy_path(&log, &parts, value.as_str(), &bytes) {
+                Some(path) => path,
+                None => {
+                    let r = kepr_error(
+                        StatusCode::FORBIDDEN,
+                        "kepr_privacy",
+                        "unsupported private Cloudflare endpoint",
+                    );
+                    return Ok(log.reply(r, bytes.len(), Some("privacy")));
+                }
+            }
+        } else {
+            rest
+        };
+    let bytes = match state.privacy.prepare(privacy_path, &mut parts, &bytes) {
+        Ok((Some(clean), count)) => {
+            redactions += count;
+            Bytes::from(clean)
+        }
+        Ok((None, _)) => bytes,
+        Err(msg) => {
+            let r = kepr_error(StatusCode::FORBIDDEN, "kepr_privacy", &msg);
+            return Ok(log.reply(r, bytes.len(), Some("privacy")));
+        }
+    };
+    let intent = match crate::journal::record_decision(&log, &bytes) {
+        Ok(intent) => intent,
+        Err(_) => {
+            let r = kepr_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "kepr_blocked",
+                "durable request decision unavailable",
+            );
+            return Ok(log.reply(r, bytes.len(), Some("decision")));
+        }
+    };
+
     let conn = state.recorder.http_request(pname, &method, rest, &bytes);
     let response =
         crate::responses::send(&log, route, &parts, &inject, value.as_str(), bytes.clone()).await;
     drop(value);
     match response {
         Ok((mut p, b)) => {
+            let status = p.status.as_u16();
+            let _ = crate::journal::record_result(
+                &state,
+                &intent,
+                kepr_core::gate_journal::ResultOutcome::Ok,
+                status,
+                bytes.len(),
+            );
             if redactions > 0 {
                 p.headers.insert("x-kepr-redactions", redactions.into());
             }
             let line = log.line(p.status, bytes.len(), None);
-            let status = p.status.as_u16();
             let b = (state.recorder).http_response(conn, pname, status, b);
             if !state.limiter.meters_tokens() && !reports_usage(&p.headers) {
                 crate::journal::push(&state.journal, line);
@@ -312,7 +268,17 @@ async fn proxy_request_to_with_slot(
             });
             Ok(Response::from_parts(p, b.boxed()))
         }
-        Err(r) => Ok(log.reply(*r, bytes.len(), None)),
+        Err(r) => {
+            let status = r.status().as_u16();
+            let _ = crate::journal::record_result(
+                &state,
+                &intent,
+                kepr_core::gate_journal::ResultOutcome::Err,
+                status,
+                bytes.len(),
+            );
+            Ok(log.reply(*r, bytes.len(), None))
+        }
     }
 }
 
@@ -338,9 +304,14 @@ pub async fn serve(listener: tokio::net::TcpListener, state: Arc<State>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::placeholder;
     use crate::rewrite::{placeholders_in, upstream_headers, upstream_query};
+    use crate::vault::Cache;
+    use http_body_util::Full;
     use hyper::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+    use hyper_util::client::legacy::connect::HttpConnector;
     use kepr_core::binding::Inject;
+    use kepr_core::secmem::SplitKey;
 
     impl State {
         /// Send upstream traffic to a plain-HTTP base URL.
@@ -499,6 +470,110 @@ mod tests {
             .body(Full::new(Bytes::from(body.to_string())))
             .unwrap();
         client.request(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn privacy_masks_actual_upstream_bytes_and_blocks_unsupported_requests() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let (upstream, mut captured) =
+            fake_upstream_with(Some(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")).await;
+        let routes = HashMap::from([(
+            "anthropic".into(),
+            Route {
+                cred: "ANTHROPIC_API_KEY".into(),
+                slot: 0,
+            },
+        )]);
+        let state = State::new(
+            SID.into(),
+            SplitKey::new(&KEY).unwrap(),
+            routes,
+            Arc::new(Cache::new(Box::new(Fixed), DEFAULT_TTL)),
+        )
+        .with_test_upstream(upstream)
+        .with_privacy(Some(kepr_core::privacy::Policy::default()))
+        .unwrap()
+        .validated()
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gate = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(serve(listener, Arc::new(state)));
+        let client: PlainClient<HttpConnector, Full<Bytes>> =
+            PlainClient::builder(hyper_util::rt::TokioExecutor::new()).build_http();
+        let ph = placeholder::make(&KEY, SID, 0);
+        let payloads = [
+            (
+                serde_json::json!({"model":"test", "messages":[{"role":"user", "content":"Mail alice@example.invalid"}],
+                "metadata":{"user_id":"private-device"}}),
+                true,
+            ),
+            (
+                serde_json::json!({"model":"test", "messages":[
+                    {"role":"assistant", "content":[{"type":"tool_use", "id":"toolu_example", "name":"lookup", "input":{"id":"alice@example.invalid"}}]},
+                    {"role":"user", "content":[{"type":"tool_result", "tool_use_id":"toolu_example", "content":"Mail alice@example.invalid"}]}
+                ]}),
+                true,
+            ),
+            (
+                serde_json::json!({"model":"test", "messages":[{"role":"user", "content":[{"type":"image", "source":{"data":"opaque"}}]}]}),
+                false,
+            ),
+            (
+                serde_json::json!({"model":"test", "messages":[{"role":"user", "content":STANDARD.encode("alice@example.invalid")}]}),
+                false,
+            ),
+            (
+                serde_json::json!({"model":"test", "messages":[{"role":"user", "content":"alice%40example.invalid"}]}),
+                false,
+            ),
+            (
+                serde_json::json!({"model":"test", "messages":[{"role":"user", "content":"alice\\u0040example.invalid"}]}),
+                false,
+            ),
+            (
+                serde_json::json!({"model":"test", "messages":[], "tools":[{"type":"web_search_20250305", "name":"web_search"}]}),
+                false,
+            ),
+        ];
+        for (index, (payload, allowed)) in payloads.into_iter().enumerate() {
+            let request = Request::post(format!("{gate}/anthropic/v1/messages"))
+                .header("x-api-key", &ph)
+                .header("authorization", "Bearer header-personal@example.invalid")
+                .header("x-goog-api-key", "header-personal@example.invalid")
+                .header("cf-aig-authorization", "header-personal@example.invalid")
+                .header("content-type", "application/json")
+                .header("user-agent", "private-device")
+                .header("anthropic-version", "2023-06-01")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&payload).unwrap(),
+                )))
+                .unwrap();
+            let response = client.request(request).await.unwrap();
+            if allowed {
+                assert_eq!(response.status(), StatusCode::OK);
+                let wire = tokio::time::timeout(Duration::from_secs(2), captured.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(!wire.contains("alice@example.invalid"));
+                assert!(!wire.contains("private-device"));
+                assert!(!wire.contains("header-personal@example.invalid"));
+                assert!(wire.contains("kepr-private-email-"));
+                assert!(wire.contains(&format!("x-api-key: {REAL}")));
+                assert!(!wire.contains(&ph));
+                if index == 1 {
+                    assert_eq!(wire.matches("toolu_example").count(), 2);
+                }
+            } else {
+                assert_eq!(response.status(), StatusCode::FORBIDDEN);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(250), captured.recv())
+                        .await
+                        .is_err()
+                );
+            }
+            response.into_body().collect().await.unwrap();
+        }
     }
 
     #[tokio::test]

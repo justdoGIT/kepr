@@ -10,6 +10,7 @@
 // fresh key would orphan every credential, so none is made. Without a
 // recovery key a failed unseal still stops the daemon, as before.
 
+use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -43,7 +44,15 @@ pub fn bootstrap(user: bool) -> Result<Boot, String> {
     }
     let sealer = master_key::sealer_from_env(user, &key)?;
     let recovery = super::recovery_key::path();
-    bootstrap_with(sealer.as_ref(), &key, &protected, &recovery, &UNSEAL_FAILED)
+    let credentials = crate::store::store_dir();
+    bootstrap_with(
+        sealer.as_ref(),
+        &key,
+        &protected,
+        &recovery,
+        &credentials,
+        &UNSEAL_FAILED,
+    )
 }
 
 fn bootstrap_with(
@@ -51,12 +60,18 @@ fn bootstrap_with(
     key: &Path,
     protected: &Path,
     recovery: &Path,
+    credentials: &Path,
     flag: &AtomicBool,
 ) -> Result<Boot, String> {
     if protected.exists() {
         return Ok(Boot::Locked);
     }
     let recoverable = recovery.exists();
+    if !key.exists() && !recoverable && credential_store_nonempty(credentials)? {
+        return Err(
+            "master key file is missing while the credential store is non-empty; refusing to generate a replacement".into(),
+        );
+    }
     // Never a new key over the old credentials while a recovery key for
     // the old one is there.
     if recoverable && !key.exists() {
@@ -77,6 +92,21 @@ fn bootstrap_with(
             Ok(Boot::Locked)
         }
         Err(e) => Err(e),
+    }
+}
+
+fn credential_store_nonempty(path: &Path) -> Result<bool, String> {
+    let mut entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("inspect credential store: {error}")),
+    };
+    match entries.next() {
+        Some(entry) => {
+            entry.map_err(|error| format!("inspect credential store: {error}"))?;
+            Ok(true)
+        }
+        None => Ok(false),
     }
 }
 
@@ -165,6 +195,7 @@ mod tests {
         key: std::path::PathBuf,
         protected: std::path::PathBuf,
         recovery: std::path::PathBuf,
+        credentials: std::path::PathBuf,
     }
 
     fn dir() -> Dir {
@@ -173,12 +204,28 @@ mod tests {
             key: tmp.path().join("master.key"),
             protected: tmp.path().join("master.key.argon2id"),
             recovery: tmp.path().join("master.key.recovery"),
+            credentials: tmp.path().join("credentials"),
             _tmp: tmp,
         }
     }
 
     fn boot(s: &Counting, d: &Dir, flag: &AtomicBool) -> Result<Boot, String> {
-        bootstrap_with(s, &d.key, &d.protected, &d.recovery, flag)
+        bootstrap_with(s, &d.key, &d.protected, &d.recovery, &d.credentials, flag)
+    }
+
+    #[test]
+    fn a_missing_key_file_never_replaces_a_nonempty_credential_store() {
+        let d = dir();
+        std::fs::create_dir(&d.credentials).unwrap();
+        std::fs::write(d.credentials.join("kepr-1000-existing"), b"ciphertext").unwrap();
+        let (s, flag) = (Counting::default(), AtomicBool::new(false));
+        let error = match boot(&s, &d, &flag) {
+            Err(error) => error,
+            Ok(_) => panic!("missing key must not orphan credentials"),
+        };
+        assert!(error.contains("credential store is non-empty"), "{error}");
+        assert_eq!(s.seals(), 0);
+        assert!(!d.key.exists());
     }
 
     #[test]

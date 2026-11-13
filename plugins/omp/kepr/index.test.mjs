@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import kepr from './index.ts';
+
+// Provider registration is covered by providers.test.mjs. Keep these hook tests
+// independent of the ambient agent gate and its Bun-only YAML loader.
+process.env.KEPR_GATE_URL = '';
+delete process.env.KEPR_OMP_ROUTES;
+const { default: kepr } = await import('./index.ts');
 
 function harness(check = text => ({text: text.replaceAll('SENSITIVE_TEST', '[removed]'), found: 1})) {
   const handlers = new Map();
@@ -14,7 +19,7 @@ function harness(check = text => ({text: text.replaceAll('SENSITIVE_TEST', '[rem
     active--;
     return { code: 0, message: JSON.stringify(check(payload.text)) };
   };
-  kepr({on: (name, fn) => handlers.set(name, fn), registerCommand() {}}, run);
+  kepr({on: (name, fn) => handlers.set(name, fn), registerCommand() {}, registerProvider() {}}, run);
   return {context: handlers.get('context'), handlers, calls, get maximum() { return maximum; }};
 }
 

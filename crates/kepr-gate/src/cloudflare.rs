@@ -35,16 +35,15 @@ fn endpoint<'a>(path: &'a str, body: &[u8]) -> Option<&'a str> {
     }
 }
 
-pub(crate) fn upstream_request(
-    log: &Log<'_>,
+fn request_suffix<'a>(
+    log: &Log<'a>,
     parts: &hyper::http::request::Parts,
-    value: &str,
-    body: Bytes,
-) -> Option<Request<Full<Bytes>>> {
+    login: &GatewayCredential,
+    body: &[u8],
+) -> Option<&'a str> {
     if log.host != HOST || parts.method != hyper::Method::POST {
         return None;
     }
-    let login = GatewayCredential::parse(value).ok()?;
     let prefix = format!("/v1/{}/{}", login.account_id, login.gateway_id);
     let path = if log.path.starts_with("/v1/") {
         // Egress-proxy traffic may already have an upstream URL. It must
@@ -53,7 +52,33 @@ pub(crate) fn upstream_request(
     } else {
         log.path
     };
-    let suffix = endpoint(path, &body)?;
+    endpoint(path, body)
+}
+
+/// Select a reviewed privacy schema only after authenticating the gateway prefix.
+pub(crate) fn privacy_path(
+    log: &Log<'_>,
+    parts: &hyper::http::request::Parts,
+    value: &str,
+    body: &[u8],
+) -> Option<&'static str> {
+    let login = GatewayCredential::parse(value).ok()?;
+    match request_suffix(log, parts, &login, body)? {
+        "/compat/chat/completions" | "/openai/chat/completions" => Some("/v1/chat/completions"),
+        "/openai/responses" => Some("/v1/responses"),
+        "/anthropic/v1/messages" => Some("/v1/messages"),
+        _ => None,
+    }
+}
+
+pub(crate) fn upstream_request(
+    log: &Log<'_>,
+    parts: &hyper::http::request::Parts,
+    value: &str,
+    body: Bytes,
+) -> Option<Request<Full<Bytes>>> {
+    let login = GatewayCredential::parse(value).ok()?;
+    let suffix = request_suffix(log, parts, &login, &body)?;
     let path = login.upstream_path(suffix).ok()?;
     let base = log
         .state
@@ -306,6 +331,106 @@ mod tests {
         let body = result.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), "*".repeat(TOKEN.len()).as_bytes());
         server.await.unwrap();
+        gate_task.abort();
+    }
+
+    #[tokio::test]
+    async fn omp_privacy_routes_expand_the_gateway_and_mask_the_actual_upstream_request() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", upstream.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (socket, _) = upstream.accept().await.unwrap();
+                let handler = hyper::service::service_fn(
+                    |request: Request<hyper::body::Incoming>| async move {
+                        assert_eq!(
+                            request.uri().path(),
+                            format!("/v1/{}/coding/compat/chat/completions", "a".repeat(32))
+                        );
+                        assert_eq!(
+                            request.headers()["cf-aig-authorization"],
+                            format!("Bearer {TOKEN}")
+                        );
+                        assert!(request.headers().get("x-personal-email").is_none());
+                        let bytes = request.into_body().collect().await.unwrap().to_bytes();
+                        assert!(!std::str::from_utf8(&bytes)
+                            .unwrap()
+                            .contains("alice@example.invalid"));
+                        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                        assert_eq!(body["model"], "reflection-ai/beam");
+                        assert!(body.get("metadata").is_none());
+                        assert!(body["messages"][0]["content"]
+                            .as_str()
+                            .unwrap()
+                            .contains("kepr-private-email-"));
+                        Ok::<_, std::convert::Infallible>(
+                            Response::builder()
+                                .status(200)
+                                .body(Full::new(Bytes::from_static(b"{}")))
+                                .unwrap(),
+                        )
+                    },
+                );
+                hyper::server::conn::http1::Builder::new()
+                    .keep_alive(false)
+                    .serve_connection(hyper_util::rt::TokioIo::new(socket), handler)
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut state = state();
+        let name = kepr_core::http_route::key(HOST, "CLOUDFLARE_AI_GATEWAY_API_KEY").unwrap();
+        state.routes.insert(
+            name.clone(),
+            Route {
+                cred: "CLOUDFLARE_AI_GATEWAY_API_KEY".into(),
+                slot: 0,
+            },
+        );
+        state.privacy =
+            crate::privacy::Filter::new(Some(kepr_core::privacy::Policy::default())).unwrap();
+        state.client = crate::proxy::build_client(true);
+        state.base_override = Some(base);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gate = format!("http://{}/{}", listener.local_addr().unwrap(), name);
+        let gate_task = tokio::spawn(crate::proxy::serve(listener, Arc::new(state)));
+        let client: Client<HttpConnector, Full<Bytes>> =
+            Client::builder(hyper_util::rt::TokioExecutor::new()).build_http();
+        for suffix in [
+            "/compat/chat/completions".to_string(),
+            format!("/v1/{}/coding/compat/chat/completions", "a".repeat(32)),
+        ] {
+            let request = Request::post(format!("{gate}{suffix}"))
+                .header("cf-aig-authorization", format!("Bearer {}", crate::placeholder::make(&KEY, SID, 0)))
+                .header("content-type", "application/json")
+                .header("x-personal-email", "alice@example.invalid")
+                .body(Full::new(Bytes::from_static(br#"{"model":"reflection-ai/beam","messages":[{"role":"user","content":"Email alice@example.invalid"}],"metadata":{"email":"alice@example.invalid"}}"#))).unwrap();
+            let response =
+                tokio::time::timeout(std::time::Duration::from_secs(5), client.request(request))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "a protected OMP Cloudflare route must reach the masked upstream"
+            );
+            response.into_body().collect().await.unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        let request = Request::post(format!("{gate}/compat/chat/completions"))
+            .header("cf-aig-authorization", format!("Bearer {}", crate::placeholder::make(&KEY, SID, 0)))
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from_static(br#"{"model":"reflection-ai/beam","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://media.example.invalid/private.png"}}]}]}"#))).unwrap();
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(5), client.request(request))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
         gate_task.abort();
     }
 }

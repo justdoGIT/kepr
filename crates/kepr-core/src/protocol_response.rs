@@ -33,6 +33,12 @@ pub enum Response {
         #[serde(flatten)]
         extras: Box<crate::protocol_types::GateExtras>,
     },
+    /// The replacement was validated by the provider before the sealed value
+    /// in the daemon was replaced.
+    ProviderRotated {
+        name: String,
+        provider: String,
+    },
     GetOk {
         name: String,
         // ZeroString rather than String so the deserialised secret on
@@ -210,6 +216,12 @@ pub enum Response {
     // batch: desktop
     #[serde(untagged)]
     Desktop(crate::protocol_desktop::DesktopResponse),
+    #[serde(untagged)]
+    Endpoint(crate::endpoint::EndpointResponse),
+    #[serde(untagged)]
+    Privacy(crate::privacy::PrivacyResponse),
+    #[serde(untagged)]
+    Workspace(Box<crate::workspace::WorkspaceResponse>),
     // end of batches
 }
 
@@ -227,6 +239,9 @@ impl Response {
         match self {
             Response::Err { .. } => false,
             Response::CheckOk { all_ok, .. } => *all_ok,
+            Response::Endpoint(crate::endpoint::EndpointResponse::EndpointScanResult {
+                report,
+            }) => report.verdict == crate::endpoint::ScanVerdict::Clean,
             _ => true,
         }
     }
