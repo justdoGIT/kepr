@@ -1,6 +1,7 @@
 "use client";
 
-import { colors, stages, type Mode } from "./security-flow-data";
+import { colors, stages } from "./security-flow-data";
+import type { SecurityFlowDiagramProps } from "./security-flow-diagram-types";
 
 export function SecurityFlowDiagram({
   mode,
@@ -8,13 +9,7 @@ export function SecurityFlowDiagram({
   cloud,
   localReady,
   onSelect,
-}: {
-  mode: Mode;
-  selected: string;
-  cloud: string;
-  localReady: boolean;
-  onSelect: (id: string) => void;
-}) {
+}: SecurityFlowDiagramProps) {
   const list = stages(mode);
   const positions = list.map((stage, i) => ({
     ...stage,
