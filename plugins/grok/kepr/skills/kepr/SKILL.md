@@ -5,74 +5,134 @@ description: How to work with API keys and other secrets when kepr manages them.
 
 # Working with secrets under kepr
 
-kepr keeps credentials in an encrypted store. In a session started with
-`kepr agent run <harness>`, you never hold a real key:
+Kepr protection starts only when the operator launches the harness through
+`kepr agent run <harness>`. A plugin or skill installed in an ordinary shell
+does not protect that process, the device, or other applications.
 
-- API key variables (`XAI_API_KEY`, `ANTHROPIC_API_KEY`, `GH_TOKEN`, …)
-  contain **placeholders** that start with `kepr-ph-`. Use them exactly as
-  they are. A local gate replaces them with the real key on the way to the
-  provider, and only for that provider's host.
-- `DATABASE_URL` / `PG*` point at a local gate port. Connect normally; the
-  gate logs in to the real database.
-- `KEPR_GATE_URL` is set. If it is missing, the session is not protected:
-  say so and suggest `kepr agent run <harness>` (for example
-  `kepr agent run claude`).
+In a protected launch:
 
-Rules:
+- the harness receives an isolated private home, an allowlisted environment,
+  and a local gate URL; the daemon socket, credential store, host auth files,
+  and desktop keyring are not exposed;
+- provider credentials are `kepr-ph-…` placeholders; the gate resolves a
+  sealed credential only for its exact bound HTTPS host and injects it there;
+- `KEPR_GATE_URL` is a loopback session URL. If it is absent, treat the
+  session as unprotected and ask the operator to relaunch it;
+- an unavailable gate, failed safety hook, invalid route, or missing binding
+  is a refusal, never a direct-network or plaintext fallback.
 
-1. Never ask the user to paste a key into the chat. Ask them to run
-   `kepr agent add NAME` (for agent keys) or `kepr set NAME` in their own
-   terminal instead.
-2. Never print, echo, base64 or otherwise decode environment variables or
-   `.env` files to look at secrets. Placeholders are useless outside the
-   gate, and real keys must not reach the transcript.
-3. Never write a key into a file, a command line or a commit. Reference the
-   environment variable (`$XAI_API_KEY`, `process.env.XAI_API_KEY`).
-4. `kepr get`, `kepr env`, `kepr exec`, `kepr totp`, `kepr inject`,
-   `kepr copy`, `kepr record get`, `kepr share` and `kepr sync-push` are
-   blocked in agent sessions because they reveal or move values. `kepr list`, `kepr agent ls` and `kepr status` are
-   fine and show names only.
-5. To call a provider API without any key in the environment, use the
-   `kepr` MCP server's `call_api` tool; `list_secrets` shows what exists.
-6. If you see something that looks like a real key anywhere, stop and tell
-   the user to run `kepr leaked NAME`, which stops sessions and deletes it.
+## Operator setup
 
+Run these commands in the operator's terminal, outside the agent:
 
-## Inspecting source and session history safely
-
-Key-shaped examples in source, test output, diffs, and old conversations can
-trigger the gate's 403 even when no live credential was exposed. Before showing
-such text to the model, capture it locally and pass it to `kepr hook redact` as
-JSON on stdin (`{"text": captured_text}`). Parse its JSON response and emit only
-its `text` field after checking the exit status and field type. Never emit the
-unfiltered output or redactor stderr on failure. Keep searches focused; the hook
-accepts at most 10 MiB of JSON input. Do not use this to inspect credential files.
-
-For example, inspect source with a bounded search:
-
-```python
-import json, subprocess
-found = subprocess.run(["rg", "-n", "topic", "path/to/source"], capture_output=True, text=True)
-checked = subprocess.run(
-    ["kepr", "hook", "redact"],
-    input=json.dumps({"text": found.stdout + found.stderr}),
-    capture_output=True, text=True,
-)
-if checked.returncode:
-    raise SystemExit("Secret check failed; output withheld")
-result = json.loads(checked.stdout)
-if not isinstance(result.get("text"), str):
-    raise SystemExit("Invalid secret-check response; output withheld")
-print(result["text"])
+```bash
+kepr agent add NAME --for PROVIDER
+kepr agent ls
+kepr agent run HARNESS
 ```
 
-Use the shared detector, not a token-length-only regex: private-key blocks and
-JSON-escaped keys need redaction too. Build synthetic test strings from short
-fragments at runtime so tool calls themselves do not contain complete key shapes.
-If a real credential is discovered, follow the `kepr leaked NAME` rule above.
+Use the exact provider binding. A custom HTTPS destination is explicit, for
+example `--for api.example.com:443:bearer`; an OpenAI-compatible reseller is
+not OpenAI. `--requires-consent` makes the daemon ask before releasing the
+sealed value. `kepr agent add` stores a sealed, write-only credential; `kepr
+get` cannot read it back. Never put a key in chat, a command argument, a
+file, an environment export, a prompt, a log, or a commit.
 
-An OpenAI Responses "different ... OpenAI resource" error is a separate upstream
-conversation-state failure. Preserve item contents, tool-call links, and encrypted
-reasoning; never fix it by deleting live history databases or disabling kepr.
-Save a sanitized recovery note before a restart. Updated gates take effect for new
-agent sessions; leave the current session's gate running while it is in use.
+Cloudflare AI Gateway credentials use the structured `kepr agent add-cloudflare`
+conversion. Do not bind the gateway token to OpenAI or use `!kepr get` as its
+OMP credential source. `kepr agent doctor --json` checks the operator-side
+installation; it does not prove that a live provider or model is available.
+
+Credential rotation and upstream revocation are operator actions, not agent
+operations. `kepr agent revoke NAME` removes the local sealed record; it does
+not prove that the provider revoked the old key. Use an official provider
+management flow or an approved `kepr rotate` flow from the operator terminal,
+and keep any separate admin or management credential sealed. Never pass a
+bootstrap key to the agent or put it in a hook argument, file, environment
+export, or prompt.
+
+## OMP provider routing
+
+After `kepr agent install omp`, start a new protected session with
+`kepr agent run omp`. The extension:
+
+- reads the session's `models.yml` and converts configured `apiKey` names (or
+  the metadata-only `!kepr get NAME` form) into gate placeholders;
+- accepts only route metadata created by Kepr, with an exact lower-case host,
+  credential name, `KEPR_OMP_KEY_<n>` placeholder, and
+  `https+HOST+CREDENTIAL` route;
+- accepts only HTTPS endpoints without an explicit port, credentials, query,
+  or fragment, and requires the endpoint host to match a sealed binding;
+- leaves OAuth/keyless providers alone, but marks an unbound or malformed
+  credential provider unavailable instead of falling back to a secret-reading
+  command or direct network access.
+
+The reviewed OpenAI-compatible defaults include Fireworks
+(`api.fireworks.ai/inference/v1`), Moonshot CN (`api.moonshot.cn/v1`), and
+Venice (`api.venice.ai/api/v1`). A route only proves local binding and
+inspection eligibility; provider authentication, account permissions, and
+model availability still need independent qualification.
+
+The extension runs `kepr hook` before session startup, tool calls, and prompts.
+It recursively checks message text and structured tool arguments, bounds the
+redaction cache and child checks, and fails closed when the check is invalid or
+times out. Signed reasoning is never edited: key-shaped signed reasoning is
+refused. Privacy masking is bounded pattern masking, not anonymity or
+device-wide egress enforcement.
+
+## MCP tools
+
+Use the operator-owned grants explicitly:
+
+```bash
+kepr mcp --credential API_KEY_NAME --read-only
+kepr mcp --credential DB_LOGIN --ssh deploy@host --ssh-key DEPLOY_KEY
+```
+
+`list_secrets` returns names and bound hosts only. `call_api` accepts an
+allowlisted provider, HTTP method, and provider path; the gate injects the
+credential and bounds the response. Database queries default to read-only and
+must be one conservative SQL statement. SSH hosts and sign-only key names
+must be granted with `--ssh` and `--ssh-key`. `--allow-writes` and
+`--allow-admin` are explicit opt-ins; tenant, workspace, connector-account,
+resource, action, and finite request-budget checks still apply. No MCP tool
+returns a credential, and result text is scrubbed and bounded.
+
+## Protected workspace and sandbox
+
+Protected launches require the supported Linux sandbox, isolated networking,
+and a private workspace snapshot. Use `--workspace PATH` or prepare one from
+the operator terminal:
+
+```bash
+kepr workspace prepare SOURCE
+kepr workspace review SESSION
+kepr workspace export SESSION --approve DIGEST --output NEW_DIRECTORY
+```
+
+Review the generated patch before using the one-use digest. Export writes a
+new bundle; it does not modify the original tree or silently apply deletions.
+The snapshot reports files omitted for unsafe paths, links, binary or
+oversized content, control characters, or failed screening. Explicit file
+inputs are UTF-8 text and fail closed when they cannot be screened.
+
+`--compatibility` is an explicit security downgrade. It may use the sandbox
+when available; `--compatibility --no-sandbox` is the only non-sandbox path.
+Do not use it to repair an authentication, binding, privacy, or isolation
+failure. Codex protection always requires the sandbox. `local-only` currently
+refuses cloud launch because local inference routing is not implemented.
+
+## Secret-safe inspection
+
+Never print environment variables or `.env` files. For bounded source or log
+inspection that may contain key-shaped examples, pass captured text through
+`kepr hook redact` and emit only its validated `text` field. If the safety
+check fails, withhold the captured output. If a real credential appears,
+stop and tell the operator to run `kepr leaked NAME`; do not copy or rotate it
+from the agent.
+
+An OpenAI Responses "different ... OpenAI resource" error is an upstream
+conversation-state failure. Preserve item contents, tool-call links, and
+encrypted reasoning; do not delete live history or disable Kepr to repair it.
+Updated gates apply to new agent sessions, so leave the current gate running
+while it is in use.

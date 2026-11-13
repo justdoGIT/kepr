@@ -62,6 +62,8 @@ pub struct KeyHealth {
 /// Optional parts of `GateStarted` (P2.1 egress CA, P7.1 database ports).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GateExtras {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub privacy: Option<crate::privacy::Preset>,
     /// Session CA (PEM) for the egress proxy; tools must trust it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ca_pem: Option<String>,

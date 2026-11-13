@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use kepr_core::binding::Inject;
 use kepr_core::framing::{read_frame, write_frame};
-use kepr_core::gate_journal::JournalEntry;
+use kepr_core::gate_journal::{DecisionRecord, JournalEntry, ResultRecord};
 use kepr_core::gate_protocol::{GateRequest, GateResponse};
 use kepr_core::gate_record::GateRecord;
 use kepr_core::generate::ZeroString;
@@ -43,6 +43,12 @@ pub trait Resolve: Send + Sync {
     /// T11.22: hand request journal entries to the daemon.
     fn journal(&self, _entries: Vec<JournalEntry>) -> Result<(), String> {
         Err("journal is not available".into())
+    }
+    fn decision(&self, _record: DecisionRecord) -> Result<(), String> {
+        Err("decision journal is not available".into())
+    }
+    fn result(&self, _record: ResultRecord) -> Result<(), String> {
+        Err("decision journal is not available".into())
     }
     /// T9.06: add to today's usage of `name`; today's (requests, tokens).
     fn day_usage(&self, _name: &str, _requests: u64, _tokens: u64) -> Result<(u64, u64), String> {
@@ -100,84 +106,16 @@ impl FdResolver {
             // A late reply to an earlier request that timed out: drop it.
         }
     }
-}
-
-impl Resolve for FdResolver {
-    fn resolve(&self, name: &str, host: &str, port: u16) -> Result<(ZeroString, Inject), String> {
-        let req = |id| GateRequest::Resolve {
-            id,
-            name: name.to_string(),
-            host: host.to_string(),
-            port,
-        };
-        match self.call(req)? {
-            GateResponse::ResolveOk { value, inject, .. } => Ok((value, inject)),
-            GateResponse::Err { error, .. } => Err(error),
-            _ => Err("daemon channel: unexpected reply".into()),
-        }
-    }
-
-    fn generation(&self) -> Result<u64, String> {
-        match self.call(|id| GateRequest::Generation { id })? {
-            GateResponse::Generation { generation, .. } => Ok(generation),
-            GateResponse::Err { error, .. } => Err(error),
-            _ => Err("daemon channel: unexpected reply".into()),
-        }
-    }
-
-    fn record(&self, record: GateRecord) -> Result<(), String> {
-        match self.call(|id| GateRequest::Record { id, record })? {
-            GateResponse::Recorded { .. } => Ok(()),
-            GateResponse::Err { error, .. } => Err(error),
-            _ => Err("daemon channel: unexpected reply".into()),
-        }
-    }
-
-    fn journal(&self, entries: Vec<JournalEntry>) -> Result<(), String> {
-        match self.call(|id| GateRequest::Journal { id, entries })? {
-            GateResponse::Recorded { .. } => Ok(()),
-            GateResponse::Err { error, .. } => Err(error),
-            _ => Err("daemon channel: unexpected reply".into()),
-        }
-    }
-
-    fn day_usage(&self, name: &str, requests: u64, tokens: u64) -> Result<(u64, u64), String> {
-        let req = |id| GateRequest::DayUsage {
-            id,
-            name: name.to_string(),
-            requests,
-            tokens,
-        };
-        match self.call(req)? {
-            GateResponse::UsageToday {
-                requests, tokens, ..
-            } => Ok((requests, tokens)),
-            GateResponse::Err { error, .. } => Err(error),
-            _ => Err("daemon channel: unexpected reply".into()),
-        }
-    }
-
-    fn rotate_commit(&self, name: &str, value: &ZeroString) -> Result<(), String> {
-        let req = |id| GateRequest::RotateCommit {
-            id,
-            name: name.to_string(),
-            value: ZeroString::from(value.as_str()),
-        };
-        match self.call(req)? {
-            GateResponse::Rotated { .. } => Ok(()),
-            GateResponse::Err { error, .. } => Err(error),
-            _ => Err("daemon channel: unexpected reply".into()),
-        }
-    }
-
-    fn canary(&self, fingerprints: Vec<String>) -> Result<bool, String> {
-        match self.call(|id| GateRequest::Canary { id, fingerprints })? {
-            GateResponse::CanaryChecked { tripped, .. } => Ok(tripped),
+    fn acknowledged(&self, make: impl FnOnce(u64) -> GateRequest) -> Result<(), String> {
+        match self.call(make)? {
+            GateResponse::DecisionRecorded { .. } | GateResponse::ResultRecorded { .. } => Ok(()),
             GateResponse::Err { error, .. } => Err(error),
             _ => Err("daemon channel: unexpected reply".into()),
         }
     }
 }
+#[path = "vault_resolver.rs"]
+mod vault_resolver;
 
 type Key = (String, String, u16);
 
@@ -194,6 +132,7 @@ pub struct Cache {
     /// tokens) by a hash of what minted them, with their expiry; dropped
     /// with the values, so a store change ends them too.
     minted: Mutex<HashMap<[u8; 32], (SecretCell, u64)>>,
+    durable_decisions: bool,
 }
 
 impl Cache {
@@ -205,11 +144,16 @@ impl Cache {
             generation: Mutex::new((0, None)),
             resolving: Mutex::new(()),
             minted: Mutex::new(HashMap::new()),
+            durable_decisions: false,
         }
+    }
+    pub fn with_durable_decisions(mut self) -> Self {
+        self.durable_decisions = true;
+        self
     }
 
     fn cached(&self, key: &Key) -> Option<(ZeroString, Inject)> {
-        let map = self.entries.lock().ok()?;
+        let map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let (v, i, at) = map.get(key)?;
         (at.elapsed() < self.ttl).then(|| (v.reveal(), i.clone()))
     }
@@ -242,32 +186,30 @@ impl Cache {
             return Ok(hit); // resolved by the request we waited behind
         }
         let (v, i) = self.resolver.resolve(name, host, port)?;
-        if let Ok(mut map) = self.entries.lock() {
-            map.insert(key, (SecretCell::new(&v), i.clone(), Instant::now()));
-        }
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, (SecretCell::new(&v), i.clone(), Instant::now()));
         Ok((v, i))
     }
 
-    /// `(NAME, value)` for every value this session has resolved; used
-    /// by the prompt DLP check.
+    /// Every resolved value and minted token in this session for outbound
+    /// screening. Poisoned HashMaps remain structurally valid; recover their
+    /// guards rather than silently losing the screening set.
     pub fn values(&self) -> Vec<(String, ZeroString)> {
-        match self.entries.lock() {
-            Ok(map) => map
-                .iter()
-                .map(|((n, _, _), (v, inject, _))| {
-                    let value = v.reveal();
-                    let value = if *inject == Inject::CloudflareGateway {
-                        kepr_core::cloudflare::GatewayCredential::parse(value.as_str())
-                            .map(|login| login.token)
-                            .unwrap_or(value)
-                    } else {
-                        value
-                    };
-                    (n.clone(), value)
-                })
-                .collect(),
-            Err(_) => Vec::new(),
-        }
+        let map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<_> = map
+            .iter()
+            .map(|((n, _, _), (v, _, _))| (n.clone(), v.reveal()))
+            .collect();
+        drop(map);
+        let tokens = self.minted.lock().unwrap_or_else(|e| e.into_inner());
+        out.extend(
+            tokens
+                .values()
+                .map(|(v, _)| ("derived session token".into(), v.reveal())),
+        );
+        out
     }
 
     /// T12.01: what no response to the agent may contain: every cached
@@ -299,6 +241,21 @@ impl Cache {
     pub fn journal(&self, entries: Vec<JournalEntry>) -> Result<(), String> {
         self.resolver.journal(entries)
     }
+    fn persist(&self, f: impl FnOnce(&dyn Resolve) -> Result<(), String>) -> Result<(), String> {
+        if self.durable_decisions {
+            f(&*self.resolver)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn decision(&self, record: DecisionRecord) -> Result<(), String> {
+        self.persist(|resolver| resolver.decision(record))
+    }
+
+    pub fn result(&self, record: ResultRecord) -> Result<(), String> {
+        self.persist(|resolver| resolver.result(record))
+    }
 
     /// T9.08: ask the daemon about canary fingerprints (not cached).
     pub fn canary(&self, fingerprints: Vec<String>) -> Result<bool, String> {
@@ -310,6 +267,14 @@ impl Cache {
         self.resolver.day_usage(name, requests, tokens)
     }
 
+    /// Replace a sealed credential through the daemon and discard every
+    /// cached copy, including the pre-cutover value.
+    pub fn rotate_commit(&self, name: &str, value: &ZeroString) -> Result<(), String> {
+        self.resolver.rotate_commit(name, value)?;
+        self.clear();
+        Ok(())
+    }
+
     /// Drop every value and token; a cell zeroizes and unmaps its region
     /// on drop. A poisoned lock is cleared all the same.
     pub fn clear(&self) {
@@ -319,16 +284,15 @@ impl Cache {
 
     /// T7.08: a token minted under `key`, with its expiry.
     pub fn minted(&self, key: &[u8; 32]) -> Option<(ZeroString, u64)> {
-        let map = self.minted.lock().ok()?;
+        let map = self.minted.lock().unwrap_or_else(|e| e.into_inner());
         map.get(key).map(|(t, exp)| (t.reveal(), *exp))
     }
 
     /// T7.08: keep a token minted under `key` until `exp` (unix seconds).
     pub fn mint(&self, key: [u8; 32], token: &ZeroString, exp: u64, now: u64) {
-        if let Ok(mut map) = self.minted.lock() {
-            map.retain(|_, (_, e)| *e > now);
-            map.insert(key, (SecretCell::new(token), exp));
-        }
+        let mut map = self.minted.lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, (_, e)| *e > now);
+        map.insert(key, (SecretCell::new(token), exp));
     }
 }
 

@@ -6,86 +6,34 @@
 //   ssh_run(host, cmd)  a command over ssh with keys the daemon holds
 //       (P2.4); hosts must be listed with `--ssh`
 //
-//   kepr mcp [--read-only] [--ssh [USER@]HOST]... [--context TARGET=NOTE]...
+//   kepr mcp --credential NAME... [--allow-writes] [--ssh HOST --ssh-key NAME]...
 //
-// `--read-only` makes every db_query read-only; `--context` attaches an
+// Queries default to read-only; the operator can opt in to writes.
+// `--read-only` rejects a conflicting write opt-in; `--context` attaches an
 // ai_context note to a target (a database NAME or an ssh host) that is
 // returned with every result for it. No tool returns a credential: the
 // gate holds the database password, the daemon the SSH key, and results
 // have key-shaped strings and the session's placeholders masked.
 
-use std::collections::HashMap;
 use std::net::TcpStream;
 
+use kepr_core::authz::{self, Grant, GrantRequest};
 use kepr_core::protocol::{CredInfo, Request, Response};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
-use super::{mcp_pg, mcp_ssh};
+use super::mcp_pg;
 use crate::cli_mcp::Backend;
 use crate::client;
 
+#[path = "mcp_config.rs"]
+mod config;
+#[path = "mcp_session.rs"]
+mod session;
+pub use config::{Budget, McpConfig, NO_CONFIG};
+pub use session::{with_gate, Attempt, Gate, GateSession};
+
 const MAX_TEXT: usize = 64 * 1024;
-const MAX_NOTE: usize = 4096;
 const MAX_INPUT: usize = 64 * 1024;
-const USAGE: &str =
-    "usage: kepr mcp [--read-only] [--ssh [USER@]HOST]... [--context TARGET=NOTE]...";
-
-/// `kepr mcp`'s flags.
-#[derive(Debug, Default, PartialEq)]
-pub struct McpConfig {
-    pub read_only: bool,
-    pub ssh_hosts: Vec<String>,
-    /// (target, ai_context note)
-    pub context: Vec<(String, String)>,
-}
-
-pub static NO_CONFIG: McpConfig = McpConfig {
-    read_only: false,
-    ssh_hosts: Vec::new(),
-    context: Vec::new(),
-};
-
-impl McpConfig {
-    pub fn parse(raw: &[String]) -> Result<Self, String> {
-        let mut c = McpConfig::default();
-        let mut it = raw.iter();
-        while let Some(arg) = it.next() {
-            let mut value = || it.next().ok_or(format!("{arg} needs a value\n{USAGE}"));
-            match arg.as_str() {
-                "--read-only" => c.read_only = true,
-                "--ssh" => {
-                    let h = value()?;
-                    if !mcp_ssh::valid_host(h) {
-                        return Err(format!("--ssh {h}: not a [USER@]HOST"));
-                    }
-                    c.ssh_hosts.push(h.clone());
-                }
-                "--context" => {
-                    let (t, note) = value()?
-                        .split_once('=')
-                        .filter(|(t, n)| !t.is_empty() && n.chars().count() <= MAX_NOTE)
-                        .ok_or(format!(
-                            "--context: TARGET=NOTE, the note at most {MAX_NOTE} characters"
-                        ))?;
-                    c.context.push((t.to_string(), note.to_string()));
-                }
-                "--json" => {}
-                other => return Err(format!("unexpected argument: {other}\n{USAGE}")),
-            }
-        }
-        Ok(c)
-    }
-
-    /// The note for a database NAME (any case) or an ssh host.
-    pub fn context_for(&self, target: &str) -> Option<&str> {
-        self.context
-            .iter()
-            .rev()
-            .find(|(t, _)| t.eq_ignore_ascii_case(target))
-            .map(|(_, n)| n.as_str())
-    }
-}
-
 /// `kepr mcp`'s own arguments: everything after the verb.
 pub fn own_args() -> Vec<String> {
     let raw: Vec<String> = std::env::args().collect();
@@ -165,9 +113,70 @@ fn result(text: String, note: Option<&str>, is_error: bool) -> Value {
     json!({"content": content, "isError": is_error})
 }
 
+fn object<'a>(args: &'a Value, allowed: &[&str]) -> Result<&'a Map<String, Value>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "arguments must be a JSON object".to_string())?;
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("unknown argument `{key}`"));
+    }
+    Ok(object)
+}
+
+fn db_args(args: &Value) -> Result<(&str, &str, bool), String> {
+    let object = object(args, &["target", "sql", "read_only"])?;
+    let target = object
+        .get("target")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "target is required and must be a string".to_string())?;
+    let sql = object
+        .get("sql")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "sql is required and must be a string".to_string())?;
+    let read_only = object
+        .get("read_only")
+        .map(|v| {
+            v.as_bool()
+                .ok_or_else(|| "read_only must be a boolean".to_string())
+        })
+        .transpose()?
+        .unwrap_or(false);
+    Ok((target, sql, read_only))
+}
+
+fn ssh_args(args: &Value) -> Result<(&str, &str), String> {
+    let object = object(args, &["host", "cmd"])?;
+    let host = object
+        .get("host")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "host is required and must be a string".to_string())?;
+    let cmd = object
+        .get("cmd")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cmd is required and must be a string".to_string())?;
+    Ok((host, cmd))
+}
+
+fn authorize_grant(grant: &Grant, tool: &str, resource: &str, action: &str) -> Result<(), String> {
+    let request = GrantRequest {
+        tenant: grant.tenant.clone(),
+        workspace: grant.workspace.clone(),
+        tool: tool.to_string(),
+        connector_account: grant.connector_account.clone(),
+        resource: resource.to_string(),
+        action: action.to_string(),
+    };
+    match authz::decide(grant, &request) {
+        authz::Decision::Allow => Ok(()),
+        authz::Decision::NeedsApproval => {
+            Err("MCP authorization requires operator approval".into())
+        }
+        authz::Decision::Deny(reason) => Err(format!("MCP authorization denied: {reason}")),
+    }
+}
+
 /// db_query / ssh_run; `None` for any other tool.
 pub fn call(backend: &mut dyn Backend, name: &str, args: &Value) -> Option<Value> {
-    let s = |k: &str| args.get(k).and_then(Value::as_str);
     let too_long = |v: &str| v.len() > MAX_INPUT;
     let reply = |r: Result<String, String>, note| match r {
         Ok(t) => result(t, note, false),
@@ -175,8 +184,9 @@ pub fn call(backend: &mut dyn Backend, name: &str, args: &Value) -> Option<Value
     };
     match name {
         "db_query" => {
-            let (Some(target), Some(sql)) = (s("target"), s("sql")) else {
-                return Some(result("target and sql are required".into(), None, true));
+            let (target, sql, requested) = match db_args(args) {
+                Ok(parsed) => parsed,
+                Err(e) => return Some(result(e, None, true)),
             };
             let valid = (1..=128).contains(&target.len())
                 && target
@@ -189,24 +199,51 @@ pub fn call(backend: &mut dyn Backend, name: &str, args: &Value) -> Option<Value
                     true,
                 ));
             }
+            let class = match super::mcp_sql::classify(sql) {
+                Ok(class) => class,
+                Err(e) => return Some(result(e, None, true)),
+            };
             let target = target.to_ascii_uppercase();
-            let read_only =
-                backend.config().read_only || args.get("read_only") == Some(&json!(true));
+            if !backend.config().permits_credential(&target) {
+                return Some(result(
+                    "database target is outside the MCP credential grant".into(),
+                    None,
+                    true,
+                ));
+            }
+            let read_only = backend.config().read_only || requested;
+            if let Err(e) = backend
+                .config()
+                .authorize_db(&target, class.action(), read_only)
+            {
+                return Some(result(e, None, true));
+            }
             let note = backend.config().context_for(&target).map(str::to_string);
             let r = backend.db_query(&target, sql, read_only);
             Some(reply(r, note.as_deref()))
         }
         "ssh_run" => {
-            let (Some(host), Some(cmd)) = (s("host"), s("cmd")) else {
-                return Some(result("host and cmd are required".into(), None, true));
+            let (host, cmd) = match ssh_args(args) {
+                Ok(parsed) => parsed,
+                Err(e) => return Some(result(e, None, true)),
             };
             if !backend.config().ssh_hosts.iter().any(|h| h == host) {
                 let msg =
                     format!("{host} is not an allowed host; the user can allow it with `kepr mcp --ssh {host}`");
                 return Some(result(msg, None, true));
             }
+            if backend.config().ssh_keys.is_empty() {
+                return Some(result(
+                    "no SSH keys granted; operator must pass --ssh-key NAME".into(),
+                    None,
+                    true,
+                ));
+            }
             if cmd.trim().is_empty() || too_long(cmd) {
                 return Some(result("cmd is empty or too long".into(), None, true));
+            }
+            if let Err(e) = backend.config().authorize("ssh_run", host, "exec") {
+                return Some(result(e, None, true));
             }
             let note = backend.config().context_for(host).map(str::to_string);
             let r = backend.ssh_run(host, cmd);
@@ -214,21 +251,6 @@ pub fn call(backend: &mut dyn Backend, name: &str, args: &Value) -> Option<Value
         }
         _ => None,
     }
-}
-
-/// The MCP server's gate session.
-pub struct Gate {
-    pub port: u16,
-    /// Route key (provider name or `db:NAME`) → placeholder.
-    pub placeholders: HashMap<String, String>,
-    /// `db:NAME` → the gate's loopback port for it.
-    pub db_ports: HashMap<String, u16>,
-}
-
-pub enum Attempt<T> {
-    Done(T),
-    /// The gate is gone or lacks the route: start a fresh one (once).
-    Restart(String),
 }
 
 /// The caller's sealed credentials.
@@ -245,57 +267,7 @@ pub fn sealed() -> Result<Vec<CredInfo>, String> {
 
 pub use super::mcp_routes::session_routes;
 
-impl Gate {
-    pub fn start() -> Result<Gate, String> {
-        let routes = session_routes(&sealed()?);
-        if routes.is_empty() {
-            return Err("no sealed keys or database logins; add one with `kepr agent add` or `kepr agent add-db`".into());
-        }
-        let req = Request::StartGate {
-            routes,
-            port: None,
-            limits: Default::default(),
-            tunnel: false,
-            record: false,
-            harness: None, // T7.10: no harness, so no just-in-time credential
-        };
-        match client::send_request(&req)? {
-            Response::GateStarted {
-                port,
-                placeholders,
-                extras,
-                ..
-            } => Ok(Gate {
-                port,
-                placeholders,
-                db_ports: extras.db_ports,
-            }),
-            Response::Err { error } => Err(error),
-            _ => Err("unexpected daemon response".into()),
-        }
-    }
-}
-
-/// Start the gate if needed and run `f`; on `Restart` start a fresh
-/// session and try once more.
-pub fn with_gate<T>(
-    gate: &mut Option<Gate>,
-    mut f: impl FnMut(&Gate) -> Result<Attempt<T>, String>,
-) -> Result<T, String> {
-    let mut why = String::new();
-    for _ in 0..2 {
-        if gate.is_none() {
-            *gate = Some(Gate::start()?);
-        }
-        match f(gate.as_ref().expect("started"))? {
-            Attempt::Done(v) => return Ok(v),
-            Attempt::Restart(reason) => (*gate, why) = (None, reason),
-        }
-    }
-    Err(why)
-}
-
-pub const GATE_GONE: &str = "kepr gate unavailable; is the store locked? (`kepr unlock`)";
+pub const GATE_GONE: &str = "MCP gate unavailable; operator must start a new session";
 
 /// One db_query on `gate`'s route for `target`.
 pub fn db_attempt(
@@ -304,14 +276,17 @@ pub fn db_attempt(
     sql: &str,
     read_only: bool,
 ) -> Result<Attempt<String>, String> {
+    let class = super::mcp_sql::classify(sql)?;
+    if read_only && class != super::mcp_sql::StatementClass::Query {
+        return Err("read-only MCP calls may run query statements only".into());
+    }
+    authorize_grant(&gate.grant, "db_query", target, class.action())?;
     let key = kepr_core::gate_protocol::db_route_key(target);
     let (Some(port), Some(ph)) = (gate.db_ports.get(&key), gate.placeholders.get(&key)) else {
-        return Ok(Attempt::Restart(format!(
-            "no sealed PostgreSQL login {target}; add one with `kepr agent add-db {target} --url postgres://…`"
-        )));
+        return Err("PostgreSQL login is outside this MCP session grant".into());
     };
     let Ok(conn) = TcpStream::connect(("127.0.0.1", *port)) else {
-        return Ok(Attempt::Restart(GATE_GONE.into()));
+        return Ok(Attempt::Unavailable(GATE_GONE.into()));
     };
     mcp_pg::query(conn, ph, sql, read_only)
         .map(|o| Attempt::Done(scrub(&mcp_pg::format(&o), &[ph])))
@@ -323,6 +298,7 @@ mod tests {
     use super::*;
     use crate::cli_gatex::mcp_pg::tests::{fake_gate, PH};
     use crate::cli_mcp::SecretInfo;
+    use std::collections::HashMap;
 
     fn v(s: &[&str]) -> Vec<String> {
         s.iter().map(|x| x.to_string()).collect()
@@ -371,6 +347,19 @@ mod tests {
             .collect()
     }
 
+    fn gate_for(cfg: &McpConfig, port: u16) -> Gate {
+        Gate {
+            port: 0,
+            placeholders: HashMap::from([("db:APP_DB".into(), PH.into())]),
+            db_ports: HashMap::from([("db:APP_DB".into(), port)]),
+            grant: cfg.grant_for("db_query"),
+        }
+    }
+
+    fn db_cfg() -> McpConfig {
+        McpConfig::parse(&v(&["--credential", "APP_DB"])).unwrap()
+    }
+
     #[test]
     fn parses_flags() {
         let c = McpConfig::parse(&v(&[
@@ -400,6 +389,41 @@ mod tests {
     }
 
     #[test]
+    fn sec_003_defaults_to_read_only() {
+        assert!(McpConfig::default().read_only);
+        assert!(McpConfig::parse(&[]).unwrap().read_only);
+    }
+
+    #[test]
+    fn sec_003_ungranted_database_is_denied_before_backend() {
+        let mut b = Fake::default();
+        let r = call(
+            &mut b,
+            "db_query",
+            &json!({"target": "UNGRANTED", "sql": "select 1"}),
+        )
+        .unwrap();
+        assert_eq!(r["isError"], true);
+        assert!(b.db.is_empty());
+    }
+
+    #[test]
+    fn sec_003_operator_can_select_credentials_and_finite_limits() {
+        assert!(McpConfig::parse(&v(&[
+            "--credential",
+            "APP_DB",
+            "--max-requests",
+            "10",
+            "--max-tokens",
+            "1000",
+            "--per-minute",
+            "5",
+            "--allow-writes",
+        ]))
+        .is_ok());
+    }
+
+    #[test]
     fn tool_schemas() {
         let t = tools(&McpConfig::default());
         assert_eq!(t.len(), 1, "no ssh_run without --ssh hosts");
@@ -422,7 +446,10 @@ mod tests {
 
     #[test]
     fn read_only_is_forwarded_and_the_server_flag_cannot_be_lifted() {
-        let mut b = Fake::default();
+        let mut b = Fake {
+            cfg: McpConfig::parse(&v(&["--credential", "APP_DB", "--allow-writes"])).unwrap(),
+            ..Default::default()
+        };
         let q = |b: &mut Fake, ro: Value| {
             call(
                 b,
@@ -433,7 +460,7 @@ mod tests {
         };
         q(&mut b, json!(false));
         q(&mut b, json!(true));
-        b.cfg.read_only = true;
+        b.cfg.read_only = true; // The operator's flag cannot be lifted.
         q(&mut b, json!(false));
         let ro: Vec<bool> = b.db.iter().map(|d| d.2).collect();
         assert_eq!(ro, [false, true, true]);
@@ -450,11 +477,114 @@ mod tests {
     }
 
     #[test]
+    fn sec_003_scope_mismatch_and_write_without_the_action_are_refused() {
+        // Scope mismatch is enforced by `authorize_grant` (the check in
+        // `db_attempt` that uses the gate's pinned grant). Build a grant
+        // with one workspace and verify a divergent request is denied.
+        let cfg = McpConfig::parse(&v(&[
+            "--credential",
+            "APP_DB",
+            "--workspace",
+            "/work/acme",
+            "--connector-account",
+            "work",
+        ]))
+        .unwrap();
+        let grant = cfg.grant_for("db_query");
+        assert!(authorize_grant(&grant, "db_query", "APP_DB", "query").is_ok());
+        // Workspace mismatch: request from "/work/other" against pinned grant.
+        let mut bad_ws = cfg.request_for("db_query", "APP_DB", "query");
+        bad_ws.workspace = "/work/other".into();
+        assert!(
+            !authz::decide(&grant, &bad_ws).allowed(),
+            "workspace mismatch"
+        );
+        // Connector-account crossover.
+        let mut bad_acct = cfg.request_for("db_query", "APP_DB", "query");
+        bad_acct.connector_account = "personal".into();
+        assert!(
+            !authz::decide(&grant, &bad_acct).allowed(),
+            "account crossover"
+        );
+        // Write and admin without the action (default is query-only).
+        let mut b = Fake {
+            cfg: McpConfig::parse(&v(&[
+                "--credential",
+                "APP_DB",
+                "--workspace",
+                "/work/acme",
+                "--connector-account",
+                "work",
+            ]))
+            .unwrap(),
+            ..Default::default()
+        };
+        let q = |b: &mut Fake, sql: &str| {
+            call(b, "db_query", &json!({"target": "APP_DB", "sql": sql})).unwrap()
+        };
+        assert_eq!(q(&mut b, "select 1")["isError"], false);
+        assert_eq!(
+            q(&mut b, "update t set a = 1")["isError"],
+            true,
+            "no write action"
+        );
+        assert_eq!(
+            q(&mut b, "drop table t")["isError"],
+            true,
+            "no admin action"
+        );
+        assert_eq!(b.db.len(), 1, "only the allowed tuple reached the backend");
+    }
+
+    #[test]
+    fn sec_003_arguments_and_statement_class_are_validated() {
+        let mut b = Fake {
+            cfg: McpConfig::parse(&v(&["--credential", "APP_DB", "--allow-writes"])).unwrap(),
+            ..Default::default()
+        };
+        for (args, why) in [
+            (
+                json!({"target": "APP_DB", "sql": "select 1", "read_only": "yes"}),
+                "type",
+            ),
+            (
+                json!({"target": "APP_DB", "sql": "select 1", "extra": 1}),
+                "unknown key",
+            ),
+            (
+                json!({"target": "APP_DB", "sql": "select 1; select 2"}),
+                "chaining",
+            ),
+            (
+                json!({"target": "APP_DB", "sql": "select 1;"}),
+                "trailing semicolon",
+            ),
+            (
+                json!({"target": "APP_DB", "sql": "drop table t"}),
+                "DDL without admin",
+            ),
+        ] {
+            let r = call(&mut b, "db_query", &args).unwrap();
+            assert_eq!(r["isError"], true, "{why}");
+        }
+        assert!(b.db.is_empty());
+        assert_eq!(
+            call(&mut b, "ssh_run", &json!({"host": "web1"})).unwrap()["isError"],
+            true
+        );
+        assert!(b.ssh.is_empty());
+    }
+
+    #[test]
     fn results_carry_the_targets_ai_context() {
         let mut b = Fake {
             cfg: McpConfig::parse(&v(&[
                 "--ssh",
                 "web1",
+                "--ssh-key",
+                "DEPLOY",
+                "--credential",
+                "APP_DB",
                 "--context",
                 "APP_DB=prod replica",
                 "--context",
@@ -495,7 +625,15 @@ mod tests {
     fn no_tool_returns_a_credential() {
         let key = format!("sk-ant-api03-{}", "k".repeat(40));
         let mut b = Fake {
-            cfg: McpConfig::parse(&v(&["--ssh", "web1"])).unwrap(),
+            cfg: McpConfig::parse(&v(&[
+                "--ssh",
+                "web1",
+                "--ssh-key",
+                "DEPLOY",
+                "--credential",
+                "T",
+            ]))
+            .unwrap(),
             reply: format!("token | {key}\nssh says {key}"),
             ..Default::default()
         };
@@ -514,11 +652,7 @@ mod tests {
         // Through a gate: the session placeholder never comes back, not
         // even when the server's error message quotes it.
         let (port, _rx) = fake_gate();
-        let gate = Gate {
-            port: 0,
-            placeholders: HashMap::from([("db:APP_DB".into(), PH.into())]),
-            db_ports: HashMap::from([("db:APP_DB".into(), port)]),
-        };
+        let gate = gate_for(&db_cfg(), port);
         let e = match db_attempt(&gate, "APP_DB", "select fail", true) {
             Err(e) => e,
             _ => panic!("expected the server error"),
@@ -530,25 +664,20 @@ mod tests {
     }
 
     #[test]
-    fn db_attempt_runs_through_the_gate_route_or_asks_for_a_restart() {
+    fn db_attempt_runs_through_the_granted_gate_or_reports_unavailable() {
         let (port, rx) = fake_gate();
-        let gate = Gate {
-            port: 0,
-            placeholders: HashMap::from([("db:APP_DB".into(), PH.into())]),
-            db_ports: HashMap::from([("db:APP_DB".into(), port)]),
-        };
+        let gate = gate_for(&db_cfg(), port);
         match db_attempt(&gate, "APP_DB", "select id, name from t", true).unwrap() {
             Attempt::Done(t) => assert_eq!(t, "id | name\n1 | alice\n2 | NULL\n(SELECT 2)"),
-            Attempt::Restart(w) => panic!("{w}"),
+            Attempt::Unavailable(w) => panic!("{w}"),
         }
         assert_eq!(
             rx.recv().unwrap(),
             "Q SET default_transaction_read_only = on"
         );
-        match db_attempt(&gate, "OTHER", "select 1", false).unwrap() {
-            Attempt::Restart(w) => assert!(w.contains("no sealed PostgreSQL login OTHER"), "{w}"),
-            Attempt::Done(_) => panic!("unknown target"),
-        }
+        assert!(db_attempt(&gate, "OTHER", "select 1", false).is_err());
+        assert!(db_attempt(&gate, "APP_DB", "select 1; select 2", false).is_err());
+        assert!(db_attempt(&gate, "APP_DB", "drop table t", false).is_err());
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let dead = Gate {
             db_ports: HashMap::from([("db:APP_DB".into(), closed.local_addr().unwrap().port())]),
@@ -556,7 +685,7 @@ mod tests {
         };
         drop(closed);
         match db_attempt(&dead, "APP_DB", "select 1", false).unwrap() {
-            Attempt::Restart(w) => assert_eq!(w, GATE_GONE),
+            Attempt::Unavailable(w) => assert_eq!(w, GATE_GONE),
             Attempt::Done(_) => panic!("gate is gone"),
         }
     }

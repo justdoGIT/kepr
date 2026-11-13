@@ -53,7 +53,7 @@ fn command_help_text(command: &str) -> Option<&'static str> {
 "agent" => concat!(
     "USAGE:\n  kepr agent add NAME [--for PROVIDER] [--stdin]\n",
     "  kepr agent add-cloudflare\n",
-    "  kepr agent run HARNESS [--port N] [-- ARGV...]\n",
+    "  kepr agent run HARNESS [--workspace PATH | --workspace-session SESSION] [-- ARGV...]\n",
     "  kepr agent install HARNESS\n  kepr agent doctor [--json]\n\n",
     "add-cloudflare seals the existing CLOUDFLARE_AI_GATEWAY_API_KEY together ",
     "with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_GATEWAY_ID inside the daemon. ",
@@ -105,7 +105,7 @@ COMMANDS:
   fido2-list                           list registered FIDO2 keys
   protect-agent NAME [--] COMMAND ARGS  run CMD with Kepr-managed creds
   agent add-cloudflare                 seal existing Cloudflare login inside the daemon
-  agent run HARNESS [-- ARGV...]        run an agent with gate-held credentials
+  agent run HARNESS [--workspace PATH]  protected run; defaults to current folder (or reuse a session)
   agent install HARNESS | agent doctor install or check protected harness integration
 {more_help}
 

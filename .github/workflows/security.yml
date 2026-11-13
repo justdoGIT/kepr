@@ -13,6 +13,9 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/*/Cargo.toml"
+      - "crates/*/Cargo.lock"
+      - "crates/*/fuzz/Cargo.toml"
+      - "crates/*/fuzz/Cargo.lock"
       - "deny.toml"
       - "docs/package.json"
       - "docs/package-lock.json"
@@ -30,20 +33,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  cargo-audit:
-    name: cargo audit
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+  # SEC-012: Linux parser campaigns only; this does not qualify native OS isolation.
+  # Runs on the default branch during the weekly schedule or an explicit main run.
+  parser-fuzz:
+    name: Bounded core parser fuzzing (Linux)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: crates/kepr-core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: nightly-2025-06-26
+      - name: Install pinned cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.1
+      - name: Fetch locked fuzz dependencies
+        run: cargo fetch --locked --manifest-path fuzz/Cargo.toml
+      - name: Run bounded synthetic parser campaigns
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+          for target in frame_fuzz protocol_fuzz ssh_wire_fuzz mysql_wire_fuzz \
+            recovery_words_fuzz shamir_fuzz http_lite_fuzz gate_protocol_fuzz; do
+            cargo +nightly-2025-06-26 fuzz run "$target" -- \
+              -max_total_time=60 -timeout=5 -rss_limit_mb=512 -max_len=65536
+          done
+          git diff --exit-code -- fuzz/Cargo.lock
+
+  cargo-audit:
+    name: cargo audit
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   cargo-deny:
     name: cargo deny
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Use the cluster toolchain (devsetup-stable)
         if: env.DEVSETUP_RUST_BIN != ''
         run: |
@@ -69,12 +111,14 @@ jobs:
 
   npm-audit:
     name: npm audit (docs)
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: docs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
@@ -124,12 +168,14 @@ jobs:
 
   sbom:
     name: SBOM (SPDX)
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           format: spdx-json

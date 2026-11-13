@@ -1,7 +1,7 @@
 name: Performance
 
-# Divan benchmarks (crates/kepr-core/benches) measured on the cluster runner and
-# gated against a baseline taken on the same runner. This is the GitHub twin of
+# Divan benchmarks (crates/kepr-core/benches) measured on a hosted runner for PRs
+# and gated against a same-runner cluster baseline for trusted events. This is the GitHub twin of
 # the shared Forgejo `reusable-performance.yml` in justdoGIT/ci-templates and
 # runs the same script, installed pinned on the runner by dev-setup
 # (scripts/install-gh-runner-support.sh) because ci-templates is a private
@@ -32,18 +32,33 @@ concurrency:
 
 jobs:
   performance:
-    name: Benchmarks (cluster runner)
+    name: Benchmarks
     # CI_BENCH_RUNS_ON (repo variable, JSON), e.g. ["self-hosted","hp"]. Unset: skipped, because the gate needs the
-    # runner that holds the baseline and the installed script.
-    if: vars.CI_BENCH_RUNS_ON != '' && github.event.pull_request.draft != true
-    runs-on: ${{ fromJSON(vars.CI_BENCH_RUNS_ON || '"ubuntu-latest"') }}
+    # runner that holds the baseline and the installed script. PRs run without
+    # that baseline on a hosted runner and cannot update cluster state.
+    if: (github.event_name == 'pull_request' || vars.CI_BENCH_RUNS_ON != '') && github.event.pull_request.draft != true
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '"ubuntu-latest"' || vars.CI_BENCH_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Install the hosted Rust toolchain
+        if: github.event_name == 'pull_request'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Run hosted PR benchmarks
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          mkdir -p performance-results
+          cargo bench --locked -p kepr-core --bench core 2>&1 | tee performance-results/cargo.log
+
       - name: Use the cluster toolchain (devsetup-stable)
+        if: github.event_name != 'pull_request'
         # The runner hook writes these values to GITHUB_ENV before the job.
         # Check in the shell: the env expression is evaluated before that
         # hook-generated environment is loaded into subsequent steps.
@@ -54,6 +69,7 @@ jobs:
           fi
 
       - name: Run the benchmarks
+        if: github.event_name != 'pull_request'
         env:
           # A baseline only gates on the runner that took it, so the id is the runner's name.
           PERF_HOST_ID: ${{ runner.name }}

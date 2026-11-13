@@ -95,6 +95,9 @@ pub enum Request {
     /// (the agent harness, after exec). User-mode daemon only.
     StartGate {
         routes: Vec<crate::gate_protocol::GateRoute>,
+        /// Optional local privacy processing, confirmed by the gate handshake.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        privacy: Option<crate::privacy::Policy>,
         /// Fixed loopback port (for harnesses whose config file holds
         /// a fixed base URL). `None` = any free port.
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -115,6 +118,13 @@ pub enum Request {
         /// matched against just-in-time grants. Claimed by the caller.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         harness: Option<String>,
+    },
+    /// Create and validate a provider replacement inside a daemon-owned gate.
+    /// Only credential names cross the public daemon socket.
+    RotateProvider {
+        target: String,
+        provider: String,
+        bootstrap: String,
     },
     Get {
         name: String,

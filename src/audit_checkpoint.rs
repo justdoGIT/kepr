@@ -64,7 +64,14 @@ fn path_for(chain: &Path) -> PathBuf {
 
 /// The checkpoint for `chain`, when it can be trusted to skip a prefix.
 pub fn usable(chain: &Path) -> Option<Checkpoint> {
-    if std::env::var_os("KEPR_AUDIT_FULL_VERIFY").is_some_and(|v| v == "1") {
+    usable_with(
+        chain,
+        std::env::var_os("KEPR_AUDIT_FULL_VERIFY").is_some_and(|v| v == "1"),
+    )
+}
+
+fn usable_with(chain: &Path, force_full_verify: bool) -> Option<Checkpoint> {
+    if force_full_verify {
         return None;
     }
     let c: Checkpoint = serde_json::from_slice(&std::fs::read(path_for(chain)).ok()?).ok()?;
@@ -301,9 +308,6 @@ mod tests {
         let (p, _d) = log(4);
         AuditChain::open(p.clone()).unwrap();
         assert!(usable(&p).is_some());
-        std::env::set_var("KEPR_AUDIT_FULL_VERIFY", "1");
-        let forced = usable(&p);
-        std::env::remove_var("KEPR_AUDIT_FULL_VERIFY");
-        assert!(forced.is_none());
+        assert!(usable_with(&p, true).is_none());
     }
 }

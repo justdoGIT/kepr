@@ -71,6 +71,9 @@ pub struct PolicyFile {
     pub roles: BTreeMap<String, Role>,
     #[serde(default, rename = "rule")]
     pub rules: Vec<Rule>,
+    /// `[[tool_rule]]`: which tool calls a session may make (F1/F8).
+    #[serde(default, rename = "tool_rule")]
+    pub tool_rules: Vec<crate::policy_tools::ToolRule>,
     #[serde(default, rename = "test")]
     pub tests: Vec<TestCase>,
 }
@@ -229,6 +232,10 @@ impl PolicyFile {
                 return Err(format!("rule {}: unknown role `{unknown}`", i + 1));
             }
         }
+        let declared: Vec<String> = self.roles.keys().cloned().collect();
+        for (i, r) in self.tool_rules.iter().enumerate() {
+            r.validate(i + 1, &declared)?;
+        }
         for (i, t) in self.tests.iter().enumerate() {
             if !OPS.contains(&t.op.as_str()) {
                 return Err(format!("test {}: unknown op `{}`", i + 1, t.op));
@@ -261,6 +268,21 @@ impl PolicyFile {
             };
         }
         Decision::Deny(None, format!("no rule allows {} of {}", ctx.op, ctx.name))
+    }
+
+    /// What a session may do with `req` (F1/F8). A file with no
+    /// `[[tool_rule]]` leaves the decision to the operator's command-line
+    /// grant, so existing setups keep working; once the file has rules,
+    /// only they decide.
+    pub fn decide_tool(
+        &self,
+        roles: &[String],
+        req: &crate::authz::GrantRequest,
+    ) -> Option<crate::authz::Decision> {
+        match self.tool_rules.is_empty() {
+            true => None,
+            false => Some(crate::policy_tools::decide(&self.tool_rules, roles, req)),
+        }
     }
 
     /// Allow rules that can apply to `op` on `name` for some caller, with
@@ -299,55 +321,10 @@ impl PolicyFile {
         }
         out
     }
-
-    /// Run the `[[test]]` cases: `(passed, one line per case)`.
-    pub fn run_tests(&self) -> (bool, Vec<String>) {
-        let mut all = true;
-        let mut lines = Vec::new();
-        for (i, t) in self.tests.iter().enumerate() {
-            let name = t.name.to_ascii_uppercase();
-            let ctx = Ctx {
-                op: &t.op,
-                name: &name,
-                exe: t.exe.as_deref(),
-                parent: t.parent.as_deref(),
-                harness: t.harness.as_deref(),
-                roles: &t.roles,
-                hosts: &t.hosts,
-                ttl: t.ttl,
-            };
-            let got = self.check(&ctx);
-            let pass = got.allowed() == (t.expect == Effect::Allow);
-            all &= pass;
-            let who = [
-                ("exe", &t.exe),
-                ("parent", &t.parent),
-                ("harness", &t.harness),
-            ]
-            .iter()
-            .filter_map(|(k, v)| v.as_ref().map(|v| format!(" {k}={v}")))
-            .collect::<String>();
-            let verdict = match &got {
-                Decision::Allow(n) => format!("allow (rule {n})"),
-                Decision::Deny(_, why) => format!("deny ({why})"),
-            };
-            let expect = match t.expect {
-                Effect::Allow => "allow",
-                Effect::Deny => "deny",
-            };
-            lines.push(match pass {
-                true => format!("ok    test {}: {} {name}{who} -> {verdict}", i + 1, t.op),
-                false => format!(
-                    "FAIL  test {}: {} {name}{who} -> {verdict}, expected {expect}",
-                    i + 1,
-                    t.op
-                ),
-            });
-        }
-        (all, lines)
-    }
 }
 
+#[path = "policy_tests_runner.rs"]
+mod test_runner;
 #[cfg(test)]
 mod tests {
     use super::*;

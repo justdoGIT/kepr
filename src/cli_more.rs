@@ -18,6 +18,21 @@ type Group = (
 );
 
 const GROUPS: &[Group] = &[
+    (
+        crate::cli_workspace::VERBS,
+        crate::cli_workspace::HELP,
+        crate::cli_workspace::dispatch,
+    ),
+    (
+        crate::cli_privacy::VERBS,
+        crate::cli_privacy::HELP,
+        crate::cli_privacy::dispatch,
+    ),
+    (
+        crate::cli_endpoint::VERBS,
+        crate::cli_endpoint::HELP,
+        crate::cli_endpoint::dispatch,
+    ),
     // batch: vault
     (
         crate::cli_vault::VERBS,

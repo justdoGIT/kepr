@@ -10,6 +10,7 @@ use crate::{daemon_health, daemon_history, daemon_usage};
 pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Response {
     match request {
         Request::StartGate {
+            privacy,
             routes,
             port,
             limits,
@@ -23,8 +24,16 @@ pub fn dispatch(uid: u32, peer_pid: i32, username: &str, request: Request) -> Re
             &routes,
             (port, limits, tunnel, record),
             harness,
+            privacy,
         ),
         Request::History { name } => daemon_history::handle_history(uid, username, &name),
+        Request::RotateProvider {
+            target,
+            provider,
+            bootstrap,
+        } => crate::daemon_gate::handle_rotate_provider(
+            uid, peer_pid, username, &target, &provider, &bootstrap,
+        ),
         Request::Restore { name, version } => {
             daemon_history::handle_restore(uid, username, &name, version)
         }

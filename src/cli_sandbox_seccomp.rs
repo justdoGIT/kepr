@@ -21,6 +21,13 @@ pub fn program() -> Vec<libc::sock_filter> {
     seccomp::program(&denied_syscalls())
 }
 
+/// A private-workspace session's program: the sandbox's, plus
+/// `socket(2)` limited to internet families so no Unix, netlink,
+/// packet or vsock socket can reach a host service.
+pub fn workspace_program() -> Vec<libc::sock_filter> {
+    seccomp::workspace_program()
+}
+
 /// Install `prog` on the calling thread (inherited across exec). Takes
 /// a prebuilt program so it is safe to call between fork and exec
 /// (no allocation).

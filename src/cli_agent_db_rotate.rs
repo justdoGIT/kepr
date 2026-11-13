@@ -127,6 +127,7 @@ fn start_gate(name: &str) -> Result<(String, u16, TargetKind), String> {
     }
     let key = db_route_key(name);
     let (ph, port) = match client::send_request(&Request::StartGate {
+        privacy: None,
         routes,
         port: None,
         limits: GateLimits::default(),

@@ -7,10 +7,28 @@
 use serde::{Deserialize, Serialize};
 
 /// How a scheduled rotation runs (`.meta` `rotate_via`):
-/// `aws-iam`, `db`, or `hook:<generator>:<absolute path>`.
+/// `aws-iam`, `db`, `provider`, `provider:<name>`,
+/// `provider:<name>:<bootstrap credential>`, or
+/// `hook:<generator>:<absolute path>`.
 pub fn valid_rotate_via(via: &str) -> bool {
     match via {
-        "aws-iam" | "db" => true,
+        "aws-iam" | "db" | "provider" => true,
+        _ if via.starts_with("provider:") => {
+            let mut parts = via["provider:".len()..].split(':');
+            let valid_part = |part: Option<&str>| {
+                part.is_some_and(|p| {
+                    !p.is_empty()
+                        && p.len() <= 64
+                        && p.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                })
+            };
+            valid_part(parts.next())
+                && match parts.next() {
+                    None => true,
+                    Some(bootstrap) => valid_part(Some(bootstrap)) && parts.next().is_none(),
+                }
+        }
         _ => via
             .strip_prefix("hook:")
             .and_then(|r| r.split_once(':'))
@@ -140,6 +158,11 @@ mod tests {
         for ok in [
             "aws-iam",
             "db",
+            "provider",
+            "provider:openai",
+            "provider:openrouter",
+            "provider:openrouter:OPENROUTER_ADMIN",
+            "provider:auto:ROTATION_ADMIN",
             "hook:hex:/home/u/bin/rotate.sh",
             "hook:words:/a:b",
         ] {
@@ -152,6 +175,9 @@ mod tests {
             "hook:hex:relative.sh",
             "hook:nope:/a",
             "hook:hex:/a\nb",
+            "provider:openrouter:",
+            "provider:openrouter:ADMIN:EXTRA",
+            "provider:open router:ADMIN",
             "aws",
         ] {
             assert!(!valid_rotate_via(bad), "{bad}");

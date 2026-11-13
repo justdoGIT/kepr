@@ -37,6 +37,6 @@ jobs:
         env:
           SPEC: ${{ inputs.secret }}
         run: |
-          # shellcheck disable=SC2016  # $0 is expanded by the inner sh
           name="${SPEC%%=*}"
+          # shellcheck disable=SC2016  # $0 is expanded by the inner sh
           kepr exec --env "${name^^}" -- sh -c 'test -n "$(printenv "$0")" && echo "value present"' "${name^^}"

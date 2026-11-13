@@ -1,14 +1,10 @@
 //! Cross-platform `KeyringBackend` trait and host keyring implementations.
 //!
-//! STATUS: only `LinuxKeyringBackend` is a deliberate design choice today
-//! (see its doc comment). `MacOSKeyringBackend` and `WindowsKeyringBackend`
-//! are trait-conformant placeholders that do **not** yet call the Keychain
-//! or DPAPI APIs their names suggest — they currently perform the exact
-//! same "prepend a label, store the raw key" no-op as the Linux backend.
-//! Do not advertise macOS/Windows master-key protection as
-//! OS-keyring-backed until real `Security.framework` / `CryptProtectData`
-//! FFI lands here; tracked as a follow-up (no Windows/macOS CI runner
-//! exists in this repo to validate real platform crypto FFI).
+//! Linux deliberately uses a permissions-protected local envelope. The
+//! macOS/Windows types remain API-compatible unavailable backends and fail
+//! closed until verified native implementations exist. They never return
+//! raw-key envelopes under an OS-protection label. The daemon's separate
+//! macOS Keychain sealer is not implemented by this interface.
 
 use zeroize::Zeroizing;
 
@@ -48,61 +44,55 @@ impl KeyringBackend for LinuxKeyringBackend {
     }
 }
 
-/// PLACEHOLDER — not wired to macOS Keychain yet. Currently performs the
-/// same unencrypted label+key envelope as `LinuxKeyringBackend`; real
-/// protection relies entirely on the 0600 file permissions of the state
-/// directory that stores the sealed blob, same as Linux. See module docs.
+/// Unavailable macOS backend; native Keychain integration is required.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MacOSKeyringBackend;
 
 impl KeyringBackend for MacOSKeyringBackend {
     fn name(&self) -> &'static str {
-        "macos-keychain"
+        "macos-keychain-unavailable"
     }
 
-    fn seal_key(&self, key: &[u8; 32]) -> Result<Vec<u8>, String> {
-        let mut blob = b"kepr-mac-v1\n".to_vec();
-        blob.extend_from_slice(key);
-        Ok(blob)
+    fn seal_key(&self, _key: &[u8; 32]) -> Result<Vec<u8>, String> {
+        Err("macOS Keychain backend is unavailable; no key material was written".into())
     }
 
-    fn unseal_key(&self, blob: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
-        const PREFIX: &[u8] = b"kepr-mac-v1\n";
-        if blob.len() != PREFIX.len() + 32 || !blob.starts_with(PREFIX) {
-            return Err("invalid macos keychain keyring format".to_string());
-        }
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&blob[PREFIX.len()..]);
-        Ok(Zeroizing::new(out))
+    fn unseal_key(&self, _blob: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+        Err("macOS Keychain backend is unavailable; operator migration of legacy envelopes is required".into())
     }
 }
 
-/// PLACEHOLDER — not wired to Windows DPAPI (`CryptProtectData`) yet.
-/// Currently performs the same unencrypted label+key envelope as
-/// `LinuxKeyringBackend`; real protection relies entirely on host
-/// filesystem ACLs on the state directory. See module docs.
+/// Unavailable Windows backend; verified DPAPI integration is required.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WindowsKeyringBackend;
 
 impl KeyringBackend for WindowsKeyringBackend {
     fn name(&self) -> &'static str {
-        "windows-dpapi"
+        "windows-dpapi-unavailable"
     }
 
-    fn seal_key(&self, key: &[u8; 32]) -> Result<Vec<u8>, String> {
-        let mut blob = b"kepr-dpapi-v1\n".to_vec();
-        blob.extend_from_slice(key);
-        Ok(blob)
+    fn seal_key(&self, _key: &[u8; 32]) -> Result<Vec<u8>, String> {
+        Err("Windows DPAPI backend is unavailable; no key material was written".into())
     }
 
-    fn unseal_key(&self, blob: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
-        const PREFIX: &[u8] = b"kepr-dpapi-v1\n";
-        if blob.len() != PREFIX.len() + 32 || !blob.starts_with(PREFIX) {
-            return Err("invalid windows dpapi keyring format".to_string());
-        }
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&blob[PREFIX.len()..]);
-        Ok(Zeroizing::new(out))
+    fn unseal_key(&self, _blob: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+        Err("Windows DPAPI backend is unavailable; operator migration of legacy envelopes is required".into())
+    }
+}
+
+/// Unsupported platforms never inherit Linux's local-envelope behavior.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UnsupportedKeyringBackend;
+
+impl KeyringBackend for UnsupportedKeyringBackend {
+    fn name(&self) -> &'static str {
+        "unsupported-os"
+    }
+    fn seal_key(&self, _key: &[u8; 32]) -> Result<Vec<u8>, String> {
+        Err("no supported keyring backend for this OS".into())
+    }
+    fn unseal_key(&self, _blob: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+        Err("no supported keyring backend for this OS".into())
     }
 }
 
@@ -116,9 +106,13 @@ pub fn platform_keyring_backend() -> Box<dyn KeyringBackend> {
     {
         Box::new(WindowsKeyringBackend)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
     {
         Box::new(LinuxKeyringBackend)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Box::new(UnsupportedKeyringBackend)
     }
 }
 
@@ -127,6 +121,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn macos_placeholder_refuses_to_wrap_or_recover_raw_keys() {
+        let key = [0x42; 32];
+        let mut legacy = b"kepr-mac-v1\n".to_vec();
+        legacy.extend_from_slice(&key);
+        assert!(MacOSKeyringBackend.seal_key(&key).is_err());
+        assert!(MacOSKeyringBackend.unseal_key(&legacy).is_err());
+    }
+
+    #[test]
+    fn windows_placeholder_refuses_to_wrap_or_recover_raw_keys() {
+        let key = [0x42; 32];
+        let mut legacy = b"kepr-dpapi-v1\n".to_vec();
+        legacy.extend_from_slice(&key);
+        assert!(WindowsKeyringBackend.seal_key(&key).is_err());
+        assert!(WindowsKeyringBackend.unseal_key(&legacy).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn test_platform_keyring_backend_round_trip() {
         let backend = platform_keyring_backend();
         let test_key = [0x42u8; 32];

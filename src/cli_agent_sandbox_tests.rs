@@ -109,3 +109,10 @@ fn wait_init_reaps_orphaned_children_before_harness_exits() {
         assert_eq!(libc::WEXITSTATUS(status), 0);
     }
 }
+#[test]
+fn failed_or_signalled_probe_never_reports_success_without_a_message() {
+    assert!(super::finish_probe(String::new(), 125).is_err());
+    assert!(super::finish_probe(String::new(), 137).is_err());
+    assert!(super::finish_probe("setup failed".into(), 0).is_err());
+    assert!(super::finish_probe(String::new(), 0).is_ok());
+}

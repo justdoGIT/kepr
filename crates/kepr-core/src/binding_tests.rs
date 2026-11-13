@@ -162,8 +162,7 @@ fn gcp_token_binds_only_google_api_hosts() {
     let j = serde_json::to_string(&bb).unwrap();
     assert!(
         j.contains(&format!(
-            r#"{{"kind":"gcp_token","scopes":["{cloud}"],"impersonate":"{}"}}"#,
-            email
+            r#"{{"kind":"gcp_token","scopes":["{cloud}"],"impersonate":"{email}"}}"#
         )),
         "{j}"
     );
