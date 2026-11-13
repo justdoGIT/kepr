@@ -142,7 +142,7 @@ public class KeprTests
             {
                 using var c = server.Accept(); // accepts, reads nothing, never answers
                 Thread.Sleep(3000);
-            } } catch { }
+            }
             catch (SocketException) { }
         }) { IsBackground = true };
         t.Start();

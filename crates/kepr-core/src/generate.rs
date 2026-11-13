@@ -206,6 +206,7 @@ pub fn random_chars(alphabet: &[u8], len: usize) -> Result<Vec<u8>, String> {
 }
 
 /// `n` words drawn uniformly from the EFF large wordlist.
+#[allow(unknown_lints)]
 #[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn random_words(n: usize) -> Result<Vec<&'static str>, String> {
     let words: Vec<&str> = EFF_WORDS.lines().collect();
@@ -229,7 +230,7 @@ pub fn generate_secret(kind: GenKind) -> Result<ZeroString, String> {
             let bytes = UrandomRng::bytes(32)?;
             bytes
                 .iter()
-                .map(|b| format!("{:02x}", b))
+                .map(|b| format!("{b:02x}"))
                 .collect::<String>()
         }
 
@@ -303,7 +304,7 @@ mod tests {
         // representation (panic messages, dbg! macros, error reports)
         // is safe by construction.
         let z = ZeroString::from_string("super-secret-totp-seed".to_string());
-        let dbg = format!("{:?}", z);
+        let dbg = format!("{z:?}");
         assert!(!dbg.contains("super-secret"), "leaked: {dbg}");
         assert!(!dbg.contains("totp"), "leaked: {dbg}");
         assert_eq!(dbg, "ZeroString(<redacted>)");
