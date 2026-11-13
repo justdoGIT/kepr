@@ -197,8 +197,8 @@ fn sweep_legacy_credstore() {
         };
         if is_legacy {
             match fs::remove_file(&path) {
-                Ok(()) => eprintln!("[kepr-daemon] swept legacy credential: {}", name_str),
-                Err(e) => eprintln!("[kepr-daemon] failed to sweep {}: {e}", name_str),
+                Ok(()) => eprintln!("[kepr-daemon] swept legacy credential: {name_str}"),
+                Err(e) => eprintln!("[kepr-daemon] failed to sweep {name_str}: {e}"),
             }
         }
     }

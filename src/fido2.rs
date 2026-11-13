@@ -389,7 +389,7 @@ mod tests {
     fn parse_es256_key_from_known_cose() {
         let x_hex = "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
         let y_hex = "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
-        let cose_hex = format!("a5010203262001215820{}225820{}", x_hex, y_hex);
+        let cose_hex = format!("a5010203262001215820{x_hex}225820{y_hex}");
         let cose_bytes = hex::decode(&cose_hex).unwrap();
         let key = parse_es256_public_key(&cose_bytes).unwrap();
         assert_eq!(key.len(), 65);
@@ -493,10 +493,7 @@ mod tests {
         let challenge_bytes = hex::decode(&hex_challenge).unwrap();
         use base64::Engine;
         let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge_bytes);
-        let cdj = format!(
-            r#"{{"type":"webauthn.get","challenge":"{}","origin":"kepr"}}"#,
-            b64u
-        );
+        let cdj = format!(r#"{{"type":"webauthn.get","challenge":"{b64u}","origin":"kepr"}}"#);
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
         // First call succeeds — challenge is known and unexpired.
@@ -509,10 +506,7 @@ mod tests {
         let challenge_bytes = hex::decode(&hex_challenge).unwrap();
         use base64::Engine;
         let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge_bytes);
-        let cdj = format!(
-            r#"{{"type":"webauthn.get","challenge":"{}","origin":"kepr"}}"#,
-            b64u
-        );
+        let cdj = format!(r#"{{"type":"webauthn.get","challenge":"{b64u}","origin":"kepr"}}"#);
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
         verify_challenge(&cdj_bytes, 1, "X").expect("first use should pass");
@@ -543,10 +537,7 @@ mod tests {
         let challenge_bytes = hex::decode(&forged).unwrap();
         use base64::Engine;
         let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge_bytes);
-        let cdj = format!(
-            r#"{{"type":"webauthn.get","challenge":"{}","origin":"kepr"}}"#,
-            b64u
-        );
+        let cdj = format!(r#"{{"type":"webauthn.get","challenge":"{b64u}","origin":"kepr"}}"#);
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
         let err = verify_challenge(&cdj_bytes, 1, "X").unwrap_err();
@@ -563,20 +554,14 @@ mod tests {
         let challenge_bytes = hex::decode(&c1).unwrap();
         use base64::Engine;
         let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge_bytes);
-        let cdj = format!(
-            r#"{{"type":"webauthn.get","challenge":"{}","origin":"kepr"}}"#,
-            b64u
-        );
+        let cdj = format!(r#"{{"type":"webauthn.get","challenge":"{b64u}","origin":"kepr"}}"#);
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
         verify_challenge(&cdj_bytes, 1, "X").expect("c1 should be in store");
         // c2 is still unused
         let challenge_bytes = hex::decode(&c2).unwrap();
         let b64u = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge_bytes);
-        let cdj = format!(
-            r#"{{"type":"webauthn.get","challenge":"{}","origin":"kepr"}}"#,
-            b64u
-        );
+        let cdj = format!(r#"{{"type":"webauthn.get","challenge":"{b64u}","origin":"kepr"}}"#);
         let cdj_hex = hex::encode(cdj.as_bytes());
         let cdj_bytes = hex::decode(&cdj_hex).unwrap();
         verify_challenge(&cdj_bytes, 1, "X").expect("c2 should be in store");
