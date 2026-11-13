@@ -228,10 +228,7 @@ pub fn generate_secret(kind: GenKind) -> Result<ZeroString, String> {
     let s = match kind {
         GenKind::Hex => {
             let bytes = UrandomRng::bytes(32)?;
-            bytes
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
         }
 
         GenKind::Base62 => {
