@@ -10,6 +10,9 @@ const DEFAULTS: Record<string, [string, string]> = {
     google: ["GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta"],
     groq: ["GROQ_API_KEY", "https://api.groq.com/openai/v1"],
     openrouter: ["OPENROUTER_API_KEY", "https://openrouter.ai/api/v1"],
+    fireworks: ["FIREWORKS_API_KEY", "https://api.fireworks.ai/inference/v1"],
+    moonshot: ["MOONSHOT_API_KEY", "https://api.moonshot.cn/v1"],
+    venice: ["VENICE_API_KEY", "https://api.venice.ai/api/v1"],
     deepseek: ["DEEPSEEK_API_KEY", "https://api.deepseek.com/v1"],
     mistral: ["MISTRAL_API_KEY", "https://api.mistral.ai/v1"],
     cerebras: ["CEREBRAS_API_KEY", "https://api.cerebras.ai/v1"],
@@ -45,7 +48,7 @@ const DEFAULTS: Record<string, [string, string]> = {
     lmzero: ["LMZERO_API_KEY", "https://17.wtf"],
     localai: ["LOCALAI_API_KEY", "https://local.ai"],
     marsai: ["MARSAI_API_KEY", "https://marsai.click"],
-    miarouter: ["MIAROUTER_API_KEY", "https://www.miarouter.online"],
+    miarouter: ["MIAROUTER_API_KEY", "https://miarouter.online"],
     omnirush: ["OMNIRUSH_API_KEY", "https://omnirush.ai"],
     onomeo: ["ONOMEO_API_KEY", "https://onomeo.com"],
     orbelis: ["ORBELIS_API_KEY", "https://nova.vcrauo.com"],
@@ -75,7 +78,7 @@ const DEFAULTS: Record<string, [string, string]> = {
     threerouter: ["THREEROUTER_API_KEY", "https://www.threerouter.com"],
     goroutine: ["GOROUTINE_API_KEY", ""],
     selora: ["SELORA_API_KEY", "https://api.selora.lol/v1"],
-    hcnsec: ["HCNSEC_API_KEY", "https://api.hcnsec.com/v1"],
+    hcnsec: ["HCNSEC_API_KEY", "https://api.hcnsec.cn/v1"],
     kktoken: ["KKTOKEN_API_KEY", "https://kktoken.cc/v1"],
 };
 

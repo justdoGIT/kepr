@@ -55,6 +55,22 @@ test('built-in defaults use sealed credentials and preserve models', () => {
   assert.equal(out.registrations.get('openai')?.baseUrl, gate + '/https+api.openai.com+OPENAI_API_KEY/v1');
   assert.equal(out.registrations.get('openai')?.models, undefined);
 });
+test('official OpenAI-compatible defaults preserve reviewed base paths', () => {
+  const routes = [
+    route('FIREWORKS_API_KEY', 0, 'api.fireworks.ai'),
+    route('MOONSHOT_API_KEY', 1, 'api.moonshot.cn'),
+    route('VENICE_API_KEY', 2, 'api.venice.ai'),
+  ];
+  const env = {
+    KEPR_OMP_KEY_0: 'kepr-ph-fireworks',
+    KEPR_OMP_KEY_1: 'kepr-ph-moonshot',
+    KEPR_OMP_KEY_2: 'kepr-ph-venice',
+  };
+  const out = plan({}, routes, env);
+  assert.equal(out.registrations.get('fireworks')?.baseUrl, gate + '/https+api.fireworks.ai+FIREWORKS_API_KEY/inference/v1');
+  assert.equal(out.registrations.get('moonshot')?.baseUrl, gate + '/https+api.moonshot.cn+MOONSHOT_API_KEY/v1');
+  assert.equal(out.registrations.get('venice')?.baseUrl, gate + '/https+api.venice.ai+VENICE_API_KEY/api/v1');
+});
 
 test('malformed route metadata and non-placeholder values fail closed', () => {
   assert.throws(() => plan({}, [{ ...route('WORK'), route: '../escape' }]));
