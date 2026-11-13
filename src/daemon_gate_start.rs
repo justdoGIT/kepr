@@ -6,6 +6,7 @@ use kepr_core::gate_protocol::{GateLimits, GateRoute, RotationConfig, SessionCon
 use kepr_core::protocol::Response;
 use std::os::unix::net::UnixStream;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn start(
     uid: u32,
     peer_pid: i32,

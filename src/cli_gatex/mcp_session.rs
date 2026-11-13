@@ -81,7 +81,7 @@ fn selected(
 pub enum GateSession {
     #[default]
     Fresh,
-    Active(Gate),
+    Active(Box<Gate>),
     Closed,
 }
 
@@ -101,7 +101,7 @@ fn run<T>(
 ) -> Result<T, String> {
     if matches!(session, GateSession::Fresh) {
         *session = GateSession::Closed;
-        *session = GateSession::Active(start(cfg)?);
+        *session = GateSession::Active(Box::new(start(cfg)?));
     }
     let GateSession::Active(gate) = session else {
         return Err("MCP gate authorization ended; operator must start a new session".into());

@@ -130,10 +130,7 @@ pub(super) fn source_tree_path(path: &str) -> Result<bool, &'static str> {
             return Ok(false);
         }
     }
-    if super::screen::check(path.as_bytes()).is_err() {
-        return Ok(false);
-    }
-    Ok(true)
+    Ok(super::screen::check(path.as_bytes()).is_ok())
 }
 
 pub(super) fn relative(path: &str) -> Result<(), &'static str> {

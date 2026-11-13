@@ -242,9 +242,11 @@ impl Cache {
         self.resolver.journal(entries)
     }
     fn persist(&self, f: impl FnOnce(&dyn Resolve) -> Result<(), String>) -> Result<(), String> {
-        self.durable_decisions
-            .then(|| f(&*self.resolver))
-            .unwrap_or(Ok(()))
+        if self.durable_decisions {
+            f(&*self.resolver)
+        } else {
+            Ok(())
+        }
     }
 
     pub fn decision(&self, record: DecisionRecord) -> Result<(), String> {

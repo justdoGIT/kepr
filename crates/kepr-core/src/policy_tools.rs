@@ -132,7 +132,7 @@ fn scope_hit(patterns: &[String], value: &str) -> bool {
 /// First matching rule decides; none matching denies, naming the rule count
 /// so the operator can tell "no rules" from "no rule matched".
 pub fn decide(rules: &[ToolRule], roles: &[String], req: &GrantRequest) -> Decision {
-    for rule in rules.iter().filter(|r| r.matches(roles, req)) {
+    if let Some(rule) = rules.iter().find(|r| r.matches(roles, req)) {
         let verdict = decide_scoped(&rule.conditions(), req);
         return match rule.effect {
             Effect::Deny => Decision::Deny("denied by tool rule".into()),
