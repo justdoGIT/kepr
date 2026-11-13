@@ -117,6 +117,36 @@ Protected runs edit a private copy. Keep the announced session identifier and
 review/export its changes afterward; see the [agent guide](docs/content/docs/guides/ai-agents.mdx).
 Explicit `--compatibility` weakens protection and is not a recommended workaround.
 
+#### Workspaces and Windows (`--workspace` and `--window`)
+
+- **Workspace Snapshot vs. In-Place Compatibility Mode**:
+  - By default, `kepr agent run <harness>` creates an ephemeral private workspace snapshot of the target directory (`--workspace PATH` or the current directory) under `~/.local/state/kepr/workspace/<SESSION>` and mounts it in an isolated user/mount namespace.
+  - Files in the snapshot are screened against sensitive credential patterns, control characters, binary formats, and size limits (max 2 MB per file, recursive decoding depth limit of 3).
+  - While snapshotting ensures no edits happen directly to your source files until approved via `kepr workspace review <SESSION>` and `kepr workspace export <SESSION>`, existing repositories with build directories (e.g. `target/`, `node_modules/`), deep test fixtures, or mock credentials will hit screening limits.
+  - For day-to-day software development in existing repositories (e.g. `~/projects/` or `~/git-repos/`), use **in-place compatibility mode**:
+    ```bash
+    kepr agent run omp --compatibility
+    kepr agent run codex --compatibility
+    kepr agent run claude --compatibility
+    ```
+    In compatibility mode, the agent operates directly on your working tree (where `git` provides version control and rollback), while **Kepr's loopback TLS proxy gate remains active**, ensuring LLM provider keys remain sealed and write-only behind session placeholders (`kepr-ph-...`).
+- **Terminal Windows (`--window`) & Multiplexers (Zellij)**:
+  - Adding `--window` (Unix only) spawns the agent session inside a dedicated GUI terminal window via the Rio GPU-accelerated terminal:
+    ```bash
+    kepr agent run omp --compatibility --window
+    ```
+  - **Inside Zellij multiplexer sessions (`sessions`)**:
+    - The `--window` flag invokes `rio` to spawn an independent Wayland/X11 desktop window outside the Zellij layout.
+    - To keep the agent session inside your existing Zellij session, run directly in your active pane (or alias via `~/.agentrc`):
+      ```bash
+      omp    # Runs: kepr agent run omp --compatibility -- omp "$@"
+      ```
+    - Or open a new dedicated tab inside Zellij:
+      ```bash
+      zellij action new-tab --name "omp" -- kepr agent run omp --compatibility
+      ```
+
+
 `kepr lock` / `kepr unlock` manage vault passphrase protection; they do not make
 sealed entries readable. A vault that reports unlocked can still have a separate
 ciphertext authentication failure. Preserve its credentials and original key or
