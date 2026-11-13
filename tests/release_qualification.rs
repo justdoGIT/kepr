@@ -14,10 +14,10 @@ fn job(workflow: &str, name: &str) -> String {
     assert!(lines.next().is_some(), "missing job {name}");
     lines
         .take_while(|line| {
-            !(line.starts_with("  ")
-                && !line.starts_with("   ")
-                && line.trim_end().ends_with(':')
-                && !line.trim_start().starts_with('#'))
+            !line.starts_with("  ")
+                || line.starts_with("   ")
+                || !line.trim_end().ends_with(':')
+                || line.trim_start().starts_with('#')
         })
         .collect::<Vec<_>>()
         .join("\n")

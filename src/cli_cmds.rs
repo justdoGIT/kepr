@@ -102,7 +102,7 @@ pub fn cmd_set(a: &Args) -> Response {
                 fido2_assertion: None,
             },
         )) {
-            warn(&format!("'{}' already exists.", name));
+            warn(&format!("'{name}' already exists."));
             eprint!("  {} ", color("0;36", "Overwrite? [y/N]:"));
             io::stderr().flush().ok();
             let mut ans = String::new();
@@ -257,7 +257,7 @@ pub fn cmd_get(a: &Args) -> Response {
                         return resp2;
                     }
                     Err(e) => {
-                        err(&format!("{} requires FIDO2 assertion.", name));
+                        err(&format!("{name} requires FIDO2 assertion."));
                         einfo(&format!("Ceremony failed: {e}"));
                         if credential_ids.is_empty() {
                             einfo("No keys. Register: kepr fido2-register LABEL CRED_ID COSE_KEY");
@@ -377,9 +377,9 @@ pub fn cmd_check(a: &Args) -> Response {
             entries.sort_by(|a, b| a.0.cmp(b.0));
             for (n, s) in entries {
                 if s == "ok" {
-                    ok(&format!("{:<40}", n));
+                    ok(&format!("{n:<40}"));
                 } else {
-                    err(&format!("{:<40} FAILED", n));
+                    err(&format!("{n:<40} FAILED"));
                 }
             }
             println!();

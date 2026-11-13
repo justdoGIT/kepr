@@ -56,12 +56,13 @@ impl Filter {
         if body.len() > kepr_core::privacy::MAX_TEXT_BYTES {
             return Err("privacy input too large".into());
         }
-        if !parts
+        let is_json = parts
             .headers
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|s| s.split(';').next() == Some("application/json"))
-        {
+            .map(|s| s.split(';').next() == Some("application/json"))
+            .unwrap_or(false);
+        if !is_json {
             return Err("privacy adapter requires JSON content".into());
         }
         let mut request: Value =
