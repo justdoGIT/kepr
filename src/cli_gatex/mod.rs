@@ -7,12 +7,12 @@ pub mod dbuser;
 pub mod grant;
 pub mod logs;
 pub mod mcp_pg;
+pub mod mcp_sql;
 pub mod mcp_ssh;
 pub mod mcp_tools;
 pub mod mysql_login;
 pub mod pg_script;
 pub mod replay;
-pub mod mcp_sql;
 pub mod tunnel;
 
 use kepr_core::protocol::Response;

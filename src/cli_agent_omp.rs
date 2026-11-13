@@ -37,6 +37,24 @@ pub fn routes(sealed: &[CredInfo]) -> Result<Vec<GateRoute>, String> {
     Ok(routes)
 }
 
+/// Required privacy grants only exact hosts with reviewed text adapters.
+pub fn privacy_routes(sealed: &[CredInfo]) -> Result<Vec<GateRoute>, String> {
+    let mut routes: Vec<_> = routes(sealed)?
+        .into_iter()
+        .filter(|r| kepr_core::privacy::supports_provider(&r.provider))
+        .collect();
+    if routes.is_empty() {
+        return Err(
+            "OMP privacy needs a sealed credential for a supported model-provider host".into(),
+        );
+    }
+    for (slot, route) in routes.iter_mut().enumerate() {
+        route.slot = slot as u16;
+    }
+    kepr_core::privacy::Policy::default().validate_routes(&routes, false)?;
+    Ok(routes)
+}
+
 pub fn env(
     routes: &[GateRoute],
     placeholders: &HashMap<String, String>,
@@ -57,6 +75,7 @@ pub fn env(
         // Keep harness/process controls separate from credential aliases.
         if !credential.starts_with("KEPR_")
             && !credential.starts_with("XDG_")
+            && !crate::cli_agent_run::reserved_environment_name(credential)
             && !matches!(
                 credential,
                 "HOME" | "PATH" | "SHELL" | "PI_CODING_AGENT_DIR"
@@ -127,5 +146,61 @@ mod tests {
             .map(|i| credential(&format!("KEY_{i}"), &["api.example.com:443"]))
             .collect();
         assert!(routes(&creds).is_err());
+    }
+
+    #[test]
+    fn required_omp_routes_exclude_uninspected_keys_and_keep_account_identity() {
+        let routes = privacy_routes(&[
+            credential("WORK", &["api.openai.com:443"]),
+            credential("PERSONAL", &["api.openai.com:443"]),
+            credential("ADMIN", &["api.github.com:443"]),
+            credential("CUSTOM", &["uninspected.example.invalid:443"]),
+        ])
+        .unwrap();
+        assert_eq!(routes.len(), 2);
+        assert!(routes
+            .iter()
+            .all(|r| matches!(r.cred.as_str(), "WORK" | "PERSONAL")));
+        assert_eq!(
+            routes.iter().map(|r| r.slot).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert!(privacy_routes(&[credential("ADMIN", &["api.github.com:443"])]).is_err());
+    }
+
+    #[test]
+    fn omp_credential_aliases_cannot_override_runtime_or_proxy_controls() {
+        for name in [
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "NODE_OPTIONS",
+            "PYTHONPATH",
+            "BASH_ENV",
+            "HTTPS_PROXY",
+            "SSL_CERT_FILE",
+            "DATABASE_URL",
+            "CODEX_HOME",
+            "LANG",
+            "AWS_REGION",
+            "DOCKER_CONFIG",
+            "REGISTRY_AUTH_FILE",
+            "NPM_CONFIG_USERCONFIG",
+            "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
+            "KUBECONFIG",
+            "AWS_CONFIG_FILE",
+        ] {
+            let routes = routes(&[credential(name, &["api.example.com:443"])]).unwrap();
+            let placeholders = routes
+                .iter()
+                .map(|r| (r.provider.clone(), "kepr-ph-test".to_string()))
+                .collect();
+            let vars = env(&routes, &placeholders).unwrap();
+            assert!(
+                !vars.iter().any(|(key, _)| key == name),
+                "reserved alias was exported: {name}"
+            );
+            assert!(vars.iter().any(|(key, _)| key.starts_with("KEPR_OMP_KEY_")));
+        }
     }
 }

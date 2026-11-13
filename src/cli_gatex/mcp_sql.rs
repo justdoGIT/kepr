@@ -64,11 +64,17 @@ fn dollar_delimiter(bytes: &[u8], start: usize) -> Option<&[u8]> {
     if bytes.get(end) == Some(&b'$') {
         return Some(&bytes[start..=end]);
     }
-    if !bytes.get(end).is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_') {
+    if !bytes
+        .get(end)
+        .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+    {
         return None;
     }
     end += 1;
-    while bytes.get(end).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_') {
+    while bytes
+        .get(end)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    {
         end += 1;
     }
     (bytes.get(end) == Some(&b'$')).then(|| &bytes[start..=end])
@@ -77,19 +83,27 @@ fn dollar_delimiter(bytes: &[u8], start: usize) -> Option<&[u8]> {
 fn skip_dollar_quote(bytes: &[u8], i: &mut usize) -> Result<(), String> {
     let delimiter = dollar_delimiter(bytes, *i).ok_or("invalid SQL dollar quote")?;
     let body = &bytes[*i + delimiter.len()..];
-    let end = body.windows(delimiter.len()).position(|w| w == delimiter)
+    let end = body
+        .windows(delimiter.len())
+        .position(|w| w == delimiter)
         .ok_or("SQL contains an unterminated dollar-quoted value")?;
     *i += delimiter.len() + end + delimiter.len();
     Ok(())
 }
 
 fn word(bytes: &[u8], i: &mut usize) -> Option<String> {
-    if !bytes.get(*i).is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_') {
+    if !bytes
+        .get(*i)
+        .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+    {
         return None;
     }
     let start = *i;
     *i += 1;
-    while bytes.get(*i).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_') {
+    while bytes
+        .get(*i)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    {
         *i += 1;
     }
     Some(String::from_utf8_lossy(&bytes[start..*i]).to_ascii_uppercase())
@@ -104,15 +118,25 @@ pub fn classify(sql: &str) -> Result<StatementClass, String> {
             b if b.is_ascii_whitespace() => i += 1,
             b'-' if bytes.get(i + 1) == Some(&b'-') => {
                 i += 2;
-                while bytes.get(i).is_some_and(|b| *b != b'\n') { i += 1; }
+                while bytes.get(i).is_some_and(|b| *b != b'\n') {
+                    i += 1;
+                }
             }
             b'/' if bytes.get(i + 1) == Some(&b'*') => skip_block_comment(bytes, &mut i)?,
-            b';' => return Err("SQL must contain exactly one statement; semicolons are refused".into()),
-            b'\'' | b'"' => { let quote = bytes[i]; skip_quote(bytes, &mut i, quote)?; }
+            b';' => {
+                return Err("SQL must contain exactly one statement; semicolons are refused".into())
+            }
+            b'\'' | b'"' => {
+                let quote = bytes[i];
+                skip_quote(bytes, &mut i, quote)?;
+            }
             b'$' if dollar_delimiter(bytes, i).is_some() => skip_dollar_quote(bytes, &mut i)?,
             _ => {
-                if first.is_none() { first = word(bytes, &mut i); }
-                else { i += 1; }
+                if first.is_none() {
+                    first = word(bytes, &mut i);
+                } else {
+                    i += 1;
+                }
             }
         }
     }
@@ -145,7 +169,17 @@ mod tests {
         ] {
             assert_eq!(classify(sql), Ok(expect), "{sql}");
         }
-        for bad in ["select 1;", "select 1; select 2", "select 1; -- trailing", "select 'unterminated", "select 'a\\\\'; drop table t; select 'x'", "select /* unterminated", "select $tag$ unterminated", "   ", ";"] {
+        for bad in [
+            "select 1;",
+            "select 1; select 2",
+            "select 1; -- trailing",
+            "select 'unterminated",
+            "select 'a\\\\'; drop table t; select 'x'",
+            "select /* unterminated",
+            "select $tag$ unterminated",
+            "   ",
+            ";",
+        ] {
             assert!(classify(bad).is_err(), "{bad}");
         }
     }

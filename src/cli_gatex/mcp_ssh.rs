@@ -42,6 +42,40 @@ pub struct Agent {
     pub sock: PathBuf,
 }
 
+/// Only operator-selected identities may be listed or used for signing.
+pub struct SelectedKeys {
+    backend: Arc<dyn Keys + Send + Sync>,
+    names: Vec<String>,
+}
+
+impl SelectedKeys {
+    pub fn new(backend: Arc<dyn Keys + Send + Sync>, names: Vec<String>) -> Self {
+        Self { backend, names }
+    }
+
+    fn permits(&self, name: &str) -> bool {
+        self.names.iter().any(|n| n.eq_ignore_ascii_case(name))
+    }
+}
+
+impl Keys for SelectedKeys {
+    fn list(&self) -> Result<Vec<kepr_core::protocol::SshKeyInfo>, String> {
+        Ok(self
+            .backend
+            .list()?
+            .into_iter()
+            .filter(|key| self.permits(&key.name))
+            .collect())
+    }
+
+    fn sign(&self, name: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+        if !self.permits(name) {
+            return Err("SSH identity is outside this MCP key grant".into());
+        }
+        self.backend.sign(name, data)
+    }
+}
+
 impl Drop for Agent {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -84,10 +118,22 @@ fn start_agent_in(
 
 /// ssh's arguments: kepr's agent only, batch mode, nothing forwarded.
 pub fn ssh_args(sock: &Path, host: &str, cmd: &str) -> Vec<String> {
-    let mut a: Vec<String> = vec!["-T".into()];
+    let mut a: Vec<String> = vec!["-T".into(), "-F".into(), "/dev/null".into()];
     for o in [
         "BatchMode=yes".to_string(),
         format!("IdentityAgent={}", sock.display()),
+        "IdentityFile=none".into(),
+        "IdentitiesOnly=no".into(), // Offer the selected agent identities, with no file identities.
+        "PreferredAuthentications=publickey".into(),
+        "PasswordAuthentication=no".into(),
+        "KbdInteractiveAuthentication=no".into(),
+        "GSSAPIAuthentication=no".into(),
+        "HostbasedAuthentication=no".into(),
+        "PKCS11Provider=none".into(),
+        "SecurityKeyProvider=internal".into(),
+        "ProxyCommand=none".into(),
+        "ProxyJump=none".into(),
+        "StrictHostKeyChecking=yes".into(),
         "ForwardAgent=no".into(),
         "ForwardX11=no".into(),
         "ClearAllForwardings=yes".into(),
@@ -208,6 +254,16 @@ mod tests {
     }
 
     #[test]
+    fn operator_selected_keys_never_offer_or_sign_other_identities() {
+        let denied = SelectedKeys::new(Arc::new(FakeKeys), vec!["OTHER".into()]);
+        assert!(denied.list().unwrap().is_empty());
+        assert!(denied.sign("DEPLOY", b"request").is_err());
+        let allowed = SelectedKeys::new(Arc::new(FakeKeys), vec!["DEPLOY".into()]);
+        assert_eq!(allowed.list().unwrap().len(), 1);
+        assert_eq!(allowed.sign("DEPLOY", b"request").unwrap(), b"sig");
+    }
+
+    #[test]
     fn ssh_uses_only_kepr_s_agent_and_forwards_nothing() {
         let a = ssh_args(Path::new("/run/x/agent.sock"), "deploy@web1", "uptime");
         let opts: Vec<&str> = a.iter().map(String::as_str).collect();
@@ -222,6 +278,28 @@ mod tests {
             assert!(opts.contains(&o), "{o}");
         }
         assert_eq!(&opts[opts.len() - 3..], ["--", "deploy@web1", "uptime"]);
+    }
+
+    #[test]
+    fn sec_003_ssh_cannot_use_implicit_file_keys_or_user_proxy_config() {
+        let args = ssh_args(Path::new("/run/test/agent.sock"), "host", "uptime");
+        assert!(args.windows(2).any(|pair| pair == ["-F", "/dev/null"]));
+        for setting in [
+            "IdentityFile=none",
+            "PreferredAuthentications=publickey",
+            "PasswordAuthentication=no",
+            "KbdInteractiveAuthentication=no",
+            "GSSAPIAuthentication=no",
+            "HostbasedAuthentication=no",
+            "ProxyCommand=none",
+            "ProxyJump=none",
+            "StrictHostKeyChecking=yes",
+        ] {
+            assert!(
+                args.iter().any(|arg| arg == setting),
+                "missing setting {setting}"
+            );
+        }
     }
 
     #[test]

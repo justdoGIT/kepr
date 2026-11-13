@@ -321,7 +321,6 @@ impl PolicyFile {
         }
         out
     }
-
 }
 
 #[path = "policy_tests_runner.rs"]

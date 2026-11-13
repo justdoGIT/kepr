@@ -2,7 +2,9 @@
 // `Request::Gatex` arrives here from daemon_extra.rs; the uid is the
 // caller's SO_PEERCRED uid, never one from the request.
 
+pub mod decisions;
 pub mod logs;
+pub mod provider_rotate;
 pub mod recfile;
 pub mod recording;
 pub mod rotate;

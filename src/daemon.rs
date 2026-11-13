@@ -251,6 +251,10 @@ fn main() {
     // concurrent daemons corrupted the audit chain by racing on the
     // same `next_seq`.
     let _daemon_lock_guard = daemon_singleton::acquire_singleton_lock(&state_dir());
+    if let Err(error) = daemon_gatex::decisions::reconcile(&state_dir()) {
+        eprintln!("[kepr-daemon] cannot reconcile agent decisions: {error}");
+        std::process::exit(1);
+    }
     fs::create_dir_all(crate::store::store_dir()).unwrap_or_else(|e| {
         eprintln!("[kepr-daemon] cannot create credential directory: {e}");
         std::process::exit(1);

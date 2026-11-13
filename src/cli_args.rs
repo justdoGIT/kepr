@@ -147,6 +147,12 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         i += 1;
     }
 
+    // MCP owns its grant arguments and JSON-RPC stdout framing.
+    if command.as_str() == "mcp" {
+        i = raw.len();
+        json = false;
+    }
+
     while i < raw.len() {
         match option_name(&raw[i]) {
             _ if crate::cli_aws::FLAGS.contains(&raw[i].as_str()) => i = aws.take(raw, i)?,

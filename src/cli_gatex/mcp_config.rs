@@ -80,7 +80,9 @@ fn name(value: &str) -> Result<String, String> {
 }
 fn scope(value: &str, what: &str) -> Result<String, String> {
     if !(1..=MAX_SCOPE).contains(&value.len()) || value.bytes().any(|b| b.is_ascii_control()) {
-        return Err(format!("--{what} requires a non-empty value without control characters"));
+        return Err(format!(
+            "--{what} requires a non-empty value without control characters"
+        ));
     }
     Ok(value.to_string())
 }
@@ -237,7 +239,6 @@ impl McpConfig {
         self.authorize("db_query", resource, action)
     }
 
-
     pub fn context_for(&self, target: &str) -> Option<&str> {
         self.context
             .iter()
@@ -329,9 +330,8 @@ mod tests {
     }
     #[test]
     fn grant_scopes_and_actions_are_operator_bound() {
-        let parse = |s: &[&str]| {
-            McpConfig::parse(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-        };
+        let parse =
+            |s: &[&str]| McpConfig::parse(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let cfg = parse(&[
             "--credential",
             "APP_DB",
@@ -359,7 +359,10 @@ mod tests {
 
         let ro = parse(&["--credential", "APP_DB"]).unwrap();
         assert!(ro.authorize_db("APP_DB", "write", false).is_err());
-        assert!(parse(&["--allow-admin"]).unwrap().authorize_db("APP_DB", "admin", false).is_err());
+        assert!(parse(&["--allow-admin"])
+            .unwrap()
+            .authorize_db("APP_DB", "admin", false)
+            .is_err());
     }
 
     #[test]

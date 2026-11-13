@@ -105,12 +105,18 @@ fn schedule(
                 return Err("--every must be between 1 hour and 10 years".into());
             }
             if !valid_rotate_via(v) {
-                return Err("rotate with --hook /absolute/path, --aws-iam, --db or --provider".into());
+                return Err(
+                    "rotate with --hook /absolute/path, --aws-iam, --db or --provider".into(),
+                );
             }
             check_kind(&m, v)?;
             Some((e, v.to_string(), now.saturating_add(e)))
         }
-        _ => return Err("--every needs a way to rotate: --hook CMD, --aws-iam, --db or --provider".into()),
+        _ => {
+            return Err(
+                "--every needs a way to rotate: --hook CMD, --aws-iam, --db or --provider".into(),
+            )
+        }
     };
     m.rotate_every_secs = next.as_ref().map(|n| n.0);
     m.rotate_via = next.as_ref().map(|n| n.1.clone());

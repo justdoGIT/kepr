@@ -3,10 +3,12 @@
 // or harness.
 //
 // What "knows how" means is what is already configured, nothing guessed:
-//   - a rotation schedule (`rotate NAME --every DUR --hook CMD|--aws-iam|--db`):
-//     the rotator the schedule names;
+//   - a rotation schedule (`rotate NAME --every DUR --hook CMD|--aws-iam|--db`
+//     or `--provider P --bootstrap KEY`): the rotator the schedule names;
 //   - a sealed AWS key (SigV4 binding): IAM access-key rotation;
 //   - a sealed database login: a new random database password.
+// Provider keys without a scheduled bootstrap credential are listed as manual
+// rather than silently attempting a management API with the target key.
 // Everything else is listed as manual, with the one thing to do, and is
 // never touched. Each rotation is atomic on its own (validate upstream,
 // then commit), so one failure leaves that credential on its old value and
@@ -22,7 +24,6 @@ pub enum Plan {
     Scheduled(String),
     AwsIam,
     Database,
-    Provider(String),
     /// Not rotatable by kepr; why, and what to do.
     Manual(&'static str),
 }
@@ -41,10 +42,14 @@ pub fn plan(c: &CredInfo) -> Option<Plan> {
     if sealed && c.record_type.as_deref() == Some("database") {
         return Some(Plan::Database);
     }
-    if let Some(p) = super::rotate_provider::detect_provider_for_cred(c) {
-        return Some(Plan::Provider(p));
+    if super::rotate_provider::detect_provider_for_cred(c).is_some() {
+        return Some(Plan::Manual(
+            "provider rotation needs --provider NAME --bootstrap KEY",
+        ));
     }
-    Some(Plan::Manual("no rotator configured: kepr rotate NAME --every 30d --hook CMD"))
+    Some(Plan::Manual(
+        "no rotator configured: kepr rotate NAME --every 30d --hook CMD",
+    ))
 }
 
 fn describe(p: &Plan) -> String {
@@ -55,7 +60,6 @@ fn describe(p: &Plan) -> String {
         ),
         Plan::AwsIam => "AWS IAM access key".into(),
         Plan::Database => "database password".into(),
-        Plan::Provider(p) => format!("provider API ({p})"),
         Plan::Manual(m) => format!("manual: {m}"),
     }
 }
@@ -80,8 +84,7 @@ pub fn run_all(
     for c in &credentials {
         let Some(p) = plan(c) else { continue };
         if only_providers {
-            let is_provider = matches!(p, Plan::Provider(_))
-                || matches!(&p, Plan::Scheduled(v) if v.starts_with("provider"));
+            let is_provider = matches!(&p, Plan::Scheduled(v) if v.starts_with("provider"));
             if !is_provider {
                 continue;
             }
@@ -125,7 +128,6 @@ pub fn rotate_one(name: &str, p: &Plan) -> Response {
         Plan::Scheduled(_) => super::rotate_sched::run_scheduled(name),
         Plan::AwsIam => super::rotate_iam::cmd(name),
         Plan::Database => crate::cli_agent_db_rotate::cmd_rotate_db(&[name.to_uppercase()]),
-        Plan::Provider(p) => super::rotate_provider::cmd(name, Some(p)),
         Plan::Manual(_) => Response::fail("not rotatable by kepr"),
     }
 }
@@ -185,7 +187,9 @@ mod tests {
         assert!(matches!(plan(&f[0]), Some(Plan::Scheduled(_))));
         assert_eq!(plan(&f[1]), Some(Plan::AwsIam));
         assert_eq!(plan(&f[2]), Some(Plan::Database));
-        assert_eq!(plan(&f[3]), Some(Plan::Provider("openrouter".into())));
+        assert!(
+            matches!(plan(&f[3]), Some(Plan::Manual(message)) if message.contains("--bootstrap"))
+        );
         assert!(matches!(plan(&f[4]), Some(Plan::Manual(_))));
         assert_eq!(plan(&f[5]), None, "kepr's own keys");
         assert_eq!(plan(&f[6]), None, "aliases");
@@ -206,7 +210,12 @@ mod tests {
 
     #[test]
     fn a_dry_run_changes_nothing() {
-        let r = run_all(&lister(), &|_, _| panic!("rotated in a dry run"), true, false);
+        let r = run_all(
+            &lister(),
+            &|_, _| panic!("rotated in a dry run"),
+            true,
+            false,
+        );
         assert!(r.is_success());
     }
 
@@ -220,13 +229,15 @@ mod tests {
         let r = run_all(&lister(), &run, false, false);
         assert!(r.is_success());
         let names: Vec<String> = ran.borrow().iter().map(|(n, _)| n.clone()).collect();
-        assert_eq!(names, ["STRIPE", "AWS_PROD", "PROD_DB", "OPENROUTER_API_KEY"]);
+        assert_eq!(names, ["STRIPE", "AWS_PROD", "PROD_DB"]);
 
         ran.borrow_mut().clear();
         let r_filtered = run_all(&lister(), &run, false, true);
         assert!(r_filtered.is_success());
-        let provider_names: Vec<String> = ran.borrow().iter().map(|(n, _)| n.clone()).collect();
-        assert_eq!(provider_names, ["OPENROUTER_API_KEY"]);
+        assert!(
+            ran.borrow().is_empty(),
+            "unconfigured provider keys stay manual"
+        );
     }
 
     #[test]
@@ -245,12 +256,17 @@ mod tests {
             r.err_msg(),
             Some("1 rotation(s) failed; those keys are unchanged")
         );
-        assert_eq!(*ran.borrow(), ["STRIPE", "AWS_PROD", "PROD_DB", "OPENROUTER_API_KEY"]);
+        assert_eq!(*ran.borrow(), ["STRIPE", "AWS_PROD", "PROD_DB"]);
     }
 
     #[test]
     fn a_list_error_is_reported() {
-        let r = run_all(&|_| Response::fail("locked"), &|_, _| Response::Pong, false, false);
+        let r = run_all(
+            &|_| Response::fail("locked"),
+            &|_, _| Response::Pong,
+            false,
+            false,
+        );
         assert_eq!(r.err_msg(), Some("locked"));
     }
 }

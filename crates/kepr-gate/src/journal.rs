@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hyper::{Response, StatusCode};
-use kepr_core::gate_journal::{JournalEntry, MAX_BATCH};
+use kepr_core::gate_journal::{
+    canonical_args_digest, intent_id, DecisionRecord, JournalEntry, ResultOutcome, ResultRecord,
+    MAX_BATCH,
+};
 use kepr_core::generate::ZeroString;
 
 use crate::proxy::{Body, State};
@@ -65,13 +68,74 @@ pub fn entry(session: &str, e: &Entry, secrets: &[ZeroString]) -> JournalEntry {
     .sanitized()
 }
 
+fn action(method: &str) -> &'static str {
+    match method {
+        "GET" | "HEAD" | "OPTIONS" => "read",
+        _ => "write",
+    }
+}
+
+/// Persist the metadata for a request before any upstream bytes are sent.
+/// The body is hashed only; it is never placed in the journal.
+pub fn record_decision(log: &Log<'_>, body: &[u8]) -> Result<String, String> {
+    let action = action(log.method);
+    let mut args = Vec::with_capacity(log.path.len() + body.len() + 1);
+    args.extend_from_slice(log.path.as_bytes());
+    args.push(0);
+    args.extend_from_slice(body);
+    let digest = canonical_args_digest(log.provider, log.host, action, &args);
+    let intent = intent_id(&log.state.session_id, log.provider, &digest, "");
+    log.state.cache.decision(DecisionRecord {
+        session: log.state.session_id.clone(),
+        intent_id: intent.clone(),
+        actor_ref: log.state.session_id.clone(),
+        tenant: "local".into(),
+        policy_version: "session-v1".into(),
+        sensitivity: "credential-scoped".into(),
+        destination: log.host.to_string(),
+        action: action.into(),
+        decision: "allow".into(),
+        approval_ref: None,
+        expiry: None,
+    })?;
+    Ok(intent)
+}
+
+/// Persist the outcome without exposing the response body. A result failure
+/// is returned to the caller so a future caller can choose an explicit
+/// unknown outcome rather than silently treating the action as recorded.
+pub fn record_result(
+    state: &State,
+    intent_id: &str,
+    outcome: ResultOutcome,
+    status: u16,
+    bytes: usize,
+) -> Result<(), String> {
+    let label = match outcome {
+        ResultOutcome::Ok => "ok",
+        ResultOutcome::Err => "err",
+        ResultOutcome::Unknown => "unknown",
+    };
+    let digest = canonical_args_digest(
+        "result",
+        intent_id,
+        label,
+        format!("{status}:{bytes}").as_bytes(),
+    );
+    state.cache.result(ResultRecord {
+        intent_id: intent_id.to_string(),
+        outcome,
+        digest,
+    })
+}
+
 pub fn format(e: &JournalEntry) -> String {
     serde_json::to_string(e).unwrap_or_default()
 }
 
 /// The stored line of one request or connection of this session.
 fn line(state: &State, e: &Entry) -> JournalEntry {
-    let secrets: Vec<ZeroString> = state.cache.values().into_iter().map(|(_, v)| v).collect();
+    let secrets = state.cache.needles();
     entry(&state.session_id, e, &secrets)
 }
 
@@ -277,5 +341,24 @@ mod tests {
         q.flush(&cache);
         assert_eq!(got.lock().unwrap().len(), 1, "stops at the first refusal");
         assert!(q.pending.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn durable_decision_refusal_is_returned_before_forwarding() {
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let cache = Cache::new(Box::new(Sink(got, true)), DEFAULT_TTL).with_durable_decisions();
+        let record = DecisionRecord {
+            session: "session".into(),
+            intent_id: "intent".into(),
+            actor_ref: "actor".into(),
+            tenant: "tenant".into(),
+            policy_version: "v1".into(),
+            sensitivity: "private".into(),
+            destination: "api.example.test".into(),
+            action: "write".into(),
+            decision: "allow".into(),
+            approval_ref: None,
+            expiry: None,
+        };
+        assert!(cache.decision(record).is_err());
     }
 }

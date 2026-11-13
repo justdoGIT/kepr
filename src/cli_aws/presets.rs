@@ -88,6 +88,27 @@ fn git_env(placeholder: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Only the exact generated GitHub credential-helper controls may reach a
+/// protected harness. Environment-supplied helper commands remain forbidden.
+pub(crate) fn validated_git_controls(env: &[(String, String)]) -> bool {
+    let Some((_, placeholder)) = env.iter().find(|(key, _)| key == GIT_PH_VAR) else {
+        return false;
+    };
+    if !placeholder.starts_with("kepr-ph-")
+        || env.iter().any(|(key, _)| {
+            key.to_ascii_uppercase().starts_with("GIT_CONFIG") && !GIT_VARS.contains(&key.as_str())
+        })
+    {
+        return false;
+    }
+    git_env(placeholder).iter().all(|(key, value)| {
+        env.iter()
+            .filter(|(actual, _)| actual == key)
+            .all(|(_, actual)| actual == value)
+            && env.iter().any(|(actual, _)| actual == key)
+    })
+}
+
 pub const NPMRC: &str = "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n";
 
 /// A Docker Hub login whose password is the session placeholder.

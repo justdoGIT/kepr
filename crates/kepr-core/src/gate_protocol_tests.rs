@@ -25,7 +25,9 @@ fn explicit_https_routes_are_bounded_and_cannot_spoof_credentials() {
         slot: crate::http_route::MAX_ROUTES as u16,
         target: None,
     });
-    assert!(validate_routes(&too_many).unwrap_err().contains(&format!("1-{}", crate::http_route::MAX_ROUTES)));
+    assert!(validate_routes(&too_many)
+        .unwrap_err()
+        .contains(&format!("1-{}", crate::http_route::MAX_ROUTES)));
 }
 
 #[test]

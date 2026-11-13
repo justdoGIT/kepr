@@ -47,6 +47,33 @@ pub const PROVIDERS: &[Provider] = &[
         egress_env: &[],
     },
     Provider {
+        name: "fireworks",
+        host: "api.fireworks.ai",
+        header: None,
+        prefixes: &[],
+        name_hints: &["FIREWORKS"],
+        keys_url: "https://fireworks.ai/account/api-keys",
+        egress_env: &[],
+    },
+    Provider {
+        name: "moonshot",
+        host: "api.moonshot.cn",
+        header: None,
+        prefixes: &[],
+        name_hints: &["MOONSHOT", "KIMI"],
+        keys_url: "https://platform.moonshot.cn/console",
+        egress_env: &[],
+    },
+    Provider {
+        name: "venice",
+        host: "api.venice.ai",
+        header: None,
+        prefixes: &[],
+        name_hints: &["VENICE"],
+        keys_url: "https://venice.ai/settings/api",
+        egress_env: &[],
+    },
+    Provider {
         name: "agentrouter",
         host: "agentrouter.org",
         header: None,
@@ -54,6 +81,15 @@ pub const PROVIDERS: &[Provider] = &[
         name_hints: &["AGENTROUTER"],
         keys_url: "https://agentrouter.org",
         egress_env: &["AGENTROUTER_API_KEY"],
+    },
+    Provider {
+        name: "selora",
+        host: "api.selora.lol",
+        header: None,
+        prefixes: &[],
+        name_hints: &["SELORA"],
+        keys_url: "https://api.selora.lol",
+        egress_env: &["SELORA_API_KEY"],
     },
     Provider {
         name: crate::cloudflare::PROVIDER,
@@ -259,6 +295,12 @@ pub fn lookup(name: &str) -> Option<&'static Provider> {
 
 pub fn by_host(host: &str) -> Option<&'static Provider> {
     PROVIDERS.iter().find(|p| p.host == host)
+}
+
+/// Providers with a documented authenticated key-creation endpoint used by
+/// `kepr rotate --provider`.
+pub fn supports_rotation(name: &str) -> bool {
+    matches!(name, "openai" | "openrouter" | "venice")
 }
 
 impl Provider {

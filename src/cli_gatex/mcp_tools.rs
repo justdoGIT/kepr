@@ -158,12 +158,7 @@ fn ssh_args(args: &Value) -> Result<(&str, &str), String> {
     Ok((host, cmd))
 }
 
-fn authorize_grant(
-    grant: &Grant,
-    tool: &str,
-    resource: &str,
-    action: &str,
-) -> Result<(), String> {
+fn authorize_grant(grant: &Grant, tool: &str, resource: &str, action: &str) -> Result<(), String> {
     let request = GrantRequest {
         tenant: grant.tenant.clone(),
         workspace: grant.workspace.clone(),
@@ -218,7 +213,10 @@ pub fn call(backend: &mut dyn Backend, name: &str, args: &Value) -> Option<Value
                 ));
             }
             let read_only = backend.config().read_only || requested;
-            if let Err(e) = backend.config().authorize_db(&target, class.action(), read_only) {
+            if let Err(e) = backend
+                .config()
+                .authorize_db(&target, class.action(), read_only)
+            {
                 return Some(result(e, None, true));
             }
             let note = backend.config().context_for(&target).map(str::to_string);
@@ -511,9 +509,12 @@ mod tests {
         // `db_attempt` that uses the gate's pinned grant). Build a grant
         // with one workspace and verify a divergent request is denied.
         let cfg = McpConfig::parse(&v(&[
-            "--credential", "APP_DB",
-            "--workspace", "/work/acme",
-            "--connector-account", "work",
+            "--credential",
+            "APP_DB",
+            "--workspace",
+            "/work/acme",
+            "--connector-account",
+            "work",
         ]))
         .unwrap();
         let grant = cfg.grant_for("db_query");
@@ -521,26 +522,44 @@ mod tests {
         // Workspace mismatch: request from "/work/other" against pinned grant.
         let mut bad_ws = cfg.request_for("db_query", "APP_DB", "query");
         bad_ws.workspace = "/work/other".into();
-        assert!(!authz::decide(&grant, &bad_ws).allowed(), "workspace mismatch");
+        assert!(
+            !authz::decide(&grant, &bad_ws).allowed(),
+            "workspace mismatch"
+        );
         // Connector-account crossover.
         let mut bad_acct = cfg.request_for("db_query", "APP_DB", "query");
         bad_acct.connector_account = "personal".into();
-        assert!(!authz::decide(&grant, &bad_acct).allowed(), "account crossover");
+        assert!(
+            !authz::decide(&grant, &bad_acct).allowed(),
+            "account crossover"
+        );
         // Write and admin without the action (default is query-only).
         let mut b = Fake {
             cfg: McpConfig::parse(&v(&[
-                "--credential", "APP_DB",
-                "--workspace", "/work/acme",
-                "--connector-account", "work",
-            ])).unwrap(),
+                "--credential",
+                "APP_DB",
+                "--workspace",
+                "/work/acme",
+                "--connector-account",
+                "work",
+            ]))
+            .unwrap(),
             ..Default::default()
         };
         let q = |b: &mut Fake, sql: &str| {
             call(b, "db_query", &json!({"target": "APP_DB", "sql": sql})).unwrap()
         };
         assert_eq!(q(&mut b, "select 1")["isError"], false);
-        assert_eq!(q(&mut b, "update t set a = 1")["isError"], true, "no write action");
-        assert_eq!(q(&mut b, "drop table t")["isError"], true, "no admin action");
+        assert_eq!(
+            q(&mut b, "update t set a = 1")["isError"],
+            true,
+            "no write action"
+        );
+        assert_eq!(
+            q(&mut b, "drop table t")["isError"],
+            true,
+            "no admin action"
+        );
         assert_eq!(b.db.len(), 1, "only the allowed tuple reached the backend");
     }
 
@@ -551,11 +570,26 @@ mod tests {
             ..Default::default()
         };
         for (args, why) in [
-            (json!({"target": "APP_DB", "sql": "select 1", "read_only": "yes"}), "type"),
-            (json!({"target": "APP_DB", "sql": "select 1", "extra": 1}), "unknown key"),
-            (json!({"target": "APP_DB", "sql": "select 1; select 2"}), "chaining"),
-            (json!({"target": "APP_DB", "sql": "select 1;"}), "trailing semicolon"),
-            (json!({"target": "APP_DB", "sql": "drop table t"}), "DDL without admin"),
+            (
+                json!({"target": "APP_DB", "sql": "select 1", "read_only": "yes"}),
+                "type",
+            ),
+            (
+                json!({"target": "APP_DB", "sql": "select 1", "extra": 1}),
+                "unknown key",
+            ),
+            (
+                json!({"target": "APP_DB", "sql": "select 1; select 2"}),
+                "chaining",
+            ),
+            (
+                json!({"target": "APP_DB", "sql": "select 1;"}),
+                "trailing semicolon",
+            ),
+            (
+                json!({"target": "APP_DB", "sql": "drop table t"}),
+                "DDL without admin",
+            ),
         ] {
             let r = call(&mut b, "db_query", &args).unwrap();
             assert_eq!(r["isError"], true, "{why}");

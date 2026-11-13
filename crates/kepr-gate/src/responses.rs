@@ -92,6 +92,7 @@ pub async fn send(
                 .insert("x-kepr-responses-retry", "item-ids".parse().unwrap());
         }
         let eligible = attempt == 0
+            && !state.privacy.enabled()
             && log.provider == "agentrouter"
             && matches!(log.path, "/v1/responses" | "/responses")
             && parts.method == hyper::Method::POST

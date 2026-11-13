@@ -60,7 +60,11 @@ pub fn validate_config(cfg: &SessionConfig) -> Result<(), String> {
     if cfg.session_id.len() != 16 || !cfg.session_id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("session id must be 16 hex chars".into());
     }
-    kepr_core::gate_protocol::validate_routes(&cfg.routes)
+    kepr_core::gate_protocol::validate_routes(&cfg.routes)?;
+    if let Some(policy) = &cfg.privacy {
+        policy.validate_routes(&cfg.routes, cfg.tunnel)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn pidfd_open(pid: i32) -> Result<OwnedFd, String> {
@@ -199,7 +203,9 @@ pub fn run() -> Result<(), String> {
     if !fd3_is_open() {
         return Err("daemon channel (fd 3) missing".into());
     }
-    let cache = Arc::new(Cache::new(Box::new(FdResolver::from_fd3()?), DEFAULT_TTL));
+    let cache = Arc::new(
+        Cache::new(Box::new(FdResolver::from_fd3()?), DEFAULT_TTL).with_durable_decisions(),
+    );
 
     let mut placeholders = HashMap::new();
     let mut table = HashMap::new();
@@ -242,6 +248,7 @@ pub fn run() -> Result<(), String> {
             table,
             cache.clone(),
         )
+        .with_privacy(cfg.privacy.clone())?
         .with_limits(cfg.limits)
         .with_egress(ca, cfg.tunnel)
         .with_tunnels(&cfg.routes)
@@ -252,11 +259,42 @@ pub fn run() -> Result<(), String> {
     // Keep only SplitKey shares in secret memory; wipe the plain key.
     drop(key);
     crate::journal::spawn_flusher(state.journal.clone(), cache.clone());
-
+    // Rotation is a one-shot daemon operation, not an agent proxy route.
+    let rotation = cfg.rotation.take();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("runtime: {e}"))?;
+    if let Some(rotation) = rotation {
+        let rotation_client = state.client.clone();
+        let port = rt.block_on(async {
+            crate::rotate_provider_http::run(&cache, &rotation_client, &rotation).await?;
+            bind_gate(0)
+                .await?
+                .local_addr()
+                .map_err(|e| format!("bind: {e}"))
+                .map(|addr| addr.port())
+        })?;
+        let ready = ReadyLine {
+            privacy: cfg.privacy.as_ref().map(|p| p.preset),
+            ready: true,
+            port,
+            placeholders: HashMap::new(),
+            ca_pem: None,
+            db_ports: HashMap::new(),
+            error: None,
+        };
+        let mut out = std::io::stdout();
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string(&ready).map_err(|e| e.to_string())?
+        )
+        .and_then(|_| out.flush())
+        .map_err(|e| format!("stdout: {e}"))?;
+        cache.clear();
+        return Ok(());
+    }
     rt.block_on(async move {
         let listener = bind_gate(bind_port).await?;
         let port = listener
@@ -280,6 +318,7 @@ pub fn run() -> Result<(), String> {
             });
         }
         let ready = ReadyLine {
+            privacy: cfg.privacy.as_ref().map(|p| p.preset),
             ready: true,
             port,
             placeholders,
