@@ -7,26 +7,38 @@ description: "The agent-harness security plan broken into small, self-contained 
 
 This page turns the [Agent & Harness Security review](/docs/agent-harness-security-review)
 into tickets. Each ticket names the files to touch, the types and functions to
-add, the tests to write first, and the commands that prove it is done. Work in
-phase order; within a phase, tickets are independent unless a dependency is
-named.
+add or review, the tests to write, and maintainer acceptance commands. Commands
+below have not been run for this documentation update. Work in phase order;
+within a phase, tickets are independent unless a dependency is named.
 
-**Status (2026-11-12):** Phase A (A1–A4) is **shipped**. Phases B–F are
-**planned**; the primitives they build on (peer auth, memfd delivery, session
-CA, seccomp, `policy.toml`, audit chain) are shipped.
+**Source status (2026-11-13):** A1–A4 have implementations, not a fresh
+release qualification. B1/B2 are implemented for gate HTTP forwarding only;
+B3 and Phases C–F remain planned or partly documented. The latest broad
+full-suite attempt was user-aborted. Source/test presence and older results
+must not be reported as a current all-tests pass or native-platform readiness.
 
 | Ticket | State | Evidence |
 | --- | --- | --- |
-| A1 `authz::Grant` | shipped | `crates/kepr-core/src/authz.rs`, `authz_tests.rs` |
-| A2 `[[tool_rule]]` | shipped | `policy_tools.rs`, `PolicyFile::decide_tool` |
-| A3 MCP tuple | shipped | `McpConfig::{grant_for,authorize}`, `Gate.grant`, `mcp_tools` |
-| A4 args + SQL class | shipped | `mcp_tools::{db_args,ssh_args}`, `mcp_sql::classify` |
+| A1 `authz::Grant` | implemented | `crates/kepr-core/src/authz.rs`, `authz_tests.rs` |
+| A2 `[[tool_rule]]` evaluator | implemented | `policy_tools.rs`, `PolicyFile::decide_tool`; evaluator presence is not universal runtime integration |
+| A3 MCP tuple | implemented | `McpConfig::{grant_for,authorize}`, `Gate.grant`, `mcp_tools`; scope comes from operator flags |
+| A4 args + SQL class | implemented | `mcp_tools::{db_args,ssh_args}`, `mcp_sql::classify`; not a full SQL semantic validator |
+| B1 `DecisionRecord` | implemented for HTTP | `kepr-gate/journal.rs`, `kepr-core/gate_journal.rs`, `proxy.rs`; daemon acknowledgment precedes forwarding |
+| B2 result/reconciliation | implemented for HTTP | `daemon_gatex/decisions.rs`, `daemon.rs` startup hook, source regression in `tests/daemon_startup.rs` |
+| B3 actor resolution | planned | separate owner-only actor map still required |
 
 A3/A4 notes: the grant is built from operator flags (`--tenant`, `--workspace`,
 `--connector-account`, `--allow-writes`, `--allow-admin`) and fixed when the
 gate session starts; `--read-only` cannot be lifted by a tool argument. The SQL
 classifier lives in `src/cli_gatex/mcp_sql.rs` (split out of `mcp_pg.rs` to stay
 under the 350-LOC file limit).
+
+These flags do not verify a work IdP, bind an independently supplied caller
+scope, or provide an exact-action approval ceremony. DB resources are credential
+names; SSH resources are approved hosts, not command/path allowlists. MCP defaults
+to 500 requests and 60 per minute; `--max-tokens` is optional. Budget exhaustion
+does not reauthorize a session. The following ticket contracts remain acceptance
+targets wherever their details exceed the source behavior described above.
 
 ## Phase A — Composite authorization (F1, F8)
 
@@ -36,7 +48,7 @@ under the 350-LOC file limit).
 - **Add:**
   ```rust
   pub struct Grant {
-      pub actor: Identity,
+      pub actor: Actor,
       pub tenant: String,
       pub workspace: String,
       pub tool: String,
@@ -44,7 +56,7 @@ under the 350-LOC file limit).
       pub resource: Vec<String>, // globs
       pub action: Vec<String>,   // query | write | send | delete | admin
   }
-  pub enum Decision { Allow, Deny, NeedsApproval }
+  pub enum Decision { Allow, Deny(String), NeedsApproval }
   pub fn decide(grant: &Grant, req: &GrantRequest) -> Decision;
   ```
 - **Tests first:** workspace mismatch → Deny; tenant mismatch → Deny; resource
@@ -58,8 +70,9 @@ under the 350-LOC file limit).
   role, connector_account }`; extend `PolicyFile` with `tool_rules`; extend the
   first-match evaluator with `fn decide_tool(&self, caller, req) -> Decision`.
   Keep `deny_unknown_fields`.
-- **Tests first:** no file → allow; file present, no matching rule → deny;
-  first match wins; tenant rule blocks personal account; typo key → parse error.
+- **Tests first:** no tool rules → defer to the operator grant; tool rules
+  present but none matching → deny; first match wins; tenant mismatch → deny;
+  typo key → parse error.
 - **Done:** `cargo nextest run --release -p kepr-core policy`.
 
 ### A3 — Bind the tuple in the MCP session
@@ -88,22 +101,33 @@ under the 350-LOC file limit).
 ### B1 — `DecisionRecord` written before execution
 
 - **Files:** `crates/kepr-gate/src/journal.rs`, `crates/kepr-core/src/gate_journal.rs`.
-- **Add:** `intent_id = blake3(session || tool || canonical_args_digest || nonce)`;
-  `DecisionRecord { intent_id, actor_ref, tenant, policy_version, sensitivity,
-  destination, action, decision, approval_ref, expiry }`. Write it and fsync
-  **before** the tool runs; fail closed if the write fails.
-- **Tests first:** write failure → action does not run; record precedes result;
-  intent_id stable for identical args, distinct for different args.
+- **Implemented:** bounded metadata records acknowledged only after daemon
+  append/fsync, before gate HTTP forwarding. IDs use BLAKE3 over the session,
+  provider, destination/action/argument digest and an empty nonce. Bodies are
+  not stored. `actor_ref` is the session, tenant is `local`, policy/sensitivity
+  are fixed labels and approval/expiry are absent.
+- **Remaining target:** per-attempt nonce/idempotency, real actor/policy/approval
+  metadata and equivalent pre-execution coverage for non-HTTP actions.
+- **Acceptance cases:** intent write failure → no upstream request; intent
+  precedes result; repeated calls have an explicitly defined identity policy.
 - **Done:** `cargo nextest run --release -p kepr-gate journal`.
 
-### B2 — Result record, idempotency, reconciliation
+### B2 — Result record and startup reconciliation; idempotency still planned
 
-- **Files:** `journal.rs`, `daemon_gate_service.rs`.
-- **Add:** `ResultRecord { intent_id, outcome: Ok|Err|Unknown, digest }`; on
-  restart, reconcile intents with no result and mark `Unknown` explicitly.
-- **Tests first:** kill between intent and result → on restart the intent is
-  `Unknown`, not silently dropped.
-- **Done:** integration test in `tests/`.
+- **Files:** `crates/kepr-gate/src/journal.rs`, `src/daemon_gate.rs`,
+  `src/daemon_gatex/decisions.rs`, `src/daemon.rs`.
+- **Implemented:** `ResultRecord { intent_id, outcome: Ok|Err|Unknown, digest }`;
+  result attempts occur at upstream headers/send failure, not after complete
+  response consumption or proof of a business operation. Result persistence
+  failure cannot undo forwarding. Startup reconciliation after the singleton
+  lock appends `Unknown` for retained unmatched IDs and fails startup on error.
+- **Remaining target:** per-attempt identity, retry/idempotency semantics,
+  rotation/retention qualification and non-HTTP tool coverage. An empty HTTP
+  nonce means identical calls can share an ID; a prior result can therefore
+  conceal an unfinished repeat from the current ID-based reconciliation.
+- **Source regression (not freshly run):** `tests/daemon_startup.rs` starts a
+  user daemon with an unfinished intent and inspects the appended `Unknown`.
+- **Maintainer acceptance:** `cargo test --release --test daemon_startup --locked`.
 
 ### B3 — Actor-resolution store
 
@@ -171,10 +195,10 @@ under the 350-LOC file limit).
 ### E2 — Streaming scan with a rolling window
 
 - **Files:** `proxy.rs`, `dlp.rs`, `privacy/mod.rs`.
-- **Change:** scan as the body streams; skip the privacy transform for
-  non-text content types.
-- **Tests first:** a secret split across two chunks is still caught; non-text
-  content is not transformed.
+- **Change:** scan as the body streams while preserving bounded decoding and
+  fail-closed privacy policy for unsupported content types.
+- **Tests first:** a secret split across chunks is caught; unsupported media is
+  refused rather than forwarded without inspection.
 - **Done:** `cargo nextest run --release -p kepr-gate`.
 
 ### E3 — Bounded worker pool for scan/transform

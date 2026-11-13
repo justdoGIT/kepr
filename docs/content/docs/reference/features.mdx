@@ -118,6 +118,7 @@ verbs print their usage line when called without arguments.
 | Verb | Args | What it does |
 | ---- | ---- | ------------ |
 | `rotate` | `KEY --hook PATH [--gen-kind K]` · `KEY --aws-iam` · `KEY --db` | Rotate now: through a hook, the AWS IAM API or the database. |
+| `rotate` | `KEY --provider PROVIDER --bootstrap ADMIN_KEY` · scheduled equivalent | Create and validate a replacement inside a daemon-owned gate; only names cross the CLI socket. Currently reviewed for OpenAI, OpenRouter and Venice. The bootstrap credential stays sealed in kepr; the stored target changes only after validation. |
 | `rotate` | `--all [--dry-run]` | Rotate every key kepr can in one run (schedules, sealed AWS keys, sealed database logins); the rest are listed as manual. A failure leaves that key unchanged and the run continues; exit status is non-zero if any failed. |
 | `rotate` | `KEY --every DUR (--hook CMD\|--aws-iam\|--db)` · `KEY --every off` · `KEY --scheduled` | Rotate on a schedule; `--scheduled` runs a due rotation now. |
 | `grant` | `KEY [--to HARNESS --for DUR\|--revoke [--to HARNESS]\|--jit on\|off]` | Just-in-time windows for a sealed key; no flags shows the state. |
@@ -146,16 +147,19 @@ See the [AI agents guide](/docs/guides/ai-agents) for the full walkthrough.
 | `agent add` | `KEY [--for PROVIDER\|HOST[:PORT]:INJECT]... [--requires-consent] [--stdin\|--from-clipboard]` | Store a write-only key bound to a provider or host (INJECT: `bearer`, `basic`, `header=NAME`, `query=NAME`, `sigv4`). `--from-clipboard` reads the key once and clears the clipboard (a clipboard manager may keep its own copy). |
 | `agent add-db` | `KEY --url postgres\|mysql\|redis[s]://USER@HOST[:PORT]/DB [--kind K] [--sslmode verify-full\|disable] [--ca FILE] [--stdin] [--requires-consent]` | Store a sealed database login. |
 | `agent rotate-db` | `KEY [--abort]` | Set a new random database password; nobody sees the old or new one. |
-| `agent run` | `HARNESS [--port N] [--isolate-net\|--no-sandbox\|--strict-sandbox] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [--tunnel NAME=HOST:PORT]... [--grant NAME=ROLE:ADMIN]... [--record] [-- ARGV]` | Run a harness sandboxed, with placeholders and a gate. |
+| `agent run` | `HARNESS [--workspace PATH\|--workspace-session SESSION] [--security-preset private-cloud\|local-only] [--compatibility [--no-sandbox]] [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [--record] [-- ARGV]` | Protected default: require sandbox/network isolation and snapshot the current folder or selected workspace. Changes remain in the copy for operator review and digest-approved export. `--workspace-session` selects a prepared session; gate ports/URLs are session-assigned unless explicitly configured. `local-only` refuses launch because local routing is unavailable. `--compatibility` explicitly disables privacy filtering and required isolation; it is not a repair for failures. |
 | `agent install` | `omp\|grok\|opencode\|claude\|codex [--port N]` | Point the harness's config at the gate and install kepr's plugin (omp, Grok Build); for `claude` and `codex`, install kepr's guidance for the model (a Claude Code skill, a block in Codex's `AGENTS.md`). |
 | `agent doctor` | `[--port N] [--json]` | Check that omp and Grok Build still route through the gate and that kepr's plugin is installed and current; prints each problem's fix, exits non-zero on any. Prints paths only, never file contents. |
 | `agent shim` | `HARNESS [--dir DIR] [--remove]` | Write a launcher so typing the harness's own command runs it through `kepr agent run` (default DIR `~/.local/share/kepr/shims`, to put first on `PATH`). |
+| `workspace` | `prepare SOURCE [--file PATH ...]` · `review SESSION` · `export SESSION --approve DIGEST --output NEW_DIRECTORY` | Snapshot a folder into a private session, omit uninspectable source-tree files with a reported count, review the diff, and export it only after approving the exact digest the review printed. Explicit `--file` inputs remain UTF-8 text only. |
 | `agent adopt` | `[FILE...] [--yes] [--remove]` | Move keys from `.env`, shell rc, shell history (bash, zsh, fish) and agent harness config files into kepr; JSON / YAML files and non-UTF-8 history are never rewritten. |
 | `agent ls` / `agent revoke` | `[KEY] [--force]` | List or delete sealed keys. |
 | `agent replay` | `[SESSION]` · `SESSION --typescript FILE --timing FILE` | List or print recorded sessions; export PostgreSQL traffic for `scriptreplay`. |
 | `agent logs` | `[SESSION] [-n N] [--follow]` | The gate's request journal. |
 | `hook` | `pre-tool\|prompt\|session-start\|redact` | Harness-hook policy (JSON on stdin; used by the plugins). |
-| `mcp` | `[--read-only] [--ssh [USER@]HOST]... [--context TARGET=NOTE]...` | MCP server (stdio); never returns a credential. |
+| `mcp` | `[--credential NAME]... [--read-only\|--allow-writes\|--allow-admin] [--tenant NAME] [--workspace PATH] [--connector-account NAME] [--ssh HOST]... [--ssh-key NAME]... [--context TARGET=NOTE]... [--max-requests N] [--per-minute N] [--max-tokens N]` | Stdio tools with explicit grants, read-only DB default and finite request budgets; never returns a credential. |
+| `privacy` | `init --preset private-cloud\|local-only` · `configure --stdin` · `status` · `preview` | Owner-only versioned local policy and bounded stdin preview; pattern masking, not anonymity. Invalid policy fails closed. Local-only preview/configuration exists, but agent launch is unavailable. |
+| `endpoint` | `status` · `scan FILE` | Linux trusted ClamAV/bubblewrap adapter over immutable staged input. Unavailable/incomplete scans report `unknown`; no qualified malware-detection, update-provenance or quarantine guarantee. |
 
 ### Platform and tools
 
@@ -837,6 +841,12 @@ below go in the daemon's environment and apply when a master key is
 **created**: an existing key keeps the sealing it was made with, and there
 is no re-seal command.
 
+This daemon sealer is separate from `kepr-core::keyring::KeyringBackend`.
+That API's Linux `linux-envelope` contains raw key bytes and relies on filesystem
+permissions; its macOS/Windows native backends are unavailable and fail closed
+for both seal and unseal, including legacy envelopes. It is not a claim of
+native Keychain/DPAPI protection or macOS/Windows endpoint readiness.
+
 | Setting | Master key sealed by |
 | --- | --- |
 | `KEPR_MASTER_KEY_SEAL=tpm2`, `host+tpm2` or `auto`, optionally `KEPR_TPM2_PCRS=7+11` | the credential backend, bound to the TPM (and those PCRs) |
@@ -846,7 +856,7 @@ is no re-seal command.
 | `KEPR_MASTER_KEY_SEAL=gcp-kms:projects/P/locations/L/keyRings/R/cryptoKeys/K` | Google Cloud KMS |
 | `KEPR_MASTER_KEY_SEAL=azure-kv:https://NAME.vault.azure.net/keys/KEY/VERSION` | Azure Key Vault wrap / unwrap (RSA-OAEP-256) |
 | `KEPR_MASTER_KEY_SEAL=pkcs11:/path/module.so:LABEL` and `KEPR_PKCS11_PIN_FILE` | a token's RSA key pair (RSA-OAEP, SHA-256) through OpenSC's pkcs11-tool 0.23+ (YubiHSM and others) |
-| `KEPR_MASTER_KEY_SEAL=keychain` (macOS) | the login keychain, with an access list naming only the daemon binary |
+| `KEPR_MASTER_KEY_SEAL=keychain` (macOS) | separate daemon login-Keychain sealer in source, with an access list naming the daemon; native qualification remains outstanding |
 
 Notes and limits:
 
@@ -945,6 +955,15 @@ Wrong words get one error after a one-second pause. If sealing again fails,
 the store stays unlocked until the daemon stops and the next start needs
 the words again. Without a recovery key, a key that won't unseal still
 stops the daemon.
+
+If the master-key file is missing, the credential directory is non-empty and
+no recovery key is enrolled, startup fails closed instead of generating a new
+key over existing ciphertext (`src/daemon_seal/startup.rs`). Restore only the
+matching master-key/envelope and credential backup, or use a previously enrolled
+recovery mechanism on a trusted machine. Do not delete or reset key/state files
+to make startup succeed. Unlocking the vault does not unseal a write-only agent
+credential. An authentication/decryption failure is not a normal sealed-key
+read refusal, and restarting does not repair wrong-key or damaged ciphertext.
 
 On macOS, with `KEPR_MASTER_KEY_SEAL=keychain`, `kepr recovery-key enrol` and
 `kepr lock` first show a dialog that names the action and defaults to Deny.
@@ -1101,7 +1120,12 @@ needs Go and CMake.
 ## Agent sessions
 
 These extend `kepr agent run`; the [AI agents guide](/docs/guides/ai-agents)
-covers the basics.
+covers the basics. The protected default requires the private workspace and
+isolated network. The additional AWS/CLI/database/tunnel/Kubernetes routes below
+describe broader gate capabilities, not automatic grants in a protected
+private-cloud launch. Protected runs reject tunnel/role-grant/ephemeral-DB
+options and do not automatically add unrelated credentials. Explicit
+`--compatibility` weakens protection; it is not a route to fix a privacy refusal.
 
 ### AWS keys
 
@@ -1117,9 +1141,9 @@ bound to.
 
 - Each service or region host needs its own `--for`; only hosts under
   `.amazonaws.com` on port 443 are accepted (`.amazonaws.com.cn` and custom
-  endpoints are refused). A CONNECT to an unbound AWS host is tunnelled
-  as is (AWS then rejects the placeholder signature) or refused under
-  `--isolate-net`.
+  endpoints are refused). Protected network isolation refuses unbound hosts.
+  A compatibility session permitting raw tunnels can tunnel an unbound host
+  without credential injection; AWS then rejects the placeholder signature.
 - Refused with 403: presigned URLs, SigV4a, signed streaming uploads, and
   credential-minting calls (STS GetSessionToken, GetFederationToken,
   AssumeRole*, AssumeRoot; IAM CreateAccessKey, login-profile and
@@ -1220,48 +1244,60 @@ client-certificate auth is not supported.
   the cap the gate answers 403 `kepr_limit`. Sessions without a daily cap
   don't count, nor do database and tunnel connections. If the daemon can't
   answer, the request is refused.
+- Gate HTTP forwarding also requires a daemon-fsynced metadata intent before
+  upstream bytes are sent. Paired results are attempted at response headers or
+  send failure, not after proof of business completion. Result write failure
+  cannot undo a request; daemon startup reconciles retained unmatched IDs to
+  `Unknown` and stops on reconciliation errors. IDs currently reuse an empty
+  nonce for identical calls, so this is not per-attempt idempotency. Session
+  actor refs, fixed policy/sensitivity labels and absent approval refs are not
+  a complete legal ledger. The separate queued request/usage journal can drop
+  events, and non-HTTP tools do not inherit this HTTP intent guarantee.
 
 ### MCP tools
 
-`kepr mcp [--read-only] [--ssh [USER@]HOST]... [--context TARGET=NOTE]...`
-adds two tools that never return a credential:
+`kepr mcp --credential NAME` starts a credential-scoped stdio tool server.
+Credentials and SSH keys must be selected explicitly; the server adds:
 
 - `db_query(target, sql[, read_only])` runs one PostgreSQL statement through
   the gate's database proxy (500 rows / 256 KiB kept). Read-only mode sets
   `default_transaction_read_only` and wraps the statement in
   `BEGIN READ ONLY … ROLLBACK`: a guard against mistakes; the real boundary
   is a role without write grants.
-- `ssh_run(host, cmd)` runs ssh, signed by daemon-held keys, only to hosts
-  given with `--ssh`, in BatchMode (unknown host keys refused, no
-  forwarding).
+  Typed arguments reject unknown fields/wrong types; the SQL classifier refuses
+  semicolons outside quotes/comments and gates query/write/admin classes.
+  It is not a full SQL semantic validator. `--allow-writes`/`--allow-admin`
+  are operator opt-ins and conflict with `--read-only`; a tool argument cannot
+  lift the session's read-only default.
+- `ssh_run(host, cmd)` runs SSH using only `--ssh-key NAME` selections and hosts
+  listed with `--ssh`, in BatchMode (unknown host keys refused, no forwarding).
+  Host authority is not a command or remote-path allowlist.
 
-Both time out after 120 s, output is capped at 64 KiB, and key-shaped
-strings and placeholders are masked. `--context` notes describe targets to
-the model.
+The operator fixes tenant/workspace/connector labels at session start. These
+labels are not verified work-IdP claims or exact-action human approval. MCP
+defaults to 500 requests and 60 per minute; `--max-tokens` is optional. A lost
+gate or exhausted session budget requires the operator to start a new session,
+never silent reauthorization. SSH has a 120-second execution timeout; PostgreSQL
+uses 120-second socket read/write timeouts, not a proven whole-query deadline.
+Tool output is scrubbed and capped at 64 KiB; SQL/command input is bounded.
+`--context` notes describe targets to the model, not permission grants.
 
 ### Landlock
 
-Inside the sandbox the harness also runs under Landlock: read and execute
-on `/`; read and write on `$HOME`, `/tmp`, `/dev`, `/proc`,
-`$XDG_RUNTIME_DIR` and the working directory; the hidden kepr directories
-get no rule. If a hiding mount were undone, the harness still couldn't
-open them.
+Protected private-workspace launches require Landlock ABI 3 or newer, private
+mounts, a fresh home/tmp/config, closed inherited descriptors, seccomp and
+network isolation. Host workspace files are copied, not writable host mounts.
+Required isolation failure refuses launch; it does not merely warn and run.
+Changes reach the host only through operator review and digest-approved export
+to a new directory. Landlock alone does not hide metadata or mediate Unix-socket
+connections; private mounts, descriptor closure and socket restrictions supply
+the complementary boundaries (`cli_sandbox_workspace.rs`, `workspace_policy.rs`).
 
-- By default the hidden directories under `$HOME` (the user-mode store and
-  state) rely on their hiding mounts alone, so harnesses can still create
-  and rename-replace files in `$HOME`. `KEPR_LANDLOCK=strict` fences them
-  too, at a cost: `$HOME`, `~/.local` and `~/.local/share` can't be listed,
-  nothing new can be created directly in them, and a file replaced there by
-  rename (such as `~/.claude.json`) loses access. `KEPR_LANDLOCK=0` turns
-  the rules off.
-- Descriptors the caller left open above stderr (`3<DIR`) are closed in
-  the sandbox before the harness starts, so an inherited handle can't
-  reach what the mounts and Landlock hide: the harness gets stdin, stdout
-  and stderr only. If they can't be closed, the sandbox counts as
-  unavailable, as when any other setup step fails.
-- Landlock doesn't mediate `connect()` on a Unix socket, so the daemon
-  socket is protected by its hiding mount. On a kernel without Landlock,
-  kepr prints a warning and the mounts still apply. Not with `--no-sandbox`.
+The older compatibility sandbox can expose more of the host and can warn/fall
+back when unavailable. `KEPR_LANDLOCK=strict` tightens its hidden home paths;
+`KEPR_LANDLOCK=0` and `KEPR_SANDBOX_DBUS=allow` weaken it and are rejected by a
+protected launch. `--no-sandbox` requires explicit `--compatibility`. None of
+these switches establishes native macOS/Windows or device-wide protection.
 
 ## Rotation and cloud secrets
 
@@ -1904,8 +1940,8 @@ own credentials.
 | `KEPR_PROFILE=NAME` | Use profile NAME's store, state and daemon (same as `--profile`). |
 | `KEPR_AUTO_MANIFEST=1` | Look for `.kepr.toml` in and above the working directory. |
 | `KEPR_STAGE=S` | Default `--stage` for `exec` / `env` when a manifest is used. |
-| `KEPR_LANDLOCK` | `strict`: also fence hidden paths under `$HOME` in the agent sandbox; `0`: no Landlock rules. |
-| `KEPR_SANDBOX_DBUS` | `allow`: leave the session bus reachable inside the agent sandbox (it is covered with `/dev/null` otherwise). |
+| `KEPR_LANDLOCK` | Compatibility sandbox only: `strict` also fences hidden home paths; `0` disables its Landlock rules and is rejected by protected launches. |
+| `KEPR_SANDBOX_DBUS` | `allow` leaves the desktop session bus reachable in compatibility mode; rejected by protected launches. |
 | `KEPR_ASKPASS` | `kepr secret-service`: a program that prints the store passphrase, used for the unlock dialog before pinentry, zenity and kdialog. |
 | `KEPR_FIDO2_DEVICE` | Security key for `lock --fido2` / `unlock` (default: the first one listed). |
 | `KEPR_HOLD_TOKEN` | Token for `kepr checkin` when `--token` isn't given. |

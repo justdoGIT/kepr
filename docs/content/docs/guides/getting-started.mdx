@@ -7,20 +7,27 @@ description: "Installation, group setup, first credential, and basic operations 
 
 ### Linux (Recommended)
 
-**Prerequisites**: `systemd`, Rust toolchain (`cargo`), `sudo` access.
+**Prerequisites**: Rust toolchain (`cargo`) and `sudo` access. Systemd is
+required for system mode, not for standalone user mode. Linux user-daemon
+restart needs Python 3.9+ and pidfd support.
 
 ```bash
 git clone https://github.com/aikepeer/kepr.git kepr
 cd kepr
-chmod +x install.sh
-sudo ./install.sh
+./install.sh
 ```
 
-The installer:
-1. Builds release binaries via `cargo build --release`.
-2. Creates the `kepr` system group.
-3. Installs binaries to `/usr/local/bin/kepr` and `/usr/local/sbin/kepr-daemon`.
-4. Installs `kepr.service` and starts the daemon.
+Run the installer as your normal user; it invokes `sudo` for privileged work.
+It builds release binaries and installs five runtimes in `/usr/local/bin`:
+`kepr`, `kepr-daemon`, `kepr-gate`, `git-credential-kepr`, and
+`docker-credential-kepr`. When systemd is PID 1 it configures the system
+daemon/group and gate service; otherwise it selects user mode. `--login`
+selects user mode with login integration.
+
+On upgrades it restarts the selected daemon without resetting keys, restarts
+the system gate service in system mode, and verifies readiness. User-mode
+restart is socket/profile scoped through `scripts/restart-user-daemon.py`;
+merely replacing the CLI does not update an already-running daemon.
 
 ### macOS (Standalone User Daemon)
 
@@ -28,16 +35,20 @@ The installer:
 git clone https://github.com/aikepeer/kepr.git kepr
 cd kepr
 cargo build --release --bins
-mkdir -p ~/.local/bin
-cp target/release/kepr target/release/kepr-daemon ~/.local/bin/
+sudo mkdir -p /usr/local/bin
+sudo install -m 0755 target/release/kepr target/release/kepr-daemon /usr/local/bin/
 mkdir -p ~/Library/LaunchAgents
 cp systemd/io.kepr.daemon.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/io.kepr.daemon.plist
 ```
 
+This standalone setup is not a claim of Linux-equivalent protected agent
+isolation. Native macOS/Windows enforcement is not qualified by this guide;
+required isolation must not silently degrade to an unprotected launch.
+
 ---
 
-## Activating Group Membership (Linux)
+## Activating Group Membership (Linux System Mode Only)
 
 ```bash
 newgrp kepr    # Activate in current shell
@@ -47,38 +58,112 @@ groups | grep kepr  # Verify
 ```
 
 <Warning>
-Without `kepr` group membership, the CLI cannot connect to `/run/kepr/kepr.sock` (`0660` permissions).
+In system mode, `kepr` group membership is required to connect to
+`/run/kepr/kepr.sock` (`0660` permissions). Standalone user mode uses the
+user's own daemon/socket and does not require this system group.
 </Warning>
 
 ---
 
-## First Credential
+## First Ordinary Credential (Non-Agent Use)
 
 ```bash
-# Interactive masked input
-kepr set OPENAI_API_KEY
+# Interactive hidden input; type/paste privately and press Enter
+kepr set APP_TOKEN
 
 # Auto-generate (hex, base62, password, uuid, words passphrase)
-kepr set SLACK_BOT_TOKEN --generate --gen-kind pass
-
-# Non-interactive from command line
-kepr set DATABASE_URL --value "postgresql://user:pass@localhost/db"
+kepr set DB_PASSWORD --generate --gen-kind pass
 ```
+
+Nothing, not even asterisks, appears while entering a secret. Do not put
+credential values in command arguments, chat, shell exports, or harness
+configuration. These `set` examples create ordinary readable entries, not
+sealed agent credentials.
+
+## First Protected Agent Session
+
+In your own terminal, outside the agent:
+
+```bash
+kepr agent add ANTHROPIC_API_KEY --for anthropic
+kepr agent ls
+kepr agent run claude
+```
+
+Enter the value only at the hidden prompt. `--for anthropic` binds it to
+`api.anthropic.com:443`; choose the exact provider for other keys. An
+OpenAI-compatible reseller is not the OpenAI host. `agent ls` shows only
+names and bindings. Sealed keys remain unreadable through `get`/export APIs,
+even when the vault is unlocked.
+
+For OMP, run `kepr agent install omp` once before `kepr agent run omp`.
+For Grok Build, use `install grok` then `run grok`; community grok-cli instead
+uses `run grok-cli` with no install step. Both Grok adapters execute `grok`,
+so select the correct implementation on `PATH`. Codex requires the selected
+OpenAI, AgentRouter, or Selora sealed credential; pass the executable after
+`--`, for example `kepr agent run codex -- codex --profile selora` with an
+already-configured Selora profile and `SELORA_API_KEY --for selora` entry.
+
+Ports are dynamic per session: use the supplied `KEPR_GATE_URL` and
+placeholders, not a fixed 7878 or raw keys. OMP's host directory is
+`$PI_CODING_AGENT_DIR`, otherwise `${XDG_CONFIG_HOME:-~/.config}/omp/agent`;
+protected workspaces generate their own private home/config rather than
+copying host auth/history or all plugins. See [AI Agent Protection](/docs/guides/ai-agents)
+for provider profiles and integration details.
+
+Protected Linux launches require sandbox and gate-only network isolation and
+automatically snapshot the current directory (or `--workspace PATH`). After
+the harness exits, inspect and publish changes from the operator terminal:
+
+```bash
+kepr workspace review <SESSION>
+# Inspect the patch before approving; destination must be new and absolute.
+kepr workspace export <SESSION> --approve <DIGEST> --output /absolute/new-bundle
+```
+
+The one-use approval expires after one hour and binds file contents/modes.
+The bundle contains changed files under `files/` and `manifest.json`, including
+deletion metadata; it does not apply changes to the original tree.
+`--workspace-session SESSION` selects an existing prepared, not already-run
+session; it is not a resume command. Unsafe snapshot inputs can be refused.
+Isolation failure stops launch. `--compatibility` weakens isolation, disables
+privacy filtering/snapshotting, and is not a troubleshooting fix.
+`private-cloud` is bounded pattern masking, not anonymity; `local-only` is
+unavailable until local inference routing is implemented. These guarantees
+are session-scoped, not device-wide.
 
 ---
 
-## Routine Operations
+## Routine Ordinary-Credential Operations (Private Operator Terminal)
 
 ```bash
-kepr get OPENAI_API_KEY              # Pretty output
-kepr get OPENAI_API_KEY --quiet      # Raw value for shell capture
-kepr get OPENAI_API_KEY --export     # Shell export syntax
-
-kepr list                             # Show all credentials
-kepr check                            # Verify all credentials decrypt
-kepr delete OPENAI_API_KEY            # Confirm before delete
-kepr rm OPENAI_API_KEY --force        # No confirmation
+kepr get APP_TOKEN                  # Reveals an ordinary readable value
+kepr list                          # Names/metadata
+kepr check                         # Decryption check; not plaintext export
+kepr delete APP_TOKEN              # Confirm before deleting
 ```
+
+Do not run plaintext retrieval/export commands inside an agent session or
+capture provider keys into its environment. Use `agent add`/`agent run` for
+sealed keys instead.
+
+### Distinguish failure causes
+
+- **Sealed entry refuses `get`:** expected write-only behavior, not a lock or
+  corrupt entry. Use it through the gate.
+- **Vault locked:** run `kepr unlock` privately. Unlocking does not unseal keys.
+- **Missing selected-provider entry/binding:** inspect `kepr agent ls`, match
+  the configured HTTPS host and `env_key`, and add/re-add with exact `--for`.
+- **Ciphertext authentication/decryption failure:** preserve the encrypted
+  store and matching master-key/recovery material. Verify the intended
+  daemon/profile; restore a matching known-good backup or use an enrolled
+  recovery mechanism. Restarting cannot repair authenticated ciphertext, and
+  deleting/regenerating a master key can orphan credentials.
+- **Connection/isolation failure:** use `kepr status`, `kepr doctor`, and
+  `kepr agent doctor` outside the agent and start the approved daemon/service
+  if needed. Never disable protection as a repair. User clients may start a
+  missing daemon outside agent sessions; agents do not auto-start it, and
+  auto-start is not a replacement for installer-managed upgrade restarts.
 
 ---
 
@@ -86,7 +171,8 @@ kepr rm OPENAI_API_KEY --force        # No confirmation
 
 ```bash
 kepr --json list | jq '.credentials[].name'
-kepr --json get OPENAI_API_KEY | jq '.value'
+# Ordinary readable values can be returned as JSON; keep them out of agent logs.
+kepr --json get APP_TOKEN | jq '.value'
 
 # Errors also return JSON
 kepr --json get DOES_NOT_EXIST 

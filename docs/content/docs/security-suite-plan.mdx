@@ -1,0 +1,324 @@
+---
+title: "Endpoint and Agent Security Implementation"
+description: "Implementation contracts, current evidence, and remaining work for local privacy and cross-platform endpoint protection."
+---
+
+# Endpoint and agent security implementation
+
+The target is an endpoint suite for individuals and small teams: Linux first,
+then native macOS and Windows support, using established scanning engines.
+Agent credentials remain sealed, workspace access is scoped, and approved
+cloud prompts are masked locally. A separate local-only configuration must
+prevent all external disclosure. Device-wide enforcement is a separate
+requirement from protecting one agent process.
+
+This document records implementation work in the current source tree. It is
+not a claim that those binaries have been installed, that every operating
+system is protected, or that the full suite is complete.
+
+## Current implementation and evidence
+
+| Work item | Current source behavior | Remaining acceptance work |
+| --- | --- | --- |
+| SEC-002 credential screening | Shared encoded/structured secret screening; poisoned caches retain screening needles; minted tokens are included | Independent adversarial review, decoder fuzzing and sustained resource tests |
+| SEC-003 MCP authority | Explicit credential and SSH-key grants; operator-bound tenant/workspace/connector tuple, typed arguments and conservative SQL classes; read-only database default; finite request budgets, bounded I/O and no silent reauthorization | Verified work-identity claims, exact-action approvals, finer resource authorization and native integration qualification |
+| SEC-004 harness isolation | Required sandbox and isolated networking by default; allowlisted environment; unsafe overrides rejected; a protected run starts on a user- and mount-namespace snapshot of the folder, and changes reach the host only through reviewed `kepr workspace export` | Native platform qualification and macOS/Windows equivalents |
+| SEC-005 durable decisions | Gate HTTP requests persist metadata-only intent before forwarding, fsynced by the daemon; result attempts pair by `intent_id` and retained unmatched intents reconcile to `Unknown` on daemon startup | Actor-reference resolution, per-attempt identity/idempotency, retention qualification and equivalent coverage for non-HTTP actions |
+| SEC-006 local masking | Owner-only versioned configuration and local preview with category counts; session-scoped random pseudonyms and bounded, zeroized mapping originals; recognized encoded private data and oversized transformed output refused | Unicode normalization, split/other encodings, decoder fuzzing, policy migration and broader memory qualification |
+| SEC-007 gateway privacy | Responses, Messages and Chat text/function schemas; inspected OMP hosts, Cloudflare gateway normalization and OpenRouter/Groq path aliases; metadata/caller-auth removal and fresh provider authentication; actual outbound capture checks | Remaining nested configuration schemas, live provider/harness interoperability and sustained resource qualification |
+| SEC-008 endpoint engine | Fixed trusted Linux ClamAV/bubblewrap adapter, immutable input, network/socket denial and bounded execution; incomplete scans return unknown | Actual engine/definitions installation, real detection qualification, engine/update provenance and quarantine |
+| SEC-009 native platforms | Unimplemented macOS/Windows keyring placeholders now fail closed | Native secret storage, IPC identity, sandbox, network enforcement, installation/signing and rollback |
+| SEC-010 device protection | Not implemented | Per-device egress enforcement, DNS/Unix-socket coverage, offline routing and tested recovery |
+| SEC-012 release assurance | Immutable annotated-tag commit qualification; workspace checks before signing/publication; bounded parser fuzz jobs; hosted PR execution in CI, security, PR review and performance workflows with checkout credentials disabled; cluster baselines limited to trusted events | Actual repository/runner-group protections, remaining workflow audit, native OS checks, executed fuzz campaigns and external audit |
+
+The Linux workspace policy primitive has real kernel tests for content and link
+denial. The private workspace launcher is implemented: `kepr workspace
+prepare|review|export` and `kepr agent run HARNESS` over a snapshot.
+`src/cli_workspace/` owns the session, and Landlock plus a seccomp
+socket-family gate are installed in the sandboxed child. Launch needs a host
+that permits user and mount namespaces and the required Landlock support.
+The source includes kernel and private-launch regressions for host-path denial,
+immutable runtime roots, writable copied workspaces and review of changes.
+Those tests are not fresh qualification evidence for this checkout. A host
+that cannot establish the required isolation gets a refusal, never a
+downgraded protected launch. Only explicit `--compatibility` weakens that
+contract; it is not a repair for privacy or credential failures.
+
+Real ClamAV detection remains unqualified here. The adapter requires trusted
+`/usr/bin/clamscan`, `/usr/bin/bwrap` and official definitions under
+`/var/lib/clamav`; unavailable isolation, stale/incomplete input or execution
+limits yield `unknown`, not `clean`. A parser test does not establish malware
+detection quality, update provenance or quarantine support.
+
+No fresh full-suite qualification is claimed. Earlier broad verification is
+historical, and the latest broad full-suite attempt was user-aborted. Focused
+`install_daemon`/`mcp_cli` release checks passed three tests and ShellCheck
+passed for `install.sh`; that narrow evidence does not qualify privacy,
+endpoint scanning or native platforms. Maintainers should run the relevant
+release checks against the exact candidate commit:
+
+```bash
+cargo test --release --workspace --all-targets --locked
+cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
+cargo fmt --all -- --check
+```
+
+The source contains regressions for privacy packet capture, workspace isolation,
+credential lifecycle and release-workflow policy. Their presence is not an
+executed result. No live Selora request, native platform qualification,
+privileged installation or device firewall deployment is established here.
+
+`release.yml` resolves an annotated tag on `main` to an immutable commit and
+gates packaging/signing/publication on a Linux qualification job. Its current
+qualification test/lint commands do not specify `--release`; the release-mode
+commands above are maintainer acceptance commands, not a description of a
+completed workflow run. PR jobs in CI, security, review and performance use
+hosted runners with checkout credentials disabled; trusted-event cluster
+baselines and actual repository/runner protections still require review.
+
+The separate `KeyringBackend` API reports macOS/Windows native backends as
+unavailable and refuses seal/unseal, including legacy raw envelopes. Linux's
+`linux-envelope` is a permissions-protected local envelope, not native secure
+storage. The daemon's separate macOS Keychain sealer exists in source but is
+not native-platform qualification. At daemon startup, a missing master key
+with a non-empty credential directory and no recovery enrollment is an error:
+no replacement key is generated. An enrolled recovery key permits a locked
+startup for explicit recovery. See [master-key recovery](/docs/reference/features#recovery-key-for-a-sealed-master-key).
+
+## Privacy modes and their limits
+
+`private-cloud` is a bounded pattern-masking mode for supported JSON text
+requests. It does not establish that arbitrary private data cannot be encoded
+by a malicious process. An attacker can exploit unknown identifiers, custom
+encodings, numerical fields, conversation IDs, timing or other covert channels.
+Semantic re-identification also remains possible from surrounding content.
+
+Recognized percent and JSON escapes and contiguous Base64 tokens are screened
+locally, including standard and URL-safe forms with or without padding. Known
+encoded private data is refused rather than rewritten. Decoding is limited to
+three layers with byte and attempt budgets; excessive work fails closed.
+Unicode normalization, split tokens and arbitrary custom encodings remain
+outside the qualified coverage.
+
+The provider still sees the account used for authentication, request timing,
+model selection, TLS/network metadata and the public source IP. Removing
+headers and body metadata does not remove those facts. A trusted outbound
+relay can change the visible IP, but adds a party that sees connection metadata.
+
+Opaque reasoning, signed thinking, attachments and server conversation state
+are refused under the initial privacy policy. Preserve that state; never fix a
+refusal by deleting live history, changing signed content or silently disabling
+privacy. Responses item-ID repair is disabled for privacy sessions so privacy
+decisions do not trigger hidden conversation rewrites.
+
+For a promise of no external personal data or metadata, use qualified local
+inference plus device-wide offline enforcement. `local-only` currently stops
+before starting a cloud gate because local inference routing is unfinished.
+An environment variable or proxy setting alone is not device-wide enforcement.
+
+## Implementation order
+
+1. Stabilize the current credential, MCP and launch boundaries. Add independent
+   outbound capture tests, bounded parser fuzzing and failure-path checks.
+2. Extend the implemented operator-owned privacy configuration and preview
+   with migration and decoder qualification. Required launches already load
+   the validated policy before daemon or sandbox operations.
+3. Qualify the private workspace launcher on more hosts and build local
+   inference routes, then qualify the Linux device network policy with
+   rollback and an offline boot test.
+4. Qualify scanning and signed definition updates; add reviewed quarantine,
+   restore and deletion controls. Keep false-positive recovery reversible.
+5. Add native macOS and Windows implementations, with platform-specific
+   tests and truthful capability reporting. Do not emulate protection with
+   configuration flags when the OS enforcement primitive is unavailable.
+6. Complete release qualification and commission an independent security
+   review before marketing a general endpoint security guarantee.
+
+## Operator setup and policy UX
+
+The local privacy commands now work without a provider call:
+
+```bash
+kepr privacy init --preset private-cloud
+kepr privacy status
+```
+
+Initialization refuses an existing policy. To validate and atomically replace
+the policy, provide JSON on stdin:
+
+```bash
+kepr privacy configure --stdin <<'JSON'
+{
+  "version": 1,
+  "preset": "private-cloud",
+  "identifiers": ["Example Person", "Example Organization", "/home/alice/work"]
+}
+JSON
+```
+
+The policy is stored at `$XDG_CONFIG_HOME/kepr/privacy.json`, or
+`~/.config/kepr/privacy.json`, with Kepr profile nesting when selected. Files
+must be owner-only regular files without symbolic or hard links. Input and
+policy size limits apply, and invalid configuration never falls back to a
+default policy. Status shows the preset, identifier count and capability
+information without configured originals.
+
+Preview accepts bounded UTF-8 stdin and returns transformed text and category
+counts. Terminal control characters are escaped:
+
+```bash
+kepr privacy preview <<'TEXT'
+Example Person: alice@example.invalid
+TEXT
+```
+
+The `local-only` preset can be configured and previewed. Agent launch still
+refuses it because local inference routing is unavailable. Compatibility mode
+cannot turn a saved local-only policy into a cloud launch.
+
+The complete setup flow remains unfinished. It must ask for a workspace,
+privacy mode, provider hosts, capability grants and update preference. Read API keys only through masked
+operator-terminal entry. Show host, port and injection style before storage;
+keep the API path separate from the credential's host binding.
+
+The setup result should be an owner-only versioned local policy and a report
+with `enforced`, `unavailable`, `not configured`, or `needs qualification` for
+each capability. Report actual enforcement, including rollback readiness.
+Reject unsafe combinations and unsupported configurations without downgrading.
+
+The privacy preview should accept stdin or explicitly selected local input,
+show only transformed text and category counts, and require no provider call.
+Custom identifiers should support names, mail addresses, organizations and
+workspace roots. Never show configured originals in logs, error messages or
+diagnostic output. Originals and pseudonym mappings must remain local.
+
+Separate previewing policy from installing firewall rules or starting privileged
+services. The installation step needs a concrete diff, a verified recovery
+path and a health check. Save the prior rules so rollback survives a restart.
+Ordinary agents must not edit the installed policy, update executable, trust
+roots, provider allowlist or approval service.
+
+## Missing security angles and executable work packages
+
+Each work package needs a failing regression, the smallest repair, focused
+checks and a reviewer. These are outstanding implementation requirements.
+
+### Prompt ingestion and authority
+
+- Represent operator instructions, retrieved pages, mail, documents, MCP
+  output and model proposals as different typed inputs. Carry source identity,
+  trust level, content hash and size limits through the harness.
+- Treat external content as data. A sentence that resembles a system prompt
+  must not change capability grants, trust roots, destinations or approvals.
+- Add bounded MIME/charset handling, duplicate JSON-key rejection, Unicode and
+  escaped-content tests, archive/decompression limits and file magic checks.
+- Review nested provider schemas. Refuse unknown media, remote retrieval and
+  executable tool types unless an adapter explicitly supports them.
+- Mediate actual actions in the gate and sandbox. Prompt-injection detection
+  can inform the operator; it must never be the access-control boundary.
+- Bind approval to the exact destination, arguments, content digest, session,
+  expiry and one-use nonce. Re-check after approval to prevent substitutions.
+- Test indirect injection, fake system roles, MCP tool-definition changes,
+  malicious search results, replayed approvals and confused-deputy attacks.
+
+### Local privacy and egress
+
+- Extend the source regressions for raw, JSON-escaped, percent-encoded, Base64
+  and nested private data with Unicode normalization, split tokens and decoder
+  fuzzing. Preserve bounded decoding and refuse transformations that corrupt
+  protocol or signed state.
+- Account for file names, document properties, EXIF, embedded links, headers,
+  telemetry, crash reports, DNS, certificate/update lookups and local sockets.
+- Capture actual upstream bytes with synthetic identifiers. Prove that the
+  original identifier is absent and that blocked requests reach no upstream.
+- Disable SDK/harness telemetry or enforce its blocking. A `store=false`
+  request does not prove provider-side retention or training behavior.
+- Add local inference routing with no download requirement. Check startup,
+  tool execution, updates and crash recovery under device offline enforcement.
+- Enforce byte/request budgets and destination authorization. Pattern masks
+  cannot prevent an attacker from inventing an arbitrary encoding.
+
+### Endpoint, OS and privileged services
+
+- Qualify Linux namespaces, Landlock, seccomp, network policy and peer UID/PID
+  identity on native machines. Exercise symlink/hardlink races and inherited
+  descriptors with private-workspace snapshots and reviewed export.
+- On macOS, implement real Keychain access control, native process isolation,
+  network-extension policy, notarization, entitlements and permission UX.
+- On Windows, implement named-pipe identity/ACLs, native key protection,
+  restricted-token/AppContainer or VM isolation, WFP egress policy and signed
+  installation/update paths. Verify session and service-account separation.
+- Establish engine provenance and signed update validation. Test stale,
+  corrupt, rollback and offline definitions; encrypted or truncated input
+  must never report clean. Avoid scanner command/path injection.
+- Add reversible quarantine with immutable scan identity, audit and restore.
+  Test malicious files, nested archives, memory/disk exhaustion and false
+  positives using isolated fixtures.
+- Threat-model clipboard, swap, hibernation, core dumps, local sockets,
+  symlinked configuration, malicious plugins and same-user process injection.
+  A compromised kernel or administrator remains outside a software-only
+  credential secrecy guarantee; document that boundary accurately.
+
+### Credentials, supply chain and operations
+
+- Use narrow provider/path/method grants, short-lived tokens where available,
+  per-action approval and immediate revocation. Test cached-token invalidation
+  and rotation after a provider reports failure.
+- Verify actual branch/tag/environment and runner-group protections. The
+  current `performance.yml` and `pr-reviewer.yml` PR paths use hosted runners;
+  hosted benchmarks do not access or update cluster baselines.
+- Qualify exact release commits on native OS runners. Generate SBOMs, pin
+  dependencies/actions, sign artifacts and updates, and test rollback safety.
+- Fuzz every exposed parser and preserve sanitized crash evidence. Exercise
+  resource exhaustion, restart, disk-full, permission and key-service failures.
+- Provide local incident reports with no prompt bodies or secret values by
+  default. Add revocation, session termination and recovery runbooks.
+
+## Work instructions for gpt-oss-120B and gpt-oss-20B
+
+Give either model one work package with exact input/output contracts, permitted
+files, acceptance commands and an explicit list of unavailable capabilities.
+Prefer one parser, one policy evaluator or one adapter at a time for 20B.
+Use 120B for cross-component integration and reviewing trust-boundary changes;
+model size does not replace independent security review.
+
+The implementation agent must first read AGENTS.md, capture a sanitized baseline
+and prove the intended failing regression. Keep Rust production modules under
+350 lines. Use existing shared detectors, protocol contracts and credential
+transport. Never supply live credentials, permit silent fallback, or modify
+the current session's gate while it is in use.
+
+Acceptance requires evidence of enforcement and negative cases, not only a
+successful command invocation. Run `cargo test --release --workspace --locked` and
+`cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings`
+for the integrated release, plus relevant native and integration checks. Mark missing
+hardware, engines, permissions and platform runners as unavailable. Update this
+status table only after the corresponding acceptance evidence exists.
+
+## Selora with Codex
+
+The Codex adapter supports a selected provider using the Responses protocol and
+an `env_key`, such as `SELORA_API_KEY`. With compatible Codex versions it selects
+the requested separate profile (for example `selora.config.toml`), verifies the
+configured host and injects the environment placeholder through a local gate URL.
+It grants only the selected Codex provider's credential. Privacy launches do
+not automatically add unrelated database, cloud, Git or raw tunnel routes.
+
+Store the key in the operator's terminal:
+
+```bash
+kepr agent add SELORA_API_KEY --for api.selora.lol:443:bearer
+```
+
+After installing mutually compatible updated CLI, daemon and gate binaries,
+start a new session:
+
+```bash
+kepr agent run codex -- codex --profile selora
+```
+
+The binding approves `api.selora.lol:443`; `/v1` belongs to the provider's base
+URL. No key belongs in Codex configuration or shell command arguments.
+Provider/model availability has not been tested with a live request. The
+private-cloud restrictions above still apply to opaque Codex conversation
+state. Preserve the running gate when deploying updates for future sessions.
