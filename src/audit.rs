@@ -165,10 +165,10 @@ fn log_to_journal(event: &AuditEvent, name_str: &str, result_str: &str) -> bool 
 
     // Structured fields — indexed by journal
     msg.push_str(&format!("KEPR_OP={}\n", event.op));
-    msg.push_str(&format!("KEPR_NAME={}\n", name_str));
+    msg.push_str(&format!("KEPR_NAME={name_str}\n"));
     msg.push_str(&format!("KEPR_UID={}\n", event.uid));
     msg.push_str(&format!("KEPR_USER={}\n", event.username));
-    msg.push_str(&format!("KEPR_RESULT={}\n", result_str));
+    msg.push_str(&format!("KEPR_RESULT={result_str}\n"));
 
     // Send to journal socket via the cached datagram fd.
     match journal_sock() {

@@ -22,8 +22,7 @@ fn validate_name(name: &str) -> Result<(), String> {
     for c in name.chars() {
         if !c.is_ascii_alphanumeric() && c != '_' {
             return Err(format!(
-                "invalid character '{}' — only A-Z, 0-9, underscore allowed",
-                c
+                "invalid character '{c}' — only A-Z, 0-9, underscore allowed"
             ));
         }
     }
@@ -343,7 +342,7 @@ mod tests {
 
     #[test]
     fn batch_request_rejects_too_many_keys() {
-        let keys: Vec<String> = (0..101).map(|i| format!("K{}", i)).collect();
+        let keys: Vec<String> = (0..101).map(|i| format!("K{i}")).collect();
         let body = serde_json::to_vec(&serde_json::json!({"keys": keys})).unwrap();
         // Verify the request itself deserializes
         let req: BatchRequest = serde_json::from_slice(&body).unwrap();
