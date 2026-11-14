@@ -37,6 +37,17 @@ pub enum GateRequest {
         id: u64,
         entries: Vec<crate::gate_journal::JournalEntry>,
     },
+    /// T14.01: durable pre-execution decision; the daemon fsyncs it before
+    /// acknowledging the gate.
+    Decision {
+        id: u64,
+        record: crate::gate_journal::DecisionRecord,
+    },
+    /// T14.02: post-execution result paired with a durable decision.
+    Result {
+        id: u64,
+        record: crate::gate_journal::ResultRecord,
+    },
     /// T9.06: add to today's usage of credential `name` (shared by every
     /// session of the user); answered with `UsageToday`.
     DayUsage {
@@ -74,6 +85,12 @@ pub enum GateResponse {
     Recorded {
         id: u64,
     },
+    DecisionRecorded {
+        id: u64,
+    },
+    ResultRecorded {
+        id: u64,
+    },
     /// T13.03: the new value is stored; gates re-fetch.
     Rotated {
         id: u64,
@@ -101,6 +118,8 @@ impl GateResponse {
             Self::ResolveOk { id, .. }
             | Self::Generation { id, .. }
             | Self::Recorded { id }
+            | Self::DecisionRecorded { id }
+            | Self::ResultRecorded { id }
             | Self::Rotated { id }
             | Self::UsageToday { id, .. }
             | Self::CanaryChecked { id, .. }
@@ -187,9 +206,21 @@ pub fn resolvable_creds(routes: &[GateRoute]) -> std::collections::HashSet<Strin
         .collect()
 }
 
+/// A one-shot provider-key rotation performed before the gate announces readiness.
+/// The config contains credential names only; the gate resolves both values over
+/// its private daemon channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RotationConfig {
+    pub provider: String,
+    pub target: String,
+    pub bootstrap: String,
+}
+
 /// What the daemon writes to a freshly spawned gate's stdin.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionConfig {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub privacy: Option<crate::privacy::Policy>,
     /// 16 hex chars.
     pub session_id: String,
     /// 64 hex chars (32 bytes).
@@ -208,6 +239,10 @@ pub struct SessionConfig {
     /// T7.09: send what the agent sends and receives to the daemon.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub record: bool,
+    /// A daemon-only, one-shot provider rotation. The gate completes it before
+    /// it emits its ready line; ordinary agent sessions leave this absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<RotationConfig>,
 }
 
 /// System-mode daemon → kepr-gate service (T1.19), sent after the
@@ -222,6 +257,9 @@ pub struct ServiceStart {
 /// The single line a gate prints to stdout once it is listening.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReadyLine {
+    /// Actual policy initialized by this gate, not a caller's claimed status.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub privacy: Option<crate::privacy::Preset>,
     pub ready: bool,
     pub port: u16,
     /// Provider name → placeholder (one per route; providers are unique).

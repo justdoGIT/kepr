@@ -24,7 +24,7 @@ namespace KeprFake {
       server.Bind(new UnixDomainSocketEndPoint(Path));
       server.Listen(4);
       thread = new Thread(() => {
-        foreach (var reply in replies) {
+        try { foreach (var reply in replies) {
           using (var c = server.Accept()) {
             var head = Read(c, 4);
             int n = (head[0] << 24) | (head[1] << 16) | (head[2] << 8) | head[3];
@@ -37,6 +37,7 @@ namespace KeprFake {
             c.Send(frame);
           }
         }
+} catch { }
       });
       thread.IsBackground = true;
       thread.Start();

@@ -24,7 +24,7 @@ sealed class FakeDaemon : IDisposable
         _server.Listen(4);
         _thread = new Thread(() =>
         {
-            foreach (var reply in replies)
+            try { foreach (var reply in replies)
             {
                 using var c = _server.Accept();
                 var head = ReadExact(c, 4);
@@ -38,7 +38,7 @@ sealed class FakeDaemon : IDisposable
                 frame[3] = (byte)body.Length;
                 body.CopyTo(frame, 4);
                 c.Send(frame);
-            }
+            } } catch { }
         }) { IsBackground = true };
         _thread.Start();
     }

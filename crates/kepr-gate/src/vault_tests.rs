@@ -103,7 +103,7 @@ fn a_generation_change_empties_values_and_tokens() {
     c.get("A", "h.example.com", 443).unwrap();
     c.mint([1; 32], &ZeroString::from("ghs_minted-token-1"), 100, 0);
     c.check_generation().unwrap();
-    assert_eq!(c.values().len(), 1);
+    assert_eq!(c.values().len(), 2, "resolved value and derived token");
     n.generation.store(7, Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(300));
     c.check_generation().unwrap();
@@ -168,4 +168,91 @@ fn stale_replies_are_skipped_by_id() {
     let (v, _) = r.resolve("A", "h.example.com", 443).unwrap();
     assert_eq!(v.as_str(), "right");
     t.join().unwrap();
+}
+
+fn poison<T>(lock: &Mutex<T>) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = lock.lock().unwrap();
+        panic!("intentional screening regression fixture");
+    }));
+}
+
+#[test]
+fn poisoned_cache_keeps_existing_values_in_outbound_screening() {
+    let c = Cache::new(Box::new(Arc::new(Counting::default())), DEFAULT_TTL);
+    let (value, _) = c.get("A", "h.example.com", 443).unwrap();
+    poison(&c.entries);
+    assert!(matches!(
+        crate::dlp::scan(value.as_bytes(), &c.values()),
+        crate::dlp::Verdict::StoredSecret(_)
+    ));
+}
+
+#[test]
+fn values_resolved_after_cache_poisoning_are_still_screened() {
+    let c = Cache::new(Box::new(Arc::new(Counting::default())), DEFAULT_TTL);
+    poison(&c.entries);
+    let (value, _) = c.get("A", "h.example.com", 443).unwrap();
+    assert!(matches!(
+        crate::dlp::scan(value.as_bytes(), &c.values()),
+        crate::dlp::Verdict::StoredSecret(_)
+    ));
+}
+
+#[test]
+fn minted_session_tokens_are_screened_even_after_lock_poisoning() {
+    let c = Cache::new(Box::new(Arc::new(Counting::default())), DEFAULT_TTL);
+    let token = ZeroString::from_string(["derived-", "session-token-fixture"].concat());
+    c.mint([1; 32], &token, 100, 0);
+    assert!(matches!(
+        crate::dlp::scan(token.as_bytes(), &c.values()),
+        crate::dlp::Verdict::StoredSecret(_)
+    ));
+    poison(&c.minted);
+    assert!(matches!(
+        crate::dlp::scan(token.as_bytes(), &c.values()),
+        crate::dlp::Verdict::StoredSecret(_)
+    ));
+    let later = ZeroString::from_string(["later-", "session-token-fixture"].concat());
+    c.mint([2; 32], &later, 100, 0);
+    assert!(matches!(
+        crate::dlp::scan(later.as_bytes(), &c.values()),
+        crate::dlp::Verdict::StoredSecret(_)
+    ));
+    let other = Cache::new(Box::new(Arc::new(Counting::default())), DEFAULT_TTL);
+    assert_eq!(
+        crate::dlp::scan(token.as_bytes(), &other.values()),
+        crate::dlp::Verdict::Clean
+    );
+    c.clear();
+    assert_eq!(
+        crate::dlp::scan(token.as_bytes(), &c.values()),
+        crate::dlp::Verdict::Clean
+    );
+}
+
+#[test]
+fn cloudflare_whole_record_encoding_cannot_hide_its_session_token() {
+    use base64::Engine;
+    let value = kepr_core::cloudflare::GatewayCredential::new(
+        ZeroString::from_string(["cloudflare-", "opaque-fixture-token"].concat()),
+        "a".repeat(32),
+        "fixture-gateway".into(),
+    )
+    .unwrap()
+    .encode();
+    let c = Cache::new(Box::new(Arc::new(Counting::default())), DEFAULT_TTL);
+    c.entries.lock().unwrap().insert(
+        ("CF".into(), kepr_core::cloudflare::HOST.into(), 443),
+        (
+            SecretCell::new(&value),
+            Inject::CloudflareGateway,
+            Instant::now(),
+        ),
+    );
+    let encoded = base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+    assert!(matches!(
+        crate::dlp::scan(encoded.as_bytes(), &c.values()),
+        crate::dlp::Verdict::StoredSecret(_)
+    ));
 }

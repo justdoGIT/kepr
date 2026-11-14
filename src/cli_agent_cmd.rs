@@ -4,115 +4,26 @@
 
 use std::io::{BufRead, IsTerminal};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(unix)]
+use std::process::Command;
+
 use kepr_core::binding::Inject;
-use kepr_core::gate_protocol::GateLimits;
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Request, Response};
 use kepr_core::sigv4_req::AwsKey;
 
 use crate::{cli_agent_detect, cli_agent_install, cli_agent_run, cli_input, cli_ui, client};
 
-const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok|opencode|claude|codex|cursor|copilot | doctor [--port N] [--json] | shim HARNESS [--dir DIR] [--remove] | ls | revoke NAME";
+#[path = "cli_agent_cmd_launch.rs"]
+mod launch;
 
-#[derive(Debug, Default, PartialEq)]
-pub struct AgentArgs {
-    pub verb: String,
-    pub target: Option<String>,
-    pub fors: Vec<String>,
-    pub port: Option<u16>,
-    pub stdin: bool,
-    pub from_clipboard: bool,
-    pub force: bool,
-    pub requires_consent: bool,
-    pub yes: bool,
-    pub remove: bool,
-    pub files: Vec<String>,
-    pub no_sandbox: bool,
-    pub strict_sandbox: bool,
-    pub isolate_net: bool,
-    pub limits: GateLimits,
-    /// Gate-batch session flags (`--tunnel`, …), see cli_gatex.
-    pub session: crate::cli_gatex::SessionOpts,
-    pub argv: Vec<String>,
-}
+const USAGE: &str = "usage: kepr agent add NAME [--for PROVIDER]... [--stdin|--from-clipboard] | run HARNESS [--workspace PATH | --workspace-session SESSION] [--window] [--security-preset private-cloud|local-only] [--compatibility [--no-sandbox]] [--port N] [--max-requests N] [--max-tokens N] [--rate N] [--max-requests-day N] [--max-tokens-day N] [-- ARGV] | install omp|grok|opencode|claude|codex|cursor|copilot | doctor [--port N] [--json] | shim HARNESS [--dir DIR] [--remove] | ls | revoke NAME";
 
-fn number<T: std::str::FromStr>(raw: &[String], i: usize, flag: &str) -> Result<T, String> {
-    raw.get(i)
-        .and_then(|v| v.parse().ok())
-        .ok_or_else(|| format!("{flag} needs a positive number"))
-}
-
-pub fn parse(raw: &[String]) -> Result<AgentArgs, String> {
-    let mut a = AgentArgs {
-        verb: raw.first().ok_or(USAGE)?.clone(),
-        ..Default::default()
-    };
-    let mut i = 1;
-    while i < raw.len() {
-        match raw[i].as_str() {
-            "--for" => {
-                i += 1;
-                a.fors.push(
-                    raw.get(i)
-                        .ok_or("--for needs a provider or binding")?
-                        .clone(),
-                );
-            }
-            "--port" => {
-                i += 1;
-                let p = raw.get(i).ok_or("--port needs a number")?;
-                a.port = Some(
-                    p.parse()
-                        .ok()
-                        .filter(|p| *p > 0)
-                        .ok_or("--port must be 1-65535")?,
-                );
-            }
-            "--max-requests" => {
-                i += 1;
-                a.limits.max_requests = Some(number(raw, i, "--max-requests")?);
-            }
-            "--max-tokens" => {
-                i += 1;
-                a.limits.max_tokens = Some(number(raw, i, "--max-tokens")?);
-            }
-            "--rate" => {
-                i += 1;
-                a.limits.per_minute = Some(number(raw, i, "--rate")?);
-            }
-            "--max-requests-day" => {
-                i += 1;
-                a.limits.max_requests_day = Some(number(raw, i, "--max-requests-day")?);
-            }
-            "--max-tokens-day" => {
-                i += 1;
-                a.limits.max_tokens_day = Some(number(raw, i, "--max-tokens-day")?);
-            }
-            f if crate::cli_gatex::SessionOpts::FLAGS.contains(&f) => i = a.session.take(raw, i)?,
-            "--stdin" => a.stdin = true,
-            "--from-clipboard" => a.from_clipboard = true,
-            "--force" | "-f" => a.force = true,
-            "--requires-consent" => a.requires_consent = true,
-            "--yes" | "-y" => a.yes = true,
-            "--remove" => a.remove = true,
-            "--no-sandbox" => a.no_sandbox = true,
-            "--strict-sandbox" => a.strict_sandbox = true,
-            "--isolate-net" => a.isolate_net = true,
-            "--" => {
-                a.argv = raw[i + 1..].to_vec();
-                break;
-            }
-            s if !s.starts_with('-') && a.verb == "adopt" => a.files.push(s.to_string()),
-            s if !s.starts_with('-') && a.target.is_none() => a.target = Some(s.to_string()),
-            other => return Err(format!("unexpected argument: {other}\n{USAGE}")),
-        }
-        i += 1;
-    }
-    if a.stdin && a.from_clipboard {
-        return Err("use one of --stdin or --from-clipboard".into());
-    }
-    Ok(a)
-}
+#[path = "cli_agent_args.rs"]
+mod args;
+pub use args::{parse, AgentArgs};
 
 fn read_value(from_stdin: bool, name: &str) -> ZeroString {
     if from_stdin || !std::io::stdin().is_terminal() {
@@ -300,6 +211,80 @@ fn cmd_revoke(a: &AgentArgs) -> Response {
     }
 }
 
+#[cfg(unix)]
+fn open_window(a: &AgentArgs) -> Response {
+    let Some(harness) = a.target.as_deref() else {
+        return Response::fail("kepr agent run needs a HARNESS before --window");
+    };
+    let source = a.session.workspace_source.as_deref().unwrap_or(".");
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => return Response::fail(format!("cannot locate kepr for Rio: {error}")),
+    };
+    let title = format!("kepr {harness}");
+    let mut command = Command::new("rio");
+    command
+        .arg("--working-dir")
+        .arg(source)
+        .arg("--title-placeholder")
+        .arg(&title)
+        .arg("--command")
+        .arg(executable)
+        .args(["agent", "run", harness]);
+    if a.compatibility {
+        command.arg("--compatibility");
+    } else if let Some(id) = a.session.workspace_session.as_deref() {
+        command.args(["--workspace-session", id]);
+    } else {
+        command.args(["--workspace", source]);
+    }
+    if let Some(preset) = a.security_preset.as_deref() {
+        command.args(["--security-preset", preset]);
+    }
+    if a.no_sandbox {
+        command.arg("--no-sandbox");
+    }
+    if a.isolate_net && a.compatibility {
+        command.arg("--isolate-net");
+    }
+    if let Some(port) = a.port {
+        command.args(["--port", &port.to_string()]);
+    }
+    for (flag, value) in [
+        ("--max-requests", a.limits.max_requests),
+        ("--max-tokens", a.limits.max_tokens),
+        ("--rate", a.limits.per_minute.map(u64::from)),
+        ("--max-requests-day", a.limits.max_requests_day),
+        ("--max-tokens-day", a.limits.max_tokens_day),
+    ] {
+        if let Some(value) = value {
+            command.args([flag, &value.to_string()]);
+        }
+    }
+    for tunnel in &a.session.tunnels {
+        command.args(["--tunnel", tunnel]);
+    }
+    for grant in &a.session.grants {
+        command.args(["--grant", grant]);
+    }
+    for db_user in &a.session.db_users {
+        command.args(["--db-user", db_user]);
+    }
+    if a.session.record {
+        command.arg("--record");
+    }
+    if !a.argv.is_empty() {
+        command.arg("--").args(&a.argv);
+    }
+    let error = command.exec();
+    Response::fail(format!("Rio window launch failed: {error}"))
+}
+
+#[cfg(not(unix))]
+fn open_window(_: &AgentArgs) -> Response {
+    Response::fail("--window is only supported with the Rio Unix terminal")
+}
+
 pub fn main(raw: &[String]) -> Response {
     match raw.first().map(String::as_str) {
         Some("add-cloudflare") => {
@@ -315,22 +300,38 @@ pub fn main(raw: &[String]) -> Response {
     if let Some(r) = crate::cli_gatex::agent_verb(raw) {
         return r;
     }
-    let a = match parse(raw) {
+    let mut a = match parse(raw) {
         Ok(a) => a,
         Err(e) => return Response::fail(e),
     };
+    if a.verb == "run" && a.open_window && a.target.is_some() {
+        return open_window(&a);
+    }
+    if a.verb == "run"
+        && a.target.is_some()
+        && !a.compatibility
+        && a.session.workspace_session.is_none()
+        && a.security_preset.as_deref() != Some("local-only")
+    {
+        let source = a
+            .session
+            .workspace_source
+            .clone()
+            .unwrap_or_else(|| ".".into());
+        let session = match crate::cli_workspace::prepare_source(&source) {
+            Ok(session) => session,
+            Err(error) => return Response::fail(format!("workspace prepare failed: {error}")),
+        };
+        a.session.workspace_session = Some(session);
+    }
     match a.verb.as_str() {
         "add" => cmd_add(&a),
         "run" => match a.target.as_deref() {
             Some(h) => {
-                let mode = match (a.no_sandbox, a.strict_sandbox) {
-                    (true, true) => {
-                        return Response::fail("--no-sandbox and --strict-sandbox conflict")
-                    }
-                    (true, false) => cli_agent_run::SandboxMode::Off,
-                    (false, true) => cli_agent_run::SandboxMode::Required,
-                    (false, false) => cli_agent_run::SandboxMode::Auto,
-                };
+                if let Some(response) = launch::preflight(&a) {
+                    return response;
+                }
+                let mode = launch::sandbox_mode(&a);
                 let (net, s) = (a.isolate_net, &a.session);
                 cli_agent_run::cmd_run(h, a.port, &a.argv, mode, net, a.limits, s)
             }

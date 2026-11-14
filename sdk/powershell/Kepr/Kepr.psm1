@@ -60,7 +60,7 @@ function Set-KeprSecret {
     elseif ($Value -isnot [string]) {
         throw 'Value must be a SecureString or a string'
     }
-    $opts = [Kepr.SetOptions]::new($null, $(if ($PSBoundParameters.ContainsKey('TtlSeconds')) { [Nullable[long]]$TtlSeconds } else { $null }), [bool]$RequiresConsent, [bool]$RequiresFido2)
+    $opts = [Kepr.SetOptions]::new($(if ($PSBoundParameters.ContainsKey('TtlSeconds')) { [Nullable[long]]$TtlSeconds } else { $null }), [bool]$RequiresConsent, [bool]$RequiresFido2)
     if ($PSCmdlet.ShouldProcess($Name, 'store credential')) {
         $null = (New-KeprClient $SocketPath).Set($Name, $Value, $opts)
     }

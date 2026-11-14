@@ -154,7 +154,7 @@ fn copy_feeds_wl_copy_on_stdin_with_a_memory_tmp() {
     let read = |f: &str| std::fs::read_to_string(out.join(f)).unwrap_or_default();
     assert_eq!(read("value"), "clip-value-1");
     assert_eq!(read("argv"), "--type\ntext/plain;charset=utf-8\n");
-    if stderr.contains("user namespaces unavailable") {
+    if all.contains("user namespaces unavailable") {
         eprintln!("skip tmpfs check: user namespaces unavailable");
         return;
     }

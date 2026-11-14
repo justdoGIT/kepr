@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [unreleased]
+- Route provider key rotation through a daemon-owned gate: bootstrap names stay
+  in Kepr, replacements are validated before commit, and post-create failures
+  trigger provider revocation using the returned key identifier. Reviewed flows
+  cover OpenAI, OpenRouter and Venice; Fireworks and Moonshot remain manual
+  because their control planes do not provide the same key-only lifecycle
+  contract.
+- Add reviewed OMP routes and privacy coverage for Fireworks, Moonshot CN and
+  Venice without allowing unbound or non-placeholder provider configuration.
+- Let MCP's parser receive explicit credential grants and request budgets, and
+  keep its stdout JSON-RPC-only even when the global `--json` flag is set.
+- Restart the installed user daemon during source installation, scoped to its
+  authenticated Unix socket/profile; also restart an existing system gate
+  service instead of leaving the previous binary running.
+- Persist metadata-only gate intent records before outbound requests, fsync them
+  through the daemon-owned channel, record bounded results, and reconcile
+  missing results as explicit `Unknown` records on daemon startup.
+- Bind every `kepr mcp` database and SSH tool call to an operator grant: the
+  session's tenant, workspace and connector account are checked with
+  `authz::decide` before the target is touched, and `--allow-admin` is required
+  for DDL.
+- Refuse MCP tool arguments that do not match the declared schema and SQL that
+  is not exactly one statement (semicolons and backslash escapes are refused),
+  so a `db_query` can neither chain statements nor reach DDL without the
+  `admin` action.
+- Make protected `kepr agent run HARNESS` snapshot the current folder automatically;
+  add `--workspace PATH` for another folder and keep `--workspace-session` for reuse.
+- Make private workspace launches reachable: reopen top-level runtime roots such
+  as `/usr` from the filesystem root instead of rejecting their `/` parent, so
+  a protected `kepr agent run` over a prepared session starts and its edits are
+  reviewable.
+- Refuse to generate a replacement master key when the credential store is
+  non-empty, preventing silent loss of access after an unsealed key disappears.
 - Reject cross-credential HTTPS placeholders using immutable destination/slot
   indexes; retain valid aliases for the same credential.
 - Bound Git credential names in a separate digest namespace and verify stored

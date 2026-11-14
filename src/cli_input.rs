@@ -51,7 +51,7 @@ fn set_termios(t: &Termios) {
 }
 
 pub fn read_masked(prompt: &str) -> ZeroString {
-    eprint!("{}", prompt);
+    eprint!("{prompt}");
     io::stderr().flush().ok();
 
     let mut t = get_termios();

@@ -1,6 +1,6 @@
 ---
 title: "Quickstart"
-description: "Install Kepr and start protecting your API keys in 1 minute on Linux, macOS, or Docker."
+description: "Install Kepr, distinguish ordinary credentials from sealed agent keys, and start a protected Linux workspace."
 ---
 
 ## Installation
@@ -11,28 +11,43 @@ description: "Install Kepr and start protecting your API keys in 1 minute on Lin
     git clone https://github.com/aikepeer/kepr.git && cd kepr
     ./install.sh
     ```
-    Installer builds release binaries and configures standalone user mode or systemd service.
+    Run the installer as your normal user; it uses `sudo` where needed. It
+    builds release binaries and installs `kepr`, `kepr-daemon`, `kepr-gate`,
+    `git-credential-kepr`, and `docker-credential-kepr` in `/usr/local/bin`.
+    It selects system mode when systemd is PID 1, otherwise user mode;
+    `--login` selects user mode. Upgrades restart the selected daemon without
+    resetting keys, restart the system gate service in system mode, and check
+    readiness. Linux user-mode restart requires Python 3.9+ and pidfd support.
   </Tab>
   <Tab value="macOS">
     ```bash
     git clone https://github.com/aikepeer/kepr.git && cd kepr
     cargo build --release --bins
-    cp target/release/kepr target/release/kepr-daemon /usr/local/bin/
+    sudo mkdir -p /usr/local/bin
+    sudo install -m 0755 target/release/kepr target/release/kepr-daemon /usr/local/bin/
+    mkdir -p ~/Library/LaunchAgents
     cp systemd/io.kepr.daemon.plist ~/Library/LaunchAgents/
     launchctl load ~/Library/LaunchAgents/io.kepr.daemon.plist
     ```
+    These are standalone daemon setup steps, not evidence of Linux-equivalent
+    protected agent isolation. Native macOS/Windows enforcement is not
+    qualified by this guide; protected launch must fail if required isolation
+    is unavailable.
   </Tab>
   <Tab value="Docker / Container">
     ```bash
     docker run -d --name kepr-eso ghcr.io/aikepeer/kepr-eso-provider:latest
     ```
+    This image is the External Secrets Operator provider, not a protected
+    local coding-agent runtime. Containers do not establish device-wide
+    protection.
   </Tab>
 </Tabs>
 
 ## Basic Usage
 
 <Steps>
-  <Step title="Store a credential">
+  <Step title="Store an ordinary, readable credential (non-agent use)">
     ```bash
     # Masked interactive input
     kepr set OPENAI_API_KEY
@@ -42,21 +57,49 @@ description: "Install Kepr and start protecting your API keys in 1 minute on Lin
     ```
   </Step>
 
-  <Step title="Deliver secrets via RAM (Zero /proc leaks)">
+  <Step title="Deliver an ordinary credential to your own process">
     ```bash
-    # Delivers secrets via sealed in-memory file descriptors (memfd)
+    # Delivers plaintext to the selected process through an in-memory descriptor
     kepr exec --memfd OPENAI_API_KEY -- python train.py
     ```
+    The selected process can read the secret; memfd is not the sealed-agent
+    boundary. Ordinary `kepr get OPENAI_API_KEY` also reveals this entry and
+    belongs only in a private operator terminal, not an agent tool call.
   </Step>
 
   <Step title="Give AI Coding Agents keys they never see">
     ```bash
-    kepr agent add ANTHROPIC_API_KEY   # paste once; write-only afterwards
-    kepr agent run claude              # Claude Code gets a placeholder
+    kepr agent add ANTHROPIC_API_KEY --for anthropic
+    kepr agent run claude
     ```
+    Enter the value at the hidden terminal prompt, never in chat or argv.
+    Nothing (not even asterisks) appears while you type; press Enter to submit.
+    This binds the sealed entry to `api.anthropic.com:443`. Use the exact
+    provider for other APIs; OpenAI-compatible does not mean OpenAI-hosted.
+    `kepr agent ls` lists names/bindings without values. Sealed entries remain
+    unreadable through `get`/export APIs even after the vault is unlocked.
+
+    Protected Linux launches require sandbox and gate-only network isolation
+    and automatically snapshot the current folder (or `--workspace PATH`).
+    Review and export changes from your own terminal after the agent exits:
+
+    ```bash
+    kepr workspace review <SESSION>
+    # Inspect the patch before approving; NEW_DIRECTORY must not exist.
+    kepr workspace export <SESSION> --approve <DIGEST> --output /absolute/NEW_DIRECTORY
+    ```
+    The bundle contains changed files under `files/` and `manifest.json`;
+    your original tree is not updated automatically. Approval is one-use,
+    expires after one hour, and is invalidated by changes. An existing
+    prepared session can be selected with `--workspace-session SESSION`.
+    Isolation failure stops launch. `--compatibility` weakens these guarantees;
+    it is not a troubleshooting repair. `local-only` launch is unavailable.
+
+    For OMP/Grok Build installation, selected-provider Codex profiles, dynamic
+    gate ports, and failure diagnosis, see [AI Agent Protection](/docs/guides/ai-agents).
   </Step>
 
-  <Step title="Argon2id Store Lock & Unlock">
+  <Step title="Vault Lock & Unlock (separate from sealing)">
     ```bash
     # Lock the master key with Argon2id passphrase
     kepr lock
@@ -68,6 +111,11 @@ description: "Install Kepr and start protecting your API keys in 1 minute on Lin
     kepr unlock
     ```
   </Step>
+  Vault locking controls access to encrypted storage; it does not unseal
+  agent keys. A missing provider/binding needs the correct sealed entry, not
+  `get` or plaintext exports. Ciphertext authentication/decryption failure is
+  a separate integrity/key-material problem: preserve the store and matching
+  recovery material; restarting or regenerating a master key is not a repair.
 </Steps>
 
 ## Integrations
@@ -91,3 +139,6 @@ In your project `.envrc`:
 source_env completions/kepr.envrc
 use_kepr OPENAI_API_KEY ANTHROPIC_API_KEY
 ```
+
+Direnv delivers ordinary readable secrets to a shell. Do not use it to load
+real provider keys into an agent session; launch agents with `kepr agent run`.

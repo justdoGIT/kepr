@@ -73,6 +73,7 @@ fn check_kind(m: &CredMeta, via: &str) -> Result<(), String> {
             Err("--db rotates sealed database logins only (kepr agent add-db)".into())
         }
         "db" => Ok(()),
+        v if v == "provider" || v.starts_with("provider:") => Ok(()),
         _ if unreadable => {
             Err("this credential can't be read, so a hook or --aws-iam can't rotate it".into())
         }
@@ -104,12 +105,18 @@ fn schedule(
                 return Err("--every must be between 1 hour and 10 years".into());
             }
             if !valid_rotate_via(v) {
-                return Err("rotate with --hook /absolute/path, --aws-iam or --db".into());
+                return Err(
+                    "rotate with --hook /absolute/path, --aws-iam, --db or --provider".into(),
+                );
             }
             check_kind(&m, v)?;
             Some((e, v.to_string(), now.saturating_add(e)))
         }
-        _ => return Err("--every needs a way to rotate: --hook CMD, --aws-iam or --db".into()),
+        _ => {
+            return Err(
+                "--every needs a way to rotate: --hook CMD, --aws-iam, --db or --provider".into(),
+            )
+        }
     };
     m.rotate_every_secs = next.as_ref().map(|n| n.0);
     m.rotate_via = next.as_ref().map(|n| n.1.clone());

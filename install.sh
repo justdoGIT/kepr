@@ -10,9 +10,9 @@
 #   1. Build release binaries
 #   2. Create 'kepr' system group
 #   3. Add current user to 'kepr' group
-#   4. Install binaries to /usr/local/bin and /usr/local/sbin
-#   5. Install systemd service
-#   6. Start daemon
+#   4. Install binaries to /usr/local/bin
+#   5. Install systemd services where available
+#   6. Restart the selected system or user daemon
 
 set -euo pipefail
 
@@ -30,6 +30,15 @@ info() { echo -e "${CYN}  ·  $*${RST}"; }
 warn() { echo -e "${YLW}  ⚠  $*${RST}"; }
 
 INSTALL_USER="${SUDO_USER:-$USER}"
+REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+run_install_user() {
+    if [ "$(id -un)" = "$INSTALL_USER" ]; then
+        "$@"
+    else
+        sudo -H -u "$INSTALL_USER" env XDG_RUNTIME_DIR="/run/user/$(id -u "$INSTALL_USER")" "$@"
+    fi
+}
 
 echo -e "\n${CYN}━━━ Building kepr ━━━${RST}"
 cargo build --release
@@ -45,7 +54,7 @@ if $LOGIN; then
     # Unlock at login is for the per-user daemon; the system service is
     # root's and is unlocked by root.
     info "--login: user mode with the per-user daemon unit (no system service)"
-elif [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ] && command -v systemctl >/dev/null 2>&1; then
+elif command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm= 2>/dev/null)" = "systemd" ]; then
     SYSTEM_MODE=true
     echo -e "\n${CYN}━━━ Configuring optional system service ━━━${RST}"
     if ! getent group kepr > /dev/null 2>&1; then
@@ -56,6 +65,10 @@ elif [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ] && command -v sys
     warn "Log out/in or run newgrp kepr for group membership"
 else
     info "No systemd PID 1 detected; using self-contained user mode"
+fi
+if ! $SYSTEM_MODE && ! command -v python3 >/dev/null 2>&1; then
+    echo "User-mode installation requires Python 3.9 or newer for a socket-scoped daemon restart" >&2
+    exit 1
 fi
 echo -e "\n${CYN}━━━ Installing binaries ━━━${RST}"
 sudo install -o root -g root -m 0755 target/release/kepr /usr/local/bin/kepr
@@ -102,7 +115,9 @@ echo -e "\n${CYN}━━━ Installing shell completion ━━━${RST}"
 # fall back to the Debian/Ubuntu default. Skip with a warning if the
 # parent path isn't present — the system likely has no bash-completion
 # installed and the script would do nothing useful.
-BASH_COMPDIR="$(pkg-config --variable=completionsdir bash-completion 2>/dev/null || true)"
+if ! BASH_COMPDIR="$(pkg-config --variable=completionsdir bash-completion 2>/dev/null)"; then
+    BASH_COMPDIR=""
+fi
 if [[ -z "$BASH_COMPDIR" ]]; then
     BASH_COMPDIR="/usr/share/bash-completion/completions"
 fi
@@ -115,6 +130,7 @@ else
     warn "bash-completion not detected — skipping completion install"
 fi
 
+warn "Restarting Kepr stops active agent gates; passphrase-protected stores may need unlocking again"
 if $SYSTEM_MODE; then
     echo -e "\n${CYN}━━━ Installing systemd service ━━━${RST}"
     sudo cp systemd/kepr.service /etc/systemd/system/kepr.service
@@ -122,7 +138,8 @@ if $SYSTEM_MODE; then
     # (unprivileged dynamic user with network access, no store access).
     sudo cp systemd/kepr-gate.service /etc/systemd/system/kepr-gate.service
     sudo systemctl daemon-reload
-    sudo systemctl enable --now kepr-gate.service || warn "kepr-gate.service did not start; agent sessions need it in system mode"
+    sudo systemctl enable kepr-gate.service
+    sudo systemctl restart kepr-gate.service
     # Scheduled rotations (T12.50): the system daemon never runs user
     # rotators, so each user's own timer runs `kepr rotate --due`.
     sudo install -d -m 0755 /usr/lib/systemd/user
@@ -148,7 +165,7 @@ if $SYSTEM_MODE; then
         exit 1
     fi
 else
-    info "User mode is ready; the CLI auto-starts kepr-daemon on first use"
+    info "User-mode daemon restart follows the optional login setup"
 fi
 
 if $LOGIN; then
@@ -162,7 +179,9 @@ if $LOGIN; then
     ok "user units → /usr/lib/systemd/user (kepr-daemon, kepr-ssh-agent, kepr-secret-service, kepr-rotate)"
 
     # Where this system keeps PAM modules: next to pam_unix.so.
-    PAM_UNIX="$(find /lib* /usr/lib* -name pam_unix.so 2>/dev/null | head -n 1 || true)"
+    if ! PAM_UNIX="$(find /lib* /usr/lib* -name pam_unix.so -print -quit 2>/dev/null)"; then
+        PAM_UNIX=""
+    fi
     if [ -n "$PAM_UNIX" ]; then
         PAM_DIR="$(dirname "$PAM_UNIX")"
         sudo install -o root -g root -m 0644 crates/kepr-pam/target/release/libpam_kepr.so "$PAM_DIR/pam_kepr.so"
@@ -182,15 +201,34 @@ if $LOGIN; then
         warn "no pam_unix.so found, so the PAM module location is unknown: not installing pam_kepr.so"
     fi
 
-    if command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/null; then
-        if systemctl --user enable kepr-daemon.service >/dev/null 2>&1; then
+    if command -v systemctl >/dev/null 2>&1 && run_install_user systemctl --user daemon-reload 2>/dev/null; then
+        if run_install_user systemctl --user enable kepr-daemon.service >/dev/null 2>&1; then
             ok "kepr-daemon.service enabled for $INSTALL_USER"
         else
             warn "could not enable kepr-daemon.service; run: systemctl --user enable kepr-daemon.service"
         fi
     else
-        warn "no systemd user manager here: the daemon starts on first use instead"
+        info "No systemd user manager here; restarting the standalone user daemon"
     fi
+fi
+
+if ! $SYSTEM_MODE; then
+    echo -e "\n${CYN}━━━ Restarting user daemon ━━━${RST}"
+    if [[ "${KEPR_PROFILE:-default}" = "default" ]] &&
+        command -v systemctl >/dev/null 2>&1 &&
+        run_install_user systemctl --user cat kepr-daemon.service >/dev/null 2>&1; then
+        run_install_user systemctl --user daemon-reload
+        run_install_user systemctl --user stop kepr-daemon.service
+        run_install_user python3 "$REPO_DIR/scripts/restart-user-daemon.py" \
+            /usr/local/bin/kepr-daemon --stop-only
+        run_install_user systemctl --user restart kepr-daemon.service
+        run_install_user systemctl --user is-active --quiet kepr-daemon.service
+        run_install_user env -u KEPR_SYSTEM_MODE /usr/local/bin/kepr ping >/dev/null
+    else
+        run_install_user python3 "$REPO_DIR/scripts/restart-user-daemon.py" \
+            /usr/local/bin/kepr-daemon
+    fi
+    ok "Installed user daemon is running"
 fi
 
 echo -e "\n${CYN}━━━ Setup complete ━━━${RST}"

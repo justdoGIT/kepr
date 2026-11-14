@@ -53,6 +53,7 @@ pub const ADAPTERS: &[Adapter] = &[
         creds: &[
             ("openai", "OPENAI_API_KEY"),
             ("agentrouter", "AGENTROUTER_API_KEY"),
+            ("selora", "SELORA_API_KEY"),
         ],
         env: &[
             var("OPENAI_BASE_URL", Value::BaseUrl("openai", "/v1")),
@@ -61,6 +62,7 @@ pub const ADAPTERS: &[Adapter] = &[
                 "AGENTROUTER_API_KEY",
                 Value::Placeholder("AGENTROUTER_API_KEY"),
             ),
+            var("SELORA_API_KEY", Value::Placeholder("SELORA_API_KEY")),
         ],
         port: None,
     },
@@ -163,6 +165,28 @@ pub fn lookup(harness: &str) -> Result<&'static Adapter, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_routes_a_sealed_selora_credential() {
+        let available = std::collections::HashSet::from(["SELORA_API_KEY".into()]);
+        let routes = crate::cli_agent_run::routes_for(lookup("codex").unwrap(), &available)
+            .expect("Selora key must route through the gate");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].provider, "selora");
+        let env = crate::cli_agent_run::build_env(
+            lookup("codex").unwrap(),
+            7001,
+            &std::collections::HashMap::from([("selora".into(), "kepr-ph-test".into())]),
+            [("SELORA_API_KEY".into(), "synthetic-secret".into())].into_iter(),
+        );
+        assert_eq!(
+            env.iter()
+                .find(|(key, _)| key == "SELORA_API_KEY")
+                .unwrap()
+                .1,
+            "kepr-ph-test"
+        );
+    }
 
     #[test]
     fn codex_routes_a_sealed_agentrouter_credential() {

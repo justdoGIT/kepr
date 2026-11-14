@@ -97,8 +97,11 @@ pub fn log(event: &AuditEvent) {
         }
     }
 
-    // Try systemd journal first (structured logging)
-    if log_to_journal(event, &name_str, &result_str) {
+    // Try systemd journal first (structured logging) unless forced to stderr
+    // by KEPR_AUDIT_STDERR / KEPR_LOG_STDERR (e.g. during integration tests).
+    let force_stderr = std::env::var_os("KEPR_AUDIT_STDERR").is_some()
+        || std::env::var_os("KEPR_LOG_STDERR").is_some();
+    if !force_stderr && log_to_journal(event, &name_str, &result_str) {
         return;
     }
 
@@ -165,10 +168,10 @@ fn log_to_journal(event: &AuditEvent, name_str: &str, result_str: &str) -> bool 
 
     // Structured fields — indexed by journal
     msg.push_str(&format!("KEPR_OP={}\n", event.op));
-    msg.push_str(&format!("KEPR_NAME={}\n", name_str));
+    msg.push_str(&format!("KEPR_NAME={name_str}\n"));
     msg.push_str(&format!("KEPR_UID={}\n", event.uid));
     msg.push_str(&format!("KEPR_USER={}\n", event.username));
-    msg.push_str(&format!("KEPR_RESULT={}\n", result_str));
+    msg.push_str(&format!("KEPR_RESULT={result_str}\n"));
 
     // Send to journal socket via the cached datagram fd.
     match journal_sock() {

@@ -33,6 +33,21 @@ fn parses_each_form() {
 }
 
 #[test]
+fn parses_workspace_source_for_protected_runs() {
+    let args = parse(&v(&["run", "omp", "--workspace", "."])).unwrap();
+    assert_eq!(args.session.workspace_source.as_deref(), Some("."));
+    assert!(parse(&v(&[
+        "run",
+        "omp",
+        "--workspace",
+        ".",
+        "--workspace-session",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ]))
+    .is_err());
+}
+
+#[test]
 fn from_clipboard_parses_and_excludes_stdin() {
     let a = parse(&v(&["add", "K", "--from-clipboard"])).unwrap();
     assert!(a.from_clipboard && !a.stdin);
@@ -56,6 +71,60 @@ fn daily_caps_parse() {
         (Some(500), Some(200_000))
     );
     assert!(parse(&v(&["run", "claude", "--max-tokens-day", "lots"])).is_err());
+}
+
+#[test]
+fn protected_launch_requires_sandbox_and_network_isolation_by_default() {
+    let args = parse(&v(&["run", "claude"])).unwrap();
+    assert!(
+        args.strict_sandbox,
+        "protected launch must require isolation"
+    );
+    assert!(args.isolate_net, "protected launch must isolate networking");
+}
+
+#[test]
+fn weaker_launch_requires_explicit_compatibility() {
+    assert!(parse(&v(&["run", "claude", "--no-sandbox"])).is_err());
+    let args = parse(&v(&["run", "claude", "--compatibility"])).unwrap();
+    assert!(!args.strict_sandbox && !args.isolate_net);
+    assert!(parse(&v(&["run", "claude", "--compatibility", "--no-sandbox"])).is_ok());
+    assert!(parse(&v(&[
+        "run",
+        "claude",
+        "--compatibility",
+        "--strict-sandbox"
+    ]))
+    .is_err());
+}
+
+#[test]
+fn compatibility_network_flag_is_independent_of_argument_order() {
+    for flags in [
+        ["--compatibility", "--isolate-net"],
+        ["--isolate-net", "--compatibility"],
+    ] {
+        let args = parse(&v(&["run", "claude", flags[0], flags[1]])).unwrap();
+        assert!(args.isolate_net);
+    }
+}
+
+#[test]
+fn explicit_privacy_preset_cannot_be_downgraded_and_local_only_stops_before_launch() {
+    assert!(parse(&v(&["run", "claude", "--security-preset", "unknown"])).is_err());
+    assert!(parse(&v(&[
+        "run",
+        "claude",
+        "--security-preset",
+        "private-cloud",
+        "--compatibility"
+    ]))
+    .is_err());
+    assert!(parse(&v(&["run", "codex", "--compatibility", "--no-sandbox"])).is_err());
+    match main(&v(&["run", "claude", "--security-preset", "local-only"])) {
+        Response::Err { error } => assert!(error.contains("local inference routing")),
+        _ => panic!("local-only launch must stop before daemon access"),
+    }
 }
 
 #[test]

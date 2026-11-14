@@ -130,6 +130,7 @@ fn session(mut conn: UnixStream) -> Result<(), String> {
             let _ = child.kill();
             let _ = child.wait();
             let report = kepr_core::gate_protocol::ReadyLine {
+                privacy: None,
                 ready: false,
                 port: 0,
                 placeholders: std::collections::HashMap::new(),

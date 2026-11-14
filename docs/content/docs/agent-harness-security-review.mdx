@@ -1,0 +1,324 @@
+---
+title: "Agent & Harness Security: Code Review and Build Plan"
+description: "Findings from a 2026-11-12 review of the agent/gate/sandbox paths, with the bottlenecks and the plan to make kepr the reference agentic-harness security layer."
+---
+
+# Agent & Harness Security: Code Review and Build Plan
+
+**Scope.** ~153k lines of Rust across `kepr` (CLI, daemon), `crates/kepr-core`,
+`crates/kepr-gate`, `crates/kepr-pam`, `crates/kepr-relay`, plus SDKs and CI.
+This is a targeted review of the paths where an AI agent is the adversary or
+the victim: the daemon request path, the gate proxy, the agent sandbox, the
+MCP tool boundary, the DLP/privacy transforms, and the audit chain. It is not
+a formal audit and does not replace one. Every finding states whether it was
+read in the code, tested, or reasoned about.
+
+**Verdict.** The foundations are unusually strong for a project at this stage:
+peer-credential auth on both ends of the socket, memfd RAM delivery with
+`F_SEAL_WRITE`, a name-constrained per-session CA, a deny-list seccomp filter,
+a first-match access policy, and a hash-chained audit log. The original review
+identified gaps in the **agent-facing control plane**: composite authorization,
+durable pre-execution intent, typed content provenance and device-wide egress.
+The dated findings below are a historical baseline, not a statement that every
+gap remains unchanged in the current tree.
+
+**Source update (2026-11-13; not release qualification).** Phase A's grant
+type, tool-policy evaluator, MCP tuple checks and typed argument/SQL checks
+exist in source. MCP scopes are operator-supplied, not verified work-IdP
+claims or per-action human approval. B1/B2 persist gate HTTP intent before
+forwarding and attempt paired results; daemon startup reconciles retained
+unmatched intents to `Unknown` after taking its singleton lock. The restart
+regression is in `tests/daemon_startup.rs`; it was not run for this review.
+B3 actor resolution, non-HTTP coverage and robust per-attempt idempotency
+remain open. No fresh full-suite pass is claimed; the latest broad attempt
+was user-aborted.
+
+---
+
+## 1. Current source mechanisms (not fresh execution evidence)
+
+| Layer | Mechanism | File |
+| --- | --- | --- |
+| Socket identity | `SO_PEERCRED` (Linux) / `LOCAL_PEERCRED` (macOS), both directions | `kepr-core/src/auth.rs`, `daemon_client.rs:27` |
+| Secret delivery | sealed `memfd` + `F_SEAL_WRITE`, `KEPR_FD_<KEY>=N` | `kepr-core/src/fdpass`, `cli_sandbox_sys.rs` |
+| Agent isolation | required Linux sandbox and isolated networking by default; private workspace snapshot, Landlock and seccomp; explicit compatibility opt-out | `cli_agent_cmd_launch.rs`, `cli_workspace/`, `cli_sandbox_workspace.rs` |
+| Gate egress | per-session in-memory CA, name-constrained to bound hosts, 24 h | `kepr-gate/src/ca.rs` |
+| Placeholder swap | verify placeholder → resolve route → inject real key at provider host only | `kepr-gate/src/proxy.rs`, `rewrite.rs` |
+| Secret DLP | stored values (raw + JSON/percent/base64 forms) blocked on outbound | `kepr-gate/src/dlp.rs` |
+| Privacy masking | bounded deterministic detectors, session-scoped random tokens, zeroized map | `kepr-core/src/privacy/` |
+| Access policy | `policy.toml`, deny-by-default, first-match, roles, exe/parent/harness globs | `kepr-core/src/policy.rs` |
+| MCP tools | explicit credential/SSH-key grants, fixed operator scope tuple, typed args, SQL classes, read-only DB default, finite request budgets, no reauth | `cli_gatex/mcp_config.rs`, `mcp_tools.rs`, `mcp_session.rs` |
+| Spend/rate | per-session + per-credential-per-day caps on requests and tokens | `kepr-gate/src/limits.rs` |
+| Audit | SHA-256 append-only chain + checkpoint, incremental verify | `audit_checkpoint.rs`, `audit_chain_recovery.rs` |
+| Gate HTTP decision journal | daemon-fsynced metadata intent before forwarding; paired result attempts; retained unmatched intents reconcile to `Unknown` at daemon startup | `src/daemon_gatex/decisions.rs`, `crates/kepr-gate/src/proxy.rs`, `src/daemon.rs` |
+
+These mechanisms are source capabilities, not proof that an installed binary
+or native macOS/Windows deployment enforces them. `KeyringBackend`'s native
+macOS/Windows implementations are unavailable and fail closed; the daemon's
+separate macOS Keychain sealer has no native qualification here.
+
+---
+
+## 2. Findings
+
+Severity uses CVSS-ish bands: **High** = a stated guarantee does not hold;
+**Medium** = a control is bypassable or a resource is unbounded;
+**Low** = robustness/defense-in-depth; **Info** = documentation/UX.
+
+### F1 — Original high-severity gap — Composite authorization
+
+**Original finding (2026-11-12):** the gate authorized on **placeholder +
+route + budget**, and MCP on **credential grant + read-only flag**, without
+the full tuple:
+
+```
+(actor, tenant, workspace, tool, connector_account, resource, action)
+```
+
+The original gap allowed session-wide write permission without a composite
+workspace/tenant/resource check. Credential-operation policy alone did not
+authorize tool operations.
+
+**Current status:** `authz.rs`, `policy_tools.rs`, `mcp_config.rs` and
+`mcp_tools.rs` implement the tuple and per-call resource/action checks. The MCP
+tuple comes from operator flags; request scope is copied from that configuration,
+not independently authenticated work-IdP claims. A database resource is its
+credential name and an SSH resource its host, not a table, recipient or command
+allowlist. Verified work-only identity and finer action policy remain planned.
+
+### F2 — Original high-severity gap — Durable pre-execution intent
+
+**Original finding (2026-11-12):** the queued request journal was post-hoc and
+best-effort, with no pre-execution intent or startup reconciliation.
+
+**Current status:** gate HTTP forwarding now waits for the daemon's fsynced
+metadata intent acknowledgment. Failure returns an error without forwarding.
+Results are attempted after upstream response headers or a send error, before
+the response stream necessarily completes; they are not proof of business
+success. Result-persistence errors do not undo a request already sent. Retained
+unmatched intents become `Unknown` on daemon startup; reconciliation failure
+stops startup. The separate queued usage/request journal can still drop events.
+
+This is not yet a ledger for every MCP/database/SSH action: actor references
+are session references, policy/sensitivity fields are fixed session labels,
+approval references are absent and identical HTTP arguments in one session
+reuse an intent ID (empty nonce). Per-attempt identity, exactly-once execution,
+complete classification/approval evidence and retention qualification are not
+established by B1/B2.
+
+### F3 — High — Typed content provenance remains planned
+
+Retrieved pages, mail, documents and MCP output have no general typed source
+identity/content-hash/trust envelope. `prompt.rs` redacts key-shaped text; it
+does not distinguish trusted instructions from retrieved data or authorize
+every model-proposed action. Read in code; no adversarial campaign run here.
+
+Indirect prompt injection therefore remains a risk *within granted authority*.
+It cannot legitimately expand the operator-owned MCP grants or bypass the
+sandbox merely by claiming to be an instruction. Provenance and exact sink/
+action validation are still required; text detection is not an access boundary.
+
+### F4 — High — No device-wide egress enforcement
+
+The gate covers traffic that goes *through it*. A browser, a personal app, a
+`curl` outside the sandbox, DNS, webhooks and telemetry all bypass it. The
+suite plan lists SEC-010 as "Not implemented".
+
+- Evidence: `egress.rs` only sees `CONNECT` from processes configured to use
+  the gate; `cli_agent_egress.rs` sets proxy env vars in the sandboxed child.
+  Read in code.
+- Impact: `private-cloud`/`local-only` cannot be promised against a
+  non-cooperating process on the same machine.
+
+### F5 — Medium — Privacy masking is bypassable by encoding and by non-text
+
+`detect.rs` covers emails, phones, IPs, paths, literals. `encoded.rs` checks
+three decode layers. The doc concedes Unicode normalization, split tokens and
+arbitrary custom encodings are outside coverage. Numeric fields, conversation
+IDs and timing are covert channels.
+
+- Evidence: `privacy/mod.rs` `transform_with_counts` + `encoded::check`;
+  `detect::spans` is a fixed detector set. Read in code.
+- Impact: `private-cloud` is a *bounded pattern-masking mode*, not
+  anonymization. This is honestly documented but should be enforced by a
+  capability flag, not just prose.
+
+### F6 — Medium — Sandbox seccomp is a deny-list, not an allow-list
+
+`sandbox_denied()` / `gate_denied()` enumerate syscalls to block; the default
+action is allow. This is a narrower claim than saying every obscure syscall is
+reachable: the gate and private-workspace paths add their own restrictions.
+
+- Evidence: `kepr-core/src/seccomp.rs` `program()` → `build(denied, false)`;
+  default action is allow. Read in code.
+- Impact: defense-in-depth is weaker than an allow-list; a kernel bug in an
+  unlisted syscall is reachable from the sandbox.
+
+### F7 — Medium — Full-body synchronous scan cost (unbenchmarked)
+
+`proxy.rs` `MAX_BODY = 8 MiB`. `dlp::scan` and `privacy::transform` walk the
+whole body, and `scan` builds a `Vec` of every encoded form of every stored
+secret per request. With N secrets and M encodings this is O(N·M·len) work on
+the request path, and the gate is one process per session.
+
+- Evidence: `dlp.rs` `scan()` allocates `forms` per call;
+  `privacy/mod.rs` builds `out` with `String::with_capacity(text.len())`.
+  Read in code; not benchmarked here.
+- Impact: a large prompt with many stored secrets can stall the session; a
+  malicious harness can use it as a local DoS against its own gate.
+
+### F8 — Medium — Argument checks exist; downstream semantic authority is coarse
+
+The original review found only size checks. Current `mcp_tools::{db_args,
+ssh_args}` reject unknown fields and wrong types, bound SQL/command input and
+scrub/cap results. `mcp_sql::classify` rejects semicolons outside quoted values
+or comments and separates query/write/admin actions. It is a conservative
+classifier, not a complete SQL semantic validator. Read-only PostgreSQL roles
+remain the boundary; an approved SSH host still permits the supplied command
+under the selected remote account. Exact command/path/recipient authorization
+and live target qualification remain open.
+
+### F9 — Low — Audit chain integrity vs. availability
+
+The hash-linked credential audit, queued request/usage journal and durable
+HTTP intent/result store have different guarantees. The queue remains
+best-effort; durable intent failures block forwarding, while result failures
+leave an outcome to reconcile on daemon startup. Neither provides a separate
+access-controlled actor-resolution store today. No complete legal-disclosure
+ledger or indefinite retention guarantee follows from these mechanisms.
+
+### F10 — Low — Session CA lifetime and leaf reuse
+
+The session CA is valid 24 h and leaves are cached per host
+(`ca.rs` `leaves: Mutex<HashMap<...>>`). A gate that outlives its harness by
+misconfiguration (owner-pid watch failing) leaves a trusted CA alive.
+
+- Evidence: `ca.rs` `validity()` + cache; `cli_agent_run.rs` relies on exec
+  keeping the pid so `--owner-pid` ends the gate. Read in code.
+
+### F11 — Info — Documentation vs. enforcement drift
+
+Documentation must distinguish raw memfd delivery (which a receiving process
+can read) from provider-bound placeholders, and implemented source mechanisms
+from installed/native-platform qualification. Neither bounded privacy masks
+nor an agent-only gate establishes anonymity or device-wide enforcement.
+
+---
+
+## 3. Performance bottlenecks (ranked)
+
+These are source-informed optimization hypotheses, not measured bottlenecks or
+latency qualification. In particular, synchronous scan work does not by itself
+establish the runtime's threading or inter-session scheduling behavior.
+
+| # | Bottleneck | Where | Proposed investigation/fix |
+| --- | --- | --- | --- |
+| P1 | Per-request rebuild of every encoded secret form | `dlp.rs::scan` | Precompute forms once per session into an Aho–Corasick automaton; rebuild only on credential change |
+| P2 | Full-body scan of up to 8 MiB on the request path | `proxy.rs`, `dlp.rs`, `privacy` | Investigate streaming with bounded windows; continue refusing unsupported private-cloud content rather than forwarding it uninspected |
+| P3 | Possible request-path scan contention (unmeasured) | `kepr-gate` scan/transform path | Measure scheduling/backpressure first; evaluate bounded offload if needed |
+| P4 | Mapping lookup is O(mappings) linear per span | `privacy/mod.rs` | Replace `Vec<Mapping>` with a `HashMap<&str, token>` keyed by original |
+| P5 | Audit verify re-hashes from checkpoint but full walk on `KEPR_AUDIT_FULL_VERIFY` | `audit_checkpoint.rs` | Already fixed for the common path; add a periodic background full verify instead of on-startup |
+| P6 | `mask::forms` allocates per secret per request | `mask.rs` | Cache alongside P1 |
+| P7 | Token metering from provider `usage` only | `limits.rs` | Add a local tokenizer estimate to enforce caps when `usage` is absent (some proxies omit it) |
+
+---
+
+## 4. The plan
+
+**Goal:** one enforced policy object, one durable decision record, one
+provenance model, one device-wide egress story — with a small, boring API and
+docs that cannot be over-read.
+
+### Phase A — Composite authorization (implemented source; qualification remains)
+
+1. Define `kepr_core::authz::Grant`:
+   `{actor, tenant, workspace, tool, connector_account, resource_glob, action}`
+   with `Decision::{Allow, Deny, NeedsApproval}`.
+2. Extend `policy.toml` with `[[tool_rule]]` sharing the existing first-match,
+   deny-by-default evaluator and role model. Reuse `policy_glob`.
+3. Thread the tuple through the MCP session: bind it at `Gate::start` from
+   verified claims (OIDC device enrolment already exists), check it on every
+   `db_query`/`ssh_run`, and reject on mismatch — never reauthorize.
+4. Validate tool arguments against the declared JSON schema (use a small
+   `jsonschema`-compatible validator) and add a `sql` statement-class check
+   (single statement, no `;` chaining, DDL refused unless the rule allows it).
+
+**Verify:** negative tests for personal-account crossover, workspace mismatch,
+write-without-rule, schema-invalid args, chained SQL.
+
+### Phase B — Durable decisions (HTTP B1/B2 implemented; broader target below)
+
+1. `intent_id = blake3(session || tool || canonical_args_digest || nonce)`.
+2. Write a `DecisionRecord` **before** execution: actor ref, tenant, policy
+   version, input sensitivity, destination, action, decision, approval ref,
+   expiry. Fail closed if the record cannot be written.
+3. Write a `ResultRecord` after, with idempotency and explicit `unknown`
+   handling; reconcile on restart.
+4. Separate actor-resolution store, access-controlled, so logs carry refs.
+5. Keep raw evidence optional, encrypted, short-TTL.
+
+The numbered contract is the target, not the exact current record format or
+coverage. Current HTTP records use BLAKE3-derived tuple IDs with an empty
+nonce, session actor refs and fixed metadata labels; they do not implement
+per-action approvals, a separate actor store or exactly-once tool execution.
+
+**Verify:** kill the gate mid-write; assert reconciliation and that no
+consequential action ran without a prior record.
+
+### Phase C — Provenance and injection defense (closes F3)
+
+1. `Provenance {source_id, content_hash, trust: Trusted|Untrusted}` on every
+   ingested item; untrusted content is wrapped in a typed envelope the model
+   is told to treat as data.
+2. Tool results are untrusted by default; a tool may be marked trusted only by
+   an explicit rule.
+3. Validate tool *arguments* on the way back: a model-supplied path, URL or
+   recipient must resolve against the grant before execution.
+4. Safe markdown: no auto remote images, sanitize HTML, route permitted
+   fetches through the egress broker with final-destination and redirect
+   checks.
+
+**Verify:** injection corpus (indirect instructions in fetched content);
+assert grants/classification/approval state unchanged and no unapproved fetch.
+
+### Phase D — Device-wide egress (closes F4)
+
+1. Linux first: nftables/`bpftool` cgroup egress policy bound to the agent's
+   cgroup, default-deny, allow the gate and approved destinations.
+2. Cover DNS and Unix-socket egress, not just TCP/443.
+3. Offline boot test and tested rollback; never leave a machine unreachable.
+
+**Verify:** a non-cooperating process on the same host cannot reach the
+network; rollback restores it.
+
+### Phase E — Performance (closes P1–P7)
+
+1. Session-scoped Aho–Corasick matcher for secret forms; rebuild on change.
+2. Streaming scan with a rolling window; preserve fail-closed content-type policy.
+3. Bounded worker pool for scan/transform with backpressure.
+4. `HashMap` mapping store.
+5. Local token estimate for caps.
+
+**Verify:** benchmark before/after on a 8 MiB body with 100 stored secrets;
+target &lt;5 ms p99 added latency, no regression in DLP coverage tests.
+
+### Phase F — Hardening and docs (closes F5, F6, F10, F11)
+
+1. Seccomp allow-list mode behind a flag; keep the deny-list as the default
+   until the allow-list passes the full test suite.
+2. Cap session CA to the harness lifetime; hard-fail if the owner-pid watch
+   cannot be established.
+3. A capability flag on the privacy preset (`masking`, not `anonymization`)
+   surfaced in `kepr status` and the journal.
+4. Rewrite the README agent row with the exact caveat; add a one-page
+   "what this stops / what it does not" for each control.
+
+---
+
+## 5. What "best" means here
+
+Not more primitives — the primitives are good. Best means: **every
+consequential agent action is authorized against a single tuple, recorded
+before it happens, and defensible after**; **untrusted content cannot change
+policy**; and **the promise holds even when the agent does not cooperate**.
+That is Phases A–D. Phases E–F make it fast and honest.

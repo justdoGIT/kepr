@@ -19,6 +19,100 @@ const MAX_HOST: usize = 255;
 const MAX_PROVIDER: usize = 64;
 const MAX_METHOD: usize = 16;
 const MAX_BLOCKED: usize = 32;
+/// A pre-execution authorization decision. The daemon persists this record
+/// before it acknowledges the gate, so a consequential call has a durable
+/// intent or does not run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionRecord {
+    pub session: String,
+    pub intent_id: String,
+    pub actor_ref: String,
+    pub tenant: String,
+    pub policy_version: String,
+    pub sensitivity: String,
+    pub destination: String,
+    pub action: String,
+    pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry: Option<u64>,
+}
+
+impl DecisionRecord {
+    /// Bound metadata before it crosses the private channel or reaches disk.
+    pub fn sanitized(self) -> Self {
+        Self {
+            session: bounded(&self.session, 16),
+            intent_id: bounded(&self.intent_id, 128),
+            actor_ref: bounded(&self.actor_ref, 128),
+            tenant: bounded(&self.tenant, 128),
+            policy_version: bounded(&self.policy_version, 64),
+            sensitivity: bounded(&self.sensitivity, 32),
+            destination: bounded(&self.destination, MAX_HOST),
+            action: bounded(&self.action, 32),
+            decision: bounded(&self.decision, 32),
+            approval_ref: self.approval_ref.map(|v| bounded(&v, 128)),
+            expiry: self.expiry,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultOutcome {
+    Ok,
+    Err,
+    Unknown,
+}
+
+/// The post-execution outcome paired with a `DecisionRecord`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultRecord {
+    pub intent_id: String,
+    pub outcome: ResultOutcome,
+    pub digest: String,
+}
+
+impl ResultRecord {
+    pub fn sanitized(self) -> Self {
+        Self {
+            intent_id: bounded(&self.intent_id, 128),
+            outcome: self.outcome,
+            digest: bounded(&self.digest, 128),
+        }
+    }
+}
+
+fn digest_parts(parts: &[&[u8]]) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(b"kepr-gate-journal-v1\0");
+    for part in parts {
+        h.update(&(part.len() as u64).to_be_bytes());
+        h.update(part);
+    }
+    h.finalize().to_hex().to_string()
+}
+
+/// Stable digest of canonical tool arguments and their destination.
+pub fn canonical_args_digest(tool: &str, destination: &str, action: &str, args: &[u8]) -> String {
+    digest_parts(&[
+        tool.as_bytes(),
+        destination.as_bytes(),
+        action.as_bytes(),
+        args,
+    ])
+}
+
+/// Stable intent identifier for one session/tool/argument tuple.
+pub fn intent_id(session: &str, tool: &str, canonical_args_digest: &str, nonce: &str) -> String {
+    digest_parts(&[
+        session.as_bytes(),
+        tool.as_bytes(),
+        canonical_args_digest.as_bytes(),
+        nonce.as_bytes(),
+    ])
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalEntry {
@@ -225,5 +319,28 @@ mod tests {
         let e: JournalEntry = serde_json::from_str(line).unwrap();
         assert_eq!(e.host, "");
         assert_eq!(e.blocked, None);
+    }
+    #[test]
+    fn intent_ids_are_stable_for_same_arguments_and_change_with_arguments() {
+        let one = canonical_args_digest(
+            "db_query",
+            "db.example.test",
+            "read",
+            br#"{"sql":"select 1"}"#,
+        );
+        let two = canonical_args_digest(
+            "db_query",
+            "db.example.test",
+            "read",
+            br#"{"sql":"select 2"}"#,
+        );
+        assert_eq!(
+            intent_id("session", "db_query", &one, "nonce"),
+            intent_id("session", "db_query", &one, "nonce")
+        );
+        assert_ne!(
+            intent_id("session", "db_query", &one, "nonce"),
+            intent_id("session", "db_query", &two, "nonce")
+        );
     }
 }
