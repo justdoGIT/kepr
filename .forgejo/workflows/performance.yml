@@ -13,6 +13,7 @@ on:
 
 jobs:
   performance:
+    runs-on: ci-rust
     uses: https://forgejo.kepr.dev/justdoGIT/ci-templates/.forgejo/workflows/reusable-performance.yml@07b435275326935d004abee9fa0f35d2b7c4b2d3
     with:
       runs_on: ci-rust
