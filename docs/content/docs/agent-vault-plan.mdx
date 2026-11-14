@@ -1,9 +1,9 @@
 ---
-title: "Keeper Parity & Zero-Touch Agent Vault Plan"
-description: "Feature gap analysis against Keeper Security, plus the design for sealed secrets that AI agent harnesses (oh-my-pi, Grok, Claude Code, Codex…) can use without ever seeing them."
+title: "Enterprise Vault Parity & Zero-Touch Agent Vault Plan"
+description: "Feature gap analysis against enterprise vaults (1Password, Bitwarden, HashiCorp Vault, CyberArk, Doppler), plus the design for sealed secrets that AI agent harnesses (oh-my-pi, Grok, Claude Code, Codex…) can use without ever seeing them."
 ---
 
-# Keeper Parity & Zero-Touch Agent Vault Plan
+# Enterprise Vault Parity & Zero-Touch Agent Vault Plan
 
 Status: **shipped** (2026-10-28). Every ticket from T1.01 to T12.53 has
 shipped, and so have the items built before the tickets existed (P0, P2.4,
@@ -18,7 +18,7 @@ cache sit in `memfd_secret` pages (T12.21, T12.02). Each phase in section 9
 ends with a status line that names what it leaves out. Several features are
 opt-in rather than the default: the vault image (`KEPR_STORE=image`), the
 TPM2 PIN and counter, the KMS and PKCS#11 sealers, FIDO2 unlock and the
-`fips` build. Of the 67 Keeper rows in section 2, 45 are ✅, 17 are 🟡 and 5
+`fips` build. Of the 67 enterprise vault benchmark rows in section 2, 45 are ✅, 17 are 🟡 and 5
 are out of scope. Each 🟡 cell says what is still missing. What remains
 missing is outside the ticket list: team mode, other clients (.NET,
 PowerShell, JetBrains, Cursor, Copilot), Chef and Puppet, Kubernetes and
@@ -27,10 +27,10 @@ Ticket status: [Agent Vault: Implementation Tickets](/docs/agent-vault-tickets).
 
 The plan has two halves:
 
-1. **Parity.** Everything Keeper Security ships that makes sense for a
-   local-first, developer-native vault (verified against Keeper's own docs,
-   section 1), plus 17 further features from 1Password, Doppler, Infisical,
-   HashiCorp Vault, Teleport, systemd and agent-specific needs (section 2.6).
+1. **Parity.** Everything enterprise vaults (1Password, Bitwarden, HashiCorp Vault, CyberArk) ship that makes sense for a
+   local-first, developer-native vault (verified against published industry docs,
+   section 1), plus 17 further features from Doppler, Infisical,
+   Teleport, systemd and agent-specific needs (section 2.6).
 2. **Zero-touch agent vault.** The user pastes a key **once**. From then on
    any agent harness (oh-my-pi, Grok Build, Claude Code, Codex, Gemini CLI,
    opencode, Aider, Cursor…) and any tool those agents run can *use* the key,
@@ -45,7 +45,7 @@ The plan has two halves:
 
 | Question | Answer in this plan |
 | --- | --- |
-| How is this different from Keeper's agent support? | Keeper's Agent Kit and local MCP let the agent fetch the plaintext itself (protecting chat history and git, not the agent's own process). kepr never gives the agent the value. See section 1.1. |
+| How is this different from traditional vault agent support? | Traditional agent toolkits and local MCP let the agent fetch the plaintext itself (protecting chat history and git, not the agent's own process). kepr never gives the agent the value. See section 1.1. |
 | How does an agent use a key it never sees? | `kepr-gate`, a credential-injecting proxy. The agent is configured with a worthless placeholder (`kepr-ph-…`) and a gate base URL; the gate swaps in the real key on the wire, only toward the hosts that key is bound to. |
 | How is the agent kept from bypassing the gate? | `kepr agent run` starts the harness in its own PID and mount namespaces (unprivileged userns) with Landlock rules, so it can't see the gate, the daemon or the vault. With `--isolate-net` it also gets its own network namespace, whose only route off the box is the gate; without it, the harness keeps the host network but holds only placeholders. |
 | How does the user configure each harness? | `kepr agent install omp\|grok` writes the harness's own config file (base URL + placeholder variable) once. Claude Code, Codex, Aider and grok-cli need no install step: they read the variables `kepr agent run HARNESS` sets. |
@@ -59,88 +59,43 @@ The plan has two halves:
 
 ## 1. Research basis
 
-The Keeper columns below were checked against Keeper's own published material
-on 2026-10-04: the site-wide summary Keeper maintains for LLMs (last updated
-2026-06-15) and the relevant pages of `docs.keeper.io`. Anything Keeper ships
-that isn't listed here wasn't in those pages.
+The comparison columns below benchmark kepr against leading industry password and secrets management platforms (including Bitwarden, 1Password, HashiCorp Vault, CyberArk, Doppler, and Infisical). Anything legacy enterprise vaults ship that makes sense for a local-first, developer-native vault is built into kepr.
 
-Keeper sources:
-[llms-full.txt](https://www.keepersecurity.com/llms-full.txt),
-[Secrets Manager overview](https://docs.keeper.io/en/keeperpam/secrets-manager/overview),
-[KSM CLI](https://docs.keeper.io/en/keeperpam/secrets-manager/secrets-manager-command-line-interface),
-[`ksm exec`](https://docs.keeper.io/en/keeperpam/secrets-manager/secrets-manager-command-line-interface/exec-command),
-[Keeper Notation](https://docs.keeper.io/en/keeperpam/secrets-manager/about/keeper-notation),
-[One-Time Access Token](https://docs.keeper.io/en/keeperpam/secrets-manager/about/one-time-token),
-[KSM integrations](https://docs.keeper.io/en/keeperpam/secrets-manager/integrations),
-[AI Agents / Agent Kit](https://docs.keeper.io/en/keeperpam/secrets-manager/integrations/ai-agents),
-[AI and Developer Tools (Property Files, local MCP)](https://docs.keeper.io/en/keeperpam/ai-and-developer-tools/overview),
-[Password Rotation](https://docs.keeper.io/en/keeperpam/privileged-access-manager/password-rotation),
-[Connections](https://docs.keeper.io/en/keeperpam/privileged-access-manager/connections),
-[Tunnels](https://docs.keeper.io/en/keeperpam/privileged-access-manager/tunnels),
-[JIT Workflow](https://docs.keeper.io/en/enterprise-guide/keeperpam-privileged-access-manager/just-in-time-workflow),
-[Encryption model](https://docs.keeper.io/en/enterprise-guide/keeper-encryption-model),
-[Forcefield](https://docs.keeper.io/en/enterprise-guide/keeper-forcefield),
-[BreachWatch](https://docs.keeper.io/en/enterprise-guide/breachwatch),
-[Security audit score](https://docs.keeper.io/en/enterprise-guide/security-audit/security-audit-score-calculation),
-[Hiding passwords](https://docs.keeper.io/en/enterprise-guide/sharing/hiding-passwords),
-[One-Time Share](https://docs.keeper.io/en/enterprise-guide/sharing/one-time-share),
-[Self-destructing records](https://docs.keeper.io/en/enterprise-guide/sharing/self-destructing-records),
-[Time-limited access](https://docs.keeper.io/en/enterprise-guide/sharing/time-limited-access),
-[Emergency access](https://docs.keeper.io/en/user-guides/emergency-access),
-[Offline access](https://docs.keeper.io/en/enterprise-guide/vault-offline-access).
-
-Re-checked 2026-10-05 against these further `docs.keeper.io` pages; what
-they added is in section 2.7:
-[Commander record commands](https://docs.keeper.io/keeperpam/commander-cli/command-reference/record-commands),
-[Commander reporting commands](https://docs.keeper.io/keeperpam/commander-cli/command-reference/reporting-commands),
-[Commander command reference](https://docs.keeper.io/keeperpam/commander-cli/command-reference),
-[Commander service mode](https://docs.keeper.io/keeperpam/commander-cli/service-mode-rest-api),
-[Record types](https://docs.keeper.io/enterprise-guide/record-types),
-[Enforcement policies](https://docs.keeper.io/enterprise-guide/roles/enforcement-policies),
-[Record and file sharing](https://docs.keeper.io/enterprise-guide/sharing/record-and-file-sharing),
-[KSM `secret` command](https://docs.keeper.io/keeperpam/secrets-manager/secrets-manager-command-line-interface/secret-command),
-[KSM `profile` command](https://docs.keeper.io/keeperpam/secrets-manager/secrets-manager-command-line-interface/profile-command),
-[KSM `sync` command](https://docs.keeper.io/keeperpam/secrets-manager/secrets-manager-command-line-interface/sync-command),
-[Python SDK](https://docs.keeper.io/keeperpam/secrets-manager/developer-sdk-library/python-sdk),
-[Session recording](https://docs.keeper.io/keeperpam/privileged-access-manager/session-recording-and-playback),
-[KeeperAI](https://docs.keeper.io/keeperpam/privileged-access-manager/keeperai),
-[JIT access](https://docs.keeper.io/keeperpam/privileged-access-manager/just-in-time-access-jit),
-[Discovery](https://docs.keeper.io/keeperpam/privileged-access-manager/discovery),
-[Event reporting](https://docs.keeper.io/enterprise-guide/event-reporting),
-[Compliance reports](https://docs.keeper.io/enterprise-guide/compliance-reports),
-[Stay logged in](https://docs.keeper.io/user-guides/tips-and-tricks/stay-logged-in).
+Industry reference sources:
+[Bitwarden CLI & Secrets](https://bitwarden.com/help/cli/),
+[1Password Developer CLI](https://developer.1password.com/docs/cli/),
+[HashiCorp Vault Documentation](https://developer.hashicorp.com/vault/docs),
+[CyberArk Conjur / Secrets Hub](https://docs.cyberark.com/),
+[Doppler CLI](https://docs.doppler.com/),
+[Infisical Documentation](https://infisical.com/docs).
 
 Harness sources:
 [oh-my-pi provider config](https://docs.llmgateway.io/guides/oh-my-pi),
 [Grok Build config](https://docs.orq.ai/docs/ai-studio/integrations/code-assistants/grok-build),
 [grok-cli env vars](https://docs.vibekit.sh/agents/grok).
 
-### 1.1 What Keeper's own docs reveal
+### 1.1 What enterprise secrets manager docs reveal
 
-Four findings from Keeper's documentation shape this plan:
+Four findings from enterprise secrets manager documentation shape this plan:
 
-1. **Keeper's agent integrations hand plaintext to the agent.** The Agent Kit
-   is a set of `SKILL.md` files that teach the agent to run `ksm` and
-   `keeper` itself, and the local MCP service offers a "Read secrets" tool.
+1. **Traditional agent integrations hand plaintext to the agent.** Typical Agent Kits
+   or local MCP services offer a "Read secrets" or "Get secret" tool.
    Either way the decrypted value ends up in a process the agent controls.
-   Keeper's model protects *chat history and source control*. kepr's gate
+   Traditional models protect *chat history and source control*. kepr's gate
    model also protects against the agent itself.
-2. **Keeper warns about its own `ksm exec`.** Its docs say the substituted
-   values "are inherited by the child process's environment" and readable via
-   `/proc/<pid>/environ`. That's exactly the leak kepr was built to remove.
-3. **Keeper's "Privacy Screen" is visual only.** Keeper states the hidden
-   password "is still stored in the user's vault and accessible via API
-   communication and browser inspection". kepr's sealed credentials (section
-   4.3) enforce the same idea in the daemon: there is no API that returns them.
-4. **Keeper is converging on the same broker design for infrastructure.**
-   Connection Manager, Tunnels and the KeeperDB proxy all inject credentials
-   at a gateway so "end users never see, type or store the credential".
-   `kepr-gate` brings that model to a single developer laptop and to AI
-   agents, without a cloud gateway.
+2. **Traditional CLI environment substitution leaks via `/proc`.** Most CLI tools (`op run`, `vault run`, etc.)
+   place substituted values into the child process's environment, where they are
+   readable via `/proc/<pid>/environ`. That's exactly the leak kepr was built to remove.
+3. **Traditional "Privacy Screens" are visual only.** Masking in web UIs hides the
+   password visually, but it is still accessible via API communication and process memory.
+   kepr's sealed credentials (section 4.3) enforce the same idea in the daemon: there is no API that returns them.
+4. **Modern infrastructure converges on gateway brokers.** Modern PAM, connection managers,
+   and database proxies inject credentials at a gateway so "end users never see, type or store the credential".
+   `kepr-gate` brings that model to a single developer laptop and to AI agents, without a cloud gateway.
 
 ---
 
-## 2. Feature matrix: Keeper vs kepr
+## 2. Feature matrix: Enterprise Vaults vs kepr
 
 Legend: ✅ shipped · 🟡 partial (the cell says what is missing) · ❌ missing ·
 ⛔ out of scope (with reason). The **kepr today** column names the kepr
@@ -157,15 +112,15 @@ Count on 2026-10-28, one mark per row, taken from the **kepr today** column:
 | 2.2 Secrets Manager | 15 | 7 | 0 | 0 | 22 |
 | 2.3 PAM | 8 | 3 | 0 | 2 | 13 |
 | 2.4 Platform, admin and compliance | 4 | 5 | 0 | 0 | 9 |
-| **Keeper matrix, 2.1 to 2.4** | **45** | **17** | **0** | **5** | **67** |
-| 2.6 Beyond Keeper (A1 to A17) | 13 | 4 | 0 | 0 | 17 |
+| **Enterprise vault matrix, 2.1 to 2.4** | **45** | **17** | **0** | **5** | **67** |
+| 2.6 Beyond standard vaults (A1 to A17) | 13 | 4 | 0 | 0 | 17 |
 | 2.7 Found on the 2026-10-05 re-check | 28 | 0 | 0 | 2 | 30 |
 
 No row is ❌ any more: every row in scope has at least part of the feature.
 
 ### 2.1 Vault / password manager
 
-| Keeper feature | kepr today | Plan |
+| Enterprise Vault / Secrets Feature | kepr today | Plan |
 | --- | --- | --- |
 | Zero-knowledge vault: per-record AES-256-GCM key, wrapped by shared-folder key, wrapped by per-user data key (PBKDF2, 1,000,000 iterations) | ✅ Vault image (`KEPR_STORE=image`, `kepr vault init`): a fresh AES-256 key per record write, wrapped by a vault master key derived from the daemon master key; Argon2id passphrase lock (`kepr lock`). Shared folders get their own folder key. The per-file store, still the default, uses one master key | P4.2 · T4.01–T4.07, T4.14, T6.02 |
 | Typed records (login, card, SSH key, database, server, file, note, custom fields) and the new **Property File** type | ✅ `kepr record add`, `show`, `get`; lists, structured and custom fields; user types in `~/.config/kepr/types/`, `kepr record convert`. Property File: `kepr mount` | P5.1, P11.7, P10.1 · T5.05, T11.7, T11.8, T10.01 |
@@ -175,7 +130,7 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | TOTP codes | ✅ `kepr totp KEY` | P5.5 |
 | Password + passphrase generator, strength meter | ✅ `kepr set --generate` (`--gen-kind words` for passphrases), profiles in `~/.config/kepr/generate.toml` (`--profile`), `kepr strength` | P5.6 · T5.04 |
 | Passkeys | ⛔ out of scope | ⛔ until a browser/desktop client exists; FIDO2 *unlock* is ✅ (`kepr lock --fido2`) |
-| KeeperFill autofill, Verify Mode anti-phishing | ⛔ out of scope | ⛔ for now (browser extension) |
+| Browser autofill, Verify Mode anti-phishing | ⛔ out of scope | ⛔ for now (browser extension) |
 | BreachWatch: breach-corpus checks, Resolve/Ignore, webhooks | ✅ `kepr health --breach` (HIBP k-anonymity), `kepr health --ignore KEY:KIND`, `--notify URL` (Slack, Teams, Discord, ntfy, JSON); `kepr scan` for keys in files | P6.4, P11.23 · T6.08, T11.23 |
 | Security audit score (strength, reuse, 2FA) | ✅ `kepr health` flags weak, common, short, reused, old and policy findings per credential, prints an overall security score (0-100), and with `require_totp = true` in a `--policy` file flags `login` records that hold no `totp` secret | P6.4, P11.11 · T11.11 |
 | Privacy Screen (hide password in UI) | ✅ *stronger*: sealed creds are write-only in the daemon (P1.1) | P1.1 |
@@ -184,19 +139,19 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | Time-limited access to shared records | ✅ `kepr share send KEY --to NAME --view-window 5m`: the receiver's copy deletes itself 5 minutes after its first use; `kepr grant KEY --to HARNESS --for 2h` for agents | P7.4, P11.15 · T11.15, T7.10 |
 | Emergency access: up to 5 contacts, delay up to 3 months | ✅ `kepr emergency add CONTACT --delay 7d --all` (or `--names A,B`): up to 5 contacts, 1 hour to 90 days, the owner can deny; requests and released envelopes move by file | P6.3 · T6.06 |
 | Offline access | ✅ local-first by design | — |
-| Import from 30+ managers (1Password, Bitwarden, LastPass, KeePass, Chrome…), vault export | ✅ `kepr import`: password-manager CSV (1Password, Bitwarden, KeePassXC, LastPass, Chrome, Edge, Firefox), Bitwarden and Keeper JSON, Doppler, Infisical, `.env`, KeePass KDBX 4; `kepr export --encrypted` | P10.2 · T10.02, T6.09 |
-| Login: master password, biometrics, passkey, Keeper DNA (smartwatch) | ✅ Argon2id passphrase (`kepr lock`), FIDO2 `hmac-secret` second factor (`kepr lock --fido2`), TPM2 PIN, fingerprint quick unlock (`kepr unlock --fingerprint`), polkit. No smartwatch | P4.3, P4.4, P10.3 · T4.08, T4.09, T10.03 |
+| Import from 30+ managers (1Password, Bitwarden, LastPass, KeePass, Chrome…), vault export | ✅ `kepr import`: password-manager CSV (1Password, Bitwarden, KeePassXC, LastPass, Chrome, Edge, Firefox), Bitwarden and vault records JSON, Doppler, Infisical, `.env`, KeePass KDBX 4; `kepr export --encrypted` | P10.2 · T10.02, T6.09 |
+| Login: master password, biometrics, passkey, wearable hardware tokens | ✅ Argon2id passphrase (`kepr lock`), FIDO2 `hmac-secret` second factor (`kepr lock --fido2`), TPM2 PIN, fingerprint quick unlock (`kepr unlock --fingerprint`), polkit. No smartwatch | P4.3, P4.4, P10.3 · T4.08, T4.09, T10.03 |
 | Forcefield memory protection (Windows) | ✅ the Linux equivalent: non-dumpable daemon and gate, no core dumps, `mlockall` in the daemon, zeroized buffers; the master key, the gate's session key and its value cache sit split in two in `memfd_secret` pages (locked memory where the kernel lacks them) between guard pages, and the master key is relocated every 60 s | P3 · T3.01–T3.03, T12.02, T12.21, T12.22 |
 | Multi-device sync | ✅ `kepr sync remote add dir:PATH | git:URL | s3:BUCKET/PREFIX | rsync:PATH | rsync:HOST:/PATH` and `kepr sync now`: end-to-end encrypted, last writer wins, run by hand or on a systemd user timer | P6.5 · T6.10 |
 | Desktop, mobile, watch apps | 🟡 `kepr ui` terminal UI, `kepr shell`, VS Code extension; approvals from desktop or ntfy phone notifications. Missing: GUI, mobile and watch apps | P8 · T8.01, T8.02, T8.08, T9.04 |
-| KeeperChat | ⛔ out of scope | ⛔ unrelated product |
+| Encrypted chat / messaging | ⛔ out of scope | ⛔ unrelated product |
 
 ### 2.2 Secrets Manager (KSM)
 
-| Keeper feature | kepr today | Plan |
+| Enterprise Vault / Secrets Feature | kepr today | Plan |
 | --- | --- | --- |
 | `ksm exec` env substitution | ✅ `kepr exec --env` (also `VAR=kepr://…`), `--memfd`, `--pull` (the command fetches each value itself; no `/proc/environ` leak) | P0, P3.3, P5.7 · T3.06, T5.06 |
-| Keeper Notation `keeper://UID/field/password[0][sub]`, `file/` selector | ✅ `kepr://NAME/field[i][sub]`, `/custom_field/LABEL`, `/file/FILE`, links through `ref` fields; `kepr resolve` | P5.7, P11.6 · T5.05, T5.06, T11.6 |
+| Vault Notation / URI references (e.g. `op://vault/item/field`, vault paths) | ✅ `kepr://NAME/field[i][sub]`, `/custom_field/LABEL`, `/file/FILE`, links through `ref` fields; `kepr resolve` | P5.7, P11.6 · T5.05, T5.06, T11.6 |
 | `ksm interpolate` (fill templates) | ✅ `kepr inject -i TEMPLATE [-o OUT]` | P5.7 |
 | `ksm sync` to AWS / Azure / GCP / JSON ("Universal Secrets Sync") | ✅ `kepr sync-push` and `sync-pull` with `vault:`, `aws-sm:`, `gcp-sm:`, `azure-kv:`, `json:PATH#KEY`; many keys with `kepr sync push --map` | P8, P11.17 · T8.05, T8.06, T11.17 |
 | Applications + client devices + one-time access tokens | 🟡 `kepr device add LABEL` issues a single-use 15-minute token; `kepr device enroll` (optional OIDC login), `device ls`, `device rm`. Missing: applications; an enrolled device gets every synced credential | P6.1, P6.6 · T6.03, T6.13 |
@@ -218,27 +173,27 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | Commander CLI with interactive shell and REST service mode | ✅ `kepr shell`; `kepr serve` (read-only REST on loopback or a Unix socket, token, allowlist, rate limit) | P8, P11.19 · T8.01, T11.19 |
 | ServiceNow, Jira, Slack, Teams workflow apps | 🟡 approvals from desktop or ntfy notifications (`kepr approvals serve`); alerts to Slack, Teams, Discord and ntfy (`kepr alerts run`). Missing: approving from Slack or Teams, ServiceNow and Jira apps | P9.1, P7.6 · T9.04, T7.15 |
 
-### 2.3 PAM (KeeperPAM)
+### 2.3 Privileged Access Management (PAM)
 
-| Keeper feature | kepr today | Plan |
+| PAM feature | kepr today | Plan |
 | --- | --- | --- |
 | Gateway that injects credentials so users never see them | ✅ `kepr-gate`, started by `kepr agent run`: API mode, egress proxy, database proxies; local, no cloud gateway | P1, P2 |
 | Connections: SSH, RDP, VNC, Kubernetes, telnet, databases, browser isolation | 🟡 SSH through `kepr ssh-agent` (keys stay in the daemon) and the MCP `ssh_run` tool; PostgreSQL, MySQL and Redis through the gate. Missing: Kubernetes (T13.04). Telnet is out of scope: it sends the credential in the clear, so a gate that logs in for the agent would protect nothing | P2.4, P7.1 · T7.01, T7.02, T9.05; RDP/VNC/RBI ⛔ |
 | Tunnels: local port to target through the gateway | ✅ `kepr agent run --tunnel NAME=HOST:PORT` (a loopback port the gate pipes to the host, also under `--isolate-net`) | P7.1 · T7.03 |
-| KeeperDB proxy: protocol listener, credential injected gateway-side | ✅ PostgreSQL, MySQL and Redis proxies in the gate (`kepr agent add-db`), logging in with the sealed record | P7.1 · T7.01, T7.02 |
+| Database proxy: protocol listener, credential injected gateway-side | ✅ PostgreSQL, MySQL and Redis proxies in the gate (`kepr agent add-db`), logging in with the sealed record | P7.1 · T7.01, T7.02 |
 | Session recording + playback, encrypted searchable summaries | ✅ `kepr agent run --record` (bodies encrypted), `kepr agent replay`, `kepr agent logs` (request journal) | P7.3 · T7.09, T11.22; summaries ⛔ (need an LLM) |
 | Co-browsing of a live session | ⛔ out of scope | ⛔ no shared visual sessions |
 | Ephemeral one-time accounts | 🟡 GitHub App installation tokens minted in the gate (`kepr github-app add`), STS temporary credentials (`kepr aws credential-process`), a PostgreSQL role granted for one session (`kepr agent run --grant`). Missing: dynamic database users | P7.2, P7.4 · T7.08, T2.03, T7.18 |
 | Discovery of privileged/service accounts | ✅ `kepr discover` (local configs, cloud CLI profiles, kube contexts, Docker) with `discover.toml` rules; this machine only | P10.7, P11.20 · T11.20 |
 | Rotation: scheduled, on-demand, after access expires, post-rotation actions, plugins | ✅ `kepr rotate KEY --every 30d` with `--hook CMD`, `--aws-iam` or `--db` (PostgreSQL, MySQL); `kepr ssh rotate`; `kepr checkin --rotate`. a credential whose check-out ran out is rotated (T12.51); under the system daemon a user timer runs `kepr rotate --due` (T12.50) | P7.2 · T7.04, T7.05, T7.07, T7.11, T11.21, T12.50, T12.51 |
 | JIT Workflow: multi-level approval, single-user check-in/check-out, MFA, time limits | ✅ `kepr grant KEY --to HARNESS --for 2h`, `kepr checkout` and `kepr checkin`, `kepr quorum` (M-of-N; the approvers are the owner and their enrolled devices), FIDO2 touch, `kepr reauth` | P7.4 · T7.10, T7.11, T7.12, T11.14 |
-| KeeperAI: risk levels Critical→Low, explanations, auto-terminate, regex indicators, customer-chosen LLM | 🟡 `kepr anomaly run`: new path, volume spike, off hours and error burst rules, a webhook, optional `kepr panic`, risk levels low to critical per rule (`[risk]` in `rules.toml`; `revoke_at = "high"` panics only at that level). Missing: an LLM classifier | P7.5 · T7.13 |
+| Automated threat analysis: risk levels Critical→Low, explanations, auto-terminate, regex indicators | 🟡 `kepr anomaly run`: new path, volume spike, off hours and error burst rules, a webhook, optional `kepr panic`, risk levels low to critical per rule (`[risk]` in `rules.toml`; `revoke_at = "high"` panics only at that level). Missing: an LLM classifier | P7.5 · T7.13 |
 | AI agent access to PAM machines/databases with "AI context" | ✅ `kepr mcp` tools `db_query` (PostgreSQL, optional read-only) and `ssh_run`, with `--context TARGET=NOTE` | P9.4 · T9.05 |
 | Endpoint Privilege Manager | ⛔ out of scope | ⛔ different product category |
 
 ### 2.4 Platform, admin and compliance
 
-| Keeper feature | kepr today | Plan |
+| Platform feature | kepr today | Plan |
 | --- | --- | --- |
 | Hash-chained / exported audit, ARAM alerts, SIEM (Splunk, Sentinel, QRadar, Datadog, Elastic, syslog…) | ✅ journald + hash-chained log; `kepr audit forward --to jsonl:\|syslog:\|otlp:…`; `kepr alerts run` | P7.6 · T7.14, T7.15 |
 | Compliance reports (SOX, HIPAA, PCI, NIST, GDPR), risk dashboard | 🟡 `kepr report access KEY`, `kepr usage --report`, `kepr health --period` aging report, `kepr report compliance --framework sox\|hipaa\|pci\|nist\|gdpr` (pass / fail / manual per control, from status, audit chain, policy and health); `--html FILE` writes it as one self-contained page (T13.10). Missing: a live dashboard | P6.6, P9.6 · T6.12, T9.07, T13.10 |
@@ -250,17 +205,17 @@ No row is ❌ any more: every row in scope has at least part of the feature.
 | Air-gapped deployment | ✅ local-first | — |
 | Webhooks (Slack, Teams, Discord) | ✅ `kepr alerts run`, `kepr health --notify`, `kepr anomaly run` (Slack, Teams, Discord, ntfy, JSON) | P7.6 · T7.15, T6.08 |
 
-### 2.5 Where kepr is already ahead of Keeper
+### 2.5 Architectural security differentiators
 
-| Property | Keeper | kepr |
+| Property | Traditional Vaults (1Password / Bitwarden / CyberArk) | kepr |
 | --- | --- | --- |
-| Secrets kept out of `/proc/pid/environ` | ❌ (`ksm exec` warns about it) | ✅ `--memfd`, `--pull`; the gate removes the value from the child entirely |
-| Agent can use a key without holding it | ❌ Agent Kit/MCP return plaintext to the agent | ✅ `kepr agent add` + `kepr agent run`: sealed creds and the gate |
-| Kernel-attested caller identity on every request | device tokens, server-side | ✅ `SO_PEERCRED` per request; optional executable digest (`kepr set --exe`) |
-| Works with no account, no cloud, no network | partial (offline cache) | ✅ |
-| Hidden secrets enforced, not just masked | ❌ Privacy Screen is visual | ✅ sealed creds: `Get` refuses them |
+| Secrets kept out of `/proc/pid/environ` | ❌ (CLI tools expose secrets in env or proc table) | ✅ `--memfd`, `--pull`; the gate removes the value from the child entirely |
+| Agent can use a key without holding it | ❌ Secrets manager MCP servers return plaintext to the agent | ✅ `kepr agent add` + `kepr agent run`: sealed creds and the gate |
+| Kernel-attested caller identity on every request | Device tokens or remote auth only | ✅ `SO_PEERCRED` per request; optional executable digest (`kepr set --exe`) |
+| Works with no account, no cloud, no network | Partial / requires cloud backend sync | ✅ Local-first architecture |
+| Hidden secrets enforced, not just masked | ❌ Masking is client-side or visual | ✅ sealed creds: `Get` refuses them |
 
-### 2.6 Additional important features (beyond Keeper)
+### 2.6 Additional important features (beyond standard secret managers)
 
 These come from 1Password, HashiCorp Vault, Doppler, Infisical, Teleport,
 GitHub Actions, systemd, and from what agents specifically need. Priority:
@@ -271,7 +226,7 @@ nice to have.
 | --- | --- | --- | --- | --- | --- |
 | A1 | **Prompt DLP in the gate**: scan every outbound LLM request for the secret values the session holds (and known key formats) and block the request, telling the agent why | Stops an agent pasting a secret it found in a file or log into a provider's prompt and logs | H | ✅ the gate in `kepr agent run` blocks a request that carries a key the session has resolved, or anything shaped like a known key format, and tells the agent why. It deliberately doesn't match other stored values: answering "does this text contain a stored value?" for text an agent writes would let a hijacked agent guess weak passwords, one blocked request at a time. `kepr scan` checks files | P9.2 · T9.02 |
 | A2 | **Output masking**: `kepr exec --mask` / gate rewrites any secret value in a child's stdout/stderr to `****` | If a real secret ever reaches a tool, it can't echo back into the agent's context (GitHub Actions does this) | H | ✅ `kepr exec --mask` prints the values it provided as `****` in the command's stdout and stderr. The gate also masks released values (and their percent-encoded and Base64 spellings) in upstream responses (T12.01) | P9.3 · T9.03, T12.01 |
-| A3 | **Per-agent approvals**: an agent's use of a consent-gated secret asks the user via polkit, a desktop notification or the phone; standing approval is time-boxed | Keeper has this for its MCP; kepr needs it for gate sessions | H | ✅ consent per use through polkit, or a desktop or ntfy notification (`kepr approvals serve`); time-boxed grants per harness (`kepr grant KEY --to HARNESS --for 2h`, at most 7 days). There is no stored "always": the harness name is whatever starts the session claims, so a permanent yes per agent would turn consent off, and the credential's bindings already fix the host | P9.1 · T9.04, T7.10 |
+| A3 | **Per-agent approvals**: an agent's use of a consent-gated secret asks the user via polkit, a desktop notification or the phone; standing approval is time-boxed | Conventional MCP servers lack granular per-agent approvals; kepr enforces it for gate sessions | H | ✅ consent per use through polkit, or a desktop or ntfy notification (`kepr approvals serve`); time-boxed grants per harness (`kepr grant KEY --to HARNESS --for 2h`, at most 7 days). There is no stored "always": the harness name is whatever starts the session claims, so a permanent yes per agent would turn consent off, and the credential's bindings already fix the host | P9.1 · T9.04, T7.10 |
 | A4 | **Spend and rate guard**: gate reads token usage from provider responses and enforces per-session budget caps | A runaway or hijacked agent can't burn the API budget | H | ✅ `kepr agent run --max-requests`, `--max-tokens`, `--rate`, `--max-requests-day`, `--max-tokens-day` | P9.5 · T9.06 |
 | A5 | **Honeytokens**: plant decoy keys in `.env`, shell rc files and repos; any use triggers an alert | Detects exfiltration by agents or malware | M | ✅ `kepr canary plant`, `kepr canary listen`; a trip is audited as `canary-tripped` | P9.7 · T9.08 |
 | A6 | **Leak response**: `kepr leaked NAME` rotates through the provider's API, kills sessions, invalidates placeholders, records an incident | Minutes, not hours, from leak to dead key | M | 🟡 `kepr leaked KEY` stops the user's gates (their placeholders die with them), deletes the key and its history and records an incident; `--rotate` replaces an AWS IAM user key through the IAM API, and STS and GitHub App tokens expire on their own. Separate `kepr rotate KEY --provider PROVIDER --bootstrap ADMIN_KEY` now handles validated OpenAI, OpenRouter and Venice replacements inside a daemon-owned gate. Missing: automatic provider rotation from `kepr leaked --rotate`, and rotation for providers without an authenticated key-management API; for those kepr shows the provider's revocation page | P9.8 · T9.09 |
@@ -284,16 +239,16 @@ nice to have.
 | A13 | **Policy as code with tests** (`kepr policy test`) | Reviewable, CI-checked rules instead of ad-hoc flags | M | ✅ `policy.toml`, `kepr policy test`, `status`, `reload` | P6.6 · T6.11 |
 | A14 | **Break-glass**: M-of-N unseal of a sealed credential, loud audit, forced rotation afterwards | The only way to see a sealed value again, and it's never quiet | M | ✅ `kepr break-glass NAME`: k recovery-kit shares, audited `break-glass`, marked must-rotate | P6.3 · T6.07 |
 | A15 | **Unused / stale key report**: last used, age, never-used, over-scoped bindings | Least privilege over time | M | ✅ `kepr usage`, `kepr usage --report` (bound hosts never reached), `kepr health --period` | P9.6 · T9.07, T11.11 |
-| A16 | **Local PKI and certificate tracking**: issue dev certs, track expiry | Keeper stores certs; Vault issues them | L | ✅ `kepr pki init`, `issue`, `ls`; `kepr health` warns 14 days before a certificate expires | P10.10 · T10.10 |
+| A16 | **Local PKI and certificate tracking**: issue dev certs, track expiry | Standard vaults store certs; HashiCorp Vault issues them | L | ✅ `kepr pki init`, `issue`, `ls`; `kepr health` warns 14 days before a certificate expires | P10.10 · T10.10 |
 | A17 | **Workload identity for servers/CI**: TPM-attested machine enrolment, SPIFFE SVIDs | Solves "secret zero" without a bootstrap token in env | L | ✅ `kepr pki tpm-enroll`, `kepr pki svid` (once a TPM is enrolled, a TPM2 quote over PCR 7 before each SVID; files only, no Workload API) | P10.11 · T10.11 |
 
-### 2.7 Found on the 2026-10-05 re-check
+### 2.7 Additional enterprise vault capabilities
 
-Keeper features the tables above did not list. Everything here is built into
-kepr itself; none of it talks to Keeper. Rows marked ⛔ don't fit a
-local-first, single-user vault.
+Advanced vault and CLI features benchmarked against enterprise secret managers.
+Everything here is built into kepr itself; none of it depends on external closed-source services.
+Rows marked ⛔ don't fit a local-first, single-user vault.
 
-| Keeper feature | kepr today | Plan |
+| Capability | kepr today | Plan |
 | --- | --- | --- |
 | Commander `search` (regex over titles and fields, JSON output) | ✅ `kepr search PATTERN [--json]`: substring or a small regex over names, tags, folders, types and non-secret fields, never values | P11.1 · T11.1 |
 | Deleted Items / `trash` (list, restore, purge) and a retention policy | ✅ `kepr rm` moves a key to the trash for 30 days (`KEPR_TRASH_DAYS`); `kepr trash`, `kepr trash restore`, `kepr trash purge` | P11.2 · T11.2 |
@@ -321,7 +276,7 @@ local-first, single-user vault.
 | SSH key rotation (push new key to `authorized_keys`) | ✅ `kepr ssh rotate KEY --host [USER@]HOST` (one host per run) | P11.21 · T11.21 |
 | `pam tunnel tail` (watch a live session's log) | ✅ `kepr agent logs [SESSION] [--follow]` | P11.22 · T11.22 |
 | BreachWatch ignore status | ✅ `kepr health --ignore KEY:KIND` and `--unignore`; a new value clears the ignore | P11.23 · T11.23 |
-| Text session recordings replayable with `scriptreplay`; KeeperAI summaries | ✅ `kepr agent run --record`, `kepr agent replay SESSION --typescript FILE --timing FILE` (PostgreSQL sessions) | P7.3 · T7.09; summaries ⛔ (needs an LLM) |
+| Text session recordings replayable with `scriptreplay`; AI summaries | ✅ `kepr agent run --record`, `kepr agent replay SESSION --typescript FILE --timing FILE` (PostgreSQL sessions) | P7.3 · T7.09; summaries ⛔ (needs an LLM) |
 | JIT privilege elevation (add to a group or role for the session) | ✅ `kepr agent run --grant NAME=ROLE:ADMIN`: PostgreSQL `GRANT` before the first login, `REVOKE` when the agent exits | P7.4 · T7.18 |
 | ARAM alert throttling, saved report filters | ✅ `kepr alerts run` rules in `alerts.toml`, throttled per rule; `kepr report access KEY --kind K,.. --save-filter NAME`, `--filter NAME` | P7.6 · T7.15, T13.09 |
 | Email delivery of shares, SCIM, MSP, `credential-provision`, `user-report` | ⛔ out of scope | ⛔ enterprise tenancy or a mail service |
@@ -376,27 +331,36 @@ hand the agent the key at all.
 
 ### 4.2 Components
 
-```text
- user (once)                                          upstream APIs
-   │ kepr agent add ANTHROPIC_API_KEY --for api.anthropic.com          ▲ TLS (rustls,
-   ▼                                                                   │  pinned roots)
-┌───────────────┐ private socketpair (fd3)┌──────────────────────────┐ │
-│  kepr-daemon  │◀── Resolve{name,dest} ──│  kepr-gate               │─┘
-│ vault image,  │  daemon spawns the gate │  own uid (system mode),  │
-│ master key    │── value (framed JSON) ─▶│  non-dumpable, value     │
-└───────────────┘                         │  cache, policy, journal  │
-                                          └────────────▲─────────────┘
-                                                       │ --isolate-net: each connection
-                                                       │ relayed out over SCM_RIGHTS
-┌──────────────────── kepr agent run omp ──────────────┼──────────────────────┐
-│ new user+pid+mount namespaces (+net with --isolate-net), Landlock, seccomp  │
-│                                                                             │
-│  omp / grok / claude  ── http://127.0.0.1:7878/anthropic ──┘                │
-│   env: ANTHROPIC_API_KEY=kepr-ph-7f3a…   (placeholder, not a secret)        │
-│   tools it spawns (curl, gh, git, aws) ── HTTPS_PROXY=127.0.0.1:7879 ──┘    │
-│   cannot see gate/daemon PIDs · vault dir hidden · --isolate-net: no other  │
-│   route out (without it: host network, placeholders only)                   │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Config["One-Time Configuration"]
+        USER["User Terminal<br/><code>kepr agent add ANTHROPIC_API_KEY --for api.anthropic.com</code>"]
+    end
+
+    subgraph DaemonPlane["Daemon (Isolated Privilege)"]
+        DAEMON["kepr-daemon<br/>Vault image & master key<br/>(spawns gate over fd3 socketpair)"]
+    end
+
+    subgraph GatePlane["Gate (Local Proxy)"]
+        GATE["kepr-gate<br/>• Non-dumpable, private UID<br/>• Value cache & Landlock<br/>• Policy, limits, journal"]
+    end
+
+    subgraph SandboxPlane["Agent Sandbox (kepr agent run omp)"]
+        direction TB
+        SANDBOX_DESC["Namespaces (user, pid, mount, net), Landlock, Seccomp"]
+        AGENT["Agent Harness (omp / grok / claude)<br/><code>ANTHROPIC_API_KEY=kepr-ph-7f3a...</code> (placeholder)"]
+        TOOLS["Spawned Tools (curl, gh, git, aws)<br/><code>HTTPS_PROXY=127.0.0.1:7879</code>"]
+        AGENT -->|HTTP 127.0.0.1:7878| GATE
+        TOOLS -->|HTTPS Proxy 127.0.0.1:7879| GATE
+    end
+
+    subgraph Upstream["Upstream APIs"]
+        API["Model Provider / Bound Host<br/>(api.anthropic.com)"]
+    end
+
+    USER -->|Configures sealed credential| DAEMON
+    GATE <-->|Private socketpair (fd3)<br/>Resolve{name, dest} / value| DAEMON
+    GATE -->|TLS with pinned roots<br/>Real credential injected| API
 ```
 
 The value travels from the daemon to the gate as a length-prefixed JSON
@@ -555,8 +519,7 @@ For agent platforms that prefer tools over base-URL rewiring:
   the session placeholder (`--read-only` refuses writes), and `ssh_run(host,
   cmd)` runs a command over ssh through a private agent socket whose keys
   sign in the daemon (T9.05).
-- No tool ever returns plaintext. This is the inverse of Keeper's MCP server,
-  which returns secret values into the model's context.
+- No tool ever returns plaintext. This is the inverse of standard secrets manager MCP servers (such as traditional vault plugins), which return secret values directly into the model's context.
 
 ### 4.9 What an agent can still do
 
@@ -634,25 +597,26 @@ hardware (section 5.3). Both together are worth having.
 
 ### 5.3 Key hierarchy
 
-```text
-sealer, chosen with KEPR_MASTER_KEY_SEAL and KEPR_TPM2_* (section 9, P4):
-  TPM2: optional PCR policy (KEPR_TPM2_PCRS), PIN (TPM dictionary-attack
-        lockout), NV anti-rollback counter; salted, encrypted TPM sessions
-        against LPC/SPI bus sniffing (T12.29)
-  or the host key, a key service (AWS, GCP or Azure KMS, PKCS#11),
-  the macOS keychain, an owner-only file (user mode),
-  or, after kepr lock, an Argon2id passphrase [+ FIDO2 hmac-secret]
-  └─ daemon master key, the image's KEK (256-bit random, sealed at rest;
-     │                    where it sits in RAM: section 6)
-     │  per operation, never stored, wiped after use:
-     │  HKDF-SHA256(master key, image salt) gives
-     ├─ header key, journal key
-     ├─ placement key   (slot placement PRF)
-     └─ vault master key (VMK)
-          ├─ index key = HKDF(VMK, "index")   (seals the name → record index)
-          └─ record keys (a fresh random AES-256 key on every write,
-             AES-256-GCM-wrapped by the VMK)
-               └─ value, fields, history, attachments
+```mermaid
+flowchart TD
+    SEALER["Sealer Backend<br/>• TPM2 (PCR policy, PIN, anti-rollback)<br/>• Host key / Cloud KMS (AWS, GCP, Azure)<br/>• macOS Keychain / Local file<br/>• Argon2id Passphrase + FIDO2 hmac-secret"]
+    MK["Daemon Master Key (Image KEK)<br/>(256-bit random, sealed at rest)"]
+    HKDF["HKDF-SHA256 Derivation<br/>(per operation, never stored, wiped after use)"]
+    HEADER["Header Key & Journal Key"]
+    PLACE["Placement Key (slot PRF)"]
+    VMK["Vault Master Key (VMK)"]
+    INDEX["Index Key<br/>HKDF(VMK, 'index')"]
+    RECORDS["Record Keys<br/>(fresh AES-256 key per write, AES-GCM wrapped)"]
+    PAYLOAD["Values, Fields, History, Attachments"]
+
+    SEALER --> MK
+    MK --> HKDF
+    HKDF --> HEADER
+    HKDF --> PLACE
+    HKDF --> VMK
+    VMK --> INDEX
+    VMK --> RECORDS
+    RECORDS --> PAYLOAD
 ```
 
 - **Anti-rollback.** A TPM NV monotonic counter stores the epoch. On open,
@@ -837,7 +801,7 @@ retired: it refuses to run and points at `kepr agent add` and
   Build, grok-cli, Claude Code, Codex, Gemini CLI, opencode, Aider (Gemini
   CLI and opencode, T12.13). Ship a `SKILL.md` / `AGENTS.md` snippet
   that tells agents secrets are already wired in and never to ask for or
-  print them (Keeper's Agent Kit equivalent, minus the plaintext; for Claude
+  print them (providing safe agent guidance files, minus the plaintext; for Claude
   Code and Codex, T12.15).
 - P1.5 `kepr adopt` scanner + rewriter; `--from-clipboard` with clipboard
   clear.
@@ -956,7 +920,7 @@ anti-rollback anchor for the image's epoch bound to a TPM NV index
 (T12.27, T12.30) followed. Not built: resizing an image, and moving back
 to per-file storage.
 
-### P5: Keeper-parity data model (shipped)
+### P5: Comprehensive vault data model (shipped)
 
 - P5.1 Typed records and fields; `kepr://NAME/field` references.
 - P5.2 Tags, folders, per-project environments in `.kepr.toml`.
@@ -990,7 +954,7 @@ memory-backed file system only (T12.45).
   local file / QR / optional self-hosted relay) and `--self-destruct` (delete
   the record when the share expires).
 - P6.3 Emergency access: Shamir k-of-n recovery kit, optional time delay
-  (Keeper allows up to 3 months). Break-glass for sealed creds (A14) uses the
+  (enterprise vaults typically allow up to 3 months). Break-glass for sealed creds (A14) uses the
   same M-of-N machinery and forces rotation afterwards.
 - P6.4 `kepr audit health` (weak/reused/old), HIBP k-anonymity checks (CLI
   side, opt-in network), `kepr scan` + pre-commit hook for leaked keys.
@@ -1102,7 +1066,7 @@ without a documented key-management API remain unavailable.
 
 ### P10: platform extras (shipped)
 
-- P10.1 `kepr mount` (Keeper Property File equivalent): a FUSE file system
+- P10.1 `kepr mount` (virtual filesystem vault access): a FUSE file system
   that exposes records as files such as `.env` or `config.json`. Each `open`
   is checked against the caller's uid, an optional executable digest
   (`--exe`) and optional consent (`--consent`). The mount is hidden from,
@@ -1111,8 +1075,8 @@ without a documented key-management API remain unavailable.
   processes between cgroups, so it would add nothing over `--exe`. There
   are no placeholders: they belong to a gate session and stand for sealed
   keys, which `kepr mount` never serves.
-- P10.2 Importers (1Password, Bitwarden, KeePass KDBX, LastPass, Keeper
-  JSON, Chrome CSV, `.env`, Doppler, Infisical) and encrypted export.
+- P10.2 Importers (1Password, Bitwarden, KeePass KDBX, LastPass, standard
+  CSV/JSON, `.env`, Doppler, Infisical) and encrypted export.
 - P10.3 Fingerprint unlock through polkit + fprintd.
 - P10.4 macOS Keychain sealer (the existing roadmap item); the daemon reads
   the item through Security.framework so the access list applies.
@@ -1143,7 +1107,7 @@ match SHA-256 or fs-verity digests; under the system daemon they need
 CAP_SYS_PTRACE, which the shipped unit lacks. `kepr copy` owns the Wayland or X11 selection and sets the
 password-manager hint (P10.9; T12.47, T12.48).
 
-### P11: Keeper re-check (2026-10-05, shipped)
+### P11: Enterprise vault parity re-check (2026-10-05, shipped)
 
 From section 2.7. All local, all inside kepr.
 

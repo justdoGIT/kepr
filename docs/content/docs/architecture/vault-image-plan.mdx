@@ -36,18 +36,29 @@ copies at rest, which is where the current layout leaks.
 
 ## Design at a glance
 
-```
-vault-<uid>.img (one per user; size grows in coarse buckets)
+```mermaid
+flowchart TD
+    subgraph Storage["vault-<uid>.img (coarse bucket size)"]
+        direction TB
+        S0["Slot 0: Superblock A"]
+        S1["Slot 1: Superblock B"]
+        subgraph Slots["Slots 2..N: Data Slots or Noise"]
+            direction TB
+            D1["Index Pages (AEAD under VK)"]
+            D2["Record Pages (AEAD under RK)"]
+            D3["Noise Pages (CSPRNG)"]
+        end
+        S0 -. alternate .-> S1
+        S1 --- Slots
+    end
 
- slot 0      superblock A ┐ two copies, written alternately; the one with
- slot 1      superblock B ┘ the higher valid generation is current
- slot 2..N   data slots: index pages, record pages, or noise
-
- KEK (master key, sealed as today: systemd-creds / TPM2 / Argon2id passphrase)
-  └─ VK   vault key, random per image, wrapped by the KEK in the superblock
-      └─ index pages (AEAD under VK): one entry per record
-           uid, name, kind, CredMeta, slot list, record key RK, content hash
-          └─ record pages (AEAD under that record's RK): the value
+    subgraph Hierarchy["Key Hierarchy"]
+        direction TB
+        KEK["KEK (Master Key)"] -->|"Wraps in Superblock"| VK["VK (Vault Key)"]
+        VK -->|"Encrypts Index"| D1
+        D1 -->|"Stores Record Key RK"| D2
+        D2 -->|"Holds Credential"| Val["Decrypted Secret Value"]
+    end
 ```
 
 ### Slots

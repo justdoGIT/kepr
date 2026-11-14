@@ -289,9 +289,25 @@ mod tests {
         assert_eq!(unique.len(), 7776);
         assert_eq!((words[0], words[7775]), ("abacus", "zoom"));
         let p = generate_secret(GenKind::Words).unwrap();
-        let parts: Vec<&str> = p.as_str().split('-').collect();
+        // Reconstruct words accounting for hyphenated entries in the EFF list
+        // (drop-down, felt-tip, t-shirt, yo-yo).
+        let mut parts = Vec::new();
+        let raw: Vec<&str> = p.as_str().split('-').collect();
+        let mut i = 0;
+        while i < raw.len() {
+            if i + 1 < raw.len() {
+                let combined = format!("{}-{}", raw[i], raw[i + 1]);
+                if unique.contains(&combined.as_str()) {
+                    parts.push(combined);
+                    i += 2;
+                    continue;
+                }
+            }
+            parts.push(raw[i].to_string());
+            i += 1;
+        }
         assert_eq!(parts.len(), PASSPHRASE_WORDS);
-        assert!(parts.iter().all(|w| unique.contains(w)));
+        assert!(parts.iter().all(|w| unique.contains(&w.as_str())));
     }
 
     #[test]

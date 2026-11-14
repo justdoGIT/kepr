@@ -208,13 +208,13 @@ mod tests {
         assert_eq!(calls.get(), 1);
         assert!(!is_needed(&r.unwrap()));
         // Tests have no terminal: the marker turns into the hint, with
-        // no second request.
-        let calls = Cell::new(0);
-        let r = get_or_ask("K", || {
-            calls.set(calls.get() + 1);
-            Ok(needed())
-        });
+        // no second request. If stdin is a terminal, skip to avoid blocking on read_masked.
         if !std::io::stdin().is_terminal() {
+            let calls = Cell::new(0);
+            let r = get_or_ask("K", || {
+                calls.set(calls.get() + 1);
+                Ok(needed())
+            });
             assert_eq!(calls.get(), 1);
             assert!(r.unwrap_err().contains("kepr reauth K"));
         }

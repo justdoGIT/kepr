@@ -36,13 +36,20 @@ one.
 
 ## How it works
 
-```text
-you type the password ─▶ PAM checks it (the OS is the root of trust)
-                          └─ pam_kepr.so (optional, after the check)
-                               └─ runs  kepr pam-unlock  as you, detached,
-                                  password on stdin (never argv or env)
-                                    └─ your daemon: LoginUnlock ─▶ store open
-screen lock / suspend ─▶ kepr locks      screen unlock (setcred) ─▶ opens again
+```mermaid
+flowchart TD
+    subgraph LoginFlow["Login & Unlock Flow"]
+        direction TB
+        PW["User types password"] --> PAM["PAM verifies credentials<br/>(OS Root of Trust)"]
+        PAM --> PAM_MOD["pam_kepr.so<br/>(runs kepr pam-unlock as user)"]
+        PAM_MOD -->|password on stdin| DAEMON["kepr-daemon<br/>LoginUnlock -> Store Open"]
+    end
+
+    subgraph LockCycle["Screen Lock Cycle"]
+        direction TB
+        LOCK["Screen lock / suspend"] -->|Triggers| LOCKED["kepr locks store"]
+        UNLOCK["Screen unlock (setcred)"] -->|Re-authenticates| DAEMON
+    end
 ```
 
 * `kepr login-unlock on` is the opt-in: a file, `~/.config/kepr/login-unlock`.

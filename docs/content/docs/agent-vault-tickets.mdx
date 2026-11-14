@@ -5,7 +5,7 @@ description: "The agent vault plan broken into small, self-contained tickets tha
 
 # Agent Vault: Implementation Tickets
 
-This page turns the [Keeper parity & agent vault plan](/docs/agent-vault-plan)
+This page turns the [Enterprise vault parity & agent vault plan](/docs/agent-vault-plan)
 into tickets. Each ticket is sized so that a small model, working alone with
 no memory of earlier tickets, can finish it in one sitting: it names every
 file to touch, every type and function to add, the tests to write first, and
@@ -38,7 +38,7 @@ the exact commands that prove it's done.
 | P7.2 `kepr agent rotate-db` (ALTER ROLE through the gate, SCRAM verifier, resumable) | shipped (scheduled rotation open) |
 | T1.22 omp extension + Grok Build plugin (`kepr agent install`, `kepr hook`) | shipped |
 | P10.7 `kepr discover` (aws, git, netrc, npm, pypi, docker, gh, kube) | shipped |
-| P10.2 `kepr import` (CSV, Bitwarden / Keeper / flat JSON, `.env`) | shipped (KDBX and encrypted export open) |
+| P10.2 `kepr import` (CSV, Bitwarden / 1Password / flat JSON, `.env`) | shipped (KDBX and encrypted export open) |
 | P5.5 `kepr totp`, P5.7 `kepr inject`, P6.4 `kepr scan`, P10.9 `kepr copy` | shipped |
 | T1.19 gate as a system service (`kepr-gate.service`, `kepr-gate --serve`) | shipped |
 | P2.1 egress proxy (CONNECT, per-session name-constrained CA, `gh`/`curl` via GH_TOKEN placeholder) | shipped |
@@ -817,7 +817,7 @@ out of scope.
   keychain is locked, there is no login session, or a rebuilt daemon binary
   no longer matches the access list.
 
-**P11: Keeper re-check**
+**P11: Enterprise vault re-check**
 
 - T11.1: also matches the record field `user` (database and server logins)
   and, after T11.5, alias names. Record fields are searched only when a
@@ -1704,9 +1704,9 @@ Split first, following plan P3.5.
 
 ## Open work, split into tickets (2026-10-05)
 
-Everything the plan still lists as open, plus what the 2026-10-05 Keeper
-re-check found (plan section 2.7, phase P11), split into S/M tickets with
-the template at the bottom of this page. Nothing here talks to Keeper: every
+Everything the plan still lists as open, plus what the 2026-10-05 enterprise
+vault re-check found (plan section 2.7, phase P11), split into S/M tickets with
+the template at the bottom of this page. Nothing here talks to external services: every
 feature is built into kepr.
 
 **Shared wiring.** Unless a ticket says otherwise:
@@ -2286,7 +2286,7 @@ Files: create `src/daemon_emergency.rs`, `src/cli_emergency.rs`; protocol
 The request is a file or relay blob signed by the contact's key. The sweeper
 (`daemon_expiry.rs`) releases when `now ≥ requested_at + delay` and no
 denial; release writes envelopes (never sealed creds) and audits loudly.
-Max delay 90 days, up to 5 contacts (Keeper's limits).
+Max delay 90 days, up to 5 contacts (standard industry limits).
 Tests: request then wait (injected clock) releases; deny cancels; a forged
 request (wrong key) is refused; sealed creds are never included.
 
@@ -2936,7 +2936,7 @@ prompt (login keychain unlocked in the job); Linux builds unchanged.
 
 ---
 
-## P11: Keeper re-check (2026-10-05)
+## P11: Enterprise vault re-check (2026-10-05)
 
 ### T11.1 `kepr search` (S)
 

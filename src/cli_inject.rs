@@ -1,6 +1,6 @@
 // cli_inject.rs — `kepr inject -i TEMPLATE [-o OUT [--allow-disk]]` (P5.7).
 // Replaces every `kepr://` reference in a template with what it stands
-// for (like Keeper's `ksm interpolate`): `kepr://NAME` the stored value,
+// for (like HashiCorp Vault / Doppler template interpolation): `kepr://NAME` the stored value,
 // `kepr://NAME/field[i][sub]`, `/custom_field/LABEL` and `/file/FILE`
 // parts of a record (T5.05, cli_recordsx/notation.rs). Output goes to
 // stdout or to a new 0600 file, which must be on a memory-backed file
