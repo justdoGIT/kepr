@@ -93,7 +93,7 @@ jobs:
           cargo test --workspace --all-targets --locked
           cargo test --manifest-path crates/kepr-pam/Cargo.toml --locked
       - name: Install pinned cargo-audit
-        run: cargo install cargo-audit --locked --version 0.21.2
+        run: cargo install cargo-audit --locked --version 0.22.2
       - name: Audit release lockfiles against current advisories
         run: |
           cargo audit --file Cargo.lock
