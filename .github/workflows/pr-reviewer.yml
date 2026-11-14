@@ -117,17 +117,27 @@ jobs:
             local path="$2"
             local line="$3"
             local sha="$4"
+            if ! [[ "$line" =~ ^[0-9]+$ ]]; then
+              echo "WARNING: line '$line' for $path is not an integer; skipping inline comment" >&2
+              return 0
+            fi
             if command -v gh >/dev/null 2>&1; then
               gh api "repos/${REPO}/pulls/${PR}/comments" \
-                -f body="$body" -f path="$path" -f commit_id="$sha" -f line="$line" -f side="RIGHT"
-              return
+                -f body="$body" -f path="$path" -f commit_id="$sha" -F line="$line" -f side="RIGHT" 2>&1 || {
+                echo "WARNING: gh api post_inline failed for $path:$line" >&2
+                return 0
+              }
+              return 0
             fi
             curl -fsS -X POST \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${REPO}/pulls/${PR}/comments" \
               -d "$(jq -n --arg b "$body" --arg p "$path" --arg c "$sha" --argjson l "$line" \
-                '{body: $b, path: $p, commit_id: $c, line: $l, side: "RIGHT"}')"
+                '{body: $b, path: $p, commit_id: $c, line: $l, side: "RIGHT"}')" 2>&1 || {
+              echo "WARNING: curl post_inline failed for $path:$line" >&2
+              return 0
+            }
           }
 
           # Active free-tier OpenRouter candidates
@@ -298,6 +308,7 @@ jobs:
 
           # ── Post review comments ──────────────────────────────────────
           echo "=== Posting review comments ==="
+          sed -i 's/\(FINDING|\)/\n\1/g' "$REVIEW_FILE"
           if ! grep -q '^FINDING|' "$REVIEW_FILE"; then
             post_comment "## Pi Agent Review (openrouter / $USED_MODEL)
 
@@ -315,7 +326,7 @@ jobs:
               *)   BADGE="![P2](https://img.shields.io/badge/P2-warning-yellow?style=flat-square)" ;;
             esac
 
-            post_inline "$BADGE $desc" "$path" "$line" "$HEAD_SHA"
+            post_inline "$BADGE $desc" "$path" "$line" "$HEAD_SHA" || true
 
             COMMENT_COUNT=$((COMMENT_COUNT + 1))
           done < <(grep '^FINDING|' "$REVIEW_FILE")
