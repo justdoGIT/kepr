@@ -13,11 +13,11 @@ only for their bound destinations, without giving the agent the stored values.
 
 ```mermaid
 flowchart LR
-  Operator[Operator terminal] --> Daemon[Kepr daemon]
-  Daemon -->|readable app credential via memfd| App[Application]
-  Agent[Protected agent with placeholder] --> Gate[Local session gate]
-  Gate -->|private authenticated channel| Daemon
-  Gate -->|bound-host authenticated request| Provider[Model provider]
+  Operator["Operator terminal"] --> Daemon["Kepr daemon"]
+  Daemon -- "readable app credential via memfd" --> App["Application"]
+  Agent["Protected agent with placeholder"] --> Gate["Local session gate"]
+  Gate -- "private authenticated channel" --> Daemon
+  Gate -- "bound-host authenticated request" --> Provider["Model provider"]
 ```
 
 The default Linux user socket is `/run/user/<uid>/kepr/kepr.sock`; the optional

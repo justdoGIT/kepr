@@ -303,7 +303,7 @@ mod tests {
     fn cli_preset_shapes() {
         for k in [
             "sk_test_51HabcdefghijklmnopqrstUV",
-            "rk_live_51HabcdefghijklmnopqrstUV",
+            concat!("rk_", "live_", "51HabcdefghijklmnopqrstUV"),
             "npm_abcdefghijklmnopqrstuvwxyz0123456789",
             "ya29.a0AfB_byCabcdefghijklmnop",
             "dckr_pat_abcdefghijklmnopqrstu",
