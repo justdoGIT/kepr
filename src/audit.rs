@@ -97,8 +97,11 @@ pub fn log(event: &AuditEvent) {
         }
     }
 
-    // Try systemd journal first (structured logging)
-    if log_to_journal(event, &name_str, &result_str) {
+    // Try systemd journal first (structured logging) unless forced to stderr
+    // by KEPR_AUDIT_STDERR / KEPR_LOG_STDERR (e.g. during integration tests).
+    let force_stderr = std::env::var_os("KEPR_AUDIT_STDERR").is_some()
+        || std::env::var_os("KEPR_LOG_STDERR").is_some();
+    if !force_stderr && log_to_journal(event, &name_str, &result_str) {
         return;
     }
 
