@@ -33,6 +33,7 @@ path = "src/git_helper.rs"
 
 [workspace]
 members = ["crates/kepr-core", "crates/kepr-eso-provider", "crates/kepr-gate", "crates/kepr-relay"]
+default-members = [".", "crates/kepr-core"]
 
 [dependencies]
 kepr-core = { path = "crates/kepr-core", version = "0.4.0" }

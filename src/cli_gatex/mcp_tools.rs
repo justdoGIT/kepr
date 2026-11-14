@@ -18,7 +18,6 @@
 use std::net::TcpStream;
 
 use kepr_core::authz::{self, Grant, GrantRequest};
-use kepr_core::gate_protocol::{GateRoute, TargetKind};
 use kepr_core::protocol::{CredInfo, Request, Response};
 use serde_json::{json, Map, Value};
 
@@ -266,33 +265,7 @@ pub fn sealed() -> Result<Vec<CredInfo>, String> {
     }
 }
 
-/// A route per provider (its first sealed key) and per sealed database login.
-pub fn session_routes(sealed: &[CredInfo]) -> Vec<GateRoute> {
-    let mut routes: Vec<GateRoute> = Vec::new();
-    for c in sealed.iter().filter(|c| c.record_type.is_none()) {
-        for h in c.bound_hosts.iter().flatten() {
-            let host = h.split(':').next().unwrap_or_default();
-            if let Some(p) = kepr_core::providers::by_host(host) {
-                if !routes.iter().any(|r| r.provider == p.name) {
-                    routes.push(GateRoute {
-                        provider: p.name.into(),
-                        cred: c.name.clone(),
-                        slot: routes.len() as u16,
-                        target: None,
-                    });
-                }
-            }
-        }
-    }
-    // db_query speaks PostgreSQL only.
-    let dbs = crate::cli_agent_db::routes(&routes, sealed);
-    routes.extend(dbs.into_iter().filter(|r| {
-        r.target
-            .as_ref()
-            .is_some_and(|t| t.kind == TargetKind::Postgres)
-    }));
-    routes
-}
+pub use super::mcp_routes::session_routes;
 
 pub const GATE_GONE: &str = "MCP gate unavailable; operator must start a new session";
 
@@ -736,5 +709,43 @@ mod tests {
         let r = session_routes(&[key, db("APP_DB", "postgres"), db("CACHE", "redis")]);
         let names: Vec<(&str, u16)> = r.iter().map(|r| (r.provider.as_str(), r.slot)).collect();
         assert_eq!(names, [("anthropic", 0), ("db:APP_DB", 1)]);
+    }
+
+    #[test]
+    fn session_routes_include_explicit_https_accounts_only_on_port_443() {
+        let key = |name: &str, host: &str, sealed: bool| CredInfo {
+            name: name.into(),
+            sealed: Some(sealed),
+            bound_hosts: Some(vec![host.into()]),
+            ..Default::default()
+        };
+        let routes = session_routes(&[
+            key("FORGEJO_API_TOKEN", "forgejo.kepr.dev:443", true),
+            key("FORGEJO_OTHER_TOKEN", "forgejo.kepr.dev:443", true),
+            key("INSECURE_TOKEN", "forgejo.kepr.dev:3000", true),
+            key("UNSEALED_TOKEN", "other.example.com:443", false),
+            key("GIT_TOKEN", "github.com:443", true),
+        ]);
+        let accounts: Vec<_> = routes
+            .iter()
+            .map(|r| (r.provider.as_str(), r.cred.as_str(), r.slot))
+            .collect();
+        assert_eq!(
+            accounts,
+            [
+                (
+                    "https+forgejo.kepr.dev+FORGEJO_API_TOKEN",
+                    "FORGEJO_API_TOKEN",
+                    0
+                ),
+                (
+                    "https+forgejo.kepr.dev+FORGEJO_OTHER_TOKEN",
+                    "FORGEJO_OTHER_TOKEN",
+                    1
+                ),
+                ("git", "GIT_TOKEN", 2),
+            ]
+        );
+        assert!(kepr_core::gate_protocol::validate_routes(&routes).is_ok());
     }
 }

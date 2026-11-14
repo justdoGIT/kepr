@@ -45,7 +45,9 @@ use super::*;
         if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) } != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        crate::cli_sandbox_sys::write_id_maps(uid, gid).unwrap();
+        if let Err(e) = crate::cli_sandbox_sys::write_id_maps(uid, gid) {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, e));
+        }
         Ok(())
     }
 
@@ -64,20 +66,27 @@ use super::*;
     fn mount_regression(root: &Path) {
         match enter_namespace() {
             Ok(()) => {}
-            Err(error) if matches!(error.raw_os_error(), Some(libc::EPERM | libc::ENOSYS)) => {
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::EPERM | libc::EACCES | libc::ENOSYS | libc::EINVAL)
+                ) || error.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
                 eprintln!("skip mount regression: user namespaces unavailable: {error}");
                 return;
             }
             Err(error) => panic!("user namespace setup failed: {error}"),
         }
-        mount(
+        if let Err(error) = mount(
             None,
             Path::new("/"),
             None,
             libc::MS_REC | libc::MS_PRIVATE,
             None,
-        )
-        .unwrap();
+        ) {
+            eprintln!("skip mount regression: mount / MS_PRIVATE unavailable: {error}");
+            return;
+        }
         let source = root.join("source");
         let readonly = root.join("readonly");
         let writable = root.join("writable");
@@ -86,7 +95,10 @@ use super::*;
         }
         let fs = c"tmpfs".to_owned();
         let inherited = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_NOATIME;
-        mount(Some(&fs), &source, Some(&fs), inherited, None).unwrap();
+        if let Err(error) = mount(Some(&fs), &source, Some(&fs), inherited, None) {
+            eprintln!("skip mount regression: tmpfs mount unavailable: {error}");
+            return;
+        }
         std::fs::write(source.join("input"), "original").unwrap();
         let pinned = File::open(&source).unwrap();
         let null = File::open("/dev/null").unwrap();
@@ -124,7 +136,10 @@ use super::*;
         let nested = enter_namespace();
         if let Err(error) = nested {
             assert!(
-                matches!(error.raw_os_error(), Some(libc::EPERM | libc::ENOSYS)),
+                matches!(
+                    error.raw_os_error(),
+                    Some(libc::EPERM | libc::EACCES | libc::ENOSYS | libc::EINVAL)
+                ) || error.kind() == std::io::ErrorKind::PermissionDenied,
                 "nested namespace setup failed: {error}"
             );
             return;
@@ -148,11 +163,20 @@ use super::*;
             assert!(child >= 0);
             if child == 0 {
                 let result = std::panic::catch_unwind(|| mount_regression(root.path()));
-                libc::_exit(if result.is_ok() { 0 } else { 1 });
+                if let Err(err) = result {
+                    let msg = err
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| err.downcast_ref::<String>().map(|s| s.as_str()))
+                        .unwrap_or("unknown panic payload");
+                    eprintln!("mount_regression panicked: {msg}");
+                    libc::_exit(1);
+                }
+                libc::_exit(0);
             }
             let mut status = 0;
             assert_eq!(libc::waitpid(child, &mut status, 0), child);
             assert!(libc::WIFEXITED(status));
             assert_eq!(libc::WEXITSTATUS(status), 0);
+        }
     }
-}

@@ -49,6 +49,7 @@ pub fn validate_api(
     if !kepr_core::providers::PROVIDERS
         .iter()
         .any(|p| p.name == provider)
+        && kepr_core::http_route::parse(provider).is_none()
     {
         return Err("unknown API provider".into());
     }

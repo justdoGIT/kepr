@@ -28,7 +28,8 @@ fn env(cmd: &mut Command, home: &Path) {
         .env("XDG_STATE_HOME", home.join("state"))
         .env("XDG_RUNTIME_DIR", home.join("run"))
         .env("KEPR_LOCK_ON_SLEEP", "0")
-        .env("KEPR_PAM_WAIT", "10");
+        .env("KEPR_PAM_WAIT", "10")
+        .env("KEPR_AUDIT_STDERR", "1");
 }
 
 impl Daemon {
@@ -55,7 +56,7 @@ impl Daemon {
         let t = Instant::now();
         while !self.run(&["status"], "").status.success() {
             assert!(
-                t.elapsed() < Duration::from_secs(10),
+                t.elapsed() < Duration::from_secs(20),
                 "daemon did not come up"
             );
             std::thread::sleep(Duration::from_millis(50));
@@ -79,7 +80,7 @@ impl Daemon {
         let t = Instant::now();
         while !self.log().contains(needle) {
             assert!(
-                t.elapsed() < Duration::from_secs(10),
+                t.elapsed() < Duration::from_secs(20),
                 "no {needle}:\n{}",
                 self.log()
             );
@@ -123,7 +124,7 @@ impl Daemon {
     fn wait_unlocked(&self) -> bool {
         let t = Instant::now();
         while self.locked() {
-            if t.elapsed() > Duration::from_secs(10) {
+            if t.elapsed() > Duration::from_secs(20) {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(100));

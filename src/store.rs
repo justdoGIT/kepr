@@ -42,7 +42,7 @@ pub fn to_cred_name(uid: u32, env_var: &str) -> String {
 /// kepr-<uid>-env-var-name → ENV_VAR_NAME
 pub fn from_cred_name(cred_name: &str) -> Option<(u32, String)> {
     // Strip "kepr-" prefix and parse the uid.
-    let rest = cred_name.strip_prefix(&format!("{}-", CRED_PREFIX))?;
+    let rest = cred_name.strip_prefix(&format!("{CRED_PREFIX}-"))?;
     let dash = rest.find('-')?;
     let uid: u32 = rest[..dash].parse().ok()?;
     let env_var = rest[dash + 1..].to_uppercase().replace('-', "_");
@@ -62,8 +62,7 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     for c in name.chars() {
         if !c.is_ascii_alphanumeric() && c != '_' {
             return Err(format!(
-                "invalid character '{}' — only A-Z, 0-9, underscore allowed",
-                c
+                "invalid character '{c}' — only A-Z, 0-9, underscore allowed"
             ));
         }
     }
@@ -92,7 +91,7 @@ pub fn list_for_uid(uid: u32) -> Vec<(String, PathBuf)> {
         return image.list(uid);
     }
     let store = store_dir();
-    let prefix = format!("{}-{}-", CRED_PREFIX, uid);
+    let prefix = format!("{CRED_PREFIX}-{uid}-");
     let mut results = vec![];
 
     if let Ok(entries) = fs::read_dir(&store) {
@@ -137,7 +136,7 @@ fn format_timestamp(secs: i64) -> String {
     let h = (secs / 3600) % 24;
     let days = secs / 86400;
     let (y, mo, d) = days_to_ymd(days);
-    format!("{:04}-{:02}-{:02} {:02}:{:02}", y, mo, d, h, m)
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}")
 }
 
 fn days_to_ymd(days: u64) -> (u64, u64, u64) {

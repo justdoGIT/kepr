@@ -357,7 +357,7 @@ mod tests {
         let a = format!("sha256:{}", "a".repeat(64));
         assert_eq!(normalize(&[a.clone(), a.clone()]).unwrap(), vec![a]);
         assert!(normalize(&["sha256:xyz".into()]).is_err());
-        let many: Vec<String> = (0..17).map(|i| format!("sha256:{:064x}", i)).collect();
+        let many: Vec<String> = (0..17).map(|i| format!("sha256:{i:064x}")).collect();
         assert!(normalize(&many).is_err());
     }
 
