@@ -97,11 +97,10 @@ Every early-exit path (unknown verb, missing flag value) reads the same
 
 ## Length-prefixed framing
 
-```
-┌──────────────┬────────────────────────────┐
-│ u32 BE len   │ JSON payload (≤ 64 KiB)    │
-└──────────────┴────────────────────────────┘
-```
+| Field | Type / Size | Description |
+| :--- | :--- | :--- |
+| **Length (`u32 BE len`)** | `u32` Big-Endian (4 bytes) | Length of the JSON payload in bytes (≤ 64 KiB) |
+| **Payload** | `len` bytes | Framed JSON request or response message |
 
 `read_exact` on the 4-byte header eliminates the silent-truncation
 failure mode of "read once into a big buffer" and bounds memory.

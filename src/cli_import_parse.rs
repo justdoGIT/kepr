@@ -4,7 +4,7 @@
 //
 // Formats: password-manager CSV (1Password, Bitwarden, KeePassXC,
 // LastPass, Chrome/Edge/Firefox — columns found by header name),
-// Bitwarden JSON, Vault JSON, flat JSON objects (Doppler) and
+// Bitwarden JSON, vault records JSON, flat JSON objects (Doppler) and
 // key/value arrays (Infisical), and `.env` files.
 
 use kepr_core::generate::ZeroString;
@@ -130,7 +130,7 @@ fn from_bitwarden(v: &Value) -> Vec<Entry> {
     out
 }
 
-fn from_vault(v: &Value) -> Vec<Entry> {
+fn from_vault_records(v: &Value) -> Vec<Entry> {
     let mut out = Vec::new();
     for r in v["records"].as_array().into_iter().flatten() {
         let title = s(r, "title");
@@ -170,7 +170,7 @@ pub fn from_json(text: &str) -> Result<Vec<Entry>, String> {
     Ok(if v.get("items").is_some() {
         from_bitwarden(&v)
     } else if v.get("records").is_some() {
-        from_vault(&v)
+        from_vault_records(&v)
     } else {
         from_flat(&v)
     })
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn bitwarden_vault_and_flat_json() {
+    fn bitwarden_records_and_flat_json() {
         let bw = r#"{"encrypted":false,"items":[{"type":1,"name":"AWS","login":{"username":"u","password":"p"},"fields":[{"name":"Access Key","value":"AK"}]}]}"#;
         assert_eq!(
             names(&from_json(bw).unwrap()),

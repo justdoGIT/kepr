@@ -40,13 +40,22 @@ description: "Per-user secret vault for Linux and macOS. Eliminates .env leaks v
 
 ## System Topology
 
-```
-┌──────────────────────────┐         /run/kepr/kepr.sock         ┌──────────────────────────┐
-│  kepr  (user process)   │ ◀──── framed JSON IPC / peer creds ─▶ │ kepr-daemon  (user/root) │
-│  unprivileged CLI / SDK  │                                           │ Argon2id + AES-256-GCM   │
-└──────────────────────────┘                                           │ memory-sealed RAM FDs    │
-                                                                       └──────────────────────────┘
-                                                                                 │
-                                                                                 ▼
-                                                                ~/.local/share/kepr/credentials/
+```mermaid
+flowchart LR
+    subgraph Client["User Process"]
+        CLI["kepr<br/>(unprivileged CLI / SDK)"]
+    end
+
+    subgraph IPC["IPC Socket"]
+        SOCK["/run/kepr/kepr.sock<br/>framed JSON IPC / peer creds"]
+    end
+
+    subgraph Service["Daemon Service"]
+        DAEMON["kepr-daemon (user/root)<br/>Argon2id + AES-256-GCM<br/>memory-sealed RAM FDs"]
+        STORAGE[("~/.local/share/kepr/credentials/")]
+    end
+
+    CLI <--> SOCK
+    SOCK <--> DAEMON
+    DAEMON --> STORAGE
 ```

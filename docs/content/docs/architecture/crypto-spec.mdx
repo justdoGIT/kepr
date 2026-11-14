@@ -26,12 +26,15 @@ When `kepr lock` is executed, Kepr wraps the random 32-byte AES credential maste
 Current format, `kepr_pw3` (T13.20). The cost is stored in the header, and
 the header is the AES-GCM associated data, so it cannot be lowered unseen:
 
-```
-┌──────────────┬──────────┬──────────┬───────┬────────┬────────┬─────────────────────┐
-│ "kepr_pw3\n"  │ m_kib    │ t        │ p     │ Salt   │ Nonce  │ AES-256-GCM         │
-│ (9 bytes)    │ u32 BE   │ u32 BE   │ u8    │ 16 B   │ 12 B   │ Key + 16-byte Tag   │
-└──────────────┴──────────┴──────────┴───────┴────────┴────────┴─────────────────────┘
-```
+| Field | Type / Size | Description |
+| :--- | :--- | :--- |
+| **Magic Header** | 9 bytes ASCII | Literal `"kepr_pw3\n"` format identifier |
+| **Memory (`m_kib`)** | `u32` Big-Endian (4 bytes) | Argon2id memory cost in KiB |
+| **Time (`t`)** | `u32` Big-Endian (4 bytes) | Argon2id iterations (pass count) |
+| **Parallelism (`p`)** | `u8` (1 byte) | Argon2id lane count |
+| **Salt** | 16 bytes | CSPRNG random salt |
+| **Nonce** | 12 bytes | AES-256-GCM initialization vector |
+| **Encrypted Master Key** | 32 bytes + 16 bytes | AES-256-GCM ciphertext + 16-byte authentication tag |
 
 A stored cost outside 8 MiB to 1 GiB, 1 to 10 passes and 1 to 8 lanes is
 refused before any hashing, so a tampered file cannot make the daemon
