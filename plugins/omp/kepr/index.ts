@@ -9,6 +9,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerProviders } from "./providers.ts";
+import {
+	evaluatePrivacyGuard,
+	isProviderAllowed,
+	isRestrictedRepo,
+	loadPrivacyPolicy,
+} from "./privacy-guard.ts";
 import { createHash } from "node:crypto";
 
 const KEPR = process.env.KEPR_BIN || "kepr";
@@ -95,6 +101,8 @@ function loadProviderConfig(): unknown {
 
 function registerAllProviders(pi: ExtensionAPI): { routed: string[]; unavailable: string[] } {
 	if (!GATE) return { routed: [], unavailable: [] };
+	const policy = loadPrivacyPolicy(process.env);
+	const restricted = isRestrictedRepo(process.cwd(), policy);
 	if (process.env.KEPR_OMP_ROUTES) {
 		let metadata: unknown;
 		try {
@@ -102,15 +110,25 @@ function registerAllProviders(pi: ExtensionAPI): { routed: string[]; unavailable
 		} catch {
 			throw new Error("kepr: invalid OMP route metadata; restart with kepr agent run omp");
 		}
+		if (restricted && Array.isArray(metadata)) {
+			metadata = metadata.filter(
+				r => isRecord(r) && typeof r.host === "string" && isProviderAllowed(`https+${r.host}+${r.credential ?? ""}`, policy),
+			);
+		}
 		return registerProviders(pi, GATE, metadata, loadProviderConfig(), process.env);
 	}
 	const routed: string[] = [];
+	const unavailable: string[] = [];
 	for (const [provider, [path, variable]] of Object.entries(ROUTES)) {
 		if (!process.env[variable]) continue;
+		if (restricted && !isProviderAllowed(provider, policy)) {
+			unavailable.push(`${provider} (blocked in restricted repository by privacy guard)`);
+			continue;
+		}
 		pi.registerProvider(provider, { baseUrl: GATE + path, apiKey: variable });
 		routed.push(provider);
 	}
-	return { routed, unavailable: [] };
+	return { routed, unavailable };
 }
 
 // A bounded queue prevents a long resumed history from starting one child per
@@ -165,7 +183,13 @@ export default function kepr(pi: ExtensionAPI, runHook: typeof hook = hook) {
 		}
 	});
 
-	pi.on("before_agent_start", async event => {
+	pi.on("before_agent_start", async (event, ctx) => {
+		const guard = evaluatePrivacyGuard({
+			cwd: (ctx as { cwd?: string } | undefined)?.cwd,
+			provider: (ctx as { model?: { provider?: string } } | undefined)?.model?.provider,
+			baseUrl: (ctx as { model?: { baseUrl?: string } } | undefined)?.model?.baseUrl,
+		});
+		if (!guard.allowed && guard.reason) throw new Error(guard.reason);
 		const r = await hook("session-start", {});
 		try {
 			const text = JSON.parse(r.message).hookSpecificOutput?.additionalContext;
@@ -173,12 +197,29 @@ export default function kepr(pi: ExtensionAPI, runHook: typeof hook = hook) {
 		} catch {}
 	});
 
-	pi.on("tool_call", async event => {
+	pi.on("tool_call", async (event, ctx) => {
+		const guard = evaluatePrivacyGuard({
+			cwd: (ctx as { cwd?: string } | undefined)?.cwd,
+			provider: (ctx as { model?: { provider?: string } } | undefined)?.model?.provider,
+			baseUrl: (ctx as { model?: { baseUrl?: string } } | undefined)?.model?.baseUrl,
+		});
+		if (!guard.allowed) return { block: true, reason: guard.reason };
 		const r = await hook("pre-tool", { tool_name: event.toolName, tool_input: event.input });
         if (r.code !== 0) return { block: true, reason: r.message };
 	});
 
 	pi.on("input", async (event, ctx) => {
+		if (!(event.text ?? "").trim().startsWith("/")) {
+			const guard = evaluatePrivacyGuard({
+				cwd: (ctx as { cwd?: string } | undefined)?.cwd,
+				provider: (ctx as { model?: { provider?: string } } | undefined)?.model?.provider,
+				baseUrl: (ctx as { model?: { baseUrl?: string } } | undefined)?.model?.baseUrl,
+			});
+			if (!guard.allowed && guard.reason) {
+				if (ctx.hasUI) ctx.ui.notify(guard.reason, "error");
+				return { handled: true };
+			}
+		}
 		const r = await hook("prompt", { prompt: event.text });
         if (r.code === 0) return;
 		if (ctx.hasUI) ctx.ui.notify(r.message, "error");
