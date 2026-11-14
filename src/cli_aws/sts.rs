@@ -264,7 +264,7 @@ mod tests {
       <SessionToken>FQoGZXIvYXdzE&amp;tok</SessionToken>
       <SecretAccessKey>wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY</SecretAccessKey>
       <Expiration>2011-07-11T19:55:29.611Z</Expiration>
-      <AccessKeyId>ASIAIOSFODNN7EXAMPLE</AccessKeyId>
+      <AccessKeyId>ASIA_MOCK_SESSION_KEY_01</AccessKeyId>
     </Credentials>
   </GetSessionTokenResult>
   <ResponseMetadata><RequestId>58c5dbae</RequestId></ResponseMetadata>
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn parses_credentials_and_identity() {
         let c = parse_credentials(SESSION_XML).unwrap();
-        assert_eq!(c.key.access_key_id, "ASIAIOSFODNN7EXAMPLE");
+        assert_eq!(c.key.access_key_id, "ASIA_MOCK_SESSION_KEY_01");
         assert_eq!(
             c.key.secret_access_key.as_str(),
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY"
@@ -328,7 +328,7 @@ mod tests {
     fn get_session_token_against_a_loopback_fake() {
         let f = fake::serve(vec![(200, SESSION_XML.into())]);
         let c = get_session_token(&loopback(&f.url), &key(None), 900, NOW).unwrap();
-        assert_eq!(c.key.access_key_id, "ASIAIOSFODNN7EXAMPLE");
+        assert_eq!(c.key.access_key_id, "ASIA_MOCK_SESSION_KEY_01");
         let req = f.requests.recv().unwrap();
         assert!(req.starts_with("POST / "));
         assert!(req.ends_with("Action=GetSessionToken&Version=2011-06-15&DurationSeconds=900"));
