@@ -100,15 +100,14 @@ printf 'changed\\n' > main.rs";
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if stderr.contains("isolation unavailable") {
-        eprintln!("skip private launch: host refuses namespace isolation: {stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if stderr.contains("isolation unavailable") || stdout.contains("isolation unavailable") {
+        eprintln!("skip private launch: host refuses namespace isolation: {stderr}{stdout}");
         return;
     }
     assert!(
         out.status.success(),
-        "private launch failed: stderr={} stdout={}",
-        stderr,
-        String::from_utf8_lossy(&out.stdout)
+        "private launch failed: stderr={stderr} stdout={stdout}"
     );
     assert_eq!(
         std::fs::read(workspace.join("main.rs")).unwrap(),
