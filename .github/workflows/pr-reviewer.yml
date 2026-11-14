@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   agent-review:
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_LIGHT || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     # Not for drafts (reviewed when marked ready) and not for Dependabot, which
     # cannot read the OpenRouter secret, so its run could only fail.
@@ -30,6 +30,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # ── Step 1: Measure diff size ──────────────────────────────────────
       - name: Measure diff size

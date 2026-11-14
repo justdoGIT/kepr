@@ -2,6 +2,46 @@
 use super::*;
 
 #[test]
+fn selora_binding_is_host_limited() {
+    let p = lookup("selora").expect("Selora must be a supported provider");
+    assert_eq!(p.binding().host, "api.selora.lol");
+    assert_eq!(p.binding().port, 443);
+    assert_eq!(p.binding().inject, Inject::Bearer);
+    assert_eq!(
+        detect(Some("SELORA_API_KEY"), "synthetic").map(|p| p.name),
+        Some("selora")
+    );
+}
+
+#[test]
+fn reviewed_openai_compatible_provider_bindings_are_host_limited() {
+    for (name, host, variable) in [
+        ("fireworks", "api.fireworks.ai", "FIREWORKS_API_KEY"),
+        ("moonshot", "api.moonshot.cn", "MOONSHOT_API_KEY"),
+        ("venice", "api.venice.ai", "VENICE_API_KEY"),
+    ] {
+        let provider = lookup(name).expect("provider must be registered");
+        assert_eq!(provider.binding().host, host);
+        assert_eq!(provider.binding().port, 443);
+        assert_eq!(provider.binding().inject, Inject::Bearer);
+        assert_eq!(
+            detect(Some(variable), "synthetic").map(|p| p.name),
+            Some(name)
+        );
+    }
+}
+
+#[test]
+fn rotation_allowlist_requires_management_api_support() {
+    for provider in ["openai", "openrouter", "venice"] {
+        assert!(supports_rotation(provider));
+    }
+    for provider in ["fireworks", "moonshot", "anthropic", "selora"] {
+        assert!(!supports_rotation(provider));
+    }
+}
+
+#[test]
 fn agentrouter_binding_is_host_limited() {
     let provider = lookup("agentrouter").expect("AgentRouter must be a supported provider");
     let binding = provider.binding();

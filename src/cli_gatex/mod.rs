@@ -7,6 +7,8 @@ pub mod dbuser;
 pub mod grant;
 pub mod logs;
 pub mod mcp_pg;
+pub mod mcp_routes;
+pub mod mcp_sql;
 pub mod mcp_ssh;
 pub mod mcp_tools;
 pub mod mysql_login;
@@ -26,7 +28,9 @@ pub const HELP: &str = concat!(
     "  agent replay [SESSION]          list recorded sessions, or print one\n",
     "  agent replay SESSION --typescript FILE --timing FILE  its PostgreSQL traffic for scriptreplay\n",
     "  agent logs [SESSION] [-n N] [--follow]  the gate's request journal (method, host, path, status)\n",
-    "  mcp [--read-only] [--ssh HOST]... [--context TARGET=NOTE]...  + db_query / ssh_run tools via the gate\n",
+    "  mcp --credential NAME [--ssh HOST --ssh-key NAME]...  explicit API/database/SSH grants\n",
+    "      [--tenant NAME] [--workspace PATH] [--connector-account NAME]\n",
+    "      [--allow-writes] [--allow-admin] [--max-requests N] [--per-minute N]  readonly default\n",
 );
 
 pub fn dispatch(verb: &str, _args: &[String]) -> Response {
@@ -46,7 +50,11 @@ pub fn agent_verb(raw: &[String]) -> Option<Response> {
 /// which is near its size limit).
 #[derive(Debug, Default, PartialEq)]
 pub struct SessionOpts {
-    /// `--tunnel NAME=host:port` (T7.03), as given.
+    /// Operator-owned snapshot; never a daemon credential route.
+    pub workspace_session: Option<String>,
+    /// Source directory to snapshot before a protected launch.
+    pub workspace_source: Option<String>,
+    /// `--tunnel NAME=HOST:PORT` (T7.03), as given.
     pub tunnels: Vec<String>,
     /// `--grant NAME=ROLE:ADMIN` (T7.18), as given.
     pub grants: Vec<String>,

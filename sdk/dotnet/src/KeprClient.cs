@@ -16,6 +16,7 @@ public sealed class KeprException : Exception
 public sealed record SetOptions(string? Generate = null, long? TtlSecs = null, bool RequiresConsent = false, bool RequiresFido2 = false)
 {
     public static readonly SetOptions None = new();
+    public SetOptions(long? ttlSecs, bool requiresConsent, bool requiresFido2) : this(null, ttlSecs, requiresConsent, requiresFido2) { }
 }
 
 /// <summary>
@@ -194,13 +195,13 @@ public sealed class KeprClient
         var req = Cmd("set", name);
         if (value is not null)
         {
-            if (o.Generate is not null) throw new KeprException("pass a value or generate, not both");
+            if (!string.IsNullOrEmpty(o.Generate)) throw new KeprException("pass a value or generate, not both");
             if (value.Length == 0) throw new KeprException("value must be a non-empty string");
             req["value"] = value;
         }
         else
         {
-            var kind = o.Generate ?? "hex";
+            var kind = string.IsNullOrEmpty(o.Generate) ? "hex" : o.Generate;
             if (!GenerateKinds.Contains(kind))
                 throw new KeprException("generate must be one of " + string.Join(", ", GenerateKinds.Order()));
             req["generate"] = kind;

@@ -5,14 +5,22 @@ description: "Deferred hardware-backed key protection, desktop keyrings, and dep
 
 # Security Extension Roadmap
 
-This page tracks security work intentionally left optional after the
-2026 dependency-free user-mode upgrade. The current implementation uses
-AES-256-GCM for credential files and Argon2id + AES-256-GCM to protect the
-master key when `kepr lock` is enabled.
+This page separates implemented master-key sealers from future alternatives and
+qualification work. The current daemon uses AES-256-GCM for credential files
+and Argon2id + AES-256-GCM for a passphrase-protected master key. Source presence
+is not proof of native-platform or hardware qualification.
 
-These items must remain opt-in. The default kepr binary must continue to work
-without systemd, a D-Bus session, TPM software, FIDO2 transport libraries, or a
-desktop keyring daemon.
+Optional integrations must not silently become dependencies of the local
+user-mode baseline. Explicitly selected TPM, token, key-service or desktop
+backends must fail closed when unavailable; they must not silently become an
+unprotected key file. The ordinary local user-mode sealer remains a deliberate
+owner-only key file until passphrase protection is configured.
+
+`daemon_seal/startup.rs` refuses new-key generation when the master-key file is
+missing but the credential directory is non-empty and no recovery key is
+enrolled. Previously enrolled recovery permits locked startup and explicit
+recovery instead. A restart cannot repair wrong-key/damaged ciphertext; do not
+delete keys or reset the store to bypass that boundary.
 
 ## 1. Hardware-backed master-key wrapping
 
@@ -24,17 +32,24 @@ machine's hardware or an enrolled authenticator.
 
 ### TPM2 backend
 
-Add a feature-gated `Tpm2Sealer` implementation behind a `tpm2` Cargo feature.
-The backend should:
+The daemon already has source implementations in `daemon_seal/tpm*.rs` for
+TPM2 PIN/counter sealing through tpm2-tools, plus a systemd-creds host/TPM
+selection path. Native TPM availability, PCR changes, recovery and hardware
+qualification remain deployment-specific. The reference documents the current
+`KEPR_MASTER_KEY_SEAL` options; this roadmap does not replace them.
+
+A direct Rust TSS backend behind an optional `tpm2` feature is a future
+alternative, not the present implementation. It should:
 
 - Generate a TPM-sealed wrapping key or use a TPM-protected sealing object.
 - Bind unsealing to an explicit PCR policy, documented per distribution.
 - Keep the random 256-bit kepr master key as the payload; never derive it
   directly from PCR values.
 - Fail closed when the TPM is unavailable, reset, or the PCR policy changes.
-- Provide an explicit recovery/export procedure before enrollment.
-- Keep the default user-mode local-file sealer unchanged when the feature is
-  disabled.
+- Require an enrolled recovery mechanism before changing the boot-bound seal;
+  do not require plaintext master-key export.
+- Keep the explicit default user-mode local-file sealer unchanged when the
+  alternative feature is disabled.
 - Update the systemd unit's `PrivateDevices`, device allow-list, and
   capability policy only for TPM-enabled deployments.
 
@@ -53,9 +68,14 @@ Required tests:
 
 ### FIDO2 wrapping or unlock
 
-The existing FIDO2 feature verifies assertions for credentials marked
-`--requires-fido2`; it does **not** wrap the master key. A future FIDO2 master
-key mode should:
+Two existing mechanisms must be kept distinct: per-credential FIDO2 assertion
+gating and `kepr lock --fido2`, which already combines the passphrase-derived
+key with an authenticator `hmac-secret` result to wrap the master key. The
+latter uses fido2-tools; it is not merely a public-key signature. See
+[passphrase plus security key](/docs/reference/features#passphrase-plus-security-key).
+Native authenticator/hardware qualification is not established here.
+
+A future direct-transport or multi-authenticator master-key mode should:
 
 - Use a standard WebAuthn/CTAP2 resident or discoverable credential flow.
 - Derive only a key-encryption key from a verified assertion response.
@@ -66,9 +86,9 @@ key mode should:
 - Support multiple enrolled authenticators and an explicit recovery policy.
 - Rate-limit failed ceremonies and invalidate challenges after one use.
 
-Direct authenticator transport should use a maintained library. The current
-`KEPR_FIDO2_HELPER` process boundary is suitable for per-credential gating,
-not for silently wrapping the daemon's long-lived master key.
+Direct authenticator transport would require a maintained library and new
+qualification. Do not confuse the per-credential `KEPR_FIDO2_HELPER` assertion
+boundary with the existing `lock --fido2` master-key wrapping flow.
 
 ## 2. Desktop keyring backends
 
@@ -76,6 +96,21 @@ not for silently wrapping the daemon's long-lived master key.
 
 Use an already-authenticated desktop session to protect the kepr master key,
 without making desktop services a requirement for servers or headless hosts.
+
+The core `KeyringBackend` API currently provides Linux's raw, permissions-
+protected local envelope. Its macOS and Windows backends explicitly report
+unavailable and refuse sealing/unsealing, including legacy raw envelopes;
+unsupported platforms do not inherit Linux behavior. These placeholders must
+not be described as native Keychain or DPAPI protection.
+
+The daemon has a *separate* opt-in macOS Keychain sealer in
+`src/daemon_seal/keychain.rs`; it is not the core trait implementation and has
+no native CI qualification here. IPC identity, sandbox, networking, signing,
+installation and rollback remain separate macOS/Windows work.
+
+Kepr's existing `secret-service run` is a Secret Service **server** backed by
+its vault. That does not implement the external desktop keyring **sealer**
+proposals below.
 
 ### Secret Service / GNOME Keyring
 
@@ -100,7 +135,7 @@ Add a feature-gated `KWalletSealer` with equivalent semantics:
 
 ### Backend selection
 
-Define an explicit configuration order, for example:
+Future proposal only; these `KEPR_MASTER_KEY_BACKEND` settings are not implemented:
 
 ```text
 KEPR_MASTER_KEY_BACKEND=local       # dependency-free default
@@ -114,16 +149,24 @@ Selection must be visible through `kepr status`, recorded without secrets in
 the audit log, and rejected when the requested backend is unavailable.
 There must be no silent downgrade from TPM2, FIDO2, Secret Service, or KWallet
 to local plaintext key storage.
+Current daemon selection uses `KEPR_MASTER_KEY_SEAL`, documented in the
+[feature reference](/docs/reference/features#master-key-protection). Keep any
+future interface explicit and migrate callers rather than implying these
+proposed names already work.
 
 ## 3. Dependency and supply-chain maintenance
 
-- Run `cargo audit` and `cargo deny` in CI and before every release.
+- Retain the implemented `release.yml` exact annotated-tag commit gate and
+  dependency audit/deny jobs; execution and repository protections still need
+  candidate-specific evidence. Current qualification test/lint commands omit
+  `--release`; use release-mode acceptance before claiming release qualification.
 - Review cryptography and D-Bus/TSS dependencies separately from ordinary
   application dependencies.
 - Keep `Cargo.lock` committed and review lockfile changes for transitive crypto
   updates.
-- Generate and publish an SBOM for release binaries.
-- Prefer signed, reproducible release artifacts.
+- Keep the release workflow's SBOM, isolated build and signing stages, and
+  qualify their output, provenance and rollback against the exact candidate.
+- Add reproducibility evidence and native platform artifact/signing qualification.
 - Record the Rust toolchain, target triple, and enabled security features in
   release metadata.
 - Add a scheduled dependency update job that opens reviewable pull requests;
@@ -144,7 +187,7 @@ A backend is ready only when it has:
 6. A documented threat model describing what root and same-user malware can
    still do.
 
-Until those criteria are met, the supported hardened baseline is:
+Until a proposed backend meets those criteria, an explicit baseline is:
 
 ```text
 Argon2id password unlock
@@ -154,3 +197,8 @@ Argon2id password unlock
 + owner-only filesystem permissions
 + daemon rate limiting
 ```
+
+This is a configuration target, not a claim that every install has enabled it
+or passed qualification. Local-only agent routing and device-wide offline
+enforcement remain unavailable; private-cloud masking does not provide anonymity.
+No fresh full-suite, native-platform or hardware pass is claimed by this page.

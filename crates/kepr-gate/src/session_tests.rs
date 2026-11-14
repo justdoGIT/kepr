@@ -5,6 +5,7 @@ use kepr_core::generate::ZeroString;
 
 fn cfg(routes: Vec<GateRoute>) -> SessionConfig {
     SessionConfig {
+        privacy: None,
         session_id: "0123456789abcdef".into(),
         session_key_hex: ZeroString::from_string("00".repeat(32)),
         routes,
@@ -12,6 +13,7 @@ fn cfg(routes: Vec<GateRoute>) -> SessionConfig {
         limits: Default::default(),
         tunnel: false,
         record: false,
+        rotation: None,
     }
 }
 
@@ -173,4 +175,25 @@ fn config_validation() {
     let mut bad = cfg(vec![route("xai", 0)]);
     bad.session_id = "xyz".into();
     assert!(validate_config(&bad).is_err());
+}
+#[test]
+fn privacy_sessions_refuse_uninspected_routes_before_startup() {
+    let mut base = cfg(vec![route("openai", 0)]);
+    base.privacy = Some(kepr_core::privacy::Policy::default());
+    assert!(super::validate_config(&base).is_ok());
+    for provider in [
+        "git",
+        "gcloud",
+        "aws:AWS_KEY",
+        "https://example.invalid:443:bearer",
+    ] {
+        base.routes[0].provider = provider.into();
+        assert!(
+            super::validate_config(&base).is_err(),
+            "uninspected route accepted"
+        );
+    }
+    base.routes[0].provider = "openai".into();
+    base.tunnel = true;
+    assert!(super::validate_config(&base).is_err());
 }

@@ -195,7 +195,7 @@ pub fn cmd_rotate(name: &str, kind: GenKind, hook_path: &Path) -> Response {
 /// sealed key stays sealed to its hosts; consent and FIDO2 stay on). An
 /// explicit `false` here would be refused only after the hook already
 /// pushed the value upstream.
-fn commit_request(name: &str, value: ZeroString) -> Request {
+pub fn commit_request(name: &str, value: ZeroString) -> Request {
     Request::Set {
         name: name.to_string(),
         value: Some(value),

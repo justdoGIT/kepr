@@ -2,13 +2,11 @@
 // `cli_args.rs` (`FLAGS` / `AwsFlags::take`) and routed from
 // `cli_activity.rs` when any is given.
 //
-//   kepr rotate NAME --aws-iam     IAM access-key rotation (T7.05)
-//   kepr rotate NAME --db          sealed database login (kepr agent rotate-db)
-//   kepr rotate NAME --every DUR   scheduled rotation (T7.07), with
-//                                  --hook CMD, --aws-iam or --db; `off` stops
-//   kepr rotate NAME --scheduled   run the scheduled rotator now (T7.07)
-//   kepr rotate --due              run every due schedule (T12.50; the
-//                                  system daemon's kepr-rotate.timer)
+//   kepr rotate NAME --provider P --bootstrap ADMIN_KEY
+//                               provider key replacement with a separate
+//                               management credential
+//   kepr rotate NAME --every DUR --provider P --bootstrap ADMIN_KEY
+//                               scheduled provider rotation
 
 use kepr_core::protocol::Response;
 
@@ -17,6 +15,8 @@ use crate::cli_args::Args;
 pub const FLAGS: &[&str] = &[
     "--aws-iam",
     "--db",
+    "--provider",
+    "--bootstrap",
     "--every",
     "--scheduled",
     "--due",
@@ -31,6 +31,10 @@ pub struct AwsFlags {
     pub aws_iam: bool,
     /// `rotate --db`: a sealed database login (T7.07).
     pub db: bool,
+    /// `rotate --provider [NAME]`: rotate API key through provider API.
+    pub provider: Option<String>,
+    /// Separate provider-management credential used for key creation.
+    pub bootstrap: Option<String>,
     /// `rotate --every DUR|off` (T7.07).
     pub every: Option<String>,
     /// `rotate --scheduled`: what the daemon spawns (T7.07).
@@ -50,6 +54,25 @@ impl AwsFlags {
             "--scheduled" => self.scheduled = true,
             "--due" => self.due = true,
             "--dry-run" => self.dry_run = true,
+            "--provider" | "--bootstrap" => {
+                let flag = raw[i].as_str();
+                if let Some(v) = raw.get(i + 1) {
+                    if !v.starts_with("--") && !FLAGS.contains(&v.as_str()) {
+                        if flag == "--provider" {
+                            self.provider = Some(v.clone());
+                        } else {
+                            self.bootstrap = Some(v.to_uppercase());
+                        }
+                        return Ok(i + 2);
+                    }
+                }
+                if flag == "--provider" {
+                    self.provider = Some("auto".to_string());
+                } else {
+                    return Err("--bootstrap needs a credential name".into());
+                }
+                return Ok(i + 1);
+            }
             "--every" => {
                 let v = raw.get(i + 1).ok_or("--every needs a duration, e.g. 30d")?;
                 self.every = Some(v.clone());
@@ -64,6 +87,8 @@ impl AwsFlags {
     pub fn any(&self) -> bool {
         self.aws_iam
             || self.db
+            || self.provider.is_some()
+            || self.bootstrap.is_some()
             || self.scheduled
             || self.due
             || self.dry_run
@@ -74,7 +99,13 @@ impl AwsFlags {
 /// `--due` runs every due schedule: it takes no NAME and no other
 /// rotate flag (`hook`: whether `--hook` was given).
 fn due_alone(name: Option<&str>, f: &AwsFlags, hook: bool) -> Result<(), &'static str> {
-    let other = hook || f.aws_iam || f.db || f.scheduled || f.every.is_some();
+    let other = hook
+        || f.aws_iam
+        || f.db
+        || f.provider.is_some()
+        || f.bootstrap.is_some()
+        || f.scheduled
+        || f.every.is_some();
     if name.is_some() || other {
         return Err("--due takes no NAME or other flag");
     }
@@ -95,13 +126,17 @@ pub fn cmd_rotate(a: &Args) -> Response {
             || a.hook_path.is_some()
             || f.aws_iam
             || f.db
+            || f.bootstrap.is_some()
             || f.scheduled
             || f.due
             || f.every.is_some();
         if other {
-            return fail("--all takes no NAME or other rotate flag (except --dry-run)");
+            return fail(
+                "--all takes no NAME or other rotate flag (except --dry-run or --provider)",
+            );
         }
-        return super::rotate_sched::shout(super::rotate_all::cmd(f.dry_run));
+        let only_providers = f.provider.is_some();
+        return super::rotate_sched::shout(super::rotate_all::cmd(f.dry_run, only_providers));
     }
     if f.dry_run {
         return fail("--dry-run goes with --all");
@@ -124,14 +159,35 @@ pub fn cmd_rotate(a: &Args) -> Response {
         return super::rotate_sched::shout(super::rotate_sched::schedule(a, name, every));
     }
     if f.scheduled {
-        if f.aws_iam || f.db || a.hook_path.is_some() {
+        if f.aws_iam
+            || f.db
+            || f.provider.is_some()
+            || f.bootstrap.is_some()
+            || a.hook_path.is_some()
+        {
             return fail("--scheduled runs the rotator the schedule names; pass no other");
         }
         let r = super::rotate_sched::run_scheduled(name);
         return super::rotate_sched::shout(r);
     }
-    if a.hook_path.is_some() || (f.aws_iam && f.db) {
-        return fail("pick one rotator: --hook CMD, --aws-iam or --db");
+    let count = (a.hook_path.is_some() as u8)
+        + (f.aws_iam as u8)
+        + (f.db as u8)
+        + (f.provider.is_some() as u8);
+    if count > 1 {
+        return fail("pick one rotator: --hook CMD, --aws-iam, --db or --provider");
+    }
+    if let Some(prov) = &f.provider {
+        let p = if prov == "auto" {
+            None
+        } else {
+            Some(prov.as_str())
+        };
+        let r = super::rotate_provider::cmd(name, p, f.bootstrap.as_deref());
+        return super::rotate_sched::shout(r);
+    }
+    if f.bootstrap.is_some() {
+        return fail("--bootstrap only applies to --provider");
     }
     if f.db {
         let db = crate::cli_agent_db_rotate::cmd_rotate_db(&[name.to_uppercase()]);
@@ -175,10 +231,20 @@ mod tests {
 
     #[test]
     fn takes_only_its_own_flags() {
-        let raw: Vec<String> = ["kepr", "rotate", "K", "--aws-iam", "--x", "--every", "30d"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let raw: Vec<String> = [
+            "kepr",
+            "rotate",
+            "K",
+            "--aws-iam",
+            "--x",
+            "--every",
+            "30d",
+            "--provider",
+            "openai",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let mut f = AwsFlags::default();
         assert!(!f.any());
         assert_eq!(f.take(&raw, 3), Ok(4));
@@ -186,10 +252,35 @@ mod tests {
         assert!(f.take(&raw, 4).is_err());
         assert_eq!(f.take(&raw, 5), Ok(7));
         assert_eq!(f.every.as_deref(), Some("30d"));
+        assert_eq!(f.take(&raw, 7), Ok(9));
+        assert_eq!(f.provider.as_deref(), Some("openai"));
         let last = ["kepr".to_string(), "--every".to_string()];
         assert!(f.take(&last, 1).is_err(), "--every at the end has no value");
         assert!(FLAGS.iter().all(
             |f| !crate::cli_store::FLAGS.contains(f) && !crate::cli_session::FLAGS.contains(f)
         ));
+    }
+    #[test]
+    fn parses_a_separate_bootstrap_credential() {
+        let f = parsed(&[
+            "kepr",
+            "rotate",
+            "TARGET",
+            "--provider",
+            "openrouter",
+            "--bootstrap",
+            "ADMIN",
+        ]);
+        assert_eq!(f.provider.as_deref(), Some("openrouter"));
+        assert_eq!(f.bootstrap.as_deref(), Some("ADMIN"));
+        assert!(f.any());
+
+        let raw = [
+            "kepr".to_string(),
+            "rotate".to_string(),
+            "--bootstrap".to_string(),
+        ];
+        let mut f = AwsFlags::default();
+        assert!(f.take(&raw, 2).is_err());
     }
 }

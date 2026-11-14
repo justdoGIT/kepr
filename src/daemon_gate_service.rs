@@ -40,6 +40,7 @@ pub fn start(
     gate_end: &UnixStream,
     config: SessionConfig,
 ) -> Result<(UnixStream, ReadyLine), String> {
+    let expected_privacy = config.privacy.as_ref().map(|p| p.preset);
     let path = socket_path();
     let mut conn = UnixStream::connect(&path).map_err(|e| {
         format!(
@@ -69,6 +70,9 @@ pub fn start(
         _ => format!("kepr-gate service readiness failed: {e}"),
     })?;
     let ready = kepr_core::gate_startup::parse_ready(&line)?;
+    if ready.privacy != expected_privacy {
+        return Err("gate did not confirm the requested privacy policy".into());
+    }
     conn.set_read_timeout(None).map_err(|e| e.to_string())?;
     Ok((conn, ready))
 }

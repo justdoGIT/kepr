@@ -10,13 +10,38 @@ Kepr protects against:
 | Threat | Protection | Mechanism |
 |--------|-----------|-----------|
 | **Plaintext on disk** | ✅ Yes | AES-256-GCM encryption at rest |
-| **Environment variable snooping** | ✅ Yes | RAM-sealed `memfd` delivery (no `/proc/environ` leaks) |
-| **Shell history exposure** | ✅ Yes | Secrets never appear in bash/zsh history |
+| **Environment variable snooping** | ⚠️ Delivery-dependent | `exec --memfd` avoids putting values in the environment; protected agent launches use provider-bound placeholders. Ordinary environment delivery exposes values to the receiving process. |
+| **Shell history exposure** | ⚠️ Operator-dependent | Masked terminal entry avoids a secret in argv/history; typing a value into a command line still exposes it. |
 | **Same-UID process inspection** | ⚠️ Partial | `F_SEAL_WRITE` blocks tampering with the sealed memfd's contents, but a same-uid process can still read it via `/proc/<pid>/fd` where ptrace policy allows |
 | **Child process inheritance** | ⚠️ By design | `FD_CLOEXEC` is deliberately *cleared* (not set) so the exec'd agent can read the fd at all; any further descendant the agent spawns also inherits it — this is a consequence of Unix fd inheritance, not an auto-close guarantee |
 | **LLM context logging** | ⚠️ Partial | memfd delivery stops *accidental* leakage via `/proc/<pid>/environ`, shell history, and env-dump logging. It does not stop an agent that intentionally reads the fd and echoes the value back into its own output/context |
 | **Unattended workstation** | ✅ Yes | Master key locked with Argon2id passphrase (`kepr lock`) |
 | **Cross-user isolation** | ✅ Yes | Credentials namespaced by UID; daemon reads peer ID from kernel |
+
+Protected `kepr agent run HARNESS` requires Linux sandbox/network isolation
+and snapshots the current folder (or `--workspace PATH`). Host changes require
+operator workspace review and digest-approved export. Missing isolation refuses
+launch, not a silent unsandboxed retry. Explicit `--compatibility` disables
+privacy filtering and required isolation; it is not a credential-recovery fix.
+Per-session gate ports/URLs are dynamic unless configured explicitly.
+
+`private-cloud` is bounded local pattern masking, not anonymity or proof of zero
+disclosure. The provider sees account identity, public source IP, timing, model
+and network metadata; custom encodings and semantic re-identification remain
+risks. `local-only` launch is unavailable and stops before starting a cloud
+gate. Device-wide offline/egress enforcement is not implemented. Browser,
+renderer, telemetry or other apps outside the protected session are not covered.
+
+MCP credentials and SSH keys require explicit grants; database tools default
+to read-only with finite request budgets (500/session, 60/minute). Operator
+tenant/workspace/connector labels, typed arguments and SQL class checks exist,
+but do not establish verified work-IdP identity, exact-action approval or a
+remote command/path allowlist. Use least-privilege database roles.
+
+The Linux endpoint adapter requires trusted ClamAV/bubblewrap and official
+definitions, scans immutable staged input without network/socket access and
+reports unavailable/incomplete executions as `unknown`. Malware detection,
+definition-update provenance and quarantine are not qualified guarantees.
 
 Kepr does **NOT** protect against:
 
@@ -74,6 +99,22 @@ When the store is unlocked, the 32-byte master key resides unencrypted in the da
 - Enable swap encryption (systemd-swap with LUKS)
 - Disable swap entirely on sensitive workstations
 
+The daemon's startup path refuses to generate a replacement if the master-key
+file is missing while the credential directory is non-empty and no recovery
+key is enrolled. With a previously enrolled recovery key it starts locked for
+explicit recovery; a protected passphrase envelope also starts locked. Restore
+only matching backups or use an enrolled recovery mechanism on a trusted host.
+Do not delete/reset key files to bypass the refusal. Vault unlock does not
+unseal write-only agent credentials; ciphertext authentication/decryption
+failure is a separate fault, not a normal sealed-key refusal or something a
+restart repairs.
+
+`kepr-core::keyring::KeyringBackend` uses a permissions-protected raw local
+envelope on Linux. Its macOS/Windows placeholders fail closed for seal/unseal
+and legacy raw envelopes; they are not native Keychain/DPAPI implementations.
+The daemon's separate macOS Keychain sealer exists in source, but native secret
+storage, IPC, sandbox, networking, signing and installation remain unqualified.
+
 ### 2. Daemon Process Memory
 
 The daemon process holds plaintext secret values in memory during decryption operations.
@@ -85,12 +126,14 @@ The daemon process holds plaintext secret values in memory during decryption ope
 
 ### 3. Unix Socket File Permissions
 
-Credentials flow over `/run/kepr/kepr.sock` (mode `0660` `root:kepr`).
+System mode uses `/run/kepr/kepr.sock`; user mode uses an owner-scoped runtime
+socket. Socket access is not blanket permission to read another UID's vault:
+the daemon authenticates kernel peer credentials and namespaces credentials by
+UID. Permissions, per-credential restrictions and daemon policy all matter.
 
-**Mitigation**:
-- Any `root:kepr` group member can fetch credentials
-- Use filesystem-level ACLs to restrict group membership
-- Audit group membership regularly
+Audit group membership and socket ownership, and protect the state/credential
+directories. Same-user compromise and administrator/kernel access remain
+important boundaries; a filesystem ACL is not a substitute for peer identity.
 
 ### 4. No Attestation or Trusted Execution Environment (TEE)
 
@@ -122,18 +165,46 @@ If you discover a security vulnerability, **please do not open a public issue**.
 
 ## Security Audit & Testing
 
-### Test Coverage
+### Source mechanisms and evidence limits
 
-- **Cryptographic primitives**: Unit-tested against NIST test vectors (AES-GCM, Argon2id)
-- **Framing protocol**: Fuzz-tested with `libFuzzer` (60-second corpus)
-- **Peer authentication**: Kernel-tested `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS
+Unit/integration and parser-fuzz targets exist in source; this page is not an
+independent cryptographic audit or a fresh execution report. The latest broad
+full-suite run was user-aborted. Historical runs and focused checks must not be
+represented as current release or native-platform qualification.
 
-### Continuous Integration
+The hash-linked credential audit is separate from gate journaling. Gate HTTP
+forwarding waits for daemon-fsynced metadata intent; failed persistence blocks
+forwarding. Results are attempted at upstream headers/send failure, not after
+proof of business completion. Failed result writes cannot undo forwarding;
+daemon startup reconciles retained unmatched IDs to `Unknown` and refuses
+startup on reconciliation failure. Repeated identical HTTP calls currently
+share an ID (empty nonce), so this is not per-attempt idempotency. Actor refs
+are session refs, classification/policy fields are fixed labels, and non-HTTP
+tool actions do not inherit this guarantee. The separate queued request/usage
+journal remains best-effort. No full legal-disclosure ledger is claimed.
 
-- GitHub Actions run `cargo clippy -D warnings` (zero unsafe warnings)
-- All tests pass in release mode (`cargo test --release`)
-- SEMGREP security scanning on every PR
-- Dependency auditing with `cargo audit`
+### Continuous integration and release acceptance
+
+`ci.yml` defines lint/test checks; `security.yml` defines dependency auditing,
+policy checks and bounded scheduled/manual parser-fuzz jobs. Configured jobs
+are not proof that a campaign or candidate release passed. PR execution uses
+hosted runners and checkout credentials are disabled. Actual repository/tag/
+runner protections still require operational review.
+
+`release.yml` resolves an annotated tag on `main` to an immutable commit and
+requires Linux qualification before packaging, signing and publication. Its
+qualification test/lint commands currently omit `--release`; do not infer
+release-mode qualification from a successful binary build. Maintainer
+release-mode acceptance commands (not run for this update):
+
+```bash
+cargo test --release --workspace --all-targets --locked
+cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
+cargo fmt --all -- --check
+```
+
+See the [suite plan](/docs/security-suite-plan) for source locations, scoped
+evidence and native-platform, privacy, endpoint and release-assurance gaps.
 
 ---
 

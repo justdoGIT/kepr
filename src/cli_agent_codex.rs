@@ -5,7 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use zeroize::Zeroizing;
+
+#[path = "cli_agent_codex_profile.rs"]
+mod profile;
 
 #[derive(Deserialize, Default)]
 struct ProviderConfig {
@@ -40,8 +42,27 @@ pub struct Config {
 
 impl Config {
     pub fn parse(text: &str) -> Result<Self, String> {
-        let file: ConfigFile =
+        Self::parse_layers(text, None)
+    }
+
+    fn parse_layers(text: &str, overlay: Option<&str>) -> Result<Self, String> {
+        let mut file: ConfigFile =
             toml::from_str(text).map_err(|_| "cannot parse Codex provider configuration")?;
+        if let Some(overlay) = overlay {
+            let overlay: ConfigFile =
+                toml::from_str(overlay).map_err(|_| "cannot parse selected Codex profile")?;
+            file.model_provider = overlay.model_provider.or(file.model_provider);
+            for (name, info) in overlay.model_providers {
+                let original = file.model_providers.entry(name).or_default();
+                original.base_url = info.base_url.or(original.base_url.take());
+                original.env_key = info.env_key.or(original.env_key.take());
+                original.requires_openai_auth =
+                    info.requires_openai_auth.or(original.requires_openai_auth);
+                original.experimental_bearer_token |= info.experimental_bearer_token;
+                original.auth |= info.auth;
+                original.gateway_oauth |= info.gateway_oauth;
+            }
+        }
         let name = file.model_provider.as_deref().unwrap_or("openai");
         if name.is_empty()
             || !name
@@ -61,6 +82,9 @@ impl Config {
         let (provider, credential) = match info.env_key.as_deref() {
             Some("AGENTROUTER_API_KEY") if info.requires_openai_auth != Some(true) => {
                 ("agentrouter", "AGENTROUTER_API_KEY")
+            }
+            Some("SELORA_API_KEY") if info.requires_openai_auth != Some(true) => {
+                ("selora", "SELORA_API_KEY")
             }
             Some("OPENAI_API_KEY") => ("openai", "OPENAI_API_KEY"),
             None if name == "openai" => ("openai", "OPENAI_API_KEY"),
@@ -93,24 +117,20 @@ impl Config {
         })
     }
 
-    pub fn load() -> Result<Self, String> {
+    pub fn load(argv: &[String]) -> Result<Self, String> {
+        let selected = profile::selected_profile(argv)?;
         let base = std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
             .ok_or("cannot locate Codex configuration")?;
-        let path = base.join("config.toml");
-        let metadata = match std::fs::metadata(&path) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::parse(""),
-            Err(_) => return Err("cannot inspect Codex configuration".into()),
-        };
-        if !metadata.is_file() || metadata.len() > 1_048_576 {
-            return Err("Codex configuration must be a bounded regular file".into());
+        let text = profile::read(&base.join("config.toml"), false)?;
+        match selected {
+            Some(name) => {
+                let overlay = profile::read(&base.join(format!("{name}.config.toml")), true)?;
+                Self::parse_layers(&text, Some(&overlay))
+            }
+            None => Self::parse(&text),
         }
-        let text = Zeroizing::new(
-            std::fs::read_to_string(path).map_err(|_| "cannot read Codex configuration")?,
-        );
-        Self::parse(&text)
     }
 
     pub fn require_credential(&self, names: &HashSet<String>) -> Result<(), String> {
@@ -122,6 +142,19 @@ impl Config {
                 self.credential, self.provider,
             ))
         }
+    }
+
+    pub fn routes(
+        &self,
+        names: &HashSet<String>,
+    ) -> Result<Vec<kepr_core::gate_protocol::GateRoute>, String> {
+        self.require_credential(names)?;
+        Ok(vec![kepr_core::gate_protocol::GateRoute {
+            provider: self.provider.into(),
+            cred: self.credential.into(),
+            slot: 0,
+            target: None,
+        }])
     }
 
     pub fn argv(&self, port: u16, argv: &[String]) -> Vec<String> {
@@ -153,11 +186,93 @@ impl Config {
         out.extend_from_slice(&argv[1..]);
         out
     }
+
+    /// Provider selection was read on the host. Private homes have no host
+    /// profile files, so retain the pinned provider and explicit arguments only.
+    pub(crate) fn private_argv(&self, port: u16, argv: &[String]) -> Vec<String> {
+        if std::path::Path::new(&argv[0])
+            .file_name()
+            .is_none_or(|n| n != "codex")
+        {
+            return argv.to_vec();
+        }
+        let mut selected = vec![argv[0].clone()];
+        let mut args = argv.iter().skip(1);
+        while let Some(arg) = args.next() {
+            if arg == "--" {
+                selected.push(arg.clone());
+                selected.extend(args.cloned());
+                break;
+            }
+            if matches!(arg.as_str(), "--profile" | "-p") {
+                args.next();
+                continue;
+            }
+            if arg.starts_with("--profile=") || (arg.starts_with("-p") && arg.len() > 2) {
+                continue;
+            }
+            selected.push(arg.clone());
+        }
+        self.argv(port, &selected)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SELORA: &str = r#"
+model_provider = "selora"
+[model_providers.selora]
+base_url = "https://api.selora.lol/v1"
+env_key = "SELORA_API_KEY"
+requires_openai_auth = false
+wire_api = "responses"
+"#;
+
+    #[test]
+    fn selora_uses_its_sealed_key_and_local_gate() {
+        let c = Config::parse(SELORA).expect("Selora must be supported");
+        assert!(c
+            .require_credential(&HashSet::from(["SELORA_API_KEY".into()]))
+            .is_ok());
+        assert!(c
+            .require_credential(&HashSet::from(["AGENTROUTER_API_KEY".into()]))
+            .is_err());
+        let args = c.argv(7001, &["codex".into(), "--profile".into(), "selora".into()]);
+        assert!(args.contains(
+            &"model_providers.selora.base_url=\"http://127.0.0.1:7001/selora/v1\"".into()
+        ));
+        assert!(args.contains(&"model_providers.selora.env_key=\"SELORA_API_KEY\"".into()));
+    }
+
+    #[test]
+    fn selected_profile_grants_only_its_provider_credential() {
+        let c = Config::parse(SELORA).unwrap();
+        let names = HashSet::from([
+            "OPENAI_API_KEY".into(),
+            "AGENTROUTER_API_KEY".into(),
+            "SELORA_API_KEY".into(),
+        ]);
+        let routes = c.routes(&names).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].provider, "selora");
+        assert_eq!(routes[0].cred, "SELORA_API_KEY");
+    }
+
+    #[test]
+    fn separate_profile_overlays_provider_selection_and_rechecks_host() {
+        let base = format!(
+            "{}{}",
+            ROUTER,
+            SELORA.replace("model_provider = \"selora\"", "")
+        );
+        let c = Config::parse_layers(&base, Some("model_provider='selora'\nmodel='gpt-6-astra'"))
+            .unwrap();
+        assert_eq!(c.provider, "selora");
+        assert!(Config::parse_layers(&base, Some("model_provider='selora'\n[model_providers.selora]\nbase_url='https://evil.example/v1'")).is_err());
+        assert!(Config::parse_layers(&base, Some("model_provider='selora'\n[model_providers.selora]\nexperimental_bearer_token='synthetic'")).is_err());
+    }
 
     const ROUTER: &str = r#"
 model_provider = "AgentRouter"

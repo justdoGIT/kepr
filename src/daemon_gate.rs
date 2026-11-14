@@ -14,14 +14,18 @@ use std::process::Child;
 
 use crate::audit::{self, AuditEvent, AuditResult};
 use crate::daemon_gate_deadline as deadline;
-use crate::daemon_gate_registry::{gates_for, track_gate, Handle, MAX_GATES_PER_UID};
+use crate::daemon_gate_registry::track_gate;
 use crate::store::{cred_path, validate_name};
 use crate::{crypto, expiry};
 use kepr_core::binding::Inject;
 use kepr_core::framing::{read_frame, write_frame};
-use kepr_core::gate_protocol::{GateLimits, GateRequest, GateResponse, GateRoute, SessionConfig};
+use kepr_core::gate_protocol::{GateLimits, GateRequest, GateResponse, GateRoute};
 use kepr_core::generate::ZeroString;
 use kepr_core::protocol::{Response, MAX_MSG_BYTES};
+
+#[path = "daemon_gate_start.rs"]
+mod startup;
+pub(crate) use startup::start;
 
 const UNAVAILABLE: &str = "credential unavailable";
 
@@ -199,6 +203,22 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
                 generation: generation() + owner.deadlines.passed(expiry::now_unix()),
             },
             Ok(GateRequest::Record { id, record }) => owner.rec.handle(id, record),
+            Ok(GateRequest::Decision { id, record }) => {
+                crate::daemon_gatex::decisions::handle_decision(
+                    owner.uid,
+                    owner.rec.session(),
+                    id,
+                    record,
+                )
+            }
+            Ok(GateRequest::Result { id, record }) => {
+                crate::daemon_gatex::decisions::handle_result(
+                    owner.uid,
+                    owner.rec.session(),
+                    id,
+                    record,
+                )
+            }
             Ok(GateRequest::Journal { id, entries }) => crate::daemon_gatex::logs::handle_journal(
                 owner.uid,
                 owner.rec.session(),
@@ -250,73 +270,6 @@ fn serve_gate_channel(mut chan: UnixStream, child: Option<Child>, key: i32, mut 
     }
 }
 
-fn start(
-    uid: u32,
-    peer_pid: i32,
-    username: &str,
-    routes: &[GateRoute],
-    (port, limits, tunnel, record): (Option<u16>, GateLimits, bool, bool),
-    harness: Option<String>,
-) -> Result<Response, String> {
-    validate_routes(routes)?;
-    limits.validate()?;
-    if gates_for(uid) >= MAX_GATES_PER_UID {
-        return Err(format!(
-            "{MAX_GATES_PER_UID} agent sessions already running; end one or run `kepr panic`"
-        ));
-    }
-    let config = SessionConfig {
-        session_id: random_hex(8)?.as_str().to_string(),
-        session_key_hex: random_hex(32)?,
-        routes: routes.to_vec(),
-        port,
-        limits,
-        tunnel,
-        record,
-    };
-    let session = config.session_id.clone();
-    let rec = crate::daemon_gatex::recording::Recorder::new(uid, &session, record);
-    let (daemon_end, gate_end) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
-    let (child, ready, key, handle) = if crate::user_mode() {
-        let (child, ready) = crate::daemon_gatex::spawn::start_local(peer_pid, &gate_end, config)?;
-        let pid = child.id() as i32;
-        (Some(child), ready, pid, Handle::Pid(pid))
-    } else {
-        let (conn, ready) = crate::daemon_gate_service::start(peer_pid, &gate_end, config)?;
-        (
-            None,
-            ready,
-            crate::daemon_gate_service::next_key(),
-            Handle::Conn(conn),
-        )
-    };
-    drop(gate_end);
-    let owner = GateOwner {
-        uid,
-        username: username.to_string(),
-        pid: peer_pid,
-        creds: kepr_core::gate_protocol::resolvable_creds(routes),
-        rec,
-        harness: harness.filter(|h| kepr_core::protocol_aws::valid_harness(h)), // T7.10
-        deadlines: Default::default(),
-        rotatable: kepr_core::gate_protocol::rotatable_creds(routes),
-    };
-    track_gate(key, uid, Some(handle));
-    std::thread::spawn(move || serve_gate_channel(daemon_end, child, key, owner));
-    let gate_pid = key.max(0);
-    crate::daemon_policy::session_started(uid, &session, routes); // T9.07
-    Ok(Response::GateStarted {
-        port: ready.port,
-        placeholders: ready.placeholders,
-        gate_pid,
-        extras: Box::new(kepr_core::protocol_types::GateExtras {
-            ca_pem: ready.ca_pem,
-            db_ports: ready.db_ports,
-            session: Some(session),
-        }),
-    })
-}
-
 pub fn handle_start_gate(
     uid: u32,
     peer_pid: i32,
@@ -324,8 +277,18 @@ pub fn handle_start_gate(
     routes: &[GateRoute],
     port_limits: (Option<u16>, GateLimits, bool, bool),
     harness: Option<String>,
+    privacy: Option<kepr_core::privacy::Policy>,
 ) -> Response {
-    let result = start(uid, peer_pid, username, routes, port_limits, harness);
+    let result = start(
+        uid,
+        peer_pid,
+        username,
+        routes,
+        port_limits,
+        harness,
+        privacy,
+        None,
+    );
     audit::log(&AuditEvent {
         op: "start-gate",
         name: None,
@@ -339,70 +302,19 @@ pub fn handle_start_gate(
     result.unwrap_or_else(Response::fail)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use kepr_core::binding::Binding;
-
-    fn route(cred: &str, slot: u16) -> GateRoute {
-        GateRoute {
-            provider: "anthropic".into(),
-            cred: cred.into(),
-            slot,
-            target: None,
-        }
-    }
-
-    fn sealed(exp: Option<u64>) -> expiry::CredMeta {
-        expiry::CredMeta {
-            expires_at_unix: exp,
-            ..Default::default()
-        }
-        .with_seal(
-            Some(true),
-            Some(vec![Binding {
-                host: "api.anthropic.com".into(),
-                port: 443,
-                inject: Inject::Header {
-                    name: "x-api-key".into(),
-                },
-            }]),
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn resolvable_only_when_sealed_bound_and_fresh() {
-        let m = sealed(Some(100));
-        assert!(check_resolvable(Some(&m), 10, "API.anthropic.com", 443).is_ok());
-        assert_eq!(
-            check_resolvable(Some(&m), 10, "evil.example.com", 443),
-            Err("resolve: host not bound".into())
-        );
-        assert!(check_resolvable(Some(&m), 10, "api.anthropic.com", 8443).is_err());
-        assert_eq!(
-            check_resolvable(Some(&m), 100, "api.anthropic.com", 443),
-            Err("resolve: expired".into())
-        );
-        assert!(check_resolvable(
-            Some(&expiry::CredMeta::default()),
-            0,
-            "api.anthropic.com",
-            443
-        )
-        .is_err());
-        assert!(check_resolvable(None, 0, "api.anthropic.com", 443).is_err());
-    }
-
-    #[test]
-    fn route_validation() {
-        assert!(validate_routes(&[route("A", 0)]).is_ok());
-        assert!(validate_routes(&[]).is_err());
-        assert!(validate_routes(&(0..17).map(|i| route("A", i)).collect::<Vec<_>>()).is_err());
-        assert!(validate_routes(&[route("A", 0), route("B", 0)]).is_err());
-        assert!(validate_routes(&[route("../x", 0)]).is_err());
-        let mut bad = route("A", 0);
-        bad.provider = "Evil/../".into();
-        assert!(validate_routes(&[bad]).is_err());
-    }
+pub fn handle_rotate_provider(
+    uid: u32,
+    peer_pid: i32,
+    username: &str,
+    target: &str,
+    provider: &str,
+    bootstrap: &str,
+) -> Response {
+    crate::daemon_gatex::provider_rotate::handle(
+        uid, peer_pid, username, target, provider, bootstrap,
+    )
 }
+
+#[cfg(test)]
+#[path = "daemon_gate_tests.rs"]
+mod tests;

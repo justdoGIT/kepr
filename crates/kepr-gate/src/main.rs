@@ -31,6 +31,7 @@ mod pg_jit;
 mod pg_rotate;
 mod pg_tls;
 mod placeholder;
+mod privacy;
 mod prompt;
 mod proxy;
 mod recording;
@@ -39,6 +40,7 @@ mod reply;
 mod responses;
 mod rewrite;
 mod rotate_provider;
+mod rotate_provider_http;
 mod routes;
 mod scram;
 mod secret_cell;
@@ -83,6 +85,7 @@ fn main() -> ExitCode {
                 "gate startup failed"
             };
             let report = kepr_core::gate_protocol::ReadyLine {
+                privacy: None,
                 ready: false,
                 port: 0,
                 placeholders: std::collections::HashMap::new(),

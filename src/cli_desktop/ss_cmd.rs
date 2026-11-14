@@ -116,7 +116,7 @@ fn policy(args: &[&str]) -> Response {
             if path.exists() {
                 println!("{}", std::fs::read_to_string(&path).unwrap_or_default());
             } else {
-                println!("{}", EXAMPLE);
+                println!("{EXAMPLE}");
             }
             Response::Pong
         }
