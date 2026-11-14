@@ -1,6 +1,6 @@
 {
   "name": "kepr-omp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "kepr for oh-my-pi: route provider calls through the kepr gate and keep real keys out of prompts, tool calls and output.",
   "license": "MIT",
   "type": "module",
