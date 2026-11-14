@@ -56,6 +56,8 @@ mod cli_more;
 mod cli_privacy;
 mod cli_record;
 mod cli_recovery;
+mod cli_repo_guard;
+mod cli_repo_policy;
 mod cli_rotate;
 mod cli_sandbox_auth;
 mod cli_sandbox_bus; // T13.28

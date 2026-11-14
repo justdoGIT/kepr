@@ -191,10 +191,26 @@ pub fn cmd_hook(args: &[String]) -> i32 {
             return 1;
         }
     };
+    let repo_notice = match crate::cli_repo_guard::check_hook(event, &input) {
+        Ok(n) => n,
+        Err(reason) => {
+            eprintln!("{reason}");
+            return 2;
+        }
+    };
     let verdict = match event {
         "pre-tool" => pre_tool(&input),
         "prompt" => prompt(&input),
-        "session-start" => session_start(std::env::var("KEPR_GATE_URL").ok().as_deref()),
+        "session-start" => {
+            match (
+                session_start(std::env::var("KEPR_GATE_URL").ok().as_deref()),
+                repo_notice,
+            ) {
+                (Verdict::Context(a), Some(b)) => Verdict::Context(format!("{a} {b}")),
+                (Verdict::Allow, Some(b)) => Verdict::Context(b),
+                (v, _) => v,
+            }
+        }
         "redact" => {
             let (text, found) = redact(input["text"].as_str().unwrap_or_default());
             println!("{}", json!({"text": text, "found": found}));

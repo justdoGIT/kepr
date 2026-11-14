@@ -18,6 +18,14 @@ const OMP: &[(&str, &str)] = &[
         "providers.ts",
         include_str!("../../plugins/omp/kepr/providers.ts"),
     ),
+    (
+        "privacy-guard.ts",
+        include_str!("../../plugins/privacy-guard.ts"),
+    ),
+    (
+        "privacy-policy.yaml",
+        include_str!("../../plugins/privacy-policy.yaml"),
+    ),
 ];
 
 fn replace(env: &mut Vec<(String, String)>, key: &str, value: String) {

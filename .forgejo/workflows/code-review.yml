@@ -10,7 +10,7 @@ jobs:
     runs-on: ci-standard
     steps:
       - name: Run trusted PR reviewer
-        uses: https://forgejo.kepr.dev/justdoGIT/ci-templates@07b435275326935d004abee9fa0f35d2b7c4b2d3
+        uses: https://forgejo.kepr.dev/justdoGIT/ci-templates@1c96fd261aac57dca9471906d02af8fe643b809c
         env:
           FORGEJO_TOKEN: ${{ secrets.CI_API_TOKEN || secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
