@@ -122,22 +122,20 @@ jobs:
               return 0
             fi
             if command -v gh >/dev/null 2>&1; then
-              gh api "repos/${REPO}/pulls/${PR}/comments" \
-                -f body="$body" -f path="$path" -f commit_id="$sha" -F line="$line" -f side="RIGHT" 2>&1 || {
+              if ! gh api "repos/${REPO}/pulls/${PR}/comments" \
+                -f body="$body" -f path="$path" -f commit_id="$sha" -F line="$line" -f side="RIGHT" 2>&1; then
                 echo "WARNING: gh api post_inline failed for $path:$line" >&2
-                return 0
-              }
+              fi
               return 0
             fi
-            curl -fsS -X POST \
+            if ! curl -fsS -X POST \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${REPO}/pulls/${PR}/comments" \
               -d "$(jq -n --arg b "$body" --arg p "$path" --arg c "$sha" --argjson l "$line" \
-                '{body: $b, path: $p, commit_id: $c, line: $l, side: "RIGHT"}')" 2>&1 || {
+                '{body: $b, path: $p, commit_id: $c, line: $l, side: "RIGHT"}')" 2>&1; then
               echo "WARNING: curl post_inline failed for $path:$line" >&2
-              return 0
-            }
+            fi
           }
 
           # Active free-tier OpenRouter candidates
@@ -326,7 +324,9 @@ jobs:
               *)   BADGE="![P2](https://img.shields.io/badge/P2-warning-yellow?style=flat-square)" ;;
             esac
 
-            post_inline "$BADGE $desc" "$path" "$line" "$HEAD_SHA" || true
+            if ! post_inline "$BADGE $desc" "$path" "$line" "$HEAD_SHA"; then
+              echo "WARNING: inline comment failed" >&2
+            fi
 
             COMMENT_COUNT=$((COMMENT_COUNT + 1))
           done < <(grep '^FINDING|' "$REVIEW_FILE")
