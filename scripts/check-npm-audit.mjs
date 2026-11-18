@@ -113,7 +113,12 @@ try {
   const output = execFileSync(
     "npm",
     ["view", allowedPackage, "version", "--json"],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      killSignal: "SIGTERM",
+    },
   ).trim();
   try {
     latestVersion = JSON.parse(output);
