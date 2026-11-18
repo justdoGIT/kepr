@@ -138,7 +138,7 @@ jobs:
           else
             audit_status=$?
           fi
-          node ../scripts/check-npm-audit.mjs \
+          node "$GITHUB_WORKSPACE/scripts/check-npm-audit.mjs" \
             "$report" "$audit_status" package-lock.json
 
   # CodeQL is disabled while this repo is private — GitHub code scanning
