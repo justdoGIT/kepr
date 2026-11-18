@@ -18,6 +18,4 @@ allowed_providers:
   - nvidia
   - ollama
   - local-decider
-restricted_repos:
-  - dev-setup
-  - fleet-management
+# No restricted repositories - all repositories are public

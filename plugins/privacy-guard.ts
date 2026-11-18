@@ -51,20 +51,20 @@ export const DEFAULT_ALLOWED_PROVIDERS = [
 	"codex-waddhwaa",
 	"openai",
 	"openai-codex",
-	"litellm",
 	"google",
 	"google-antigravity",
 	"google-vertex",
-	"deepseek",
 	"groq",
 	"mistral",
-	"xai",
 	"nvidia",
+	"xai",
+	"deepseek",
 	"ollama",
+	"ollama-cloud",
 	"local-decider",
 ];
 
-export const DEFAULT_RESTRICTED_REPOS = ["dev-setup", "fleet-management"];
+export const DEFAULT_RESTRICTED_REPOS: string[] = [];
 
 const STRICT_MARKERS = [
 	".kepr-strict",
@@ -88,9 +88,7 @@ const FIRST_PARTY_HOST_MAP: Record<string, string> = {
 	"api.groq.com": "groq",
 	"api.mistral.ai": "mistral",
 	"integrate.api.nvidia.com": "nvidia",
-	localhost: "ollama",
-	"127.0.0.1": "ollama",
-	"::1": "ollama",
+	"ollama.com": "ollama-cloud",
 };
 
 function cleanScalar(raw: string): string {

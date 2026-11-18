@@ -67,12 +67,13 @@ test('isProviderAllowed permits first-party/local providers and blocks third-par
   }
 });
 
-test('isRestrictedRepo detects restricted folder names, markers, and git origin URLs', () => {
+test('isRestrictedRepo detects markers and git origin URLs (no default restricted repos)', () => {
   const root = mkdtempSync(join(tmpdir(), 'kepr-pguard-'));
   try {
     const devSetup = join(root, 'dev-setup', 'scripts');
     mkdirSync(devSetup, { recursive: true });
-    assert.equal(isRestrictedRepo(devSetup), true);
+    // No default restricted repos: folder name alone is not enough
+    assert.equal(isRestrictedRepo(devSetup), false);
 
     const publicRepo = join(root, 'demo-app');
     mkdirSync(publicRepo, { recursive: true });
@@ -87,6 +88,14 @@ test('isRestrictedRepo detects restricted folder names, markers, and git origin 
       join(mounted, '.git', 'config'),
       '[remote "origin"]\n\turl = git@github.com:org/fleet-management.git\n',
     );
+    // No default restricted repos: git origin slug alone is not enough
+    assert.equal(isRestrictedRepo(mounted), false);
+
+    // Git config omp.privacy=strict still restricts
+    writeFileSync(
+      join(mounted, '.git', 'config'),
+      '[remote "origin"]\n\turl = git@github.com:org/fleet-management.git\n[omp]\n\tprivacy = strict\n',
+    );
     assert.equal(isRestrictedRepo(mounted), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -98,7 +107,12 @@ test('generic plugin hooks block third-party providers in restricted repos and a
   try {
     const restricted = join(root, 'dev-setup');
     mkdirSync(restricted, { recursive: true });
+    process.env.KEPR_PRIVACY_POLICY = join(restricted, 'privacy-policy.yaml');
     const handlers = new Map();
+    writeFileSync(
+      join(restricted, 'privacy-policy.yaml'),
+      'restricted_repos:\n  - dev-setup\n',
+    );
     privacyGuard({ on: (name, fn) => handlers.set(name, fn) });
 
     const blockedTool = await handlers.get('tool_call')(
