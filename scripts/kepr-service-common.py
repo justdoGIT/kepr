@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Filesystem and socket checks shared by Kepr's runit tools."""
+import errno
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import signal
 import socket
 import stat
 import struct
+import time
 
 
 def absolute(value):
@@ -131,3 +133,28 @@ def environment(config):
     return {'HOME': config['home'], 'USER': config['user'], 'LOGNAME': config['user'],
             'PATH': '/usr/local/bin:/usr/bin:/bin', 'XDG_RUNTIME_DIR': config['runtime'],
             'KEPR_PROFILE': config['profile']}
+
+
+def wait_supervisors(services, timeout=20):
+    deadline = time.monotonic() + timeout
+    pending = list(services)
+    while pending:
+        for directory in pending[:]:
+            control = directory / 'supervise/control'
+            try:
+                fd = os.open(control, os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+            except OSError as error:
+                if error.errno not in (errno.ENOENT, errno.ENXIO):
+                    raise
+                continue
+            try:
+                if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+                    raise RuntimeError(f'runit control is not a FIFO: {control}')
+            finally:
+                os.close(fd)
+            pending.remove(directory)
+        if pending:
+            if time.monotonic() >= deadline:
+                raise RuntimeError('runsv did not open control pipes; check the active runsvdir: '
+                                   + ', '.join(str(path) for path in pending))
+            time.sleep(0.05)

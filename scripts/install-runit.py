@@ -9,6 +9,7 @@ from pathlib import Path
 import pwd
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 
@@ -249,22 +250,33 @@ def install(args):
     if not args.root:
         if not args.cutover:
             raise RuntimeError('live installation requires --cutover after reviewing --dry-run')
-        cutover(config, args, True)
     for service in services:
         backup_service(root, target(root, service))
     for path, (body, mode) in files.items():
         install_file(target(root, path), body, mode)
+    for service in services:
+        target(root, service).chmod(0o755)
     if not args.root:
         contents = files['/usr/local/bin/kepr-ssh-keygen'][0]
         as_owner(config, lambda: user_adapter(config, args, contents))
     if args.enable:
         for service in services:
             directory = target(root, service)
-            (directory / 'down').unlink()
             link = target(root, str(service_dir / Path(service).name))
             link.parent.mkdir(parents=True, exist_ok=True)
             if not link.is_symlink():
                 link.symlink_to(service)
+        if not args.root:
+            common.wait_supervisors([target(root, service) for service in services])
+    if not args.root:
+        # Leave the existing listener alive until installation and supervision are ready.
+        cutover(config, args, True)
+    if args.enable:
+        for service in services:
+            (target(root, service) / 'down').unlink()
+        if not args.root:
+            subprocess.run(['sv', '-w', '20', 'up',
+                            *(str(service_dir / Path(service).name) for service in services)], check=True)
     print('Installed Kepr runit services' + (' and enabled them.' if args.enable else ' (down; enable explicitly).'))
 
 
@@ -293,6 +305,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, RuntimeError, KeyError, ValueError) as error:
+    except (OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f'kepr runit: {error}', file=sys.stderr)
         sys.exit(1)

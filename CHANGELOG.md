@@ -7,6 +7,9 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 - Own opt-in runit daemon/SSH-agent installation and the Git signing adapter
   in Kepr; establish the daemon-only memory-lock limit before dropping to
   the vault owner, without exporting private SSH keys.
+- Wait for live runit control pipes before cutting over Kepr listeners, and
+  recover an already-installed service handoff without reinstalling active
+  supervisors or starting an unmanaged daemon.
 - Extend gated-launch authentication-cache isolation beyond Codex and keep
   newly created harness artifacts private; refuse an unisolated fallback
   when credential caches would otherwise be readable.

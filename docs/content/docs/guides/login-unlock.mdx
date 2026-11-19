@@ -146,19 +146,24 @@ directory. Socket owner, executable identity and protocol are checked before
 either process is stopped; an existing supervisor must be stopped through
 that service manager instead. Unrelated listeners are left untouched.
 
-The installer backs up replaced services outside the active service tree and
-can replace a user-local `kepr-ssh-keygen` adapter that takes PATH precedence.
+The installer backs up replaced services outside the active service tree,
+creates runit-readable service directories, and waits for each supervisor's
+control pipe before stopping the existing listener. If runit never opens a
+control pipe, installation times out without signaling the old daemon. It can
+also replace a user-local `kepr-ssh-keygen` adapter that takes PATH precedence.
 The adapter selects the current private runtime/profile's Kepr socket, even
 when a Git caller lacks `SSH_AUTH_SOCK`. Keep
 `git config --global gpg.ssh.program kepr-ssh-keygen` for that adapter; never
 materialize a private key to repair signing. The supervised SSH client disables
 daemon autostart so a restart cannot create a second unmanaged daemon.
 
-After service replacement, run `kepr unlock` locally and verify both service
-states, `kepr status`, `kepr audit-verify`, and an SSH signature. A locked vault
-after restart is expected and must not be bypassed. Migrate shared workstation
-bootstrap hooks only after every affected node has the Kepr-owned installation;
-otherwise an older configuration apply can restore the previous wrapper.
+After service replacement, run `kepr unlock` locally. Verify the daemon has
+`RLIMIT_MEMLOCK=unlimited` and nonzero `VmLck`, then check `kepr status`,
+`kepr audit-verify`, both service states, and `ssh-add -l` through the Kepr agent.
+A locked vault after restart is expected and must not be bypassed. Migrate
+shared workstation bootstrap hooks only after every affected node has the
+Kepr-owned installation; otherwise an older configuration apply can restore
+the previous wrapper.
 
 
 

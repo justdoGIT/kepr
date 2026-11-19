@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -233,6 +234,54 @@ class Services(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertTrue(backups[0].is_symlink())
 
+    def test_wait_supervisors_handles_delayed_discovery(self):
+        services = [self.base / name for name in ('daemon', 'agent')]
+        ready = threading.Event()
+        release = threading.Event()
+        def supervise():
+            ready.wait()
+            for service in services:
+                (service / 'supervise').mkdir(parents=True)
+                control = service / 'supervise/control'
+                os.mkfifo(control)
+                fd = os.open(control, os.O_RDONLY | os.O_NONBLOCK)
+                readers.append(fd)
+            release.wait()
+        readers = []
+        worker = threading.Thread(target=supervise)
+        worker.start()
+        try:
+            ready.set()
+            common.wait_supervisors(services, timeout=2)
+            for service in services:
+                fd = os.open(service / 'supervise/control', os.O_WRONLY | os.O_NONBLOCK)
+                os.write(fd, b'u')
+                os.close(fd)
+            self.assertEqual([os.read(fd, 1) for fd in readers], [b'u', b'u'])
+        finally:
+            release.set()
+            worker.join(timeout=3)
+            for fd in readers:
+                os.close(fd)
+
+    def test_wait_supervisors_rejects_missing_or_unread_pipes(self):
+        for name, fifo in (('missing', False), ('stale', True)):
+            service = self.base / name
+            if fifo:
+                (service / 'supervise').mkdir(parents=True)
+                os.mkfifo(service / 'supervise/control')
+            with self.assertRaisesRegex(RuntimeError, 'runsv did not open control pipes'):
+                common.wait_supervisors([service], timeout=0)
+
+    def test_wait_supervisors_rejects_non_fifo_controls(self):
+        service = self.base / 'invalid'
+        (service / 'supervise').mkdir(parents=True)
+        control = service / 'supervise/control'
+        control.write_bytes(b'leave untouched')
+        with self.assertRaisesRegex(RuntimeError, 'not a FIFO'):
+            common.wait_supervisors([service], timeout=0)
+        self.assertEqual(control.read_bytes(), b'leave untouched')
+
     def stage(self, *extra):
         binaries = self.base / 'binaries'
         binaries.mkdir(exist_ok=True)
@@ -258,7 +307,7 @@ class Services(unittest.TestCase):
         self.assertEqual(config['profile'], 'work')
         service = stage / 'etc/sv/kepr-daemon'
         self.assertFalse(service.is_symlink())
-        self.assertFalse((service / 'down').exists())
+        self.assertEqual(service.stat().st_mode & 0o777, 0o755)
         self.assertEqual(os.readlink(stage / 'var/service/kepr-daemon'), '/etc/sv/kepr-daemon')
         body = (service / 'run').read_text()
         self.assertIn('/usr/local/libexec/kepr/kepr-runit-launcher.py', body)
