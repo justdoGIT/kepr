@@ -28,6 +28,7 @@ const ROUTES: Record<string, [string, string]> = {
 	"cloudflare-ai-gateway": ["/cloudflare/compat", "KEPR_PH_CLOUDFLARE"],
 	hcnsec: ["/hcnsec/v1", "KEPR_PH_HCNSEC"],
 	kktoken: ["/kktoken/v1", "KEPR_PH_KKTOKEN"],
+  ollama: ["/api/chat", "KEPR_PH_OLLAMA"],
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
