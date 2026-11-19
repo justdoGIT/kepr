@@ -250,7 +250,10 @@ mod tests {
 
     #[test]
     fn restricted_repo_hook_and_route_filtering() {
-        let p = PrivacyPolicy::default();
+        let p = PrivacyPolicy {
+            restricted_repos: vec!["dev-setup".into()],
+            ..PrivacyPolicy::default()
+        };
         let tmp = tempfile::tempdir().unwrap();
         let dev = tmp.path().join("dev-setup");
         std::fs::create_dir_all(&dev).unwrap();

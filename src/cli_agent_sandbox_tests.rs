@@ -162,8 +162,10 @@ fn actual_sandbox_masks_cache_names_targets_and_uses_private_creation_modes() {
     let runner = unsafe { libc::fork() };
     assert!(runner >= 0);
     if runner == 0 {
+        // SAFETY: umask takes no pointers and only changes this forked child's mask.
         unsafe { libc::umask(0); }
         let code = run_status(plan);
+        // SAFETY: terminate this test-owned child without running inherited destructors.
         unsafe { libc::_exit(code); }
     }
     assert_eq!(wait_code(runner), 0);

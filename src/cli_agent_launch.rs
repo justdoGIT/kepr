@@ -265,6 +265,38 @@ pub(super) fn cache_sandbox(
     Ok(SandboxMode::Required)
 }
 
+/// A protected workspace may run an explicitly supplied command even when no
+/// usable model route exists. It receives no gate, credentials, or proxy; the
+/// workspace sandbox remains the only execution surface.
+pub(super) fn run_workspace_command(
+    private: crate::cli_workspace::launch::PreparedLaunch,
+    adapter: &Adapter,
+    harness: &str,
+) -> ! {
+    crate::cli_ui::warn(
+        "protected workspace command: no provider gate was started; cloud credentials are unavailable",
+    );
+    let (inherited, withheld) = super::keep_safe_env(std::env::vars());
+    if !withheld.is_empty() {
+        crate::cli_ui::warn(&format!(
+            "not passed to the workspace command (they hold real keys): {}",
+            withheld.join(", ")
+        ));
+    }
+    let mut env = build_env(adapter, 0, &HashMap::new(), inherited.into_iter());
+    env.push(("KEPR_AGENT_HARNESS".into(), harness.into()));
+    if let Err(error) = private.stage(harness, 0, None, &mut env) {
+        eprintln!("kepr: {error}");
+        std::process::exit(125);
+    }
+    if let Err(error) = validate_final_env(&env, 0) {
+        eprintln!("kepr: {error}");
+        std::process::exit(125);
+    }
+    let argv = private.argv.clone();
+    private.run(&argv, env, 0)
+}
+
 pub(super) fn private_creation(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
     // SAFETY: umask is async-signal-safe and cannot fail. Apply only at the

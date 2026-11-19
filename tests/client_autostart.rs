@@ -20,7 +20,7 @@ fn supervised_clients_never_launch_a_standalone_daemon() {
             .env("HOME", home.path())
             .env("XDG_RUNTIME_DIR", &runtime)
             .env("PATH", &bin)
-            .args(["ping", "--json"]);
+            .args(["status", "--json"]);
         if supervised {
             command.env("KEPR_NO_AUTOSTART", "1");
         }

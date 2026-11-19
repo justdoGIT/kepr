@@ -4,7 +4,7 @@
 // exec keeps the pid, so the gate's --owner-pid watch ends the gate
 // when the harness exits.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -18,7 +18,7 @@ use crate::client;
 mod launch;
 pub(crate) use launch::reserved_environment_name;
 pub use launch::{build_env, SandboxMode};
-use launch::{decide_sandbox, harness_sandbox};
+use launch::{decide_sandbox, harness_sandbox, run_workspace_command};
 #[path = "cli_agent_run_env.rs"]
 mod env;
 pub use env::keep_safe_env;
@@ -60,38 +60,6 @@ pub fn routes_for(
         ));
     }
     Ok(routes)
-}
-
-/// A protected workspace may run an explicitly supplied command even when no
-/// usable model route exists. It receives no gate, credentials, or proxy; the
-/// workspace sandbox remains the only execution surface.
-fn run_workspace_command(
-    private: crate::cli_workspace::launch::PreparedLaunch,
-    adapter: &Adapter,
-    harness: &str,
-) -> ! {
-    crate::cli_ui::warn(
-        "protected workspace command: no provider gate was started; cloud credentials are unavailable",
-    );
-    let (inherited, withheld) = keep_safe_env(std::env::vars());
-    if !withheld.is_empty() {
-        crate::cli_ui::warn(&format!(
-            "not passed to the workspace command (they hold real keys): {}",
-            withheld.join(", ")
-        ));
-    }
-    let mut env = build_env(adapter, 0, &HashMap::new(), inherited.into_iter());
-    env.push(("KEPR_AGENT_HARNESS".into(), harness.into()));
-    if let Err(error) = private.stage(harness, 0, None, &mut env) {
-        eprintln!("kepr: {error}");
-        std::process::exit(125);
-    }
-    if let Err(error) = launch::validate_final_env(&env, 0) {
-        eprintln!("kepr: {error}");
-        std::process::exit(125);
-    }
-    let argv = private.argv.clone();
-    private.run(&argv, env, 0)
 }
 
 pub fn cmd_run(
