@@ -131,10 +131,26 @@ pub fn cmd_run(
         }
         None => None,
     };
+    // Retain only path controls before the harness allowlist drops unrelated
+    // overrides; those caches must still be hidden from the selected harness.
+    let credential_env = if private.is_none() {
+        match crate::cli_sandbox_auth::environment() {
+            Ok(env) => env,
+            Err(error) => return Response::fail(error),
+        }
+    } else {
+        Vec::new()
+    };
     let sandbox = if private.is_some() {
         true
     } else {
-        match harness_sandbox(harness, mode).and_then(|m| decide_sandbox(m, isolate_net)) {
+        if let Err(error) = crate::cli_sandbox_auth::validate_selected(harness, &credential_env) {
+            return Response::fail(error);
+        }
+        match harness_sandbox(harness, mode)
+            .and_then(|m| launch::cache_sandbox(m, &credential_env))
+            .and_then(|m| decide_sandbox(m, isolate_net))
+        {
             Ok(s) => s,
             Err(e) => return Response::fail(e),
         }
@@ -324,6 +340,15 @@ pub fn cmd_run(
     if sandbox {
         match crate::cli_agent_sandbox::Plan::new(argv, env, gate_port, isolate_net) {
             Ok(mut plan) => {
+                match crate::cli_sandbox_auth::hidden_cstrings(
+                    &credential_env,
+                    &crate::cli_agent_sandbox::hide_dirs(),
+                ) {
+                    Ok(files) => plan.hide_files.extend(files),
+                    Err(error) => return Response::fail(error),
+                }
+                plan.hide_files.sort();
+                plan.hide_files.dedup();
                 // Database and tunnel ports are relayed into an isolated netns too.
                 plan.extra_ports = db_ports.values().copied().collect();
                 crate::cli_agent_sandbox::run(plan)
@@ -331,11 +356,10 @@ pub fn cmd_run(
             Err(e) => return Response::fail(e),
         }
     }
-    let err = Command::new(&argv[0])
-        .args(&argv[1..])
-        .env_clear()
-        .envs(env)
-        .exec();
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]).env_clear().envs(env);
+    launch::private_creation(&mut command);
+    let err = command.exec();
     Response::fail(format!("exec {} failed: {err}", argv[0]))
 }
 

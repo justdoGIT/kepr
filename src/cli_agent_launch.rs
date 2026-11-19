@@ -25,6 +25,7 @@ fn inherited_allowed(harness: &str, key: &str) -> bool {
         || matches!(
             (harness, key),
             ("codex", "CODEX_HOME") | ("omp", "PI_CODING_AGENT_DIR")
+                | ("claude", "CLAUDE_CONFIG_DIR") | ("gemini", "GEMINI_CLI_HOME")
         )
 }
 
@@ -79,6 +80,12 @@ pub(crate) fn reserved_environment_name(key: &str) -> bool {
             upper.as_str(),
             "CODEX_HOME"
                 | "PI_CODING_AGENT_DIR"
+                | "CLAUDE_CONFIG_DIR"
+                | "GEMINI_CLI_HOME"
+                | "PI_CONFIG_DIR"
+                | "OMP_PROFILE"
+                | "PI_PROFILE"
+                | "OPENCODE_DB"
                 | "AWS_REGION"
                 | "AWS_DEFAULT_REGION"
                 | "DOCKER_CONFIG"
@@ -241,6 +248,33 @@ pub(super) fn confirm_privacy(
         return Err("protected launch stopped: daemon/gate did not confirm the requested privacy preset; update both binaries before relaunching".into());
     }
     Ok(())
+}
+
+/// Decide before probing so Auto cannot downgrade while host caches exist.
+pub(super) fn cache_sandbox(
+    mode: SandboxMode,
+    env: &[(String, String)],
+) -> Result<SandboxMode, String> {
+    if crate::cli_sandbox_auth::files(env)?.is_empty() {
+        return Ok(mode);
+    }
+    if mode == SandboxMode::Off {
+        return Err("credential caches require the sandbox; omit --no-sandbox (host account logins are preserved)".into());
+    }
+    crate::cli_ui::warn("host credential caches will be hidden; cached account logins are not brokered into this gated launch (external logins remain unchanged)");
+    Ok(SandboxMode::Required)
+}
+
+pub(super) fn private_creation(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: umask is async-signal-safe and cannot fail. Apply only at the
+    // harness exec boundary; the invoking shell/user's mask remains untouched.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o077);
+            Ok(())
+        });
+    }
 }
 
 pub(super) fn harness_sandbox(harness: &str, mode: SandboxMode) -> Result<SandboxMode, String> {

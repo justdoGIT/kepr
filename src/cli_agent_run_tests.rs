@@ -220,3 +220,52 @@ fn routes_need_a_sealed_credential() {
     let r = routes_for(claude(), &some).unwrap();
     assert_eq!((r[0].provider.as_str(), r[0].slot), ("anthropic", 0));
 }
+
+#[test]
+fn any_harness_cache_requires_isolation_before_compatibility_probe() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("auth.json");
+    std::fs::write(&cache, "synthetic-sentinel").unwrap();
+    let env = vec![("CODEX_HOME".into(), root.path().display().to_string())];
+    assert!(launch::cache_sandbox(SandboxMode::Off, &env).is_err());
+    let mode = launch::cache_sandbox(SandboxMode::Auto, &env).unwrap();
+    assert_eq!(mode, SandboxMode::Required);
+    assert!(launch::after_probe(mode, false, Err("unavailable".into())).is_err());
+    std::fs::remove_file(cache).unwrap();
+    assert_eq!(launch::cache_sandbox(SandboxMode::Off, &env), Ok(SandboxMode::Off));
+    let unsafe_env = vec![("CODEX_HOME".into(), "relative".into())];
+    assert!(launch::cache_sandbox(SandboxMode::Auto, &unsafe_env).is_err());
+}
+
+#[test]
+fn host_exec_creation_is_private_despite_a_permissive_inherited_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "mkdir private-dir && printf synthetic > private-file"]);
+    command.current_dir(root.path()).env_clear();
+    // SAFETY: change the mask only in the isolated subprocess, never the test runner.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0);
+            Ok(())
+        });
+    }
+    launch::private_creation(&mut command);
+    assert!(command.status().unwrap().success());
+    for (name, mode) in [("private-dir", 0o700), ("private-file", 0o600)] {
+        assert_eq!(std::fs::metadata(root.path().join(name)).unwrap().permissions().mode() & 0o777, mode);
+    }
+}
+
+#[test]
+fn selected_claude_and_gemini_config_roots_remain_allowlisted() {
+    let inherited = [
+        ("CLAUDE_CONFIG_DIR".into(), "/synthetic/claude".into()),
+        ("GEMINI_CLI_HOME".into(), "/synthetic/gemini".into()),
+    ];
+    for (index, harness) in ["claude", "gemini"].iter().enumerate() {
+        let adapter = cli_agent_adapters::lookup(harness).unwrap();
+        assert_eq!(build_env(adapter, 7000, &HashMap::new(), inherited.clone().into_iter()), [inherited[index].clone()]);
+    }
+}
