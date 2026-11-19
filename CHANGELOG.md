@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [unreleased]
+- Own opt-in runit daemon/SSH-agent installation and the Git signing adapter
+  in Kepr; establish the daemon-only memory-lock limit before dropping to
+  the vault owner, without exporting private SSH keys.
+- Extend gated-launch authentication-cache isolation beyond Codex and keep
+  newly created harness artifacts private; refuse an unisolated fallback
+  when credential caches would otherwise be readable.
+- Document locked-store startup, evidence-preserving audit recovery, complete
+  audit backups, and the difference between owner-only OAuth files and
+  brokered/encrypted credentials.
 - Route provider key rotation through a daemon-owned gate: bootstrap names stay
   in Kepr, replacements are validated before commit, and post-create failures
   trigger provider revocation using the returned key identifier. Reviewed flows

@@ -158,3 +158,19 @@ fn missing_installed_binary_does_not_stop_existing_daemon() {
         Some(original.0.id() as i32)
     );
 }
+
+#[test]
+fn runit_and_signing_scripts_preserve_service_boundaries() {
+    let output = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runit_services.py"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

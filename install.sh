@@ -5,6 +5,7 @@
 #   chmod +x install.sh
 #   ./install.sh            # system service where systemd runs, else user mode
 #   ./install.sh --login    # user mode with unlock-at-login (see below)
+#   ./install.sh --runit    # opt in to Kepr-owned runit daemon and SSH services
 #
 # What this does:
 #   1. Build release binaries
@@ -17,12 +18,18 @@
 set -euo pipefail
 
 LOGIN=false
+RUNIT=false
 for arg in "$@"; do
     case "$arg" in
         --login) LOGIN=true ;;
-        *) echo "usage: $0 [--login]" >&2; exit 2 ;;
+        --runit) RUNIT=true ;;
+        *) echo "usage: $0 [--login | --runit]" >&2; exit 2 ;;
     esac
 done
+if $LOGIN && $RUNIT; then
+    echo "--runit does not change PAM or unlock-at-login; do not combine it with --login" >&2
+    exit 2
+fi
 
 GRN='\033[0;32m'; YLW='\033[1;33m'; CYN='\033[0;36m'; RST='\033[0m'
 ok()   { echo -e "${GRN}  ✓  $*${RST}"; }
@@ -50,7 +57,9 @@ fi
 ok "Build complete"
 
 SYSTEM_MODE=false
-if $LOGIN; then
+if $RUNIT; then
+    info "--runit: explicitly installing Kepr-owned user daemon and SSH services"
+elif $LOGIN; then
     # Unlock at login is for the per-user daemon; the system service is
     # root's and is unlocked by root.
     info "--login: user mode with the per-user daemon unit (no system service)"
@@ -66,8 +75,8 @@ elif command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm= 2>/dev/null)"
 else
     info "No systemd PID 1 detected; using self-contained user mode"
 fi
-if ! $SYSTEM_MODE && ! command -v python3 >/dev/null 2>&1; then
-    echo "User-mode installation requires Python 3.9 or newer for a socket-scoped daemon restart" >&2
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Installation requires Python 3.9 or newer for Kepr's signing adapter and socket-scoped service tools" >&2
     exit 1
 fi
 echo -e "\n${CYN}━━━ Installing binaries ━━━${RST}"
@@ -81,6 +90,13 @@ ok "kepr-daemon             → /usr/local/bin/kepr-daemon"
 ok "docker-credential-kepr  → /usr/local/bin/docker-credential-kepr"
 ok "git-credential-kepr     → /usr/local/bin/git-credential-kepr"
 ok "kepr-gate               → /usr/local/bin/kepr-gate"
+if ! $RUNIT; then
+    if [[ -e /usr/local/bin/kepr-ssh-keygen || -L /usr/local/bin/kepr-ssh-keygen ]]; then
+        warn "Existing kepr-ssh-keygen left unchanged; --runit explicitly backs up and replaces this adapter"
+    else
+        sudo install -o root -g root -m 0755 scripts/kepr-ssh-keygen /usr/local/bin/kepr-ssh-keygen
+    fi
+fi
 
 
 # Phase 2 ε: install the polkit action so creds set with
@@ -212,7 +228,11 @@ if $LOGIN; then
     fi
 fi
 
-if ! $SYSTEM_MODE; then
+if $RUNIT; then
+    sudo python3 "$REPO_DIR/scripts/install-runit.py" --user "$INSTALL_USER" \
+        --runtime "${XDG_RUNTIME_DIR:-/run/user/$(id -u "$INSTALL_USER")}" \
+        --profile "${KEPR_PROFILE:-default}" --cutover --enable --replace-existing --replace-user-adapter
+elif ! $SYSTEM_MODE; then
     echo -e "\n${CYN}━━━ Restarting user daemon ━━━${RST}"
     if [[ "${KEPR_PROFILE:-default}" = "default" ]] &&
         command -v systemctl >/dev/null 2>&1 &&

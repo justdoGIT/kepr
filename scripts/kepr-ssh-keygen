@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Git SSH signing adapter: select only the current Kepr profile's agent."""
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import sys
+
+
+def main():
+    uid = os.getuid()
+    runtime = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{uid}'))
+    if not runtime.is_absolute() or '..' in runtime.parts:
+        raise RuntimeError('Kepr signing requires an absolute private runtime directory')
+    for entry in [runtime, *runtime.parents]:
+        if entry.is_symlink():
+            raise RuntimeError('Kepr signing refuses symlinked runtime paths')
+    item = runtime.stat()
+    if item.st_uid != uid or not stat.S_ISDIR(item.st_mode) or stat.S_IMODE(item.st_mode) != 0o700:
+        raise RuntimeError('Kepr signing requires an owner-only runtime directory (0700)')
+    profile = os.environ.get('KEPR_PROFILE', 'default')
+    if profile not in ('', 'default') and not re.fullmatch(r'[a-z0-9_-]{1,32}', profile):
+        raise RuntimeError('invalid Kepr profile')
+    suffix = '' if profile in ('', 'default') else '-' + profile
+    agent = runtime / f'kepr-ssh-agent{suffix}.sock'
+    item = agent.lstat()
+    if not stat.S_ISSOCK(item.st_mode) or item.st_uid != uid:
+        raise RuntimeError('Kepr signing socket is missing or has an unsafe owner')
+    executable = shutil.which('ssh-keygen')
+    if executable is None or Path(executable).resolve() == Path(__file__).resolve():
+        raise RuntimeError('real ssh-keygen executable not found')
+    os.environ['SSH_AUTH_SOCK'] = str(agent)
+    os.execv(executable, [executable, *sys.argv[1:]])
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, RuntimeError) as error:
+        print(f'kepr-ssh-keygen: {error}', file=sys.stderr)
+        sys.exit(1)
