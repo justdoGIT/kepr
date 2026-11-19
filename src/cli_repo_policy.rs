@@ -119,12 +119,16 @@ pub fn policy_search_paths(
     paths
 }
 
-pub fn load_policy() -> PrivacyPolicy {
+pub fn load_policy() -> Result<PrivacyPolicy, String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    policy_search_paths(home.as_deref(), &|k| std::env::var(k).ok())
-        .into_iter()
-        .find_map(|p| std::fs::read_to_string(p).ok().map(|s| parse_policy(&s)))
-        .unwrap_or_default()
+    for p in policy_search_paths(home.as_deref(), &|k| std::env::var(k).ok()) {
+        match std::fs::read_to_string(&p) {
+            Ok(s) => return Ok(parse_policy(&s)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("read {}: {}", p.display(), e)),
+        }
+    }
+    Ok(PrivacyPolicy::default())
 }
 
 fn git_config_path(repo_root: &Path) -> PathBuf {
@@ -150,7 +154,13 @@ fn repo_label(dir: &Path) -> String {
 }
 
 fn inspect_git_config(repo_root: &Path, policy: &PrivacyPolicy) -> Option<String> {
-    let text = std::fs::read_to_string(git_config_path(repo_root)).ok()?;
+    let text = match std::fs::read_to_string(git_config_path(repo_root)) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("read git config: {e}");
+            return None;
+        }
+    };
     let mut section = String::new();
     for raw in text.lines() {
         let line = raw.trim();

@@ -117,8 +117,10 @@ pub fn filter_routes_for_dir(
 }
 
 pub fn filter_routes(routes: Vec<GateRoute>) -> Result<Vec<GateRoute>, String> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    filter_routes_for_dir(&cwd, routes, &load_policy())
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("current_dir failed: {e}"))?;
+    let policy = load_policy()?;
+    filter_routes_for_dir(&cwd, routes, &policy)
 }
 
 fn extract_str<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
@@ -211,8 +213,10 @@ pub fn check_hook_in(
 }
 
 pub fn check_hook(event: &str, input: &Value) -> Result<Option<String>, String> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    check_hook_in(event, input, &cwd, &load_policy(), &|k| {
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("current_dir failed: {e}"))?;
+    let policy = load_policy()?;
+    check_hook_in(event, input, &cwd, &policy, &|k| {
         std::env::var(k).ok()
     })
 }
