@@ -26,6 +26,7 @@ fn env(cmd: &mut Command, home: &Path) {
         .env("XDG_DATA_HOME", home.join("data"))
         .env("XDG_STATE_HOME", home.join("state"))
         .env("XDG_RUNTIME_DIR", home.join("run"))
+        .env("KEPR_NO_AUTOSTART", "1")
         .env("KEPR_LOCK_ON_SLEEP", "0");
 }
 
@@ -42,9 +43,13 @@ fn start(home: tempfile::TempDir, store: Option<&str>) -> Daemon {
         .stderr(Stdio::null())
         .spawn()
         .expect("start kepr-daemon");
-    let d = Daemon { child, home };
+    let mut d = Daemon { child, home };
     let t = Instant::now();
     while !kepr(&d, &["status"]).status.success() {
+        assert!(
+            d.child.try_wait().unwrap().is_none(),
+            "owned vault-image daemon exited before readiness"
+        );
         assert!(
             t.elapsed() < Duration::from_secs(10),
             "daemon did not come up"
