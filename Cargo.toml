@@ -192,7 +192,7 @@ codegen-units = 16
 maintainer = "kepr maintainers"
 section = "admin"
 priority = "optional"
-depends = "$auto"
+depends = "$auto, python3"
 extended-description = """
 kepr is a per-user credential manager for Linux. The default user-mode CLI
 starts its own daemon and has no systemd or root-service dependency. Optional
@@ -204,6 +204,13 @@ assets = [
     ["target/release/docker-credential-kepr",  "/usr/local/bin/docker-credential-kepr", "0755"],
     ["target/release/git-credential-kepr",     "/usr/local/bin/git-credential-kepr",    "0755"],
     ["target/release/kepr-gate",               "/usr/local/bin/kepr-gate",              "0755"],
+    ["scripts/kepr-ssh-keygen", "/usr/local/bin/kepr-ssh-keygen", "0755"],
+    ["scripts/kepr-ssh-keygen", "/usr/local/libexec/kepr/kepr-ssh-keygen", "0755"],
+    ["scripts/install-runit.py", "/usr/local/libexec/kepr/install-runit.py", "0755"],
+    ["scripts/kepr-runit-launcher.py", "/usr/local/libexec/kepr/kepr-runit-launcher.py", "0755"],
+    ["scripts/kepr-service-common.py", "/usr/local/libexec/kepr/kepr-service-common.py", "0755"],
+    ["runit/kepr-daemon.run", "/usr/share/kepr/runit/kepr-daemon.run", "0644"],
+    ["runit/kepr-ssh-agent.run", "/usr/share/kepr/runit/kepr-ssh-agent.run", "0644"],
     ["systemd/kepr.service",       "/lib/systemd/system/kepr.service","0644"],
     ["systemd/kepr-gate.service",  "/lib/systemd/system/kepr-gate.service", "0644"],
     ["systemd/polkit/io.kepr.policy", "/usr/share/polkit-1/actions/io.kepr.policy", "0644"],
@@ -238,13 +245,20 @@ maintainer-scripts = "packaging/debian"
 
 [package.metadata.generate-rpm]
 license = "MIT OR Apache-2.0"
-requires = {}
+requires = { python3 = "*" }
 assets = [
     { source = "target/release/kepr",                   dest = "/usr/local/bin/kepr",                   mode = "0755" },
     { source = "target/release/kepr-daemon",            dest = "/usr/local/bin/kepr-daemon",            mode = "0755" },
     { source = "target/release/docker-credential-kepr", dest = "/usr/local/bin/docker-credential-kepr", mode = "0755" },
     { source = "target/release/git-credential-kepr",    dest = "/usr/local/bin/git-credential-kepr",    mode = "0755" },
     { source = "target/release/kepr-gate",              dest = "/usr/local/bin/kepr-gate",              mode = "0755" },
+    { source = "scripts/kepr-ssh-keygen", dest = "/usr/local/bin/kepr-ssh-keygen", mode = "0755" },
+    { source = "scripts/kepr-ssh-keygen", dest = "/usr/local/libexec/kepr/kepr-ssh-keygen", mode = "0755" },
+    { source = "scripts/install-runit.py", dest = "/usr/local/libexec/kepr/install-runit.py", mode = "0755" },
+    { source = "scripts/kepr-runit-launcher.py", dest = "/usr/local/libexec/kepr/kepr-runit-launcher.py", mode = "0755" },
+    { source = "scripts/kepr-service-common.py", dest = "/usr/local/libexec/kepr/kepr-service-common.py", mode = "0755" },
+    { source = "runit/kepr-daemon.run", dest = "/usr/share/kepr/runit/kepr-daemon.run", mode = "0644" },
+    { source = "runit/kepr-ssh-agent.run", dest = "/usr/share/kepr/runit/kepr-ssh-agent.run", mode = "0644" },
     { source = "systemd/kepr.service",       dest = "/lib/systemd/system/kepr.service",mode = "0644" },
     { source = "systemd/kepr-gate.service",  dest = "/lib/systemd/system/kepr-gate.service", mode = "0644" },
     { source = "systemd/polkit/io.kepr.policy", dest = "/usr/share/polkit-1/actions/io.kepr.policy", mode = "0644" },

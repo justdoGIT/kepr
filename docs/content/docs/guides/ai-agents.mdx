@@ -290,7 +290,7 @@ isolation and a private workspace. If required isolation is unavailable,
 launch fails closed; it does **not** silently run on the host.
 
 - The credential store, daemon state/socket, desktop keyring sockets, and
-  cached Codex authentication are hidden from the harness.
+  supported harness authentication caches are hidden from the harness.
 - The harness runs with a generated private home, no capabilities,
   `no_new_privs`, and a seccomp filter restricting process inspection and
   privileged operations.
@@ -317,6 +317,35 @@ that mode accepts `--no-sandbox` (Codex still refuses it). Do not choose it as
 a workaround for a lock, authentication, binding, or isolation failure.
 Native macOS/Windows protected launch enforcement is not qualified by these
 Linux instructions.
+
+### Authentication caches are not the vault
+
+API-key gating and an existing account login are different authentication
+paths. A harness that reads a bearer or refresh token from its own JSON file
+or SQLite database can use that token independently of the API-key gate.
+Do not claim that a private file or an encrypted Kepr vault also encrypts a
+third-party harness's database.
+
+Keep authentication roots owner-only (`0700`), files and SQLite sidecars
+owner-only (`0600`), and use a private creation umask. This protects against
+other Unix users, not arbitrary processes running as the same owner or root.
+Protected workspace launches use a generated private home rather than the
+operator's authentication caches. Existing logins outside that workspace are
+preserved, not silently imported or removed.
+
+If a provider's account-login/refresh lifecycle has no qualified external
+broker, use a separately granted Kepr API-key route for the isolated session.
+Do not copy an OAuth database into the workspace to repair authentication.
+Keep the unsupported account-login path outside that isolation claim.
+
+Compatibility-mode cache masking covers known credential paths and their
+canonical targets, including SQLite sidecars; it is not an exhaustive secret
+scan. Discovered credential caches prohibit an unsandboxed fallback. An
+OMP/OpenCode database mixing settings and authentication is refused for its
+own compatibility-mode consumer instead of being blanked or copied. Use the
+protected private-home workspace with an API-key grant. Arbitrary helper/plugin
+credentials, inactive/custom profiles, and unrecognized database names are not
+covered by the compatibility-mode cache list.
 
 ## What the agent can change: the workspace snapshot
 
@@ -628,6 +657,10 @@ kepr exec --env DEPLOY_TOKEN --mask -- ./deploy.sh
   only public roots. A root-owned CA setting is planned.
 - **Root:** an attacker with root on the running machine can read any
   process's memory. Run agents as your normal user.
+- **Persisted account logins:** local OAuth token files/databases are not
+  automatically migrated into or encrypted by Kepr. Owner-only permissions
+  do not stop another process running as the owner; use the protected private
+  workspace and an explicitly supported broker/API-key route.
 - **Use, not read:** an agent can still make calls with the key toward its
   bound provider. It cannot copy it or send it anywhere else.
 - **FIDO2:** sealed keys can't require a FIDO2 touch yet (use

@@ -194,7 +194,7 @@ pub fn cmd_hook(args: &[String]) -> i32 {
     let repo_notice = match crate::cli_repo_guard::check_hook(event, &input) {
         Ok(n) => n,
         Err(reason) => {
-            eprintln!("{reason}");
+            eprintln!("{}", json!({"error": "privacy_guard_blocked", "reason": reason}));
             return 2;
         }
     };

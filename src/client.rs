@@ -44,6 +44,7 @@ fn connect_socket(start: bool) -> Result<UnixStream, String> {
     if start
         && std::env::var_os("KEPR_SYSTEM_MODE").is_none()
         && std::env::var_os("KEPR_GATE_URL").is_none()
+        && std::env::var_os("KEPR_NO_AUTOSTART").is_none()
     {
         let mut cmd = Command::new("kepr-daemon");
         cmd.arg("--user")

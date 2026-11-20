@@ -4,7 +4,7 @@
 // exec keeps the pid, so the gate's --owner-pid watch ends the gate
 // when the harness exits.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -18,7 +18,7 @@ use crate::client;
 mod launch;
 pub(crate) use launch::reserved_environment_name;
 pub use launch::{build_env, SandboxMode};
-use launch::{decide_sandbox, harness_sandbox};
+use launch::{decide_sandbox, harness_sandbox, run_workspace_command};
 #[path = "cli_agent_run_env.rs"]
 mod env;
 pub use env::keep_safe_env;
@@ -62,38 +62,6 @@ pub fn routes_for(
     Ok(routes)
 }
 
-/// A protected workspace may run an explicitly supplied command even when no
-/// usable model route exists. It receives no gate, credentials, or proxy; the
-/// workspace sandbox remains the only execution surface.
-fn run_workspace_command(
-    private: crate::cli_workspace::launch::PreparedLaunch,
-    adapter: &Adapter,
-    harness: &str,
-) -> ! {
-    crate::cli_ui::warn(
-        "protected workspace command: no provider gate was started; cloud credentials are unavailable",
-    );
-    let (inherited, withheld) = keep_safe_env(std::env::vars());
-    if !withheld.is_empty() {
-        crate::cli_ui::warn(&format!(
-            "not passed to the workspace command (they hold real keys): {}",
-            withheld.join(", ")
-        ));
-    }
-    let mut env = build_env(adapter, 0, &HashMap::new(), inherited.into_iter());
-    env.push(("KEPR_AGENT_HARNESS".into(), harness.into()));
-    if let Err(error) = private.stage(harness, 0, None, &mut env) {
-        eprintln!("kepr: {error}");
-        std::process::exit(125);
-    }
-    if let Err(error) = launch::validate_final_env(&env, 0) {
-        eprintln!("kepr: {error}");
-        std::process::exit(125);
-    }
-    let argv = private.argv.clone();
-    private.run(&argv, env, 0)
-}
-
 pub fn cmd_run(
     harness: &str,
     port: Option<u16>,
@@ -131,10 +99,26 @@ pub fn cmd_run(
         }
         None => None,
     };
+    // Retain only path controls before the harness allowlist drops unrelated
+    // overrides; those caches must still be hidden from the selected harness.
+    let credential_env = if private.is_none() {
+        match crate::cli_sandbox_auth::environment() {
+            Ok(env) => env,
+            Err(error) => return Response::fail(error),
+        }
+    } else {
+        Vec::new()
+    };
     let sandbox = if private.is_some() {
         true
     } else {
-        match harness_sandbox(harness, mode).and_then(|m| decide_sandbox(m, isolate_net)) {
+        if let Err(error) = crate::cli_sandbox_auth::validate_selected(harness, &credential_env) {
+            return Response::fail(error);
+        }
+        match harness_sandbox(harness, mode)
+            .and_then(|m| launch::cache_sandbox(m, &credential_env))
+            .and_then(|m| decide_sandbox(m, isolate_net))
+        {
             Ok(s) => s,
             Err(e) => return Response::fail(e),
         }
@@ -324,6 +308,15 @@ pub fn cmd_run(
     if sandbox {
         match crate::cli_agent_sandbox::Plan::new(argv, env, gate_port, isolate_net) {
             Ok(mut plan) => {
+                match crate::cli_sandbox_auth::hidden_cstrings(
+                    &credential_env,
+                    &crate::cli_agent_sandbox::hide_dirs(),
+                ) {
+                    Ok(files) => plan.hide_files.extend(files),
+                    Err(error) => return Response::fail(error),
+                }
+                plan.hide_files.sort();
+                plan.hide_files.dedup();
                 // Database and tunnel ports are relayed into an isolated netns too.
                 plan.extra_ports = db_ports.values().copied().collect();
                 crate::cli_agent_sandbox::run(plan)
@@ -331,11 +324,10 @@ pub fn cmd_run(
             Err(e) => return Response::fail(e),
         }
     }
-    let err = Command::new(&argv[0])
-        .args(&argv[1..])
-        .env_clear()
-        .envs(env)
-        .exec();
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]).env_clear().envs(env);
+    launch::private_creation(&mut command);
+    let err = command.exec();
     Response::fail(format!("exec {} failed: {err}", argv[0]))
 }
 

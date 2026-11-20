@@ -116,3 +116,69 @@ fn failed_or_signalled_probe_never_reports_success_without_a_message() {
     assert!(super::finish_probe("setup failed".into(), 0).is_err());
     assert!(super::finish_probe(String::new(), 0).is_ok());
 }
+
+#[test]
+fn actual_sandbox_masks_cache_names_targets_and_uses_private_creation_modes() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    if let Err(error) = probe(false) {
+        eprintln!("skip credential sandbox: namespaces unavailable: {error}");
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let name = home.join(".codex/auth.json");
+    let target = root.path().join("redirected-auth");
+    std::fs::create_dir_all(name.parent().unwrap()).unwrap();
+    std::fs::write(&target, "synthetic-sentinel").unwrap();
+    symlink(&target, &name).unwrap();
+    let mut expected = vec![name, target.clone()];
+    for (index, relative) in [
+        ".claude/.credentials.json", ".gemini/oauth_creds.json",
+        ".gemini/gemini-credentials.json",
+        ".gemini/mcp-oauth-tokens.json", ".gemini/a2a-oauth-tokens.json",
+        ".pi/agent/auth.json", ".omp/agent/auth.json", ".omp/agent/agent.db",
+        ".config/pi/auth.json", ".config/pi/agent/auth.json", ".config/pi/agent/agent.db",
+        ".config/pi/agent/agent.db-wal", ".config/pi/agent/agent.db-shm",
+        ".config/omp/agent/agent.db-wal", ".config/omp/agent/agent.db-shm",
+        ".local/share/opencode/auth.json", ".local/share/opencode/opencode.db",
+        ".local/share/opencode/opencode.db-wal", ".local/share/opencode/opencode.db-shm",
+    ].iter().enumerate() {
+        let name = home.join(relative);
+        let target = root.path().join(format!("redirected-{index}"));
+        std::fs::create_dir_all(name.parent().unwrap()).unwrap();
+        std::fs::write(&target, "synthetic-sentinel").unwrap();
+        symlink(&target, &name).unwrap();
+        expected.extend([name, target]);
+    }
+    let mut argv = vec![
+        "/bin/sh".into(), "-c".into(),
+        "for cache do test ! -s \"$cache\" || exit 41; done; mkdir \"$HOME/private-dir\" && printf synthetic > \"$HOME/private-file\"".into(),
+        "credential-fixture".into(),
+    ];
+    let env = vec![("HOME".into(), home.display().to_string())];
+    argv.extend(expected.iter().map(|path| path.display().to_string()));
+    let plan = Plan::new(&argv, env, 7000, false).unwrap();
+    // SAFETY: only this test-owned child changes process guards/signals/umask.
+    let runner = unsafe { libc::fork() };
+    assert!(runner >= 0);
+    if runner == 0 {
+        // SAFETY: umask takes no pointers and only changes this forked child's mask.
+        unsafe { libc::umask(0); }
+        let code = run_status(plan);
+        // SAFETY: terminate this test-owned child without running inherited destructors.
+        unsafe { libc::_exit(code); }
+    }
+    assert_eq!(wait_code(runner), 0);
+    for (name, mode) in [("private-dir", 0o700), ("private-file", 0o600)] {
+        assert_eq!(std::fs::metadata(home.join(name)).unwrap().permissions().mode() & 0o777, mode);
+    }
+    assert_eq!(std::fs::read(target).unwrap(), b"synthetic-sentinel");
+}
+
+#[test]
+fn malformed_cache_targets_never_produce_an_unprotected_plan() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("auth.json")).unwrap();
+    let env = vec![("CODEX_HOME".into(), root.path().display().to_string())];
+    assert!(Plan::new(&["/bin/true".into()], env, 7000, false).is_err());
+}

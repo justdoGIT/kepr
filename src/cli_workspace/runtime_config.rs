@@ -54,7 +54,8 @@ fn private_env(harness: &str, port: u16, prefix: &str, ca: bool, env: &mut Vec<(
     env.retain(|(key, _)| {
         !matches!(
             key.as_str(),
-            "CODEX_HOME" | "PI_CODING_AGENT_DIR" | "KEPR_BIN"
+            "CODEX_HOME" | "PI_CODING_AGENT_DIR" | "CLAUDE_CONFIG_DIR"
+                | "GEMINI_CLI_HOME" | "KEPR_BIN"
         )
     });
     match harness {
@@ -175,6 +176,8 @@ mod tests {
             ("PATH".into(), "/home/operator/bin".into()),
             ("CODEX_HOME".into(), "/home/operator/auth".into()),
             ("PI_CODING_AGENT_DIR".into(), "/home/operator/omp".into()),
+            ("CLAUDE_CONFIG_DIR".into(), "/home/operator/claude".into()),
+            ("GEMINI_CLI_HOME".into(), "/home/operator/gemini".into()),
             ("SSL_CERT_FILE".into(), "/tmp/host-ca.crt".into()),
             ("KEPR_GATE_URL".into(), "http://127.0.0.1:7000".into()),
         ];
@@ -191,13 +194,32 @@ mod tests {
         assert_eq!(env["KEPR_GATE_URL"], "http://127.0.0.1:7000");
         assert_eq!(env["PI_CODING_AGENT_DIR"], "/session/private/home/omp");
         assert!(!env.contains_key("CODEX_HOME"));
+        assert!(!env.contains_key("CLAUDE_CONFIG_DIR"));
+        assert!(!env.contains_key("GEMINI_CLI_HOME"));
         assert_eq!(
             env["SSL_CERT_FILE"],
             "/session/private/config/launch-example/gate-ca.crt"
         );
         assert_eq!(env["PATH"], crate::cli_sandbox_runtime::SEARCH_PATH);
+
         assert!(!env
             .values()
             .any(|v| v.contains("/home/operator") || v.contains("/tmp/host-ca")));
+    }
+    #[test]
+    fn selected_claude_and_gemini_cannot_restore_host_config_roots() {
+        for harness in ["claude", "gemini"] {
+            let mut env = vec![
+                ("CLAUDE_CONFIG_DIR".into(), "/synthetic/host-claude".into()),
+                ("GEMINI_CLI_HOME".into(), "/synthetic/host-gemini".into()),
+            ];
+            private_env(harness, 7000, "/session/private/config/test", false, &mut env);
+            assert!(!env.iter().any(|(name, _)| {
+                matches!(name.as_str(), "CLAUDE_CONFIG_DIR" | "GEMINI_CLI_HOME")
+            }));
+            assert!(env.iter().any(|(name, value)| {
+                name == "HOME" && value == "/session/private/home"
+            }));
+        }
     }
 }

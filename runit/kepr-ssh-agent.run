@@ -1,0 +1,3 @@
+#!/bin/sh
+# Kepr-owned runit service; rendered by install-runit.py.
+exec @PYTHON@ @LAUNCHER@ @CONFIG@ ssh-agent

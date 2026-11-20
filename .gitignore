@@ -20,6 +20,11 @@ target/
 docs/public/Gemini_Generated_Image_*.png
 docs/public/Kepr_gemini.png
 
+# For Limiting 3rd Party LLM providers to certain repos.
+# But currently its dropped.
+privacy-policy.yaml
+privacy-guard.ts
+
 # Python
 __pycache__/
 *.pyc

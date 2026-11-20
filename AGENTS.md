@@ -14,9 +14,17 @@
 - `./tests/agent_e2e.sh` — self-contained "malicious agent" test for sealed credentials and kepr-gate: starts its own user-mode daemon in a temp HOME using `target/debug` binaries (`cargo build --workspace` first; `KEPR_BIN_DIR` overrides). Run it as a non-root user for the full check; root skips the gate memory/environ checks. It also checks `kepr agent logs`, sealed credentials staying sealed across `set` / `rotate --hook` / `restore`, and the sandbox's Landlock rules in `KEPR_LANDLOCK=strict` (store dir denied) and default mode (a file in `$HOME` can be replaced by rename).
 - `./tests/secret_service_e2e.sh` — kepr as the desktop's Secret Service against a real `dbus-daemon` (needs `dbus-run-session`, `secret-tool`; `python3-secretstorage` adds the DH-session check): `secret-tool` store / lookup / search / clear, a locked store and a cold start through `KEPR_ASKPASS`, the policy file, `takeover` / `restore` (the bus starts kepr), `import` between two kepr profiles and a sandboxed `kepr agent run`. Temp HOME, private bus; `cargo build --workspace` first. `cargo test --test desktop_packaging` pins what the packages ship for the PAM module and the user units (T13.27, T13.28).
 - `kepr-relay [--listen ADDR] [--max-ttl SECS] [--rate PER_MINUTE]` — optional relay for one-time share links (T6.04); defaults 127.0.0.1:8737, 7 days, 60 requests/min per address; plain HTTP, put it behind a TLS reverse proxy.
-- `./install.sh` — full install: builds, creates `kepr` system group, installs binaries to `/usr/local/bin/kepr` and `/usr/local/sbin/kepr-daemon`, installs and starts the systemd service.
-- `sudo systemctl restart kepr.service` — reload the daemon after rebuilding. `sudo systemctl reload kepr.service` (SIGHUP, `ExecReload`) or `kepr policy reload` re-reads `policy.toml` (T6.11) without a restart.
-- `journalctl -t kepr-daemon -f` — follow the audit log (structured fields: `KEPR_OP`, `KEPR_NAME`, `KEPR_UID`, `KEPR_USER`, `KEPR_RESULT`).
+## Daemon Failure Handling
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| cannot connect to credential service at /run/user/1000/kepr/kepr.sock | Daemon not running (runit) | sudo sv start kepr-daemon |
+| cannot connect to credential service at /run/kepr/kepr.sock | Daemon not running (systemd) | sudo systemctl start kepr-daemon |
+| 502 Bad Gateway: kepr could not obtain the credential | Daemon down or credential missing/bound wrong | 1. kepr status 2. kepr agent ls 3. Restart daemon 4. Verify placeholder in tool config |
+| credential store is locked | Vault password-protected | kepr unlock (enter passphrase) or kepr get KK_SUDO_PASSWORD --quiet | kepr unlock --stdin |
+| No private key found for public key (git commit) | SSH key only in Kepr agent | git config --global gpg.ssh.program kepr-ssh-keygen; ensure kepr-ssh-keygen installed |
+| kepr get / kepr exec fails in agent session | Blocked in protected sessions | Use kepr agent run placeholders or kepr MCP call_api tool |
+| kepr status shows locked but agent has placeholders | Store locked, session has old placeholders | kepr unlock then restart agent session |
 
 ## Architecture
 

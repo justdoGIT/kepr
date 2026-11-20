@@ -22,6 +22,26 @@ kepr unlock
 # Enter passphrase: ****
 ```
 
+### Startup locks and locked memory
+
+A passphrase-protected store intentionally starts locked after a daemon restart.
+Run `kepr unlock` in your own terminal; never put the passphrase in a service
+file, environment variable, script, or agent conversation. Login unlock can
+hand over a successfully authenticated login password when the daemon is
+already running and the vault passphrase matches it.
+
+`RLIMIT_MEMLOCK` is inherited from the process starting the daemon. A 1 MiB
+limit can be smaller than its existing mappings, so even `MCL_CURRENT` fails.
+Configure the dedicated service's limit before dropping privileges, rather
+than suppressing the warning or granting capabilities to every Kepr command.
+Future allocations also need locking: a successful current-pages-only lock
+does not prove that all later secret-bearing pages are unswappable. Verify
+the running daemon's memory-lock limit and `VmLck` after installation.
+
+User services cannot raise their hard limit above the login manager's inherited
+limit. A root-supervised service can establish the daemon-only limit before
+running it as the vault owner. Do not run the user vault as root.
+
 ---
 
 ## Auditing Credential Access
@@ -51,6 +71,21 @@ journalctl -t kepr-daemon KEPR_UID=1000        # Specific UID
 ```bash
 journalctl -t kepr-daemon -f
 ```
+
+### Preserve audit continuity
+
+The hash chain is not an ordinary disposable log. Exclude `audit.log` and its
+checkpoint from generic log trimming, `copytruncate`, and independent rotation.
+Keep consistent backups of the complete chain and publish audit anchors to a
+separately controlled destination. `kepr audit-verify` checks the complete chain;
+a cached startup checkpoint is not a replacement for that check.
+
+An initial sequence other than 1 means the prefix is missing. Do not renumber
+records, edit hashes, fabricate a checkpoint, or accept that suffix as a complete
+verified history. Restore the complete backup, or explicitly authorize a new
+chain: preserve the original log and checkpoint unchanged, record their digest
+and the history gap, then start a fresh chain with a recovery record. A valid
+retained suffix cannot recover or authenticate the missing records.
 
 ---
 
@@ -86,6 +121,27 @@ ls -la /var/lib/kepr/
 ```
 
 **Expected**: `drwx------` (0700), owner `root:root`.
+
+### Agent authentication files and databases
+
+Use owner-only authentication directories (`0700`) and credential/database files
+(`0600`), including SQLite WAL/SHM sidecars and any backups. Resolve directory
+symlinks when checking permissions; a symlink's displayed `0777` mode is not the
+target directory's access mode. Preserve executable bits on unrelated programs.
+
+These modes deny other Unix users; they do **not** encrypt database contents or
+isolate other processes running as the owner. Root, an authenticated process,
+or offline access to an unencrypted disk remains outside this boundary. Use
+full-disk encryption for offline protection and a credential broker plus a
+private sandbox for isolation from agent tools.
+
+Launch API-key harnesses through `kepr agent run HARNESS`, not directly with
+real keys in the environment. Supported protected launches use a private home
+and a destination-bound credential gate. Existing account-login OAuth caches
+are a separate credential source: file permissions do not migrate or encrypt
+them in Kepr, and an unsupported login must not be advertised as brokered.
+Keep those logins private and outside the isolated API-key session unless a
+qualified broker supports their refresh and persistence lifecycle.
 
 ---
 
