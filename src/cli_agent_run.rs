@@ -190,7 +190,7 @@ pub fn cmd_run(
             crate::cli_gatex::dbuser::apply(&mut routes, &session.db_users)?; // T13.02
         }
         kepr_core::gate_protocol::validate_routes(&routes)?;
-        Ok(routes)
+        crate::cli_repo_guard::filter_routes(routes)
     })();
     let routes = match routes {
         Ok(r) => r,

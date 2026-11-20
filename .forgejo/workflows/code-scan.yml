@@ -2,6 +2,7 @@ name: Code scan
 
 on:
   push:
+    branches: [main, master]
   pull_request:
   schedule:
     - cron: "47 4 * * 1"
@@ -10,4 +11,4 @@ on:
 jobs:
   semgrep:
     runs-on: ci-standard
-    uses: https://forgejo.kepr.dev/justdoGIT/ci-templates/.forgejo/workflows/reusable-code-scan.yml@07b435275326935d004abee9fa0f35d2b7c4b2d3
+    uses: https://forgejo.kepr.dev/justdoGIT/ci-templates/.forgejo/workflows/reusable-code-scan.yml@1c96fd261aac57dca9471906d02af8fe643b809c

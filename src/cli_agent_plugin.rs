@@ -25,6 +25,14 @@ const OMP: Files = &[
         "providers.ts",
         include_str!("../plugins/omp/kepr/providers.ts"),
     ),
+    (
+        "privacy-guard.ts",
+        include_str!("../plugins/privacy-guard.ts"),
+    ),
+    (
+        "privacy-policy.yaml",
+        include_str!("../plugins/privacy-policy.yaml"),
+    ),
 ];
 
 const GROK: Files = &[

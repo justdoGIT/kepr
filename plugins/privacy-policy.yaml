@@ -1,0 +1,21 @@
+# Repositories listed here reject third-party provider relays and allow only
+# approved first-party or local model providers across all coding agents.
+strict: true
+allowed_providers:
+  - anthropic
+  - claude-waddhwaa
+  - codex-waddhwaa
+  - openai
+  - openai-codex
+  - litellm
+  - google
+  - google-antigravity
+  - google-vertex
+  - deepseek
+  - groq
+  - mistral
+  - xai
+  - nvidia
+  - ollama
+  - local-decider
+# No restricted repositories - all repositories are public
