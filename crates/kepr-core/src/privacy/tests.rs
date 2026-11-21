@@ -146,6 +146,7 @@ fn sec_004_privacy_accepts_omp_routes_only_for_inspected_provider_hosts() {
     for host in [
         "api.openai.com",
         "api.anthropic.com",
+        "generativelanguage.googleapis.com",
         "gateway.ai.cloudflare.com",
         "api.fireworks.ai",
         "api.moonshot.cn",
@@ -168,6 +169,7 @@ fn sec_004_privacy_accepts_omp_routes_only_for_inspected_provider_hosts() {
         "api.github.com",
         "uninspected.example.invalid",
         "api.openai.com.attacker.invalid",
+        "generativelanguage.googleapis.com.attacker.invalid",
     ] {
         let provider = crate::http_route::key(host, "WORK").unwrap();
         assert!(!supports_provider(&provider));
@@ -184,4 +186,16 @@ fn sec_004_privacy_accepts_omp_routes_only_for_inspected_provider_hosts() {
             .is_err());
     }
     assert!(!supports_provider("https+api.openai.com+../WORK"));
+    assert!(supports_provider("google"));
+    assert!(policy
+        .validate_routes(
+            &[GateRoute {
+                provider: "google".into(),
+                cred: "GEMINI_API_KEY".into(),
+                slot: 0,
+                target: None,
+            }],
+            false,
+        )
+        .is_ok());
 }

@@ -72,6 +72,14 @@ pub(super) fn schema(path: &str) -> Option<&'static [&'static str]> {
             "user",
             "service_tier",
         ]),
+        _ if super::google::endpoint(path).is_some() => Some(&[
+            "contents",
+            "tools",
+            "toolConfig",
+            "generationConfig",
+            "safetySettings",
+            "systemInstruction",
+        ]),
         _ => None,
     }
 }
@@ -122,12 +130,15 @@ fn walk_in(
                     "encrypted_content"
                         | "signature"
                         | "thinkingSignature"
+                        | "thoughtSignature"
                         | "thinking_signature"
                         | "previous_response_id"
                         | "conversation"
                         | "image_url"
                         | "file_id"
                         | "file_data"
+                        | "inlineData"
+                        | "fileData"
                         | "audio"
                         | "video"
                 )
@@ -190,7 +201,17 @@ fn walk_in(
                     }
                 } else {
                     let child_protocol = protocol
-                        && !matches!(key.as_str(), "parameters" | "input_schema" | "schema")
+                        && !matches!(
+                            key.as_str(),
+                            "parameters"
+                                | "input_schema"
+                                | "schema"
+                                | "args"
+                                | "response"
+                                | "parametersJsonSchema"
+                                | "responseSchema"
+                                | "responseJsonSchema"
+                        )
                         && !(tool_input && key == "input");
                     count += walk_in(value, session, depth + 1, nodes, child_protocol)?;
                 }
