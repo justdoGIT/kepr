@@ -7,6 +7,7 @@ pub fn supports_provider(name: &str) -> bool {
     const INSPECTED: &[&str] = &[
         "anthropic",
         "openai",
+        "google",
         "agentrouter",
         "selora",
         "cloudflare",

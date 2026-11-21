@@ -170,6 +170,20 @@ allowlisted for the private-cloud adapter; unsupported endpoints, provider
 extensions, media, and opaque state remain refused. Model availability and
 live provider behavior are not tested by these bindings.
 
+Google Generative Language requests are inspected on the reviewed
+`generateContent` and `streamGenerateContent` model paths. Only streaming
+requests may include the exact `alt=sse` query. Text, instructions, tool
+declarations, and function arguments/results are scrubbed; media, cached
+state, unreviewed tools, and opaque `thoughtSignature` replay are refused.
+OMP conversations that replay signed thinking history therefore fail closed
+rather than bypass privacy inspection. See Google's
+[request schema](https://ai.google.dev/api/generate-content#Part).
+
+`kepr agent doctor` also starts a disposable gate for each installed OMP or
+Grok integration, checks readiness within five seconds, and terminates it.
+The probe uses synthetic configuration, never retrieves vault credentials,
+and does not contact a provider; it does not certify live provider access.
+
 ### Provider credential lifecycle qualification
 
 OMP routes do not retrieve API keys from providers. Operators add the sealed

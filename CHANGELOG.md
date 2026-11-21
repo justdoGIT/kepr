@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [unreleased]
+- Check installed agent gate startup with a bounded readiness probe and
+  deterministic diagnostics, without retrieving vault credentials.
+- Inspect Google generation and SSE requests, scrub structured tool data,
+  and reject unreviewed queries, media, cached state and signed-history
+  replay instead of forwarding opaque content.
 - Own opt-in runit daemon/SSH-agent installation and the Git signing adapter
   in Kepr; establish the daemon-only memory-lock limit before dropping to
   the vault owner, without exporting private SSH keys.

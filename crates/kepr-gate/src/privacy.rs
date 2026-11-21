@@ -7,6 +7,8 @@ use std::sync::Mutex;
 
 #[path = "privacy_fields.rs"]
 mod fields;
+#[path = "privacy_google.rs"]
+mod google;
 #[path = "privacy_schema.rs"]
 mod schema;
 
@@ -49,10 +51,22 @@ impl Filter {
         if session.preset() == Preset::LocalOnly {
             return Err("local-only policy forbids cloud requests".into());
         }
-        if parts.method != hyper::Method::POST || parts.uri.query().is_some() {
-            return Err("privacy adapter requires a POST without a query string".into());
+        let google_endpoint = google::endpoint(path);
+        if parts.method != hyper::Method::POST
+            || parts.uri.query().is_some_and(|query| {
+                query != "alt=sse" || !google_endpoint.is_some_and(|(_, streaming)| streaming)
+            })
+        {
+            return Err(
+                "privacy adapter requires POST with only reviewed streaming options".into(),
+            );
         }
         let schema = fields::schema(path).ok_or("unsupported privacy endpoint")?;
+        if let Some((model, _)) = google_endpoint {
+            if session.transform(model).map_err(str::to_owned)?.1 > 0 {
+                return Err("personal data in Google model path".into());
+            }
+        }
         if body.len() > kepr_core::privacy::MAX_TEXT_BYTES {
             return Err("privacy input too large".into());
         }
@@ -86,10 +100,17 @@ impl Filter {
         if path.ends_with("responses") || path.ends_with("completions") {
             object.insert("store".into(), Value::Bool(false));
         }
-        schema::validate(path, &request).map_err(str::to_owned)?;
+        let validate = |request: &Value| {
+            if google_endpoint.is_some() {
+                google::validate(request)
+            } else {
+                schema::validate(path, request)
+            }
+        };
+        validate(&request).map_err(str::to_owned)?;
         let mut nodes = 0;
         count += fields::walk(&mut request, session, 0, &mut nodes)?;
-        schema::validate(path, &request).map_err(str::to_owned)?;
+        validate(&request).map_err(str::to_owned)?;
         let removed: Vec<_> = parts
             .headers
             .keys()
@@ -143,3 +164,7 @@ impl Filter {
 #[cfg(test)]
 #[path = "privacy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "privacy_google_tests.rs"]
+mod google_tests;

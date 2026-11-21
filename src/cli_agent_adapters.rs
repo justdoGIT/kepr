@@ -96,6 +96,7 @@ pub const ADAPTERS: &[Adapter] = &[
         creds: &[
             ("anthropic", "ANTHROPIC_API_KEY"),
             ("cloudflare", "CLOUDFLARE_AI_GATEWAY_API_KEY"),
+            ("google", "GEMINI_API_KEY"),
         ],
         env: &[
             var("KEPR_PH_ANTHROPIC", Value::Placeholder("ANTHROPIC_API_KEY")),
@@ -108,6 +109,8 @@ pub const ADAPTERS: &[Adapter] = &[
                 "CLOUDFLARE_AI_GATEWAY_API_KEY",
                 Value::Placeholder("CLOUDFLARE_AI_GATEWAY_API_KEY"),
             ),
+            var("KEPR_PH_GOOGLE", Value::Placeholder("GEMINI_API_KEY")),
+            var("GEMINI_API_KEY", Value::Placeholder("GEMINI_API_KEY")),
         ],
         port: None,
     },
@@ -217,6 +220,38 @@ mod tests {
             Some("kepr-ph-test")
         );
         assert!(!env.iter().any(|(_, v)| v == "synthetic-secret"));
+    }
+
+    #[test]
+    fn omp_google_uses_declared_gate_placeholders_and_removes_inherited_key() {
+        let adapter = lookup("omp").unwrap();
+        let available = std::collections::HashSet::from(["GEMINI_API_KEY".into()]);
+        let routes = crate::cli_agent_run::routes_for(adapter, &available).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].provider, "google");
+        assert_eq!(routes[0].cred, "GEMINI_API_KEY");
+        let env = crate::cli_agent_run::build_env(
+            adapter,
+            7001,
+            &std::collections::HashMap::from([("google".into(), "kepr-ph-test".into())]),
+            [
+                ("GEMINI_API_KEY".into(), "synthetic-secret".into()),
+                ("KEPR_PH_GOOGLE".into(), "stale-placeholder".into()),
+            ]
+            .into_iter(),
+        );
+        for name in ["GEMINI_API_KEY", "KEPR_PH_GOOGLE"] {
+            assert_eq!(env.iter().filter(|(key, _)| key == name).count(), 1);
+            assert_eq!(
+                env.iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value.as_str()),
+                Some("kepr-ph-test")
+            );
+        }
+        assert!(!env
+            .iter()
+            .any(|(_, value)| value == "synthetic-secret" || value == "stale-placeholder"));
     }
 
     #[test]
