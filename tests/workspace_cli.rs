@@ -27,13 +27,15 @@ fn prepare_without_files_captures_safe_source_tree() {
 fn prepare_without_files_skips_uninspectable_source_files() {
     let (_root, source, state) = fixture();
     std::fs::write(source.join("logo.bin"), [0_u8, 0xff, 0x00]).unwrap();
+    symlink(source.join("main.rs"), source.join("linked.rs")).unwrap();
 
     let prepared = prepare(&state, &source, &[]);
     assert_eq!(prepared["files"], 1);
-    assert_eq!(prepared["skipped"], 1);
+    assert_eq!(prepared["skipped"], 2);
     let workspace = Path::new(prepared["workspace"].as_str().unwrap());
     assert!(workspace.join("main.rs").exists());
     assert!(!workspace.join("logo.bin").exists());
+    assert!(!workspace.join("linked.rs").exists());
 }
 
 #[test]

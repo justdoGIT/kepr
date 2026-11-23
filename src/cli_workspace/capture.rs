@@ -188,6 +188,8 @@ fn visit(
                 return Err("workspace total byte limit reached");
             }
             output.insert(path, data);
+        } else if matches!(mode, TreeMode::Source) {
+            limits.skipped += 1;
         } else {
             return Err("workspace links and special files are excluded");
         }
