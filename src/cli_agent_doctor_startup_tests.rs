@@ -29,9 +29,13 @@ fn exercise(script: &str, provider: &str, timeout: Duration) -> Result<(), Strin
     let mut status = 0;
     // A killed-but-unreaped child would return its PID here, and a live one
     // would return zero. ECHILD proves run() already reaped this exact child.
+    // SAFETY: `pid` is the child recorded by this test and `status` points to
+    // valid writable storage for waitpid's status result.
     let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
     let error = std::io::Error::last_os_error();
     if waited == 0 {
+        // SAFETY: zero means the recorded child is still live; kill and wait
+        // use that valid PID and the same status storage to reap it.
         unsafe {
             libc::kill(pid, libc::SIGKILL);
             libc::waitpid(pid, &mut status, 0);
