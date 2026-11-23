@@ -86,9 +86,10 @@ fn run(command: &mut Command, provider: &str, timeout: Duration) -> Result<(), S
         .stdout(Stdio::piped())
         // Even a broken/replaced gate must not print session material.
         .stderr(Stdio::null());
-    // SAFETY: only async-signal-safe calls before exec. gate_end remains
-    // open until spawn returns; fd 3 is the private resolver channel, not
-    // the config transport (which is stdin, closed after the JSON).
+    // gate_end remains open until spawn returns; fd 3 is the private resolver channel,
+    // not the config transport (which is stdin, closed after the JSON).
+    // SAFETY: only async-signal-safe calls run before exec; the descriptor invariants
+    // above hold for the entire pre-exec closure.
     unsafe {
         command.pre_exec(move || {
             if libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
