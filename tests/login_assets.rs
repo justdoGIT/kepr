@@ -110,10 +110,19 @@ fn install_login_installs_every_piece_and_touches_pam_only_when_asked() {
     ] {
         assert!(s.contains(want), "install.sh lost `{want}`");
     }
-    // Every PAM change sits inside the `--login` branch.
-    let first_pam_change = s.find("pam-auth-update --package").unwrap();
+    // The module file installs on every run (a system-auth that references a
+    // missing pam_kepr.so logs "PAM unable to dlopen" on each session); only
+    // the distro profile that wires it into the stack sits in `--login`.
+    let module_install = s
+        .find("-m 0755 crates/kepr-pam/target/release/libpam_kepr.so")
+        .expect("install.sh no longer installs libpam_kepr.so");
     let branch = s.find("echo -e \"\\n${CYN}━━━ Unlock at login").unwrap();
-    assert!(branch < first_pam_change);
+    assert!(
+        module_install < branch,
+        "pam_kepr.so install must not be gated behind --login"
+    );
+    let first_profile_change = s.find("pam-auth-update --package").unwrap();
+    assert!(branch < first_profile_change);
     assert!(s[..branch].contains("if $LOGIN; then"));
 }
 
