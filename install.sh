@@ -43,10 +43,10 @@ run_install_user() {
 echo -e "\n${CYN}━━━ Building kepr ━━━${RST}"
 cargo build --release
 cargo build --release -p kepr-gate
-if $LOGIN; then
-    # pam_kepr.so is its own workspace (it links nothing from kepr).
-    cargo build --release --manifest-path crates/kepr-pam/Cargo.toml
-fi
+# pam_kepr.so is its own workspace (it links nothing from kepr). Built on every
+# run: the module installs unconditionally below, because /etc/pam.d/system-auth
+# may reference it whether or not --login is used.
+cargo build --release --manifest-path crates/kepr-pam/Cargo.toml
 ok "Build complete"
 
 SYSTEM_MODE=false
@@ -81,6 +81,22 @@ ok "kepr-daemon             → /usr/local/bin/kepr-daemon"
 ok "docker-credential-kepr  → /usr/local/bin/docker-credential-kepr"
 ok "git-credential-kepr     → /usr/local/bin/git-credential-kepr"
 ok "kepr-gate               → /usr/local/bin/kepr-gate"
+
+# Where this system keeps PAM modules: next to pam_unix.so.
+# The module installs on every run: /etc/pam.d/system-auth may reference
+# pam_kepr.so regardless of how the daemon runs, and a missing module logs
+# "PAM unable to dlopen" on each session.
+if ! PAM_UNIX="$(find /lib* /usr/lib* -name pam_unix.so -print -quit 2>/dev/null)"; then
+    PAM_UNIX=""
+fi
+if [ -n "$PAM_UNIX" ]; then
+    PAM_DIR="$(dirname "$PAM_UNIX")"
+    sudo install -o root -g root -m 0755 crates/kepr-pam/target/release/libpam_kepr.so "$PAM_DIR/pam_kepr.so"
+    ok "pam_kepr.so → $PAM_DIR/pam_kepr.so"
+else
+    warn "no pam_unix.so found, so the PAM module location is unknown: not installing pam_kepr.so"
+    PAM_DIR=""
+fi
 
 
 # Phase 2 ε: install the polkit action so creds set with
@@ -178,27 +194,18 @@ if $LOGIN; then
         systemd/user/kepr-rotate.service systemd/user/kepr-rotate.timer /usr/lib/systemd/user/
     ok "user units → /usr/lib/systemd/user (kepr-daemon, kepr-ssh-agent, kepr-secret-service, kepr-rotate)"
 
-    # Where this system keeps PAM modules: next to pam_unix.so.
-    if ! PAM_UNIX="$(find /lib* /usr/lib* -name pam_unix.so -print -quit 2>/dev/null)"; then
-        PAM_UNIX=""
-    fi
-    if [ -n "$PAM_UNIX" ]; then
-        PAM_DIR="$(dirname "$PAM_UNIX")"
-        sudo install -o root -g root -m 0644 crates/kepr-pam/target/release/libpam_kepr.so "$PAM_DIR/pam_kepr.so"
-        ok "pam_kepr.so → $PAM_DIR/pam_kepr.so"
-        if [ -d /usr/share/pam-configs ] && command -v pam-auth-update >/dev/null 2>&1; then
-            sudo install -o root -g root -m 0644 packaging/pam-configs/kepr /usr/share/pam-configs/kepr
-            if sudo pam-auth-update --package --enable kepr; then
-                ok "pam-auth-update profile kepr enabled (auth, password, interactive sessions)"
-            else
-                warn "could not enable the profile; run: sudo pam-auth-update --enable kepr"
-            fi
+    # The module itself installed unconditionally above; --login only enables
+    # the distro profile that wires it into the interactive PAM stack.
+    if [ -n "${PAM_DIR:-}" ] && [ -d /usr/share/pam-configs ] && command -v pam-auth-update >/dev/null 2>&1; then
+        sudo install -o root -g root -m 0644 packaging/pam-configs/kepr /usr/share/pam-configs/kepr
+        if sudo pam-auth-update --package --enable kepr; then
+            ok "pam-auth-update profile kepr enabled (auth, password, interactive sessions)"
         else
-            warn "no pam-auth-update here: add pam_kepr.so to your PAM services by hand"
-            warn "(optional, after the module that checks the password; see the login-unlock guide)"
+            warn "could not enable the profile; run: sudo pam-auth-update --enable kepr"
         fi
-    else
-        warn "no pam_unix.so found, so the PAM module location is unknown: not installing pam_kepr.so"
+    elif [ -n "${PAM_DIR:-}" ]; then
+        warn "no pam-auth-update here: add pam_kepr.so to your PAM services by hand"
+        warn "(optional, after the module that checks the password; see the login-unlock guide)"
     fi
 
     if command -v systemctl >/dev/null 2>&1 && run_install_user systemctl --user daemon-reload 2>/dev/null; then
